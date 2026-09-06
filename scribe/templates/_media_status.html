@@ -1,0 +1,21 @@
+{#
+  One row's status cell, and the thing that keeps it current.
+
+  A cell whose job is still queued or running asks for itself again every two
+  seconds; the answer is this same fragment, and the moment the job reaches a
+  terminal status the cell it returns carries no polling attributes, so the
+  polling stops on its own. Nothing has to remember to switch it off.
+
+  It is the cell rather than the table that refreshes on purpose: swapping
+  #media-table under the user would close an open row menu and throw away a
+  half-typed rename, and a transcribe run is exactly when someone is likely to
+  be tidying the rest of the library.
+
+  Context: `row` (id, job_id, job_status). The macros are imported here
+  rather than inherited, because this fragment is also rendered on its own
+  by the route the cell polls, where no parent has imported them.
+#}
+{% import "_macros.html" as m %}<td class="status" id="status-{{ row.id }}"
+    {%- if row.job_status in ('queued', 'running') %}
+    hx-get="/media/{{ row.id }}/status" hx-trigger="every 2s" hx-swap="outerHTML"
+    {%- endif %}>{{ m.job_badge(row.job_id, row.job_status) }}</td>

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.id }}: {{ job.title }} - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  One job up close: the status block, then three tabs over the same screen.
+
+  The page used to stack four sections - status, parameters, events, live log -
+  so watching a running job meant scrolling between the stepper at the top and
+  the log at the bottom, and neither was ever in view with the other. What a
+  person needs at a glance is the status; what they need at length is one of
+  the three details. So the status stays, and the details take turns.
+
+  Context (from scribe.web.jobs_ui.detail_context): see _job_panel.html, plus
+
+      last_seq   the seq of the newest event the panel rendered
+      terminal   true when the job will not change again
+
+  The radios live here rather than in either fragment, and that is the whole
+  trick: #job-panel and #job-details both re-fetch themselves on `refresh`,
+  and a radio inside one of them would be replaced by a fresh unchecked copy
+  - putting the page back on the default tab at the moment the stream ended,
+  which is exactly when someone is reading. Switching is `:has()` on the
+  group, so it works before app.js loads and needs no script at all.
+
+  A job that is still running opens on the live log, because that is the thing
+  that changes; a finished one opens on its events, because its log is over
+  and the events are what is left to read.
+
+  The log is a <pre> rendered here with every event the page already has,
+  one line each in the shape app.js appends, and then fed by app.js from
+  /api/jobs/{id}/stream starting after last_seq, so nothing arrives twice.
+  It used to start empty and be filled by the stream alone, which on a job
+  opened after it finished - or opened at all, for the part that ran before -
+  showed nothing: the stream only carries what happens next. Every line is
+  text: a trace or a stage summary is pipeline output.
+#}
+<p class="crumbs"><a href="/jobs">← All jobs</a></p>
+
+{% include "_job_panel.html" %}
+
+<div class="jobtabs">
+  <input type="radio" name="job_tab" id="jt-log" class="visually-hidden" aria-controls="jobpanel-log"{% if not terminal %} checked{% endif %}>
+  <input type="radio" name="job_tab" id="jt-events" class="visually-hidden" aria-controls="jobpanel-events"{% if terminal %} checked{% endif %}>
+  <input type="radio" name="job_tab" id="jt-params" class="visually-hidden" aria-controls="jobpanel-params">
+
+  <div class="tabstrip">
+    <label class="tab" for="jt-log">{% if terminal %}Log{% else %}Live log{% endif %}</label>
+    <label class="tab" for="jt-events">Events <span class="count">{{ listed|length }}</span></label>
+    <label class="tab" for="jt-params">Parameters{% if job.params %} <span class="count">{{ job.params|length }}</span>{% endif %}</label>
+  </div>
+
+  <section class="panel" id="jobpanel-log" data-jobpanel="log">
+    {# aria-live is on this sentence and deliberately not on the <pre>: a
+       live region that is filled line by line from the stream reads every
+       trace line aloud for the whole run, and drowns the flash region. #}
+    <p class="log-head hint"><span id="log-status" data-log-status aria-live="polite">{% if terminal %}finished: {{ job.status }}{% else %}connecting…{% endif %}</span></p>
+    <pre id="log" class="log" data-stream-url="/api/jobs/{{ job.id }}/stream" data-last-seq="{{ last_seq }}" data-terminal="{{ 'true' if terminal else 'false' }}" tabindex="0" aria-label="Job log">{% for event in events %}{{ event.ts|localtime('%H:%M:%S') }}  {% if event.kind != 'log' %}{{ event.kind }} {% endif %}{{ event.summary }}
+{% endfor %}{% if terminal %}-- end of log ({{ job.status }}) --
+{% endif %}</pre>
+    <p class="hint" id="log-nojs">
+      The live log needs JavaScript: it is streamed from
+      <span class="mono">/api/jobs/{{ job.id }}/stream</span> as server-sent events.
+    </p>
+  </section>
+
+  {% include "_job_details.html" %}
+</div>
+{% endblock %}

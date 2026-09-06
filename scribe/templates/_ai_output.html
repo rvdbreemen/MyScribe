@@ -1,0 +1,180 @@
+{#
+  One kind's answer: what is stored, or what is on its way.
+
+  Context: `panel` (from scribe.web.ai_ui.panel_for)
+
+      media_id, kind, label, needs_prompt
+      output   the newest llm_output row, or none
+      view     that row shaped for this template - the fields differ per
+               shape and are built in Python, because two shapes carry
+               timestamps that become links and two carry markdown that
+               becomes HTML. `view.shape` says which block renders it, and it
+               is deliberately not `panel.kind`: a row that did not parse into
+               the shape its kind promises comes back as `text`, so it renders
+               as what was stored rather than under a block whose fields it
+               does not have
+      stale    the row was made from a transcript that is no longer the
+               current one; still shown, but never as an answer about the
+               words on the screen
+      truncated the model stopped because it ran out of room rather than
+               because it had finished (params_json.finish_reason). Shown
+               for the same reason `stale` is: what is there is real, and
+               presenting it as a finished answer is the lie
+      job      the queued or running llm job for this kind, or none
+      poll     seconds between polls while one is running
+
+  The polling attributes are on the section only while a job exists, so a
+  finished panel stops asking by itself - and a panel re-fetched after an
+  unrelated rail action comes back exactly as pending as it was, because that
+  state is read from the job row rather than carried in the markup.
+
+  `view.html` is the one value written unescaped, and only because
+  `ai_ui.render_markdown` escaped the model's text before adding any tag of
+  its own. Every other field here is a plain string and is escaped by the
+  environment.
+#}
+{% import "_macros.html" as m %}
+<section id="ai-{{ panel.kind }}" class="ai-output" data-kind="{{ panel.kind }}"
+         {% if panel.job %}hx-get="/media/{{ panel.media_id }}/ai/{{ panel.kind }}" hx-trigger="every {{ panel.poll }}s" hx-swap="outerHTML"{% elif panel.kind == 'speakers' %}hx-get="/media/{{ panel.media_id }}/ai/{{ panel.kind }}" hx-trigger="speakers-applied from:body" hx-swap="outerHTML"{% endif %}>
+  <header class="ai-output-head">
+    <h3>{{ panel.label }}</h3>
+    {% if panel.output %}
+    <p class="sub muted">
+      <span class="mono">{{ panel.output.provider }}</span> ·
+      <span class="mono">{{ panel.output.model }}</span> ·
+      {{ m.when(panel.output.created_at) }}
+      {% if panel.output.completion_tokens %}· {{ panel.output.completion_tokens }} tokens out{% endif %}
+    </p>
+    {% endif %}
+  </header>
+
+  {% if panel.job %}
+  <p class="hint working" aria-live="polite">
+    Working… <a href="/jobs/{{ panel.job.id }}">job {{ panel.job.id }}</a>
+    {% if panel.job.stage %}<span class="mono">{{ panel.job.stage }}</span>{% endif %}
+  </p>
+  {% endif %}
+
+  {% if panel.stale %}
+  <p class="hint stale">
+    Made from an earlier transcript of this recording, so it is not about the words
+    on this page. Ask again to get one about the current transcript.
+  </p>
+  {% endif %}
+
+  {% if panel.truncated %}
+  <p class="hint stale">
+    The model ran out of room and this answer is cut off - it stopped where it stopped
+    rather than finishing. Ask again with a model that has more room to answer in.
+  </p>
+  {% endif %}
+
+  {% if panel.output %}
+  <div class="ai-body">
+    {% if panel.view.shape == 'summary' %}
+    <p>{{ panel.view.paragraph }}</p>
+    {% if panel.view.bullets %}
+    <ul>{% for bullet in panel.view.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
+    {% endif %}
+
+    {% elif panel.view.shape == 'action_items' %}
+    <ul class="action-items">
+      {# `view['items']`, not `view.items`: Jinja resolves a dot with getattr()
+         before __getitem__, and `view` is a dict, so `view.items` is the bound
+         dict method rather than this shape's list. Subscript is not enough on
+         its own - Jinja falls back to getattr() when the key is missing too -
+         which is why the branch above is on `view.shape`, so this block only
+         ever runs against a view that has the key. Belt and braces; the other
+         shapes name fields no dict has. #}
+      {% for item in panel.view['items'] %}
+      <li>
+        {{ item.text }}
+        {% if item.owner %}<span class="owner">— {{ item.owner }}</span>{% endif %}
+        {% if item.moment %} <a class="ts" href="{{ item.moment.href }}" data-start="{{ item.moment.at }}">{{ item.moment.label }}</a>{% endif %}
+      </li>
+      {% else %}
+      <li class="muted">Nothing was agreed to do.</li>
+      {% endfor %}
+    </ul>
+
+    {% elif panel.view.shape == 'chapters' %}
+    <ol class="chapters">
+      {% for chapter in panel.view.chapters %}
+      <li>
+        {% if chapter.moment %}<a class="ts" href="{{ chapter.moment.href }}" data-start="{{ chapter.moment.at }}">{{ chapter.moment.label }}</a> {% endif %}{{ chapter.title }}
+      </li>
+      {% else %}
+      <li class="muted">No chapter breaks were found.</li>
+      {% endfor %}
+    </ol>
+
+    {% elif panel.view.shape == 'minutes' %}
+    {% if panel.view.agenda %}
+    <h4>Discussed</h4>
+    <ul>{% for line in panel.view.agenda %}<li>{{ line }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if panel.view.decisions %}
+    <h4>Decided</h4>
+    <ul>{% for line in panel.view.decisions %}<li>{{ line }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if panel.view.actions %}
+    <h4>Agreed to do</h4>
+    <ul class="action-items">
+      {% for item in panel.view.actions %}
+      <li>
+        {{ item.text }}
+        {% if item.owner %}<span class="owner">— {{ item.owner }}</span>{% endif %}
+        {% if item.moment %} <a class="ts" href="{{ item.moment.href }}" data-start="{{ item.moment.at }}">{{ item.moment.label }}</a>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% elif panel.view.shape == 'blog' %}
+    <h4>{{ panel.view.title }}</h4>
+    {{ panel.view.html }}
+
+    {% elif panel.view.shape == 'speakers' %}
+    {# Suggestions, not names: nothing is written until the form is sent, and
+       the form sends only the ticked rows. A row already named by a person
+       starts unticked - the model does not get to overrule a choice by
+       default - and a default name starts ticked, because "Speaker 2" was
+       never anybody's decision. #}
+    {% if panel.view.speakers %}
+    <form class="speaker-suggestions" method="post" action="/media/{{ panel.media_id }}/speakers/apply"
+          hx-post="/media/{{ panel.media_id }}/speakers/apply" hx-target="#transcript-panel" hx-swap="outerHTML">
+      {% if panel.view.format %}<p class="muted">Format: {{ panel.view.format }}</p>{% endif %}
+      <ul class="suggestions">
+        {% for s in panel.view.speakers %}
+        <li class="suggestion conf-{{ s.confidence }}">
+          <label class="check">
+            <input type="checkbox" name="apply" value="{{ s.cluster }}"{% if not s.named and s.name %} checked{% endif %}>
+            <span class="mono muted">{{ s.cluster }}</span>
+            <span class="current">now “{{ s.current }}”</span>
+          </label>
+          <label class="field suggested">
+            <span class="visually-hidden">Name for {{ s.cluster }}</span>
+            <input type="text" name="name:{{ s.cluster }}" value="{{ s.name }}" maxlength="300">
+            {% if s.role %}<span class="badge">{{ s.role }}</span>{% endif %}
+            {% if s.confidence %}<span class="badge conf">{{ s.confidence }}</span>{% endif %}
+          </label>
+          {% if s.evidence %}<p class="evidence muted">{{ s.evidence }}</p>{% endif %}
+          {% if s.notes %}<p class="evidence muted">{{ s.notes }}</p>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% if panel.view.unknown %}<p class="hint">{{ panel.view.unknown }} suggestion(s) named a label this transcript does not have and are not offered.</p>{% endif %}
+      <button type="submit" class="primary">Apply the ticked names</button>
+    </form>
+    {% else %}
+    <p class="muted">The model named nobody.</p>
+    {% endif %}
+
+    {% else %}
+    {{ panel.view.html }}
+    {% endif %}
+  </div>
+  {% elif not panel.job %}
+  <p class="muted">Not asked yet.</p>
+  {% endif %}
+</section>

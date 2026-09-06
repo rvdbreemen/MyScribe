@@ -1,0 +1,43 @@
+{#
+  One level of this machine's filesystem, for the transcribe dialog's
+  "pick a file on this machine" flow. GET /fs?path=... returns it and every
+  click inside it replaces it (hx-swap="outerHTML" on #fs-panel).
+
+  Context (from scribe.web.transcribe_dialog.browse):
+
+      path        the directory shown, or "" for the list of roots
+      parent_url  /fs?path=... one level up, /fs at a root, none at the top
+      dirs        [{name, url}]
+      files       [{name, size (text), is_media, path}]
+
+  Directories and the parent are htmx buttons that fetch the next level.
+  A media file is a button carrying its full path in data-pick-path; app.js
+  copies it into the form's path field on click. Other files are shown but
+  not clickable - the extension is a hint, and typing a path stays possible.
+  Every button is type="button": the panel lives inside the dialog's form and
+  must never submit it.
+#}
+<div id="fs-panel" class="fs-panel">
+  <p class="fs-path mono">{{ path if path else 'This machine' }}</p>
+  <ul class="fs-list">
+    {% if parent_url %}
+    <li class="dir"><button type="button" hx-get="{{ parent_url }}" hx-target="#fs-panel" hx-swap="outerHTML">⬆ up</button></li>
+    {% endif %}
+    {% for dir in dirs %}
+    <li class="dir"><button type="button" hx-get="{{ dir.url }}" hx-target="#fs-panel" hx-swap="outerHTML">📁 {{ dir.name }}</button></li>
+    {% endfor %}
+    {% for file in files %}
+    <li class="file{% if file.is_media %} media{% endif %}">
+      {% if file.is_media %}
+      <button type="button" data-pick-path="{{ file.path }}">🎧 {{ file.name }}</button>
+      {% else %}
+      <span class="muted">{{ file.name }}</span>
+      {% endif %}
+      <span class="size muted">{{ file.size }}</span>
+    </li>
+    {% endfor %}
+    {% if not dirs and not files and path %}
+    <li class="muted">Nothing here.</li>
+    {% endif %}
+  </ul>
+</div>

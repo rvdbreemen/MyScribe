@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Export - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The export dialog as a page of its own: what a browser without scripting
+  gets from an Export link, and what a plain write-to-folder post comes back
+  to, with the list of written files above the form. The form inside is the
+  same fragment the dialog shows.
+#}
+<div class="dialog-page">
+  <p class="hint"><a href="{{ back_url }}">← Back</a></p>
+  {% if written %}
+  <div class="export-result">{% include "_export_written.html" %}</div>
+  {% endif %}
+  {% include "export_dialog.html" %}
+</div>
+{% endblock %}

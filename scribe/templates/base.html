@@ -1,0 +1,66 @@
+{#
+  Page skeleton for MyScribe.
+
+  Context every page gets from scribe.web.render():
+
+      version   scribe.__version__
+      nav       [{label, href, active}] - the top navigation, in order
+      now       time.time() at render
+
+  Three deliberate choices:
+
+  * htmx is served from /static/htmx.min.js, vendored in the repository. The
+    app is localhost-only and has to work offline, so nothing here points at a
+    CDN.
+  * htmx runs with allowScriptTags and allowEval off and selfRequestsOnly on.
+    It only ever swaps in HTML this app rendered itself. allowScriptTags is
+    not a sanitiser (it strips <script>, not inline handlers); escaping is the
+    template environment's job, and autoescape is on unconditionally there.
+  * All script lives in files under /static, never inline, so a Content-
+    Security-Policy of script-src 'self' stays possible. theme.js is the one
+    that is not deferred: it writes the chosen theme onto <html>, and that has
+    to happen before the first paint or the page flashes the other theme on
+    every load. It is kept tiny for exactly that reason.
+
+  The #flash region is the one place a fragment response can talk to the
+  whole page: include <div id="flash" hx-swap-oob="innerHTML:#flash">...</div> in any
+  (innerHTML, not the element: a live region that is replaced rather than
+  filled is announced by nothing) - put it in any
+  htmx response and it lands here, whatever the request targeted.
+#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MyScribe{% endblock %}</title>
+  <meta name="htmx-config" content='{"allowScriptTags":false,"allowEval":false,"selfRequestsOnly":true}'>
+  <link rel="stylesheet" href="{{ asset_url('app.css') }}">
+  <script src="{{ asset_url('theme.js') }}"></script>
+  <script src="{{ asset_url('htmx.min.js') }}" defer></script>
+  <script src="{{ asset_url('app.js') }}" defer></script>
+  <script src="{{ asset_url('recorder.js') }}" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">MyScribe</a>
+    <nav class="nav" aria-label="Main">
+      {% for item in nav %}
+      <a href="{{ item.href }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.label }}</a>
+      {% endfor %}
+    </nav>
+    <span class="version mono" title="MyScribe">v{{ version }}</span>
+    <div class="theme-switch" role="group" aria-label="Colour theme">
+      <button type="button" data-theme-choice="system" aria-pressed="true" title="Follow the operating system">Auto</button>
+      <button type="button" data-theme-choice="light" aria-pressed="false" title="Always light">Light</button>
+      <button type="button" data-theme-choice="dark" aria-pressed="false" title="Always dark">Dark</button>
+    </div>
+  </header>
+
+  <div id="flash" class="flash" role="status" aria-live="polite">{% block flash %}{% endblock %}</div>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

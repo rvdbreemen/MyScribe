@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Transcribe - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The transcribe dialog as a page of its own: what a browser without
+  scripting gets from the library's "Transcribe" link. The form inside is
+  the same fragment; a plain post lands back on the library with a 303.
+#}
+<div class="dialog-page">
+  <p class="crumbs"><a href="/">← Back to the library</a></p>
+  {% include "transcribe_dialog.html" %}
+</div>
+{% endblock %}

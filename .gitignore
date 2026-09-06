@@ -1,0 +1,58 @@
+# Secrets — first, so nothing below can accidentally re-include them.
+# .env holds OPENAI_API_KEY, HF_TOKEN and friends. .env.example is the tracked
+# template and is re-included explicitly below.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# Runtime data: media, databases, logs, model weights, scratch. None of this is
+# source, all of it is large, and the media is the user's own recordings.
+data/
+media/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local tooling scratch
+.claude.local.md
+.playwright-mcp/
+.adr-kit/backups/
+backlog/.locks/
+
+# Stray saved-webpage artifact some tool drops in the repo root
+r1.json

@@ -1,0 +1,18 @@
+{#
+  Rows for the log table, and the offset the next poll starts from.
+
+  Rendered twice: inside logs.html for the first paint, and on its own by
+  /logs/tail. The hidden offset input is swapped out of band so it replaces
+  the previous one wherever the rows land; hx-include names it on the poll.
+  Every value is text - a log field can be anything a request contained.
+#}
+{% for line in lines %}
+<tr class="lv-{{ line.level }}">
+  <td class="mono">{{ line.when }}</td>
+  <td class="mono lv">{{ line.level }}</td>
+  <td class="mono">{{ line.proc }}</td>
+  <td class="mono ev">{{ line.event }}</td>
+  <td class="detail">{% for key, value in line.fields %}<span class="kv"><span class="k">{{ key }}</span>={{ value }}</span> {% endfor %}</td>
+</tr>
+{% endfor %}
+{% if with_offset is not defined or with_offset %}<input type="hidden" id="log-offset" name="after" value="{{ offset }}" hx-swap-oob="true">{% endif %}

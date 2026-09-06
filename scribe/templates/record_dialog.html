@@ -1,0 +1,48 @@
+{#
+  The record dialog: a microphone, the transcription options, a folder.
+
+  Its own dialog rather than a tab in Transcribe, because recording is a
+  different act from handing over a file, and the three file doors beside it
+  were three ways of saying "not this". The recorder starts as the dialog
+  opens (data-record-autostart, honoured by recorder.js): a person who pressed
+  Record has said what they want, and the browser's own permission prompt is
+  still the consent gate.
+
+  There is no submit button in the footer on purpose. The recording is
+  finished by the recorder's own "Stop and transcribe", which posts this
+  form's fields to /record/{session}/finish - so language, tier, speakers,
+  folder and the name travel with the audio. The form has no action and no
+  submit button, and data-enter-scope keeps Enter from the browser: without
+  recorder.js there is no session and nothing to post, and the hint says so.
+
+  The options are the same partial the transcribe dialog uses; see
+  _transcribe_options.html for why.
+#}
+{% import "_macros.html" as m %}
+<form class="transcribe record" data-enter-scope>
+  <header class="dialog-head">
+    <h2>Record</h2>
+    <button type="button" data-close-dialog aria-label="Close">×</button>
+  </header>
+
+  <p class="dialog-flash" data-dialog-flash role="alert"></p>
+
+  <div class="source">
+    {% include "_recorder.html" %}
+    {# Shown only while the recorder is still hidden, which is how recorder.js
+       says this browser cannot record. #}
+    <p class="hint no-recorder">This browser will not give the page a microphone. A recording made elsewhere can be transcribed from the library’s Transcribe button.</p>
+  </div>
+
+  {% include "_transcribe_options.html" %}
+
+  <footer class="dialog-foot">
+    <label class="field folder">Folder
+      <select name="folder_id">
+        <option value=""{% if folder is none %} selected{% endif %}>Uncategorized</option>
+        {% for f in folders %}{{ m.folder_option(f, folder) }}{% endfor %}
+      </select>
+    </label>
+    <button type="button" data-close-dialog>Cancel</button>
+  </footer>
+</form>

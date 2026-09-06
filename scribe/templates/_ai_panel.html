@@ -1,0 +1,109 @@
+{#
+  The rail's AI section: the pin, the provider, and the six questions.
+
+  Context (from scribe.web.ai_ui.panel_context, merged into the transcript
+  page's), all under `ai`:
+
+      media_id        the recording every action posts about
+      private         whether this recording (or a folder above it) is pinned
+      has_transcript  false before anything has been transcribed: there is
+                      nothing to ask about, so the form is not offered
+      providers       [{name, label, local, selected, disabled}] every
+                      registered provider; `disabled` is set for the cloud
+                      ones when `private`
+      provider        the one the form opens with - a local one when the
+                      recording is pinned, whatever the default is otherwise
+      model, models   the model field's value and the ids the provider last
+                      offered (empty until Settings has refreshed them)
+      panels          the six kinds, in order; only `kind` and `label` are
+                      used here - the answers render in transcript.html
+
+  One form, six buttons. Each button carries its own `formaction` (and the
+  matching `hx-post`), so the provider, the model and the custom prompt are
+  posted once from one set of fields rather than repeated six times. htmx
+  sends the enclosing form's values with a button's request, and `formaction`
+  is what does the same without scripting.
+
+  Every button targets `#ai-<kind>`, which lives outside this panel: the panel
+  re-fetches itself after a rail action, and an answer being written must not
+  be swapped away by a rename.
+#}
+<section id="ai-panel" class="ai-panel rail-group">
+  <h2>AI</h2>
+
+  <div class="privacy {{ 'on' if ai.private else 'off' }}">
+    <p class="privacy-state">
+      {% if ai.private %}
+      <span class="badge private" title="Pinned private">🔒 Private</span>
+      This recording's text never leaves this machine.
+      {% else %}
+      <span class="badge">Not private</span>
+      Its text may be sent to the provider you choose.
+      {% endif %}
+    </p>
+    <form method="post" action="/media/{{ ai.media_id }}/private"
+          hx-post="/media/{{ ai.media_id }}/private" hx-target="#transcript-panel" hx-swap="outerHTML">
+      <input type="hidden" name="private" value="{{ '0' if ai.private else '1' }}">
+      <button type="submit">{{ 'Un-pin' if ai.private else 'Pin private' }}</button>
+    </form>
+  </div>
+
+  {% if ai.has_transcript %}
+  {# The warning stays outside the collapsed part on purpose: which provider is
+     selected is a privacy fact, and a fact that only shows when you go looking
+     is not a warning. #}
+  {% for p in ai.providers %}{% if p.selected and not p.local %}
+  <p class="warn leaves">⚠ {{ p.label }} is not on this machine: the transcript is sent to it.</p>
+  {% endif %}{% endfor %}
+
+  <form class="ai-ask" method="post" action="/media/{{ ai.media_id }}/ai/summary">
+    {# The questions first. Five of the six need nothing but a click, and they
+       are the reason anyone opens this section. #}
+    <div class="ai-actions">
+      {% for panel in ai.panels[:-1] %}
+      <button type="submit" class="ai-action"
+              formaction="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
+              hx-post="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
+              hx-target="#ai-{{ panel.kind }}" hx-swap="outerHTML">{{ panel.label }}</button>
+      {% endfor %}
+    </div>
+
+    {# The sixth needs a question, and the provider and model need saying only
+       when they are wrong - so they collapse behind a line that says what they
+       currently are. Collapsed is honest here: closed means answered. #}
+    <details class="options">
+      <summary>
+        <span class="summary-title">Ask &amp; provider</span>
+        <span class="summary-line">{{ ai.summary_line }}</span>
+      </summary>
+
+      <label class="field">Question <span class="muted">(for “{{ ai.panels[-1].label }}”)</span>
+        <textarea name="prompt" rows="2" maxlength="2000" placeholder="What did they decide about the budget?"></textarea>
+      </label>
+      <button type="submit" class="ai-action"
+              formaction="/media/{{ ai.media_id }}/ai/{{ ai.panels[-1].kind }}"
+              hx-post="/media/{{ ai.media_id }}/ai/{{ ai.panels[-1].kind }}"
+              hx-target="#ai-{{ ai.panels[-1].kind }}" hx-swap="outerHTML">{{ ai.panels[-1].label }}</button>
+
+      <label class="field">Provider
+        <select name="provider">
+          {% for p in ai.providers %}
+          <option value="{{ p.name }}"{% if p.selected %} selected{% endif %}{% if p.disabled %} disabled{% endif %}>{{ p.label }}{% if not p.local %} · leaves your machine{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="field">Model
+        <input type="text" name="model" value="{{ ai.model }}" list="ai-models" autocomplete="off" spellcheck="false">
+      </label>
+      <datalist id="ai-models">
+        {% for name in ai.models %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
+    </details>
+  </form>
+
+  <a class="button" href="/media/{{ ai.media_id }}/chat">Chat with this transcript</a>
+  {% else %}
+  <p class="hint">Transcribe this file first; there is nothing to ask about yet.</p>
+  {% endif %}
+</section>

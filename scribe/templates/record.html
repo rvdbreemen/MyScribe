@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Record - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The record dialog as a page of its own: what a browser without scripting
+  gets from the library's Record button. The recorder needs recorder.js to do
+  anything, and its own hint says so.
+#}
+<div class="dialog-page">
+  <p class="crumbs"><a href="/">← Back to the library</a></p>
+  {% include "record_dialog.html" %}
+</div>
+{% endblock %}

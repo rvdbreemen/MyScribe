@@ -1,0 +1,92 @@
+{#
+  Shared rendering bits for MyScribe.
+
+  Everything here takes plain values (a float, a string, an int) or the row
+  dicts the routers build, and renders them as text. Nothing uses |safe: a
+  title, a model name or a status word is data, and the environment escapes
+  it. The filters used below (clock, localtime, isotime) are registered in
+  scribe/web/__init__.py.
+#}
+
+{# Seconds of media time as a clock: 1:05, or 1:01:01 from an hour up. None
+   (duration unknown until probe ran) renders as a muted dash. #}
+{% macro ts(seconds) -%}
+{% if seconds is none %}<span class="muted">-</span>{% else %}<span class="ts mono">{{ seconds|clock }}</span>{% endif %}
+{%- endmacro %}
+
+
+{# A unix epoch as local wall-clock time, with the ISO instant on the
+   element for anything that wants to re-render it. #}
+{% macro when(epoch) -%}
+{% if epoch %}<time datetime="{{ epoch|isotime }}">{{ epoch|localtime }}</time>{% else %}<span class="muted">-</span>{% endif %}
+{%- endmacro %}
+
+
+{# The model tier a run used, as the spec's two icons: Turbo (the default
+   model) is the dolphin, Maximaal (large-v3) the whale. Any checkpoint whose
+   name says turbo counts as turbo - the same rule transcribe.resolve_model
+   uses. No current run, no icon. #}
+{% macro mode_icon(model) -%}
+{% if model %}<span class="mode" title="{{ 'Turbo' if 'turbo' in model|lower else 'Maximaal' }} ({{ model }})">{{ '🐬' if 'turbo' in model|lower else '🐋' }}</span>{% endif %}
+{%- endmacro %}
+
+
+{# The latest job's status as a badge that links to the job. The class names
+   are the schema's CHECK-constraint words, so app.css has a colour for every
+   status the database can hold; done gets its tick. #}
+{% macro job_badge(job_id, status) -%}
+{# The id is what lets htmx give focus back after a swap: the library's
+   status cell replaces itself every two seconds while a job runs, and a
+   keyboard user resting on this link was dropped to <body> each time. #}
+{% if status %}<a class="badge s-{{ status }}" id="job-badge-{{ job_id }}" href="/jobs/{{ job_id }}" title="job {{ job_id }}">{% if status == 'done' %}✓ {% endif %}{{ status }}</a>{% endif %}
+{%- endmacro %}
+
+
+{# A folder's name for a <select>, indented one em space (U+2003) per level
+   of nesting. Browsers strip and collapse ASCII whitespace in option text;
+   an em space is not ASCII whitespace, so the indent survives. #}
+{% macro folder_option(folder, selected=none) -%}
+<option value="{{ folder.id }}"{% if selected == folder.id %} selected{% endif %}>{{ ' ' * folder.depth }}{{ folder.name }}</option>
+{%- endmacro %}
+
+
+{# The pipeline's stages as a stepper. `steps` is jobs_ui.stepper_steps'
+   list of {name, state}, state one of done / active / failed / stopped /
+   todo; the state is the class, and app.js moves it along from the
+   stream's progress frames on the detail page. #}
+{% macro stepper(steps) -%}
+<ol class="stepper" data-stepper>
+{% for step in steps %}
+  <li class="step {{ step.state }}" data-stage="{{ step.name }}">{{ step.name }}</li>
+{% endfor %}
+</ol>
+{%- endmacro %}
+
+
+{# Progress within the stage a running job is in: the runner's 0..1
+   stage_progress as a bar and a percentage. #}
+{% macro stage_progress(job) -%}
+{% set pct = ((job.stage_progress or 0) * 100)|round|int %}
+<progress class="stage-progress" max="100" value="{{ pct }}" data-stage-progress aria-label="Progress within {{ job.stage }}"></progress>
+<span class="stage-label mono" data-stage-label>{{ job.stage }} · {{ pct }}%</span>
+{%- endmacro %}
+
+
+{# Cancel and Retry post to the JSON job API through app.js's confirmed
+   forms: data-confirm asks first (Retry has nothing to ask), data-refresh
+   names the region to re-fetch once the post went through - the board's
+   polling fragment, or the detail page's panel. Without scripting the form
+   still posts; the browser then shows the API's JSON answer. #}
+{% macro cancel_form(job, refresh='#jobs-live') -%}
+<form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/cancel"
+      data-confirm="Cancel job {{ job.id }} ({{ job.title }})?{% if job.status == 'running' %} It is running now; the work done so far is lost.{% else %} It is still queued and is simply removed.{% endif %}"
+      data-refresh="{{ refresh }}">
+  <button type="submit" class="danger"{% if job.cancel_requested %} disabled{% endif %}>{{ 'cancelling…' if job.cancel_requested else 'Cancel' }}</button>
+</form>
+{%- endmacro %}
+
+{% macro retry_form(job, refresh='#jobs-live') -%}
+<form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/retry" data-refresh="{{ refresh }}">
+  <button type="submit">Retry</button>
+</form>
+{%- endmacro %}

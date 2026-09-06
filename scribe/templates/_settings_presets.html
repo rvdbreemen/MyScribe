@@ -1,0 +1,65 @@
+{#
+  The export presets section of the settings page: what settings.html
+  includes, and what POST /settings/presets and POST /settings/presets/{id}/
+  delete return to swap in its place (unless the save came from the export
+  dialog, which gets the select alone).
+
+  Context (from scribe.web.settings.presets_context):
+
+      presets           [{id, name, options, summary}] the saved rows
+      builtin_presets   [{name, label}] the ones that are always there
+      flash             a line for the page's status region, or none
+      oob               whether this is a fragment response carrying the
+                        flash out of band
+
+  A preset is one ExportOptions as JSON. The form here takes that JSON for
+  the hand that wants it; the export dialog's "Save preset" is the same post
+  with the fields filled in by the dialog.
+#}
+<section id="settings-presets" class="panel presets">
+  <h2>Export presets</h2>
+  <p class="hint">
+    Saved sets of export options, offered in the export dialog next to the built-in
+    {% for p in builtin_presets %}{{ p.label }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Save one from the dialog, or paste its options here as JSON.
+  </p>
+  <div class="table-wrap">
+    <table class="presets">
+      <thead><tr><th>Name</th><th>Options</th><th class="actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+      <tbody>
+        {% for p in presets %}
+        <tr>
+          <td>{{ p.name }}</td>
+          <td class="summary">{{ p.summary }}</td>
+          <td class="actions">
+            <form method="post" action="/settings/presets/{{ p.id }}/delete"
+                  hx-post="/settings/presets/{{ p.id }}/delete" hx-target="#settings-presets" hx-swap="outerHTML"
+                  hx-confirm="Delete the preset “{{ p.name }}”?">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr class="empty"><td colspan="3">No saved presets yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <form method="post" action="/settings/presets" hx-post="/settings/presets" hx-target="#settings-presets" hx-swap="outerHTML">
+    <fieldset class="options">
+      <legend>Add a preset</legend>
+      <label class="field">Name
+        <input type="text" name="name" required maxlength="100" autocomplete="off">
+      </label>
+      <label class="field">Options (JSON)
+        <textarea name="options" rows="3" spellcheck="false" placeholder='{"formats": ["srt"], "cpl": 42, "max_lines": 2, "max_cps": 20}'></textarea>
+      </label>
+    </fieldset>
+    <footer class="form-foot">
+      <button type="submit">Add preset</button>
+    </footer>
+  </form>
+
+  {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
+</section>

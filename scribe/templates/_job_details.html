@@ -1,0 +1,54 @@
+{#
+  The job's two detail tables, behind the tabs on job_detail.html.
+
+  A region of its own rather than part of #job-panel, for two reasons. The
+  tab a person chose lives in radios *outside* both regions, so neither
+  refresh can put the page back on a tab nobody picked - which is what would
+  happen every time the stream ended, precisely while someone was reading.
+  And the status block above stays still while a hundred-row event list is
+  replaced under it.
+
+  Context (from scribe.web.jobs_ui.detail_context): job, events, event_limit.
+#}
+<section id="job-details" class="job-details"
+         hx-get="/jobs/{{ job.id }}/details" hx-trigger="refresh" hx-swap="outerHTML">
+  <section class="panel" id="jobpanel-params" data-jobpanel="params">
+  <h3>Parameters</h3>
+  {% if job.params %}
+  <div class="table-wrap">
+    <table class="params">
+      <thead><tr><th>Key</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for key, value in job.params|dictsort %}
+        <tr><td class="mono">{{ key }}</td><td class="mono">{{ value }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="hint">Defaults.</p>
+  {% endif %}
+
+  </section>
+
+  <section class="panel" id="jobpanel-events" data-jobpanel="events">
+  <h3>Events <span class="muted">(last {{ event_limit }})</span></h3>
+  <div class="table-wrap events-wrap">
+    <table class="events">
+      <thead><tr><th class="num">#</th><th>When</th><th>Kind</th><th>Detail</th></tr></thead>
+      <tbody>
+        {% for event in listed %}
+        <tr data-seq="{{ event.seq }}" class="kind-{{ event.kind }}">
+          <td class="num mono">{{ event.seq }}</td>
+          <td class="mono">{{ event.ts|localtime('%H:%M:%S') }}</td>
+          <td class="mono">{{ event.kind }}</td>
+          <td class="detail">{{ event.summary }}</td>
+        </tr>
+        {% else %}
+        <tr class="empty"><td colspan="4">No events yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  </section>
+</section>

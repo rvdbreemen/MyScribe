@@ -1,0 +1,52 @@
+{#
+  The transcript's sentence and word markup, shared by the app's transcript
+  panel (_transcript_panel.html) and the self-contained HTML export
+  (export_bundle.html), so the player script in each reads the same
+  attributes off the same elements. `p` is a render.Paragraph: sentences,
+  each with its start and its words (idx, start, end, text, probability).
+
+  What the markup promises app.js and the bundle's inline script, so they
+  read attributes and compute nothing:
+
+      a.ts        href="#t=<s>"   the deep link; data-start the same number,
+                                  the sentence's first word start in seconds
+      span.w      data-i          the word's idx in the run
+                  data-s, data-e  its start and end, in seconds
+                  data-was        what the word said before the glossary
+                                  corrected it, and only then
+                  band-high|mid|low|unknown  render.confidence_band
+
+  `data-was` is there because a correction the reader cannot see is not far
+  from the silent rewrite ADR-003 forbids: the glossary changes what a word
+  says, so the word carries what it used to say. Last of the attributes, and
+  absent on a word nothing was done to, so the markup of an uncorrected
+  transcript is exactly what it was.
+
+  A correction says so three ways, because saying it once was not enough:
+  `title` for the mouse, `aria-description` for the accessible tree, and - in
+  the app - a dotted underline from `.w[data-was]` in app.css, so it is
+  visible without hovering anything. `title` on a plain <span> is not
+  reliably announced, so on its own it left keyboard and screen-reader users
+  with no audit trail at all and a corrected name reading as Whisper's own.
+  `aria-description` is ARIA 1.3 and support is still partial, which is why
+  `title` stays rather than being replaced.
+
+  A visually-hidden sibling span would reach more assistive technology, but
+  this macro also renders into export_bundle.html, whose stylesheet is its
+  own and has no `.visually-hidden` rule - the text would show up mid
+  sentence in every exported bundle. For the same reason the bundle gets the
+  description but not the underline.
+
+  Every word is user content and is escaped by the environment; nothing here
+  is |safe. A word keeps its leading space inside its span, so the spans read
+  as running text and the join needs no help. The filters used (clock, band)
+  are registered by both environments that load this file: scribe.web's and
+  scribe.exports.html_bundle's.
+#}
+{% macro sentences(p) -%}
+<p class="sentences">
+  {% for s in p.sentences %}
+  <span class="sent"><a class="ts" href="#t={{ s.start }}" data-start="{{ s.start }}">{{ s.start|clock }}</a>{% for w in s.words %}<span class="w band-{{ w.probability|band }}" data-i="{{ w.idx }}" data-s="{{ w.start }}" data-e="{{ w.end }}"{% if w.corrected_from %}{% set who = 'Edited' if w.corrected_rule == 'manual' else 'Glossary' %} data-was="{{ w.corrected_from }}" title="{{ who }}: was &quot;{{ w.corrected_from|trim }}&quot;" aria-description="{{ who }}: was &quot;{{ w.corrected_from|trim }}&quot;"{% endif %}>{{ w.text }}</span>{% endfor %}</span>
+  {% endfor %}
+</p>
+{%- endmacro %}

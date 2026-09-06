@@ -1,0 +1,6 @@
+{
+  "judge": {
+    "backend": "host",
+    "llm_enabled": true
+  }
+}

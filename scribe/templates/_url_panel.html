@@ -1,0 +1,45 @@
+{#
+  What a pasted link turns out to be. POST /transcribe/url/preview (a POST
+  because it opens a socket - see scribe.web.ingest_ui) returns it and the URL
+  field swaps it in as it is typed (hx-target="#url-preview",
+  hx-swap="outerHTML").
+
+  Context (from scribe.web.ingest_ui.url_preview):
+
+      preview  {state: "ok"|"error"|"empty", …}
+               ok:    kind ("single"|"playlist"), title, uploader,
+                      duration (seconds or none), entries (count)
+               error: message - the reason, in words
+               empty: message - the hint under an empty field
+
+  Everything on show came back from a stranger's web page and is escaped by
+  the environment like every other string in this app. The page URL yt-dlp
+  reports is deliberately not rendered: the only thing to do with a URL in a
+  template is make it a link, and autoescaping quotes an href correctly while
+  doing nothing about a javascript: scheme.
+
+  The playlist line is the confirmation the plan asks for: nothing here can be
+  fetched a little at a time, so the count and the words "all N" have to be in
+  front of the user before the button is pressed, not after fifty jobs appear.
+#}
+<div id="url-preview" class="url-preview">
+  {% if preview.state == 'ok' %}
+  <p class="url-title"><strong>{{ preview.title or 'Untitled' }}</strong></p>
+  {% if preview.uploader or preview.duration %}
+  <p class="muted">
+    {{ preview.uploader }}{% if preview.uploader and preview.duration %} · {% endif %}{{ preview.duration | clock }}
+  </p>
+  {% endif %}
+  {% if preview.kind == 'playlist' %}
+  <p class="url-playlist">
+    A playlist of {{ preview.entries }} video{{ '' if preview.entries == 1 else 's' }}.
+    Fetching it queues all {{ preview.entries }}, one job each, so each one
+    downloads, succeeds or fails on its own.
+  </p>
+  {% endif %}
+  {% elif preview.state == 'error' %}
+  <p class="url-bad" role="alert">{{ preview.message }}</p>
+  {% else %}
+  <p class="muted">{{ preview.message }}</p>
+  {% endif %}
+</div>

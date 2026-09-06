@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The library: sidebar on the left, the table (or search hits) on the right.
+
+  Context (from scribe.web.library.library_context, plus search's additions):
+
+      heading     what the view is called
+      state       State(view, folder, sort, q)
+      rows, folders, counts, ... see _sidebar.html and _media_rows.html
+      hits        none on the library itself; a list on /search
+      search_q    the search query, on /search only
+
+  Two search boxes, on purpose. The filter narrows the table by title as you
+  type - an htmx GET of / that swaps just #media-table, with the view, folder
+  and sort carried along by hx-include, and the URL replaced rather than
+  pushed so a reload keeps the filter without a history entry per keystroke.
+  The search box is a plain GET form to
+  /search: full-text over the transcripts, a different question with a
+  different answer (passages, not files), so it gets its own page load.
+
+  The bulk form sits outside #media-table so a swap never removes it; the row
+  checkboxes point at it through form="bulk-form". In the trash the only bulk
+  action is Restore, so the destination-folder select is not rendered there.
+  One Apply can trash every checked file or queue a GPU job per file, so the
+  form asks first (hx-confirm), the way every per-row destructive form does.
+
+  The Transcribe link fetches the dialog fragment into the empty <dialog> at
+  the bottom (app.js opens it once it has been swapped in); without scripting
+  the same link is a page of its own. The Export… button next to Apply does
+  the same with the export dialog for the checked rows: hx-include carries
+  the bulk form's ids, and hx-confirm is unset on it because opening a
+  dialog is not the action the form asks about. The rows' own Export
+  entries open the same dialog for one file.
+#}
+{% import "_macros.html" as m %}
+<div class="library">
+  {% include "_sidebar.html" %}
+
+  <section class="library-main">
+    <div class="toolbar">
+      <h1>{{ heading }}</h1>
+      <a class="button primary" href="/transcribe" hx-get="/transcribe" hx-target="#transcribe-dialog" hx-swap="innerHTML">+ Transcribe</a>
+      {# Its own dialog, already recording when it opens. Recording is a
+         different act from handing over a file, so it does not sit as a tab
+         among three file doors. Without scripting the link is a page. #}
+      <a class="button mic" href="/record" hx-get="/record"
+         hx-target="#record-dialog" hx-swap="innerHTML"
+         title="Record from the microphone" aria-label="Record from the microphone">⬤ Record</a>
+      <form class="filter" method="get" action="/" role="search">
+        {% if state.view %}<input type="hidden" name="view" value="{{ state.view }}">{% endif %}
+        {% if state.folder is not none %}<input type="hidden" name="folder" value="{{ state.folder }}">{% endif %}
+        {% if state.sort != 'created_at' %}<input type="hidden" name="sort" value="{{ state.sort }}">{% endif %}
+        <input type="search" name="q" value="{{ state.q }}" placeholder="Filter by title" aria-label="Filter by title" autocomplete="off"
+               hx-get="/" hx-trigger="keyup changed delay:300ms, search" hx-target="#media-table" hx-swap="outerHTML"
+               hx-include="closest form" hx-replace-url="true" hx-indicator="#filter-spinner">
+        <span id="filter-spinner" class="spinner" aria-hidden="true">filtering…</span>
+      </form>
+      <form class="search" method="get" action="/search" role="search">
+        <input type="search" name="q" value="{{ search_q|default('') }}" placeholder="Search transcripts" aria-label="Search transcripts" required>
+        <button type="submit">Search</button>
+      </form>
+    </div>
+
+    {% if hits is not none %}
+    <p class="crumbs"><a href="/">← Back to the library</a></p>
+    {% include "_search_hits.html" %}
+    {% else %}
+    <form id="bulk-form" class="bulk" method="post" action="/media/bulk"
+          hx-post="/media/bulk" hx-target="#media-table" hx-swap="outerHTML"
+          hx-confirm="Apply the chosen action to every selected file?{% if state.view != 'trash' %} A file in the trash can be restored; a re-transcribe queues one GPU job per file.{% endif %}">
+      <span class="muted">With the selected files:</span>
+      <select name="action" aria-label="Bulk action">
+        {% if state.view == 'trash' %}
+        <option value="restore">Restore</option>
+        {% else %}
+        <option value="move">Move to the folder →</option>
+        <option value="trash">Move to trash</option>
+        <option value="retranscribe">Transcribe again</option>
+        {% endif %}
+      </select>
+      {% if state.view != 'trash' %}
+      <select name="folder_id" aria-label="Destination folder">
+        <option value="">Uncategorized</option>
+        {% for folder in folders %}{{ m.folder_option(folder) }}{% endfor %}
+      </select>
+      {% endif %}
+      <button type="submit">Apply</button>
+      <button type="button" hx-get="/export" hx-include="#bulk-form" hx-target="#export-dialog" hx-swap="innerHTML" hx-confirm="unset" title="Export the selected files">Export…</button>
+    </form>
+    {% include "_media_rows.html" %}
+    {% endif %}
+  </section>
+</div>
+<dialog id="transcribe-dialog" class="dialog" aria-label="Transcribe"></dialog>
+<dialog id="record-dialog" class="dialog" aria-label="Record"></dialog>
+<dialog id="export-dialog" class="dialog export-dialog" aria-label="Export" data-stay-open></dialog>
+{% endblock %}

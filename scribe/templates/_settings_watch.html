@@ -1,0 +1,110 @@
+{#
+  The watch-folder section: what settings.html includes, and what
+  POST /settings/watch, /settings/watch/{id} and /settings/watch/{id}/delete
+  return to swap in its place.
+
+  Context (from scribe.web.settings.watch_context):
+
+      watch_folders    [{id, path, enabled, missing, outside_roots,
+                       unwatchable, summary}] every row, switched off ones
+                       included. Three of those keys say a folder is listed
+                       but not actually being read from, and each gets a badge
+                       next to the path: `missing` (not on this machine right
+                       now), `outside_roots` (the browse roots no longer cover
+                       it, so nothing here is read at all) and `unwatchable`
+                       (the observer would not open a watch on it - the
+                       startup walk still finds files, live events do not).
+                       `watch_context` always fills all three; they are still
+                       read with `.get` so a test that builds a row by hand
+                       renders rather than raising.
+      quiesce_seconds  how long a file must hold still before it is taken in
+      watch_options    the defaults the add-form opens with
+      languages        [(code, name)] sorted by name
+      flash            a line for the page's status region, or none
+      oob              whether this is a fragment response carrying the flash
+                       out of band
+
+  Paths are rendered as text; nothing here is |safe. The diarize checkbox is
+  preceded by a hidden diarize=0 for the same reason as everywhere else: an
+  unticked box posts nothing at all, and the route takes the last value.
+#}
+<section id="watch-folders" class="panel watch">
+  <h2>Watch folders</h2>
+  <p class="hint">
+    Anything dropped in one of these folders is transcribed by itself. A file is only
+    taken in once it has stopped changing for {{ quiesce_seconds }} seconds - a copy that is still
+    running has a growing size, and half a recording would be stored as if it were whole.
+    Your files are never moved or renamed.
+  </p>
+
+  <div class="table-wrap">
+    <table class="watch-folders">
+      <thead><tr><th>Folder</th><th>Transcribes with</th><th>Watching</th><th class="actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+      <tbody>
+        {% for folder in watch_folders %}
+        <tr data-watch="{{ folder.id }}"{% if not folder.enabled %} class="off"{% endif %}>
+          <td class="mono path">
+            {{ folder.path }}
+            {% if folder.missing %}<span class="badge fail" title="This folder is not on this machine right now">not there</span>{% endif %}
+            {% if folder.get('outside_roots') %}<span class="badge fail out-of-roots" title="This folder is outside the folders MyScribe may read from. Nothing in it is taken in until you widen them above.">outside the allowed folders</span>{% endif %}
+            {% if folder.get('unwatchable') %}<span class="badge fail not-watching" title="No filesystem watch could be opened on this folder. Files already in it are still picked up when MyScribe starts; new ones are not noticed until then.">not watching live</span>{% endif %}
+          </td>
+          <td class="summary">{{ folder.summary }}</td>
+          <td>
+            <form method="post" action="/settings/watch/{{ folder.id }}"
+                  hx-post="/settings/watch/{{ folder.id }}" hx-target="#watch-folders" hx-swap="outerHTML">
+              <input type="hidden" name="enabled" value="{{ '0' if folder.enabled else '1' }}">
+              <button type="submit" class="{{ 'ok' if folder.enabled else '' }}">{{ 'On' if folder.enabled else 'Off' }}</button>
+            </form>
+          </td>
+          <td class="actions">
+            <form method="post" action="/settings/watch/{{ folder.id }}/delete"
+                  hx-post="/settings/watch/{{ folder.id }}/delete" hx-target="#watch-folders" hx-swap="outerHTML"
+                  hx-confirm="Stop watching {{ folder.path }}? Recordings already transcribed stay in the library.">
+              <button type="submit" class="danger">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr class="empty"><td colspan="4">No folders watched yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <form method="post" action="/settings/watch" hx-post="/settings/watch" hx-target="#watch-folders" hx-swap="outerHTML">
+    <fieldset class="options">
+      <legend>Watch another folder</legend>
+      <label class="field">Folder
+        <input type="text" name="path" required spellcheck="false" autocomplete="off"
+               placeholder="C:\Users\you\Recordings" aria-describedby="watch-path-hint">
+      </label>
+      <p id="watch-path-hint" class="hint">
+        A full path to a folder this app may read from - the same folders the transcribe
+        dialog can pick files from. Subfolders are watched too.
+      </p>
+
+      <label class="field">Language
+        <select name="language">
+          <option value=""{% if not watch_options.language %} selected{% endif %}>Auto-detect</option>
+          {% for code, name in languages %}
+          <option value="{{ code }}"{% if code == watch_options.language %} selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="tier" role="radiogroup" aria-label="Model tier for this folder">
+        <label class="check"><input type="radio" name="tier" value="turbo"{% if watch_options.tier == 'turbo' %} checked{% endif %}> 🐬 Turbo</label>
+        <label class="check"><input type="radio" name="tier" value="max"{% if watch_options.tier == 'max' %} checked{% endif %}> 🐋 Maximaal</label>
+      </div>
+
+      <input type="hidden" name="diarize" value="0">
+      <label class="check"><input type="checkbox" name="diarize" value="1"{% if watch_options.diarize %} checked{% endif %}> Recognise speakers</label>
+    </fieldset>
+    <footer class="form-foot">
+      <button type="submit">Watch this folder</button>
+    </footer>
+  </form>
+
+  {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
+</section>

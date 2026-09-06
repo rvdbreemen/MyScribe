@@ -1,0 +1,20 @@
+{#
+  What a write-to-folder answers: the files it wrote, and the recordings it
+  skipped. Lands in the dialog's #export-result on an htmx post; export.html
+  shows it above the dialog after a plain one.
+
+  Context: written [Written(path, replaced)], skipped [{title, reason}],
+  folder Path. A file that took the place of one already there is marked,
+  since the write asks nobody first.
+#}
+<div class="export-done">
+  <p><strong>Wrote {{ written|length }} file{{ '' if written|length == 1 else 's' }}</strong> to <code>{{ folder }}</code>.</p>
+  <ul class="mono">
+    {% for w in written %}
+    <li>{{ w.path }}{% if w.replaced %} <span class="muted">(replaced)</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% if skipped %}
+  <p class="warn">Skipped: {% for s in skipped %}{{ s.title }} ({{ s.reason }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
+  {% endif %}
+</div>

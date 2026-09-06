@@ -1,0 +1,53 @@
+{#
+  The export preview: what POST /media/{id}/export/preview returns into the
+  dialog's #export-preview on load and on every change of the form.
+
+  Context (from scribe.web.exports_ui.preview_context):
+
+      kind      "cues" for a subtitle format, "lines" for a text
+      format    the first selected format, which decides
+      cues      [{index, start, end, name, lines, rules}] the first ten,
+                timings as the format writes them, rules the constraints
+                the cue breaks (empty when it complies)
+      total     how many cues (or lines) the whole file has
+      summary   the compliance line over every cue, not just the ten
+      clean     whether the summary is "No violations."
+      lines     the first ten lines of the text; source the writer they
+                came from, as_text whether that is a stand-in for a format
+                that has no text of its own (DOCX, HTML, JSON), caveat
+                which of the fields the stand-in honours that format does
+                not (none for a format shown as itself)
+      warning   a line when the chosen encoding cannot hold the text (the
+                export would refuse with a 400), else none
+
+  The arrow between the timings is written here, not in the value, so it is
+  an arrow and not an escaped one. Every cue line and name is transcript
+  text and is escaped by the environment.
+#}
+{% if warning %}
+<p class="preview-head"><span class="warn" data-encoding-warning>{{ warning }}</span></p>
+{% endif %}
+{% if kind == 'cues' %}
+<p class="preview-head">
+  <span class="mono">{{ format|upper }}</span> · showing {{ cues|length }} of {{ total }} cue{{ '' if total == 1 else 's' }}
+  · <span class="{{ 'ok' if clean else 'warn' }}" data-summary>{{ summary }}</span>
+</p>
+<ol class="cues">
+  {% for c in cues %}
+  <li class="cue{% if c.rules %} bad{% endif %}" value="{{ c.index }}">
+    <span class="timing mono">{{ c.start }} --> {{ c.end }}</span>
+    {% if c.rules %}<span class="rules mono" title="Constraints this cue breaks">{{ c.rules|join(', ') }}</span>{% endif %}
+    <span class="text">{% if c.name %}<span class="name">{{ c.name }}:</span> {% endif %}{% for line in c.lines %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</span>
+  </li>
+  {% else %}
+  <li class="muted">The transcript has no words.</li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="preview-head">
+  <span class="mono">{{ format|upper }}</span>{% if as_text %} · shown as text ({{ source|upper }}), the nearest the format has to a listing{% if caveat %}; {{ caveat }}{% endif %}{% endif %}
+  · showing {{ lines|length }} of {{ total }} line{{ '' if total == 1 else 's' }}
+</p>
+<pre class="lines">{% for line in lines %}{{ line }}
+{% endfor %}</pre>
+{% endif %}

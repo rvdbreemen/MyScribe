@@ -1,0 +1,6 @@
+* text=auto
+.githooks/** text eol=lf
+*.sh text eol=lf
+
+# Export golden files are compared byte for byte: no line-ending or BOM conversion.
+tests/golden/** -text

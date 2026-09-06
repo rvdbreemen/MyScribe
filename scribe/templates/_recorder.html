@@ -1,0 +1,79 @@
+{#
+  The recorder, included by record_dialog.html inside its form.
+
+  No context of its own: everything on show is filled in by
+  /static/recorder.js, which finds this block by [data-recorder] and does
+  nothing at all when it is not on the page.
+
+  Three constraints shape the markup.
+
+  * **Every button is type="button".** This block sits inside the dialog's
+    form, and a submit button would post it - there is nothing to post
+    without a session, and finishing goes through recorder.js.
+  * **No <script> anywhere near it.** htmx runs with allowScriptTags off, so
+    a script tag in a swapped-in fragment is stripped and would fail
+    silently. recorder.js is loaded by base.html, like app.js.
+  * **It degrades to nothing.** With scripting off - or on a browser without
+    MediaRecorder, or when the user refuses the microphone - the controls
+    stay hidden and the dialog's hint says why.
+
+  `data-record-autostart` is always set: this block only appears in the
+  Record dialog, and a person who opened that has said what they want. The
+  browser's own permission prompt is still the consent gate; this only skips
+  a button.
+
+  Nothing here says whether a recording is running: recorder.js puts
+  data-busy on this block for as long as one is, and app.js refuses to close a
+  dialog that contains a data-busy element (showing its value in the dialog's
+  flash line). The markup carries no such attribute, because a fragment that
+  arrived mid-recording would then claim a session it knows nothing about -
+  the state is the script's, and only the script may write it.
+
+  The name field is called `record_title`, not `title`. It once shared a form
+  with the upload and path doors, and the name kept a title typed for a
+  recording off a file that was uploaded instead; the doors are apart now, and
+  the name stays because the finish route reads it by that name.
+#}
+<div class="recorder" data-recorder hidden data-record-autostart>
+  {# What the microphone hears, while it hears it: the last ~18 s as an
+     envelope and the live trace beside it. recorder.js paints it and writes
+     data-record-scope-state (waiting / sound / silent / paused) on it, so a
+     dead input is a sentence in amber rather than a meter at zero nobody
+     looks at. The <meter> below stays as the one-glance level. #}
+  <canvas class="scope" data-record-scope width="640" height="120" role="img" aria-label="Live audio input"></canvas>
+  {# The scope's verdict in words, for anyone the picture is not for: written
+     by recorder.js on a change of state only, never per frame, so a screen
+     reader hears "no sound is reaching the microphone" once and not sixty
+     times a second. A node of its own, because say() overwrites
+     [data-record-status] with the recording hint. #}
+  <p class="visually-hidden" data-record-scope-say role="status" aria-live="polite"></p>
+  <div class="recorder-row">
+    <button type="button" class="record" data-record-start>Record</button>
+    <button type="button" data-record-pause hidden>Pause</button>
+    <button type="button" class="primary" data-record-finish hidden>Stop and transcribe</button>
+    <button type="button" data-record-cancel hidden>Discard</button>
+    <meter class="level" data-record-level min="0" max="1" value="0" aria-label="Input level"></meter>
+    <span class="mono elapsed" data-record-elapsed aria-label="Elapsed">0:00</span>
+  </div>
+  {# Which microphone, by name. getUserMedia({audio: true}) takes whatever
+     the browser calls its default, and that is not always what Windows has
+     selected - an 8-second recording of -91 dB was made that way. The line
+     under the select names the device the stream actually came from, with
+     its sample rate and channel count, so "wrong input" is something a person
+     can read rather than infer. Choosing here restarts the capture; the
+     choice is kept in localStorage for the next recording. #}
+  <label class="field">Microphone
+    <select data-record-input aria-label="Microphone to record from">
+      <option value="">System default</option>
+    </select>
+  </label>
+  <p class="hint mono" data-record-device></p>
+  <label class="field">Name this recording
+    <input type="text" name="record_title" placeholder="Voice note" aria-label="Name of the recording" autocomplete="off">
+  </label>
+  <p class="hint" data-record-status role="status">
+    Nothing is uploaded to anyone: the audio is saved to this machine every five
+    seconds while you record, so a closed tab costs you the last few seconds and
+    nothing more.
+  </p>
+</div>

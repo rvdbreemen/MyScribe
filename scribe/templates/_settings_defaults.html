@@ -1,0 +1,66 @@
+{#
+  The defaults form: what settings.html includes, and what POST /settings
+  returns to swap in its place.
+
+  Context (from scribe.web.settings.defaults_context):
+
+      options        TranscribeOptions - the transcribe dialog's current defaults
+      languages      [(code, name)] sorted by name
+      roots_text     the stored fsbrowse_roots setting, or "" when unset
+      roots          the roots in effect right now
+      default_roots  what applies when nothing is stored
+      flash          a line for the page's status region, or none
+      oob            whether this is a fragment response carrying the flash
+                     out of band
+
+  The language, tier and speakers fields are the transcribe dialog's, by the
+  same names, because they set the same rows. The diarize checkbox is
+  preceded by a hidden diarize=0: an unticked box posts nothing at all, and
+  the route takes the last value it sees.
+#}
+{% import "_macros.html" as m %}
+<section id="settings-defaults" class="panel defaults">
+  <h2>Defaults for the next transcription</h2>
+  <p class="hint">What the transcribe dialog opens with. Choosing something else in the dialog changes these too.</p>
+
+  <form method="post" action="/settings" hx-post="/settings" hx-target="#settings-defaults" hx-swap="outerHTML">
+    <fieldset class="options">
+      <legend>Transcription</legend>
+
+      <label class="field">Language
+        <select name="language">
+          <option value=""{% if not options.language %} selected{% endif %}>Auto-detect</option>
+          {% for code, name in languages %}
+          <option value="{{ code }}"{% if code == options.language %} selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="tier" role="radiogroup" aria-label="Model tier">
+        <label class="check"><input type="radio" name="tier" value="turbo"{% if options.tier == 'turbo' %} checked{% endif %}> 🐬 Turbo <span class="muted">fast, the default</span></label>
+        <label class="check"><input type="radio" name="tier" value="max"{% if options.tier == 'max' %} checked{% endif %}> 🐋 Maximaal <span class="muted">the full model, about four times slower</span></label>
+      </div>
+
+      <input type="hidden" name="diarize" value="0">
+      <label class="check"><input type="checkbox" name="diarize" value="1"{% if options.diarize %} checked{% endif %}> Recognise speakers</label>
+    </fieldset>
+
+    <fieldset id="folders" class="options">
+      <legend>Files on this machine</legend>
+      <label class="field">Folders the transcribe dialog may pick files from
+        <textarea name="fsbrowse_roots" rows="3" spellcheck="false" aria-describedby="roots-hint">{{ roots_text }}</textarea>
+      </label>
+      <p id="roots-hint" class="hint">
+        One folder per line, each an absolute path that exists. Blank means the default,
+        {% for root in default_roots %}<code>{{ root }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        In effect now: {% for root in roots %}<code>{{ root }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      </p>
+    </fieldset>
+
+    <footer class="form-foot">
+      <button type="submit" class="primary">Save</button>
+    </footer>
+  </form>
+
+  {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
+</section>

@@ -1,0 +1,110 @@
+{#
+  The transcribe dialog: three ways in, one set of options, one button.
+
+  Three doors, one at a time: a file, a path, a link. They used to be stacked,
+  each under an "or", which put the submit button below the fold and made every
+  door look equally likely. They are tabs now: all three labels visible so
+  nothing is hidden, one panel open so nothing is in the way.
+
+  The microphone is not a door here any more. It was the fourth tab, and a
+  person who clicked a microphone found themselves looking at "Upload a file"
+  and "From a link" with no idea why - recording is a different act from
+  handing over something already recorded, so it has a dialog of its own
+  (record_dialog.html) and only the options are shared.
+
+  The tabs are radio inputs and the switching is CSS (`:has()`), not script, so
+  the dialog works before app.js loads and cannot be left in a state no button
+  can reach.
+
+  The radio group is named `source_tab` and does reach the server, where every
+  route ignores it: `parse_options` reads only the option fields by name, and
+  the upload, path and url routes each read their own. A test says so, because
+  "the server ignores it" is exactly the kind of thing that stops being true
+  quietly.
+
+  Options are collapsed. Everything in there has a default that is right for
+  most files, and the summary line spells the current one out, so collapsed
+  does not mean hidden - it means answered. Folder stays outside: filing is a
+  decision about this upload, not a setting.
+
+  Enter: this form is data-enter-scope, so the key never reaches the browser
+  inside it. The browser would press the first submit in the form - "Add file"
+  - from whichever field the cursor is in. A field opts IN to a button by
+  sitting in a data-submit-row or by naming one with data-enter; everything
+  else swallows the key. Opting in rather than out is the point: the
+  speaker-hint inputs were missed by the first attempt at this precisely
+  because opting out has to be remembered.
+#}
+{% import "_macros.html" as m %}
+<form class="transcribe" data-enter-scope method="post" action="/transcribe/upload" enctype="multipart/form-data"
+      hx-post="/transcribe/upload" hx-encoding="multipart/form-data"
+      hx-target="#media-table" hx-swap="outerHTML">
+  <header class="dialog-head">
+    <h2>Transcribe</h2>
+    <button type="button" data-close-dialog aria-label="Close">×</button>
+  </header>
+
+  <p class="dialog-flash" data-dialog-flash role="alert"></p>
+
+  <div class="sources" data-sources>
+    <div class="tabstrip">
+      <input type="radio" name="source_tab" id="src-upload" value="upload" class="visually-hidden"{% if source|default("upload") == "upload" %} checked{% endif %}>
+      <label class="tab" for="src-upload">Upload a file</label>
+      <input type="radio" name="source_tab" id="src-path" value="path" class="visually-hidden"{% if source|default("upload") == "path" %} checked{% endif %}>
+      <label class="tab" for="src-path">On this machine</label>
+      <input type="radio" name="source_tab" id="src-url" value="url" class="visually-hidden"{% if source|default("upload") == "url" %} checked{% endif %}>
+      <label class="tab" for="src-url">From a link</label>
+    </div>
+
+    <div class="panel" data-panel="upload">
+      <div class="dropzone" data-dropzone>
+        <p><strong>Drop audio or video here</strong></p>
+        <label class="button">Choose files… <input type="file" name="files" multiple accept="audio/*,video/*"></label>
+        <label class="check"><input type="checkbox" data-toggle-directory> pick a whole folder</label>
+        <p class="hint" data-file-summary>No files chosen yet.</p>
+      </div>
+    </div>
+
+    <div class="panel" data-panel="path">
+      <div class="pick-path" data-submit-row>
+        <input type="text" name="path" placeholder="D:\Recordings\meeting.m4a" aria-label="Path of a file on this machine" autocomplete="off" spellcheck="false">
+        <button type="submit" formaction="/transcribe/path" hx-post="/transcribe/path" hx-params="not files">Add file</button>
+      </div>
+      <div id="fs-panel" class="fs-panel">
+        <button type="button" hx-get="/fs" hx-target="#fs-panel" hx-swap="outerHTML">Browse this machine…</button>
+      </div>
+    </div>
+
+    <div class="panel" data-panel="url">
+      <div class="pick-url" data-submit-row>
+        <input type="url" name="url" placeholder="https://…" aria-label="Link to a video or podcast" autocomplete="off" spellcheck="false"
+               hx-post="/transcribe/url/preview" hx-target="#url-preview" hx-swap="outerHTML"
+               hx-params="url" hx-trigger="change, keyup changed delay:800ms">
+        <button type="submit" data-url-submit formaction="/transcribe/url" hx-post="/transcribe/url" hx-params="not files">Fetch and transcribe</button>
+      </div>
+      <div id="url-preview" class="url-preview"></div>
+      <details class="cookies">
+        <summary>Needs a sign-in?</summary>
+        <label class="field">Cookies file
+          <input type="text" name="cookies_file" data-enter="[data-url-submit]" placeholder="C:\Users\you\Downloads\cookies.txt" aria-label="Path of an exported cookies.txt" autocomplete="off" spellcheck="false">
+        </label>
+        <p class="hint">Export a cookies.txt from the browser you are signed in with. Chrome and Edge cookies cannot be read directly on Windows since App-Bound Encryption; Firefox or an exported file works.</p>
+      </details>
+    </div>
+
+  </div>
+
+  {% include "_transcribe_options.html" %}
+
+  <footer class="dialog-foot">
+    <label class="field folder">Folder
+      <select name="folder_id">
+        <option value=""{% if folder is none %} selected{% endif %}>Uncategorized</option>
+        {% for f in folders %}{{ m.folder_option(f, folder) }}{% endfor %}
+      </select>
+    </label>
+    <progress data-upload-progress max="100" value="0" hidden aria-label="Upload progress"></progress>
+    <button type="button" data-close-dialog>Cancel</button>
+    <button type="submit" class="primary">Upload and transcribe</button>
+  </footer>
+</form>

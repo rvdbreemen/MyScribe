@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ media.title }} - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  One recording: the transcript panel and, under it, the player.
+
+  Context (from scribe.web.transcript.page_context): see _transcript_panel.html,
+  plus
+
+      audio_url   /media/{id}/audio - the original when a browser can play
+                  it, an AAC proxy of the same audio otherwise
+      speeds      the playback rates the bar offers, as strings
+      resume_key  the localStorage key app.js keeps the position under
+
+  The player sits outside #transcript-panel on purpose: the panel re-fetches
+  itself after a rail action (rename, move, trash), and a player inside it
+  would be replaced mid-sentence. app.js wires the two together - a click on
+  a timestamp or a word seeks, timeupdate moves the .current word, a #t=
+  in the URL seeks on load - and rebuilds its word index whenever the panel
+  is swapped.
+
+  The export dialog is outside the panel for the same reason: the rail's
+  Export link fetches the dialog fragment into it (app.js opens it once
+  swapped in), and it stays open across the previews it posts
+  (data-stay-open).
+
+  So are the AI answer panels, and for the same reason again: each one polls
+  itself while its job runs, and a rename that replaced the panel around them
+  would restart six of those mid-flight. The rail's AI buttons target them by
+  id (#ai-summary and so on). What each panel shows is read from the rows, so
+  a full reload never loses one.
+#}
+{% include "_transcript_panel.html" %}
+
+{% if ai.has_transcript %}
+<section id="ai-outputs" class="ai-outputs" aria-label="AI answers">
+  {% for panel in ai.panels %}{% include "_ai_output.html" %}{% endfor %}
+</section>
+{% endif %}
+
+<dialog id="export-dialog" class="dialog export-dialog" aria-label="Export" data-stay-open></dialog>
+
+<div class="player-bar" data-player-bar>
+  <audio id="player" controls preload="metadata" src="{{ audio_url }}"
+         data-media-id="{{ media.id }}" data-resume-key="{{ resume_key }}"
+         {% if media.duration %}data-duration="{{ media.duration }}"{% endif %}>
+    Your browser cannot play audio inline.
+    <a href="/media/{{ media.id }}/download">Download the file</a> instead.
+  </audio>
+  <div class="speeds" role="group" aria-label="Playback speed">
+    {% for speed in speeds %}
+    <button type="button" class="speed" data-speed="{{ speed }}" aria-pressed="{{ 'true' if speed == '1' else 'false' }}">{{ speed }}×</button>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

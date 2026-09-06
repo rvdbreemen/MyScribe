@@ -1,0 +1,46 @@
+{#
+  The transcription options, collapsed behind a line that says what they are.
+
+  One partial, two dialogs: Transcribe (upload, a path, a link) and Record.
+  They post to different routes and are different acts, but a recording is
+  transcribed with the same language, tier and speaker settings as an upload,
+  and `parse_options` reads the same field names from both. Keeping the fields
+  in one file is what keeps that true.
+
+  Context: `options` (the defaults), `summary` (options_summary of them),
+  `languages`.
+#}
+  <details class="options">
+    <summary>
+      <span class="summary-title">Options</span>
+      <span class="summary-line">{{ summary }}</span>
+    </summary>
+
+    <label class="field">Language
+      <select name="language">
+        <option value=""{% if not options.language %} selected{% endif %}>Auto-detect</option>
+        {% for code, name in languages %}
+        <option value="{{ code }}"{% if code == options.language %} selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <div class="tier" role="radiogroup" aria-label="Model tier">
+      <label class="check"><input type="radio" name="tier" value="turbo"{% if options.tier == 'turbo' %} checked{% endif %}> 🐬 Turbo <span class="muted">fast, the default</span></label>
+      <label class="check"><input type="radio" name="tier" value="max"{% if options.tier == 'max' %} checked{% endif %}> 🐋 Maximaal <span class="muted">the full model, about four times slower</span></label>
+    </div>
+
+    <input type="hidden" name="diarize" value="0">
+    <label class="check"><input type="checkbox" name="diarize" value="1"{% if options.diarize %} checked{% endif %} data-enables="#speaker-hints"> Recognise speakers</label>
+    <fieldset id="speaker-hints" class="speakers"{% if not options.diarize %} disabled{% endif %}>
+      <legend class="visually-hidden">How many speakers</legend>
+      <label>exactly <input type="number" name="num_speakers" min="1" max="50" placeholder="?" aria-label="Exact number of speakers"></label>
+      <span class="muted">or between</span>
+      <label><input type="number" name="min_speakers" min="1" max="50" placeholder="min" aria-label="Fewest speakers"></label>
+      <span class="muted">and</span>
+      <label><input type="number" name="max_speakers" min="1" max="50" placeholder="max" aria-label="Most speakers"></label>
+    </fieldset>
+
+    <input type="hidden" name="translate" value="0">
+    <label class="check"><input type="checkbox" name="translate" value="1"> Translate to English <span class="muted">(runs the full model)</span></label>
+  </details>

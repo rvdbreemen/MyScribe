@@ -1,0 +1,277 @@
+{#
+  The transcript panel: the heading, the tools, the paragraphs and the right
+  rail. This is what an htmx GET /media/{id} returns on its own, and what
+  transcript.html includes for the full page. It re-fetches itself on
+  `refresh`, which app.js fires after a rail action has posted.
+
+  Context (from scribe.web.transcript.page_context):
+
+      media        the media row (title, orig_name, duration, trashed_at, ...)
+      run          the current run row, or none when nothing has finished
+      paragraphs   render.Paragraph list: speaker, display_name, sentences;
+                   each sentence has start, end and its words (idx, start,
+                   end, text, probability, speaker)
+      speakers     [{cluster, label, name, color, words}] every speaker the
+                   run knows, in label order - the Assign-to list and the
+                   rail's rename forms
+      colors       {cluster: '#rrggbb'} for the speakers that have one
+      new_speaker  the `speaker` value that asks reassign for a new one
+      job          {id, status, stage, error_code} of the latest job, or none
+      folders      [{id, name, parent_id, depth}] for the Move select
+      hide_ts_key  the localStorage key the timestamp toggle persists under
+
+  What the markup promises app.js, so it reads attributes and computes nothing
+  (a.ts and span.w are _transcript_macros.html's, shared with the HTML export):
+
+      a.ts        data-start   the sentence's first word start, in seconds
+      span.w      data-i       the word's idx in the run, the unit a
+                               reassignment's from_idx/to_idx count in
+                  data-s, data-e  its start and end, in seconds
+                  band-high|mid|low|unknown  render.confidence_band
+      h3.speaker  data-cluster the diarization label the heading stands for
+                  data-rename-url  where a rename of that cluster posts
+      template[data-rename-template]  the inline rename form, cloned under
+                               a clicked heading and pointed at its URL
+      form[data-assign-toolbar]  the reassignment form: hidden until a
+                               range is chosen, from_idx/to_idx filled by
+                               app.js, data-new-speaker its "new" value
+
+  Every word, name and title is user content and is escaped by the
+  environment; nothing here is |safe. A word keeps its leading space inside
+  its span, so the spans read as running text and the join needs no help.
+#}
+{% import "_macros.html" as m %}
+{% import "_transcript_macros.html" as t %}
+<div id="transcript-panel" class="transcript-page" hx-get="/media/{{ media.id }}" hx-trigger="refresh" hx-swap="outerHTML">
+  <p class="crumbs"><a href="/">← Library</a></p>
+
+  {% if media.trashed_at %}
+  <div class="banner warn">This file is in the trash.
+    <form class="inline-form" method="post" action="/media/{{ media.id }}/restore" data-refresh="#transcript-panel">
+      <button type="submit">Restore</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="transcript-layout">
+    <section class="transcript-main">
+      <header class="transcript-head">
+        <h1>{{ media.title }}</h1>
+        <p class="sub muted">
+          <span class="mono" title="Original filename">{{ media.orig_name }}</span>
+          · {{ m.ts(media.duration) }}
+          · uploaded {{ m.when(media.created_at) }}
+        </p>
+      </header>
+
+      {% if run %}
+      <div class="transcript-tools" role="toolbar" aria-label="Transcript tools">
+        <label class="find">
+          <span class="visually-hidden">Find in transcript</span>
+          <input type="search" placeholder="Find in transcript" data-transcript-search autocomplete="off" spellcheck="false">
+        </label>
+        <span class="muted" data-search-count aria-live="polite"></span>
+        <button type="button" data-toggle-ts data-storage-key="{{ hide_ts_key }}" aria-pressed="false">Hide timestamps</button>
+        <span class="legend muted" title="Word confidence from the model">
+          <span class="w band-mid">uncertain</span> <span class="w band-low">doubtful</span>
+        </span>
+      </div>
+
+      {#
+        Reassignment. Hidden until app.js has a range: a plain click on a
+        word marks where it starts, a shift-click where it ends, and the
+        bounds land in from_idx and to_idx. The list is every speaker the
+        run knows; "new" asks for a name. Sticky, so the toolbar is in view
+        however far down the range was chosen.
+      #}
+      <form class="assign" data-assign-toolbar data-new-speaker="{{ new_speaker }}" hidden
+            method="post" action="/media/{{ media.id }}/words/reassign"
+            hx-post="/media/{{ media.id }}/words/reassign" hx-target="#transcript-panel" hx-swap="outerHTML">
+        <span class="range" data-assign-range aria-live="polite"></span>
+        <input type="hidden" name="from_idx" value="">
+        <input type="hidden" name="to_idx" value="">
+        <label>Assign to
+          <select name="speaker" data-assign-speaker>
+            {% for s in speakers %}
+            <option value="{{ s.cluster }}">{{ s.name }}</option>
+            {% endfor %}
+            <option value="{{ new_speaker }}">New speaker…</option>
+          </select>
+        </label>
+        <input type="text" name="display_name" placeholder="Name for the new speaker" maxlength="300" autocomplete="off" data-assign-name hidden>
+        <button type="submit" class="primary">Assign</button>
+        <button type="button" data-assign-clear>Clear</button>
+      </form>
+
+      {# The inline rename form app.js clones under a clicked heading and
+         points at the heading's data-rename-url. Inert here, as a template's
+         content is; htmx.process wires the clone. #}
+      <template data-rename-template>
+        <form class="rename-speaker" method="post" hx-target="#transcript-panel" hx-swap="outerHTML">
+          <input type="text" name="display_name" required maxlength="300" aria-label="Speaker name" autocomplete="off">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" data-cancel-rename>Cancel</button>
+        </form>
+      </template>
+
+      {# The inline word editor app.js clones after a double-clicked word,
+         pointed at /media/{id}/words/{idx}/correct. Enter saves, Escape
+         cancels; an empty text restores the word Whisper wrote. #}
+      <template data-correct-template>
+        <form class="correct-word" method="post" hx-target="#transcript-panel" hx-swap="outerHTML">
+          <input type="hidden" name="scope" value="one">
+          <input type="text" name="text" maxlength="100" aria-label="Corrected word" autocomplete="off" spellcheck="true">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" data-cancel-correct>Cancel</button>
+        </form>
+      </template>
+
+      {% if word_offer is defined and word_offer %}
+      <form class="word-offer" method="post" action="{{ word_offer.url }}"
+            hx-post="{{ word_offer.url }}" hx-target="#transcript-panel" hx-swap="outerHTML" role="status">
+        <input type="hidden" name="scope" value="all">
+        <input type="hidden" name="text" value="{{ word_offer.text }}">
+        <span>Saved. {{ word_offer.others }} other word{{ '' if word_offer.others == 1 else 's' }} in this transcript say{{ 's' if word_offer.others == 1 else '' }} “{{ word_offer.was }}”.</span>
+        <button type="submit">Replace {{ 'it' if word_offer.others == 1 else 'them' }} too</button>
+        <button type="button" data-dismiss-offer aria-label="Dismiss">×</button>
+      </form>
+      {% elif word_flash is defined and word_flash %}
+      <p class="word-offer" role="status">{{ word_flash }}</p>
+      {% endif %}
+
+      <div id="transcript" class="transcript" data-run-id="{{ run.id }}" data-correct-url="/media/{{ media.id }}/words/">
+        {% for p in paragraphs %}
+        <section class="para"{% if p.speaker %} data-speaker="{{ p.speaker }}"{% endif %}>
+          {% if p.speaker %}
+          <h3 class="speaker" data-cluster="{{ p.speaker }}" data-rename-url="/media/{{ media.id }}/speakers/{{ p.speaker|urlencode }}/rename" title="Click to rename this speaker"{% if p.speaker in colors %} style="--speaker-color: {{ colors[p.speaker] }}"{% endif %}>{{ p.display_name }}</h3>
+          {% endif %}
+          {{ t.sentences(p) }}
+        </section>
+        {% else %}
+        <p class="hint">The current run has no words.</p>
+        {% endfor %}
+      </div>
+      {% else %}
+      <section class="panel not-transcribed">
+        <h2>Not transcribed yet</h2>
+        {% if job %}
+        <p>The latest job is {{ m.job_badge(job.id, job.status) }}{% if job.stage and job.status == 'running' %}, in <span class="mono">{{ job.stage }}</span>{% endif %}{% if job.error_code %}: <code>{{ job.error_code }}</code>{% endif %}.
+          <a href="/jobs/{{ job.id }}">Follow it on the jobs page.</a></p>
+        {% else %}
+        <p>No job has run for this file. Queue one from the library's <a href="/">Transcribe</a> dialog, or re-transcribe it from the ⋯ menu.</p>
+        {% endif %}
+      </section>
+      {% endif %}
+    </section>
+
+    <aside class="rail" aria-label="File actions">
+      {# The rail is four things, not one list: what you can take away, what
+         you can ask, what the file is called and where it lives, and the
+         facts of the run. They used to sit under a single "Actions" heading
+         with nothing between them, so the eye read one long column and the
+         headings inside it looked like more buttons. Each is its own titled
+         card now. #}
+      <section class="rail-group">
+        <h2>Take away</h2>
+        {% if run %}
+        {# One row per format, each a form posting nothing but the format:
+           `parse_export_options` fills the rest from the defaults, so a
+           one-click download needs no route of its own and cannot drift from
+           what the dialog would have produced. The four here are the ones
+           worth a single click; the other four live in the dialog, which is
+           also where every option does. #}
+        <ul class="quick-export">
+          {% for fmt, label in quick_exports %}
+          <li>
+            <form method="post" action="/media/{{ media.id }}/export">
+              <input type="hidden" name="formats" value="{{ fmt }}">
+              <input type="hidden" name="destination" value="download">
+              <button type="submit"><span class="ext mono">{{ fmt }}</span> {{ label }}</button>
+            </form>
+          </li>
+          {% endfor %}
+        </ul>
+        <a class="button" href="/media/{{ media.id }}/export" hx-get="/media/{{ media.id }}/export" hx-target="#export-dialog" hx-swap="innerHTML">
+          Export…<span class="sub">every format, every option, or straight to a folder</span>
+        </a>
+        {% else %}
+        <button type="button" disabled title="Transcribe the file first">Export</button>
+        {% endif %}
+        <a class="button" href="/media/{{ media.id }}/download">Download audio{% if audio_size %}<span class="sub">{{ audio_size }}</span>{% endif %}</a>
+      </section>
+
+      {# The AI section: the pin, the provider and the six questions. Its
+         buttons target the answer panels in transcript.html, which sit
+         outside this element so a rename cannot swap away an answer being
+         written. #}
+      {% include "_ai_panel.html" %}
+
+      {# What the file is called and where it lives - properties, not verbs,
+         which is why they are not under the heading with Export. Trash closes
+         the group because it is the end of the same subject: this file. #}
+      <section class="rail-group">
+        <h2>File</h2>
+        <form method="post" action="/media/{{ media.id }}/rename" data-refresh="#transcript-panel">
+          <label class="field">Title
+            <input type="text" name="title" value="{{ media.title }}" required maxlength="300">
+          </label>
+          <button type="submit">Rename</button>
+        </form>
+
+        <form method="post" action="/media/{{ media.id }}/move" data-refresh="#transcript-panel">
+          <label class="field">Folder
+            <select name="folder_id">
+              <option value=""{% if media.folder_id is none %} selected{% endif %}>Uncategorized</option>
+              {% for folder in folders %}{{ m.folder_option(folder, media.folder_id) }}{% endfor %}
+            </select>
+          </label>
+          <button type="submit">Move</button>
+        </form>
+
+        {% if not media.trashed_at %}
+        <form class="rail-destructive" method="post" action="/media/{{ media.id }}/trash"
+              data-confirm="Move “{{ media.title }}” to the trash? It can be restored from there."
+              data-refresh="#transcript-panel">
+          <button type="submit" class="danger">Trash</button>
+        </form>
+        {% endif %}
+      </section>
+
+      {% if speakers %}
+      <section class="rail-group">
+      <h2>Speakers</h2>
+      {# One rename form per speaker: the same post a heading click makes
+         inline, and the way to rename without scripting. The name shown is
+         prefilled, default or not, so saving it as it is makes it explicit. #}
+      <ul class="speakers">
+        {% for s in speakers %}
+        <li>
+          <form method="post" action="/media/{{ media.id }}/speakers/{{ s.cluster|urlencode }}/rename"
+                hx-post="/media/{{ media.id }}/speakers/{{ s.cluster|urlencode }}/rename" hx-target="#transcript-panel" hx-swap="outerHTML">
+            <label class="field"><span class="mono muted" title="{{ s.words }} words">{{ s.cluster }}</span>
+              <input type="text" name="display_name" value="{{ s.name }}" required maxlength="300">
+            </label>
+            <button type="submit">Rename</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      </section>
+      {% endif %}
+
+      {% if run %}
+      <section class="rail-group">
+      <h2>This transcript</h2>
+      <dl class="facts">
+        <dt>Model</dt><dd>{{ m.mode_icon(run.model) }} <span class="mono">{{ run.model }}</span></dd>
+        <dt>Language</dt><dd><span class="mono">{{ run.language or 'auto' }}</span></dd>
+        {% if run.task != 'transcribe' %}<dt>Task</dt><dd class="mono">{{ run.task }}</dd>{% endif %}
+        <dt>Speed</dt><dd>{% if run.xrt %}{{ "%.1f"|format(run.xrt) }}× realtime{% else %}<span class="muted">-</span>{% endif %}</dd>
+        <dt>Created</dt><dd>{{ m.when(run.created_at) }}</dd>
+        {% if job %}<dt>Job</dt><dd>{{ m.job_badge(job.id, job.status) }}</dd>{% endif %}
+      </dl>
+      </section>
+      {% endif %}
+    </aside>
+  </div>
+</div>

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="MyScribe">
+  <title>Clip</title>
+  <style>
+    :root {
+      --bg: #ffffff; --bg-soft: #f4f5f7; --fg: #16181d; --fg-muted: #6a7280; --line: #d7dae0;
+      --accent: #1f6feb; --warn: #8a6100; --bad-bg: #fdefee;
+      --mono: ui-monospace, "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14161a; --bg-soft: #1b1e24; --fg: #e6e8ec; --fg-muted: #969ba5; --line: #2e333b;
+        --accent: #6aa8ff; --warn: #e3b341; --bad-bg: #2b1b1a;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
+    .page { padding: 1rem; max-width: 50rem; margin: 0 auto; }
+    h1 { font-size: 1.35rem; margin: 0 0 .2rem; }
+    .muted, .hint { color: var(--fg-muted); }
+    .sub { margin: 0 0 1rem; overflow-wrap: anywhere; }
+    .transcript { font-size: 15px; line-height: 1.75; }
+    .para { content-visibility: auto; contain-intrinsic-size: auto 8rem; margin: 0 0 1.1rem; }
+    .speaker { margin: 0 0 .15rem; font-size: .85rem; font-weight: 600; color: var(--accent); }
+    .sentences { margin: 0; }
+    .ts { display: inline-block; margin: 0 .3rem 0 .15rem; font-family: var(--mono); font-size: .72rem; color: var(--fg-muted); text-decoration: none; }
+    .ts:hover { color: var(--accent); text-decoration: underline; }
+    body.hide-ts .ts { display: none; }
+    .w { border-radius: 2px; cursor: pointer; }
+    .w:hover { background: var(--bg-soft); }
+    .w.band-mid { text-decoration: underline dotted var(--warn); text-underline-offset: .18em; }
+    .w.band-low { background: var(--bad-bg); }
+    .w.current, .w.current.band-low { background: var(--accent); color: var(--bg); }
+    footer { margin: 2rem 0 1rem; font-size: .8rem; }
+    .player-bar { position: sticky; bottom: 0; padding: .5rem 1rem; background: var(--bg-soft); border-top: 1px solid var(--line); }
+    .player-bar audio { display: block; width: 100%; max-width: 50rem; margin: 0 auto; height: 2.2rem; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="transcript-head">
+      <h1>Clip</h1>
+      <p class="sub muted">Clip.wav · 0:30 · large-v3-turbo · en · 2026-09-02</p>
+    </header>
+    <div id="transcript" class="transcript">
+      <section class="para" data-speaker="SPEAKER_00">
+        <h3 class="speaker" data-cluster="SPEAKER_00">Arthur</h3>
+        <p class="sentences">
+  <span class="sent"><a class="ts" href="#t=0.0" data-start="0.0">0:00</a><span class="w band-high" data-i="0" data-s="0.0" data-e="0.4"> Don&#39;t</span><span class="w band-high" data-i="1" data-s="0.5" data-e="0.9"> panic,</span><span class="w band-mid" data-i="2" data-s="1.0" data-e="1.4"> the</span><span class="w band-low" data-i="3" data-s="1.5" data-e="1.9"> towel</span><span class="w band-high" data-i="4" data-s="2.0" data-e="2.4"> is</span><span class="w band-high" data-i="5" data-s="2.5" data-e="2.9"> still</span><span class="w band-mid" data-i="6" data-s="3.0" data-e="3.4"> the</span><span class="w band-low" data-i="7" data-s="3.5" data-e="3.9"> most</span><span class="w band-high" data-i="8" data-s="4.0" data-e="4.4"> important</span><span class="w band-high" data-i="9" data-s="4.5" data-e="4.9"> item.</span></span>
+  <span class="sent"><a class="ts" href="#t=5.0" data-start="5.0">0:05</a><span class="w band-mid" data-i="10" data-s="5.0" data-e="5.4"> The</span><span class="w band-low" data-i="11" data-s="5.5" data-e="5.9"> answer</span><span class="w band-high" data-i="12" data-s="6.0" data-e="6.4"> to</span><span class="w band-high" data-i="13" data-s="6.5" data-e="6.9"> life,</span><span class="w band-mid" data-i="14" data-s="7.0" data-e="7.4"> the</span><span class="w band-low" data-i="15" data-s="7.5" data-e="7.9"> universe</span><span class="w band-high" data-i="16" data-s="8.0" data-e="8.4"> and</span><span class="w band-high" data-i="17" data-s="8.5" data-e="8.9"> everything</span><span class="w band-mid" data-i="18" data-s="9.0" data-e="9.4"> is</span><span class="w band-low" data-i="19" data-s="9.5" data-e="9.9"> forty-two.</span></span>
+</p>
+      </section>
+      <section class="para" data-speaker="SPEAKER_01">
+        <h3 class="speaker" data-cluster="SPEAKER_01">Speaker 2</h3>
+        <p class="sentences">
+  <span class="sent"><a class="ts" href="#t=10.0" data-start="10.0">0:10</a><span class="w band-high" data-i="20" data-s="10.0" data-e="10.4"> Marvin</span><span class="w band-high" data-i="21" data-s="10.5" data-e="10.9"> says</span><span class="w band-mid" data-i="22" data-s="11.0" data-e="11.4"> the</span><span class="w band-low" data-i="23" data-s="11.5" data-e="11.9"> improbability</span><span class="w band-high" data-i="24" data-s="12.0" data-e="12.4"> drive</span><span class="w band-high" data-i="25" data-s="12.5" data-e="12.9"> makes</span><span class="w band-mid" data-i="26" data-s="13.0" data-e="13.4"> him</span><span class="w band-low" data-i="27" data-s="13.5" data-e="13.9"> even</span><span class="w band-high" data-i="28" data-s="14.0" data-e="14.4"> more</span><span class="w band-high" data-i="29" data-s="14.5" data-e="14.9"> depressed.</span></span>
+  <span class="sent"><a class="ts" href="#t=15.0" data-start="15.0">0:15</a><span class="w band-mid" data-i="30" data-s="15.0" data-e="15.4"> Vogon</span><span class="w band-low" data-i="31" data-s="15.5" data-e="15.9"> poetry</span><span class="w band-high" data-i="32" data-s="16.0" data-e="16.4"> is</span><span class="w band-high" data-i="33" data-s="16.5" data-e="16.9"> the</span><span class="w band-mid" data-i="34" data-s="17.0" data-e="17.4"> third</span><span class="w band-low" data-i="35" data-s="17.5" data-e="17.9"> worst</span><span class="w band-high" data-i="36" data-s="18.0" data-e="18.4"> in</span><span class="w band-high" data-i="37" data-s="18.5" data-e="18.9"> the</span><span class="w band-mid" data-i="38" data-s="19.0" data-e="19.4"> known</span><span class="w band-low" data-i="39" data-s="19.5" data-e="19.9"> universe.</span></span>
+</p>
+      </section>
+    </div>
+    <footer class="muted">Exported by MyScribe. Click a timestamp or a word to play from there.</footer>
+  </main>
+  <div class="player-bar">
+    <audio id="player" controls preload="metadata" src="Clip.m4a" data-duration="30.0">Your browser cannot play audio inline.</audio>
+  </div>
+  <script>
+    (function () {
+      'use strict';
+      /* The bundle's player: app.js's transcript wiring, cut down to what a
+         file on its own needs. Everything it reads is in the markup - a.ts
+         data-start, span.w data-s - and nothing is fetched or stored. */
+      var SCROLL_SUSPEND_MS = 8000;
+      var PROGRAMMATIC_SCROLL_MS = 1000;
+      var audio = document.getElementById('player');
+      var words = Array.prototype.slice.call(document.querySelectorAll('#transcript .w'));
+      var starts = new Float64Array(words.length);
+      words.forEach(function (w, i) { starts[i] = Number(w.getAttribute('data-s')) || 0; });
+      var current = -1;
+      var suspendedUntil = 0;
+      var programmaticUntil = 0;
+
+      /* The last word that has started by t: binary search over the starts. */
+      function wordAt(t) {
+        var lo = 0, hi = starts.length - 1, found = -1;
+        while (lo <= hi) {
+          var mid = (lo + hi) >> 1;
+          if (starts[mid] <= t) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        return found;
+      }
+
+      function highlight(t, follow) {
+        var i = wordAt(t);
+        if (i === current) { return; }
+        if (current >= 0) { words[current].classList.remove('current'); }
+        current = i;
+        if (i < 0) { return; }
+        words[i].classList.add('current');
+        if (follow && Date.now() >= suspendedUntil) {
+          programmaticUntil = Date.now() + PROGRAMMATIC_SCROLL_MS;
+          words[i].scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+      }
+
+      function seek(t, follow) {
+        if (!isFinite(t) || t < 0) { return; }
+        if (audio) {
+          if (audio.readyState >= 1) { audio.currentTime = t; }
+          else { audio.addEventListener('loadedmetadata', function () { audio.currentTime = t; }, { once: true }); }
+        }
+        highlight(t, follow);
+      }
+
+      function hashTime() {
+        var found = /^#t=([0-9]+(?:\.[0-9]+)?)$/.exec(window.location.hash || '');
+        return found ? Number(found[1]) : NaN;
+      }
+
+      /* A scroll that is not ours means the reader took over: no auto-scroll for a while. */
+      window.addEventListener('scroll', function () {
+        if (Date.now() > programmaticUntil) { suspendedUntil = Date.now() + SCROLL_SUSPEND_MS; }
+      }, { passive: true });
+
+      if (audio) {
+        audio.addEventListener('timeupdate', function () { highlight(audio.currentTime, true); });
+      }
+
+      document.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!target || typeof target.closest !== 'function') { return; }
+        var stamp = target.closest('#transcript a.ts');
+        if (stamp) {
+          event.preventDefault();
+          seek(Number(stamp.getAttribute('data-start')), false);
+          /* Keep the address bar's #t= honest; some browsers refuse this on a file: page. */
+          try { window.history.replaceState(null, '', stamp.getAttribute('href')); } catch (err) { /* then it stays */ }
+          return;
+        }
+        var word = target.closest('#transcript span.w');
+        if (word) { seek(Number(word.getAttribute('data-s')), false); }
+      });
+
+      window.addEventListener('hashchange', function () {
+        var t = hashTime();
+        if (isFinite(t)) { seek(t, true); }
+      });
+
+      var at = hashTime();
+      if (isFinite(at)) { seek(at, true); }
+    })();
+  </script>
+</body>
+</html>

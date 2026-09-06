@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Log - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The application log, live.
+
+  Context (from scribe.web.logs_ui.logs_page):
+
+      lines        the last `first_paint` lines that pass the filter, oldest first
+      offset       byte offset of the end of what is shown
+      level, q     the filter in force
+      levels       every level, for the select
+      path         where the file is, for an editor
+      poll         seconds between tails
+
+  The table's body polls /logs/tail with the offset the last answer carried,
+  and appends only what is new - so the scroll position is yours and the
+  browser never re-reads the file. The offset travels out of band in a hidden
+  input that each answer replaces; hx-include picks it up on the next tick.
+  Filtering is a plain GET, so a filtered view has a URL that can be kept.
+#}
+<div class="logpage">
+  <header class="toolbar">
+    <h1>Log</h1>
+    <form class="logfilter" method="get" action="/logs">
+      <select name="level" aria-label="Lowest level to show">
+        <option value=""{% if not level %} selected{% endif %}>all levels</option>
+        {% for lv in levels %}<option value="{{ lv }}"{% if lv == level %} selected{% endif %}>{{ lv }} and up</option>{% endfor %}
+      </select>
+      <input type="search" name="q" value="{{ q }}" placeholder="Filter text (job=24, record., SILENT)" aria-label="Filter text">
+      <button type="submit">Filter</button>
+      {% if level or q %}<a class="button" href="/logs">Clear</a>{% endif %}
+    </form>
+    {# Auto-updating content has to be stoppable (WCAG 2.2.2); app.js flips
+       the poll off and on. Without script the page does not poll at all. #}
+    <button type="button" class="logpause" data-log-pause aria-pressed="false" aria-controls="log-body">Pause updates</button>
+  </header>
+  <p class="hint mono logpath" title="The file on disk; append-only, capped at 32 MB with one previous file kept">{{ path }}</p>
+
+  <div class="table-wrap logwrap" data-log-wrap>
+    <table class="log-lines">
+      <thead><tr><th>When</th><th>Level</th><th>Proc</th><th>Event</th><th>Detail</th></tr></thead>
+      <tbody id="log-body" data-log-keep="{{ first_paint * 4 }}"
+             hx-get="/logs/tail?level={{ level|urlencode }}&q={{ q|urlencode }}"
+             hx-trigger="every {{ poll }}s" hx-include="#log-offset" hx-swap="beforeend"
+             hx-target="#log-body">
+        {% with with_offset = false %}{% include "_log_lines.html" %}{% endwith %}
+        {% if not lines %}<tr class="empty"><td colspan="5">Nothing in the log yet{% if level or q %} that matches{% endif %}.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+  {# The offset lives outside the table: an <input> inside a <tbody> is not
+     HTML, and a browser would hoist it somewhere of its own choosing. Each
+     tail answer replaces it out of band by id. #}
+  <input type="hidden" id="log-offset" name="after" value="{{ offset }}">
+  <p class="hint">Showing the last {{ first_paint }} lines that match, then everything new as it arrives. The table keeps the newest {{ first_paint * 4 }} rows; the file keeps everything.</p>
+</div>
+{% endblock %}

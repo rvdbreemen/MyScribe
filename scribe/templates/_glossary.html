@@ -1,0 +1,103 @@
+{#
+  The glossary section: what settings.html includes, and what
+  POST /settings/glossary, /settings/glossary/import,
+  /settings/glossary/{id}/delete and /settings/glossary/recorrect
+  return to swap in its place.
+
+  Context (from scribe.web.settings.glossary_context):
+
+      glossary_terms     [{id, term, weight, variants}] heaviest first
+      transcribed_media  how many recordings a re-run would cover
+      hotword_limit      the token budget the list is truncated at
+      flash              a line for the page's status region, or none
+      oob                whether this is a fragment response carrying the flash
+                         out of band
+
+  Every term is user content and is escaped by the environment; nothing here
+  is |safe.
+#}
+<section id="glossary" class="panel glossary">
+  <h2>Glossary</h2>
+  <p class="hint">
+    Names this machine should get right. Each term is used twice: it biases the decoder
+    while it transcribes, and afterwards a correction pass fixes what came out close but
+    not right. Corrections are stored separately from the words - nothing is ever
+    overwritten, and removing a term takes its corrections back out on the next re-run.
+    The heaviest terms go first; the decoder only takes about {{ hotword_limit }} tokens' worth.
+  </p>
+
+  <div class="table-wrap">
+    <table class="glossary-terms">
+      <thead><tr><th>Term</th><th>Weight</th><th>Also spelled</th><th class="actions"><span class="visually-hidden">Actions</span></th></tr></thead>
+      <tbody>
+        {% for entry in glossary_terms %}
+        <tr data-term="{{ entry.id }}">
+          <td class="term">{{ entry.term }}</td>
+          <td class="weight">{{ '%g'|format(entry.weight) }}</td>
+          <td class="variants">{{ entry.variants }}</td>
+          <td class="actions">
+            <form method="post" action="/settings/glossary/{{ entry.id }}/delete"
+                  hx-post="/settings/glossary/{{ entry.id }}/delete" hx-target="#glossary" hx-swap="outerHTML"
+                  hx-confirm="Remove {{ entry.term }} from the glossary?">
+              <button type="submit" class="danger">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr class="empty"><td colspan="4">No terms yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <form method="post" action="/settings/glossary" hx-post="/settings/glossary" hx-target="#glossary" hx-swap="outerHTML">
+    <fieldset class="options">
+      <legend>Add a term</legend>
+      <label class="field">Term
+        <input type="text" name="term" required spellcheck="false" autocomplete="off" placeholder="Vermeulen">
+      </label>
+      <label class="field">Weight
+        <input type="number" name="weight" value="1" min="0.1" step="0.1">
+      </label>
+      <label class="field">Also spelled
+        <input type="text" name="variants" spellcheck="false" autocomplete="off"
+               placeholder="Vermulen, Vermeule" aria-describedby="variants-hint">
+      </label>
+      <p id="variants-hint" class="hint">
+        Misspellings you have already seen, comma separated. They are corrected to the term
+        above and are deliberately never fed to the decoder - asking for a spelling and a
+        misspelling at once asks for both.
+      </p>
+    </fieldset>
+    <footer class="form-foot">
+      <button type="submit">Add</button>
+    </footer>
+  </form>
+
+  <form method="post" action="/settings/glossary/import" hx-post="/settings/glossary/import" hx-target="#glossary" hx-swap="outerHTML">
+    <fieldset class="options">
+      <legend>Paste a list</legend>
+      <label class="field">One term per line
+        <textarea name="terms" rows="4" spellcheck="false" placeholder="Vermeulen&#10;WHYcast&#10;Zaphod"></textarea>
+      </label>
+      <p class="hint">Terms already in the list keep the weights they have.</p>
+    </fieldset>
+    <footer class="form-foot">
+      <button type="submit">Import</button>
+    </footer>
+  </form>
+
+  <form method="post" action="/settings/glossary/recorrect" hx-post="/settings/glossary/recorrect" hx-target="#glossary" hx-swap="outerHTML"
+        hx-confirm="Re-run corrections on {{ transcribed_media }} recording(s)?">
+    <p class="hint">
+      Changed the list? Re-run the correction pass over the {{ transcribed_media }} recording(s) that
+      already have a transcript. Each becomes its own job, and each replaces that transcript's
+      corrections outright - so this is also how a term you removed stops changing anything.
+    </p>
+    <footer class="form-foot">
+      <button type="submit">Re-run corrections on the whole library</button>
+    </footer>
+  </form>
+
+  {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
+</section>

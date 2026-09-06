@@ -1,0 +1,85 @@
+{#
+  The library sidebar: the fixed views, the folder tree, and folder actions.
+
+  Context (from scribe.web.library.library_context):
+
+      state                the State the page is showing (view, folder, sort, q)
+      folders              [{id, name, parent_id, depth}] depth-first
+      counts               {folder id: live files directly in it}
+      nonempty             set of folder ids that hold files (trashed ones
+                           included) or subfolders - what delete must force
+      uncategorized_count  live files with no folder
+      total_count          live files anywhere
+      trash_count          files in the trash
+      oob                  true when this is riding along on a fragment
+                           response, so htmx swaps it into the page's
+                           #sidebar instead of into the request's target
+
+  The view links are plain links: a full page load is cheap, and it is the
+  only way the active marker, the heading and the bulk form all agree.
+  Folder actions are forms that work with scripting off (POST + redirect)
+  and, with htmx, post in place and receive the table plus this sidebar.
+#}
+{% import "_macros.html" as m %}
+<aside id="sidebar" class="sidebar"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <nav class="views" aria-label="Views">
+    <a href="/"{% if state.view is none and state.folder is none %} aria-current="page"{% endif %}>All files <span class="count">{{ total_count }}</span></a>
+    <a href="/?view=recent"{% if state.view == 'recent' %} aria-current="page"{% endif %}>Recent</a>
+    <a href="/?view=uncategorized"{% if state.view == 'uncategorized' %} aria-current="page"{% endif %}>Uncategorized <span class="count">{{ uncategorized_count }}</span></a>
+    <a href="/?view=trash"{% if state.view == 'trash' %} aria-current="page"{% endif %}>Trash <span class="count">{{ trash_count }}</span></a>
+  </nav>
+
+  <h2>Folders</h2>
+  <ul class="tree">
+    {% for folder in folders %}
+    <li style="--depth: {{ folder.depth }}">
+      <a href="/?folder={{ folder.id }}"{% if state.view is none and state.folder == folder.id %} aria-current="page"{% endif %}>{{ folder.name }}</a>
+      {% if folder.private %}<span class="badge private" title="Pinned private: nothing in this folder, at any depth, leaves this machine">🔒</span>{% endif %}
+      <span class="count">{{ counts.get(folder.id, 0) }}</span>
+      {# The same overlay as a media row's: see _media_rows.html. #}
+      <button type="button" class="menu-button" popovertarget="menu-folder-{{ folder.id }}"
+              aria-label="Actions for folder {{ folder.name }}" title="Folder actions">⋯</button>
+      <div id="menu-folder-{{ folder.id }}" popover class="menu-body" aria-label="Actions for folder {{ folder.name }}">
+          <form method="post" action="/folders/{{ folder.id }}/rename"
+                hx-post="/folders/{{ folder.id }}/rename" hx-target="#media-table" hx-swap="outerHTML">
+            <input type="text" name="name" value="{{ folder.name }}" required maxlength="300" aria-label="New folder name">
+            <button type="submit">Rename</button>
+          </form>
+          {# The pin, on the folder: everything inside it, at any depth, is
+             private while this is on (scribe/llm/privacy.py walks up). #}
+          <form method="post" action="/folders/{{ folder.id }}/private"
+                hx-post="/folders/{{ folder.id }}/private" hx-target="#media-table" hx-swap="outerHTML">
+            <input type="hidden" name="private" value="{{ '0' if folder.private else '1' }}">
+            <button type="submit">{{ 'Un-pin (allow the cloud)' if folder.private else 'Pin private (this machine only)' }}</button>
+          </form>
+          {% if folder.id in nonempty %}
+          <form method="post" action="/folders/{{ folder.id }}/delete"
+                hx-post="/folders/{{ folder.id }}/delete" hx-target="#media-table" hx-swap="outerHTML"
+                hx-confirm="Delete folder “{{ folder.name }}”? Everything in it moves up one level{% if folder.parent_id is none %} (files become Uncategorized){% endif %}.">
+            <input type="hidden" name="force" value="1">
+            <button type="submit" class="danger">Delete, move contents up</button>
+          </form>
+          {% else %}
+          <form method="post" action="/folders/{{ folder.id }}/delete"
+                hx-post="/folders/{{ folder.id }}/delete" hx-target="#media-table" hx-swap="outerHTML"
+                hx-confirm="Delete the empty folder “{{ folder.name }}”?">
+            <button type="submit" class="danger">Delete</button>
+          </form>
+          {% endif %}
+      </div>
+    </li>
+    {% else %}
+    <li class="muted">No folders yet.</li>
+    {% endfor %}
+  </ul>
+
+  <form class="new-folder" method="post" action="/folders"
+        hx-post="/folders" hx-target="#media-table" hx-swap="outerHTML">
+    <input type="text" name="name" placeholder="New folder" required maxlength="300" aria-label="New folder name">
+    <select name="parent_id" aria-label="Parent folder">
+      <option value="">(top level)</option>
+      {% for folder in folders %}{{ m.folder_option(folder, state.folder) }}{% endfor %}
+    </select>
+    <button type="submit">Add</button>
+  </form>
+</aside>

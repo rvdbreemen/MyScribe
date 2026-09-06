@@ -1,0 +1,75 @@
+{#
+  The job detail panel: what an htmx GET /jobs/{id} returns on its own, and
+  what job_detail.html includes for the full page. It re-fetches itself on
+  `refresh` - fired by app.js after a Cancel or Retry posted, and when the
+  live log's stream ends - so the header, stepper, error card and event list
+  are never older than the row.
+
+  Context (from scribe.web.jobs_ui.detail_context):
+
+      job          the job view (see _jobs_fragment.html for its shape)
+      stages       the stage names, in order
+      events       [{seq, ts, kind, payload, summary}] the last event_limit
+                   events, oldest first
+      event_limit
+      trace        the `error` event's traceback, or none
+      retried_by   ids of the jobs that retried this one
+
+  Error text, params and traces are pipeline output and user input: rendered
+  as text, never |safe.
+#}
+{% import "_macros.html" as m %}
+<section id="job-panel" class="job-panel" hx-get="/jobs/{{ job.id }}" hx-trigger="refresh" hx-swap="outerHTML">
+  <header class="job-head">
+    <h1>{{ job.title }}</h1>
+    <p class="sub">
+      <span class="badge s-{{ job.status }}" data-job-status>{{ job.status }}</span>
+      {% if job.cancel_requested and job.status in ('queued', 'running') %}<span class="badge">cancelling…</span>{% endif %}
+      <span class="mono">job {{ job.id }}</span>
+      {% if job.summary %}· {{ job.summary }}{% endif %}
+      {% if job.media_id %}· <a href="/media/{{ job.media_id }}">open the recording</a>{% endif %}
+      {% if job.retry_of %}· retry of <a href="/jobs/{{ job.retry_of }}">job {{ job.retry_of }}</a>{% endif %}
+      {% for other in retried_by %}· retried as <a href="/jobs/{{ other }}">job {{ other }}</a>{% endfor %}
+    </p>
+  </header>
+
+  {{ m.stepper(job.steps) }}
+  {% if job.status == 'running' %}<div class="stage-bar">{{ m.stage_progress(job) }}</div>{% endif %}
+
+  {% if job.status == 'failed' %}
+  <section class="error-card">
+    <h2>Failed{% if job.stage %} in {{ job.stage }}{% endif %}</h2>
+    <p><code class="error-code">{{ job.error_code or 'RUNTIME' }}</code> {{ job.error_detail or '' }}</p>
+    {% if trace %}
+    <details class="stderr">
+      <summary>Show stderr</summary>
+      <pre class="trace">{{ trace }}</pre>
+    </details>
+    {% endif %}
+  </section>
+  {% elif job.status == 'interrupted' %}
+  <p class="banner warn">Interrupted: the app was restarted while this job ran. Retry starts it over.</p>
+  {% elif job.status == 'cancelled' %}
+  <p class="banner">Cancelled.</p>
+  {% endif %}
+
+  <dl class="facts">
+    <dt>Queued</dt><dd>{{ m.when(job.created_at) }}</dd>
+    <dt>Started</dt><dd>{{ m.when(job.started_at) }}</dd>
+    {% if job.status == 'running' %}
+    <dt>Elapsed</dt><dd><span class="elapsed live" data-since="{{ job.started_at }}">{{ job.elapsed|clock }}</span></dd>
+    <dt>ETA</dt><dd>{% if job.eta_left is not none %}≈ {{ job.eta_left|clock }} left in {{ job.stage }}{% else %}<span class="muted">no estimate yet: {{ job.stage }} has not run on this machine before</span>{% endif %}</dd>
+    {% else %}
+    <dt>Finished</dt><dd>{{ m.when(job.finished_at) }}</dd>
+    <dt>Took</dt><dd>{{ m.ts(job.took) }}</dd>
+    {% endif %}
+    <dt>Type</dt><dd class="mono">{{ job.type }}</dd>
+    {% if job.pid %}<dt>Process</dt><dd class="mono">pid {{ job.pid }}</dd>{% endif %}
+  </dl>
+
+  <div class="actions">
+    {% if job.status in ('queued', 'running') %}{{ m.cancel_form(job, '#job-panel, #job-details') }}{% endif %}
+    {% if job.retryable %}{{ m.retry_form(job, '#job-panel, #job-details') }}{% endif %}
+  </div>
+
+</section>

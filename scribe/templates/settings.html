@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Settings - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The settings page: six categories down the left, one of them open on the
+  right.
+
+  It used to be one long scroll - the doctor, the models, storage, the
+  defaults, watch folders, the glossary, providers, presets - and finding the
+  one thing you came for meant reading past five you did not. Now a category
+  is a card of its own, and the sidebar is the table of contents.
+
+  Context (from scribe.web.settings.settings_page): the union of every
+  partial's context (see page_context), plus
+
+      sections   [(key, label, hint)] in sidebar order
+      section    the key that is open
+
+  Switching is the same trick as the transcribe dialog's doors and the job
+  page's tabs: a radio group and `:has()` in app.css, so it works before
+  app.js loads and cannot reach a state nothing can leave. The radios live
+  HERE, outside every partial, on purpose: each partial re-fetches itself
+  after its own POST (hx-swap="outerHTML" on its section id), and a radio
+  inside one would come back unchecked - putting the page on the first
+  category the moment you pressed Save on the fourth. app.js only adds the
+  courtesy of writing the chosen key into the URL (`?section=`), so a reload
+  or a shared link lands on the same card; the server honours that query.
+
+  Saving is per section and explicit. Every form that persists something has
+  its own button - Save, Add, Watch this folder, Save key - and nothing
+  posts on change. That is a rule this page keeps rather than a convenience:
+  a setting that saves as you type is a setting you cannot back out of.
+#}
+<div class="settings settings-layout">
+  {% for key, label, hint in sections %}
+  <input type="radio" name="settings_section" id="ss-{{ key }}" value="{{ key }}" class="visually-hidden"
+         aria-controls="settings-{{ key }}"{% if key == section %} checked{% endif %}>
+  {% endfor %}
+
+  <nav class="settings-nav" aria-label="Settings categories">
+    <h1>Settings</h1>
+    {% for key, label, hint in sections %}
+    <label class="settings-link" for="ss-{{ key }}">
+      <span class="settings-link-label">{{ label }}</span>
+      <span class="settings-link-hint">{{ hint }}</span>
+    </label>
+    {% endfor %}
+  </nav>
+
+  <div class="settings-main">
+    <div id="settings-defaults-section" class="settings-section" data-settings-section="defaults">
+      {% include "_settings_defaults.html" %}
+    </div>
+
+    <div id="settings-watch-section" class="settings-section" data-settings-section="watch">
+      {% include "_settings_watch.html" %}
+    </div>
+
+    <div id="settings-glossary-section" class="settings-section" data-settings-section="glossary">
+      {% include "_glossary.html" %}
+    </div>
+
+    <div id="settings-llm-section" class="settings-section" data-settings-section="llm">
+      {% include "_settings_llm.html" %}
+    </div>
+
+    <div id="settings-presets-section" class="settings-section" data-settings-section="presets">
+      {% include "_settings_presets.html" %}
+    </div>
+
+    <div id="settings-machine-section" class="settings-section" data-settings-section="machine">
+      {% include "_doctor_panel.html" %}
+
+      <section id="models" class="panel">
+        <h2>Models on this machine</h2>
+        <p class="hint">
+          Weights in the Hugging Face cache at <code>{{ cache_dir }}</code>{% if local_weights %}, and the
+          speaker pipeline under <code>{{ local_weights }}</code>{% endif %}. A model that is not here is
+          downloaded the first time a job asks for it.
+        </p>
+        <div class="table-wrap">
+          <table class="models">
+            <thead><tr><th>Model</th><th>Where</th><th class="num">On disk</th></tr></thead>
+            <tbody>
+              {% for model in models %}
+              <tr data-source="{{ model.source }}">
+                <td class="mono">{{ model.name }}</td>
+                <td class="mono path">{{ model.path }}</td>
+                <td class="num">{{ model.size }}</td>
+              </tr>
+              {% else %}
+              <tr class="empty"><td colspan="3">No speech or speaker weights cached yet; the first transcribe job downloads them.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="storage" class="panel">
+        <h2>Storage</h2>
+        <dl class="facts">
+          <dt>Media store</dt>
+          <dd class="mono">{{ storage.path }}</dd>
+          <dt>Holding</dt>
+          <dd>{{ storage.files }} file{{ '' if storage.files == 1 else 's' }}, {{ storage.size }}</dd>
+          <dt>Drive</dt>
+          <dd>{{ storage.free_size }} free of {{ storage.total_size }}</dd>
+        </dl>
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}

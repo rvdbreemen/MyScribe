@@ -1,0 +1,53 @@
+{#
+  Full-text search results, in the slot the media table normally fills.
+
+  Context (from scribe.web.library.search):
+
+      search_q      the query as typed
+      hits          [{media_id, title, start, parts: [(text, highlighted)]}]
+                    best match first
+      search_limit  the most hits the query returned (SEARCH_LIMIT); when
+                    the list is that long, the caption says it was cut
+      search_uncorrected  true when this library has a glossary correction
+                    layer, which the index does not carry
+
+  Every part of a snippet is escaped by the environment; the <mark> is
+  written here, around the parts FTS5 flagged. Transcript text is never
+  marked safe anywhere.
+
+  The note under the table is not decoration. This searches `segment_fts`,
+  and a glossary correction is a layer over *words*, applied when a
+  transcript is read - so a corrected name is findable here only under the
+  spelling Whisper produced, and the snippet shows that spelling. Said out
+  loud rather than left for somebody to discover, and only where there are
+  corrections to be wrong about.
+#}
+{% import "_macros.html" as m %}
+<div id="media-table" class="table-wrap hits">
+  <table class="hits">
+    <caption>{{ hits|length }} hit{{ '' if hits|length == 1 else 's' }} for “{{ search_q }}”{% if hits|length >= search_limit %} (showing the first {{ search_limit }}){% endif %}</caption>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th class="num">At</th>
+        <th>Passage</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for hit in hits %}
+      <tr>
+        <td class="title"><a href="/media/{{ hit.media_id }}#t={{ hit.start }}">{{ hit.title }}</a></td>
+        <td class="num"><a class="ts mono" href="/media/{{ hit.media_id }}#t={{ hit.start }}">{{ hit.start|clock }}</a></td>
+        <td class="snippet">{% for text, marked in hit.parts %}{% if marked %}<mark>{{ text }}</mark>{% else %}{{ text }}{% endif %}{% endfor %}</td>
+      </tr>
+      {% else %}
+      <tr class="empty"><td colspan="3">No matches.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if search_uncorrected %}
+  <p class="hint">This searches the transcripts as it was heard. Glossary
+    corrections are applied when a transcript is shown, not to what is searched,
+    so a corrected name is found under the spelling it was transcribed with.</p>
+  {% endif %}
+</div>

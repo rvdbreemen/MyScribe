@@ -1,0 +1,74 @@
+{#
+  The doctor: what settings.html includes, and what POST /settings/doctor
+  returns to swap in its place.
+
+  Context (from scribe.web.settings.doctor_context):
+
+      cpu_checks   [Check] the quick checks, just run in this process
+      gpu_last     {ts, job_id, checks: [Check]} what the last doctor job
+                   stored, or none
+      gpu_job      {id, status} a doctor job still queued or running, or none
+      flash        a line for the page's status region, or none
+      oob          whether this is a fragment response carrying the flash
+                   out of band
+
+  Two forms post to the same route: the first re-runs the quick checks, the
+  second also asks for the GPU job (its button carries gpu=1). Check details
+  and fix hints are the doctor's own text, rendered as text.
+#}
+{% import "_macros.html" as m %}
+
+{% macro check_rows(checks) -%}
+{% for c in checks %}
+<tr data-check="{{ c.name }}" class="{{ 'ok' if c.ok else ('skip' if c.optional else 'fail') }}">
+  <td class="mono">{{ c.name }}</td>
+  <td>{% if c.ok %}<span class="badge ok">OK</span>{% elif c.optional %}<span class="badge skip">SKIP</span>{% else %}<span class="badge fail">FAIL</span>{% endif %}</td>
+  <td class="detail">{{ c.detail }}{% if not c.ok and c.fix_hint %}<div class="fix">→ {{ c.fix_hint }}</div>{% endif %}</td>
+</tr>
+{% endfor %}
+{%- endmacro %}
+
+<section id="doctor-panel" class="panel doctor">
+  <h2>Doctor</h2>
+  <p class="hint">
+    Will this machine run the pipeline? The quick checks run each time this page loads.
+    The GPU checks load a model and transcribe a clip, so they run as a job, like a transcription.
+  </p>
+
+  <form class="doctor-actions" method="post" action="/settings/doctor"
+        hx-post="/settings/doctor" hx-target="#doctor-panel" hx-swap="outerHTML">
+    <button type="submit">Run the quick checks again</button>
+  </form>
+  <div class="table-wrap">
+    <table class="checks">
+      <thead><tr><th>Check</th><th>Result</th><th>Found</th></tr></thead>
+      <tbody>{{ check_rows(cpu_checks) }}</tbody>
+    </table>
+  </div>
+
+  <section id="gpu-checks" class="gpu-checks">
+    <h3>GPU</h3>
+    {% if gpu_job %}
+    <p class="banner">The GPU checks are <a href="/jobs/{{ gpu_job.id }}">{{ gpu_job.status }} as job {{ gpu_job.id }}</a>; this section updates once it has finished.</p>
+    {% endif %}
+    <form class="doctor-actions" method="post" action="/settings/doctor"
+          hx-post="/settings/doctor" hx-target="#doctor-panel" hx-swap="outerHTML">
+      <button type="submit" name="gpu" value="1" class="primary"{% if gpu_job %} disabled{% endif %}>Run the GPU checks as a job</button>
+    </form>
+    {% if gpu_last %}
+    <p class="hint">
+      Last run {{ m.when(gpu_last.ts) }}{% if gpu_last.job_id %} by <a href="/jobs/{{ gpu_last.job_id }}">job {{ gpu_last.job_id }}</a>{% endif %}.
+    </p>
+    <div class="table-wrap">
+      <table class="checks">
+        <thead><tr><th>Check</th><th>Result</th><th>Found</th></tr></thead>
+        <tbody>{{ check_rows(gpu_last.checks) }}</tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="hint">The GPU checks have never run on this installation. Run them once before the first long recording: a missing CUDA DLL only shows up on the first real compute call.</p>
+    {% endif %}
+  </section>
+
+  {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
+</section>

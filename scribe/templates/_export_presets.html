@@ -1,0 +1,27 @@
+{#
+  The preset select of the export dialog, on its own so POST /settings/presets
+  can send it back with the new preset chosen when the save came from the
+  dialog (HX-Target names it).
+
+  Context: presets [{name, label, options_json, builtin}], selected (a name
+  or none), preset_select_id. Each option carries its options as JSON in
+  data-options; app.js fills the form's fields from it on change, and the
+  blank "Custom" entry is what the select falls back to once a field is
+  edited by hand. The JSON is escaped like any attribute; the browser
+  decodes it before app.js parses it.
+#}
+<select id="{{ preset_select_id }}" name="preset" data-preset-select aria-label="Preset">
+  <option value=""{% if not selected %} selected{% endif %}>Custom</option>
+  <optgroup label="Built in">
+    {% for p in presets if p.builtin %}
+    <option value="{{ p.name }}" data-options="{{ p.options_json }}"{% if p.name == selected %} selected{% endif %}>{{ p.label }}</option>
+    {% endfor %}
+  </optgroup>
+  {% if presets|rejectattr('builtin')|list %}
+  <optgroup label="Saved">
+    {% for p in presets if not p.builtin %}
+    <option value="{{ p.name }}" data-options="{{ p.options_json }}"{% if p.name == selected %} selected{% endif %}>{{ p.label }}</option>
+    {% endfor %}
+  </optgroup>
+  {% endif %}
+</select>

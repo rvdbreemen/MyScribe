@@ -1,0 +1,1265 @@
+/*
+ * MyScribe - all of the styling.
+ *
+ * No build step, no external fonts, no framework. Every colour is one
+ * `light-dark()` call in the single token block below: the light value, then
+ * the dark one. That is deliberate. The old shape - a light block plus a
+ * `prefers-color-scheme` override - made "a token defined only once is a
+ * light-only bug" a rule a test had to police. Here it cannot be written: a
+ * token either carries both values or it is not a colour. The scales are the
+ * exception and stay plain, because a radius and a font stack do not change
+ * because the lights went out.
+ *
+ * `light-dark()` resolves against the element's used colour-scheme, which is
+ * what the three rules under the block set - and setting `color-scheme` is
+ * also what keeps the parts of the page this file does not paint honest:
+ * scrollbars, the <audio> player, <progress>, and a <select>'s drop-down are
+ * drawn by the browser, and without it they would follow the operating system
+ * while everything else followed the switch.
+ *
+ * Composite tokens hold offsets, never colours: --shadow-sm is built from
+ * --shadow-color, because light-dark() returns a colour and cannot be handed
+ * a whole box-shadow.
+ *
+ * This is a single-user local tool: density beats decoration.
+ */
+
+:root {
+  /* No attribute on <html>: follow the operating system, which is what
+     happens for anyone who never touches the switch. */
+  color-scheme: light dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+:root {
+  /* Neutrals are slate rather than grey: every one carries a little of the
+     accent's hue, which is what makes a blue interface read as designed
+     instead of as a blue button dropped on a grey page. Dark leans further -
+     navy, indigo and a touch of violet in the lines - because a dark palette
+     built from one desaturated blue reads as switched off rather than as a
+     second design.
+
+     The relation between the three is the same in both themes: --bg-soft is
+     the ground, --bg is what sits on it, --bg-panel is the chrome between.
+     Dark used to invert that and put the cards *below* the page, which is why
+     a table read as a hole rather than a surface. */
+  --bg:       light-dark(#ffffff, #18243c);
+  --bg-soft:  light-dark(#f1f5f9, #0c1424);
+  --bg-panel: light-dark(#f8fafc, #131e33);
+  --fg:       light-dark(#0f172a, #e6edf8);
+  --fg-muted: light-dark(#5b6b82, #9fb0cc);
+  --line:     light-dark(#cbd5e1, #33456a);
+  --line-soft:light-dark(#e2e8f0, #24334f);
+  /* The one border that has to be *seen*: a text field's. The decorative
+     lines above sit at 1.4:1 against their fill, which is fine for a rule
+     and invisible for a control; this clears 3:1 on every surface. */
+  --line-control: light-dark(#64748b, #7f93bb);
+
+  /* The accent is a ramp, not a colour: a fill, the two states it moves
+     through, a tint for backgrounds, and the ink that stays readable on it. */
+  --accent:        light-dark(#2563eb, #6ea8fe);
+  --accent-strong: light-dark(#1d4ed8, #9cc4ff);
+  --accent-active: light-dark(#1e40af, #c7dcff);
+  --accent-soft:   light-dark(#eff6ff, #1c2c4e);
+  --accent-line:   light-dark(#bfdbfe, #3a5b91);
+  /* Ink flips: on a light-blue fill the readable label is the dark ground,
+     not white. Keeping this white in dark mode would fail contrast on every
+     primary button there. */
+  --accent-ink:    light-dark(#ffffff, #0c1424);
+
+  /* A second hue, decorative only - never a state, never a status. One blue
+     shading into a slightly darker blue is not a gradient anybody sees; blue
+     into violet is. */
+  --accent-2:      light-dark(#7c3aed, #b191fb);
+
+  --ok:   light-dark(#15803d, #5fe39b);
+  --warn: light-dark(#a16207, #fbbf24);
+  --bad:  light-dark(#b91c1c, #ff9aa2);
+  --ok-bg:      light-dark(#f0fdf4, #123326);
+  --warn-bg:    light-dark(#fefce8, #322611);
+  --bad-bg:     light-dark(#fef2f2, #3a1a24);
+  --neutral-bg: light-dark(#eef2f7, #1e2c48);
+
+  /* One radius scale, so nothing is a magic number. Buttons take the pill;
+     everything that holds content takes a soft rectangle, which is what keeps
+     a control distinguishable from a container at a glance. */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
+
+  --shadow-color:      light-dark(rgba(15, 23, 42, .08), rgba(3, 7, 18, .55));
+  --shadow-color-deep: light-dark(rgba(15, 23, 42, .18), rgba(3, 7, 18, .72));
+  --shadow-sm: 0 1px 2px var(--shadow-color);
+  --shadow-md: 0 4px 12px var(--shadow-color);
+  --shadow-lg: 0 16px 40px var(--shadow-color-deep);
+  --ring: light-dark(rgba(37, 99, 235, .35), rgba(110, 168, 254, .45));
+
+  --mono: ui-monospace, "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  /* The page is the ground and the panels are what sits on it. With both
+     white there is nothing for a card, a table or a pill to be raised above,
+     and every border has to do the work a surface should. */
+  background: var(--bg-soft);
+  background-image:
+    radial-gradient(1100px 520px at 12% -8%, color-mix(in oklab, var(--accent) 12%, transparent), transparent 70%),
+    radial-gradient(900px 460px at 92% 0%, color-mix(in oklab, var(--accent-2) 10%, transparent), transparent 72%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  color: var(--fg);
+  font: 14px/1.45 var(--sans);
+}
+
+a { color: var(--accent); }
+h1 { font-size: 1.35rem; margin: 0 0 .2rem; }
+h2 { font-size: 1rem; margin: 0 0 .5rem; }
+.mono { font-family: var(--mono); }
+.muted, .hint { color: var(--fg-muted); }
+.hint { font-size: .85rem; margin: .3rem 0; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- chrome ---- */
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 1.2rem;
+  padding: .6rem 1rem;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line-soft);
+  box-shadow: var(--shadow-sm);
+}
+/* The one place the brand colour is allowed to be decorative: a hairline that
+   says which application this is before any text is read. */
+.topbar::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2) 55%, var(--accent-strong));
+}
+.topbar { position: relative; }
+.brand { font-weight: 700; text-decoration: none; color: var(--fg); }
+.nav a { margin-right: 1rem; text-decoration: none; }
+.nav a:hover { text-decoration: underline; }
+.nav a[aria-current="page"] { color: var(--fg); font-weight: 600; }
+.version { margin-left: auto; color: var(--fg-muted); font-size: .8rem; }
+
+/* The theme switch: three states, not two. "System" has to stay reachable,
+   because following the operating system is what the page did before this
+   control existed and what it still does for anyone who never presses it.
+   With scripting off nothing here does anything and the system preference
+   applies - which is the same behaviour, so the control is left visible
+   rather than hidden by a script that may not run.
+
+   Written by theme.js as data-theme on <html>; this file only reacts to it,
+   and the pressed state comes from aria-pressed so the button says out loud
+   what the highlight says in colour. */
+.theme-switch {
+  display: flex;
+  gap: .15rem;
+  margin-left: .8rem;
+  align-self: center;
+  padding: .15rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+}
+.theme-switch button {
+  padding: .12rem .45rem;
+  border: none;
+  border-radius: var(--r-pill);
+  background: none;
+  box-shadow: none;
+  color: var(--fg-muted);
+  font-size: .85rem;
+  line-height: 1.3;
+}
+.theme-switch button:hover:enabled { background: var(--accent-soft); color: var(--accent-strong); }
+.theme-switch button[aria-pressed="true"] {
+  background: var(--bg);
+  color: var(--accent-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.page { padding: 1.1rem 1rem 2rem; max-width: 1500px; }
+
+/* The one-line status region under the top bar. Empty means invisible, so a
+   page without a message pays no vertical space for it. */
+.flash {
+  margin: 0;
+  padding: .45rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--neutral-bg);
+  font-size: .9rem;
+}
+.flash:empty { display: none; }
+.flash.ok { background: var(--ok-bg); }
+.flash.warn { background: var(--warn-bg); }
+.flash.bad { background: var(--bad-bg); color: var(--bad); }
+
+/* ---- controls ---- */
+
+button, .button {
+  padding: .4rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.35;
+  cursor: pointer;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease, box-shadow .12s ease;
+}
+button:hover:enabled, .button:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+button:active:enabled, .button:active { box-shadow: none; }
+
+/* One ring for everything focusable. A keyboard user has to be able to see
+   where they are, and the browser's default outline disappears against a
+   tinted button - which is exactly where it is needed most. :focus-visible
+   rather than :focus, so a mouse click does not leave a ring behind. */
+button:focus-visible,
+.button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+.primary, button.primary {
+  /* Not `button.primary`: the library's own "+ Transcribe" is an <a class="button
+     primary"> and an element selector never matched it, so the one action the
+     page exists for looked like every other control. */
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.primary:hover, button.primary:hover:enabled {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--accent-ink);
+}
+.primary:active, button.primary:active:enabled { background: var(--accent-active); border-color: var(--accent-active); }
+
+/* Amber rather than red on purpose: these are the actions that want a second
+   look (trash, stop, remove a folder), not the ones that already went wrong.
+   Red stays for errors, so the two never read as the same thing. */
+.danger, button.danger { border-color: var(--warn); color: var(--warn); font-weight: 600; background: var(--bg); }
+.danger:hover, button.danger:hover:enabled { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+
+button:disabled { opacity: .5; cursor: default; box-shadow: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  button, .button { transition: none; }
+}
+
+.inline-form { display: inline; margin: 0; }
+
+/* The hidden attribute has to win over any display rule an element also
+   matches (a flex toolbar hidden until it has something to show), which the
+   browser's own display:none for it does not. */
+[hidden] { display: none !important; }
+
+input[type="text"], input[type="search"], input[type="number"], input[type="url"], select, textarea {
+  padding: .4rem .65rem;
+  background: var(--bg-panel);
+  color: var(--fg);
+  border: 1px solid var(--line-control);
+  border-radius: var(--r-sm);
+  font: inherit;
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* htmx sets .htmx-request on the element named by hx-indicator while a
+   request is in flight. Without JavaScript the spinner never shows. */
+.spinner { visibility: hidden; color: var(--fg-muted); font-size: .8rem; }
+.htmx-request .spinner, .spinner.htmx-request { visibility: visible; }
+
+
+/* ---- the transcribe dialog's three doors ---- */
+
+/* Tabs, not a stack. The four ways in used to sit under one another, each
+   under an "or", which put the submit button below the fold and made every
+   door look equally likely to be the one you wanted. All four labels stay
+   visible - that is the discoverability - and one panel is open at a time.
+   Switching is `:has()` on a radio group, so it works before app.js loads and
+   the dialog cannot end up in a state no control can leave. */
+.tabstrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  padding: .3rem;
+  margin: 0 0 .9rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+}
+.tabstrip .tab {
+  flex: 1 1 auto;
+  text-align: center;
+  padding: .38rem .9rem;
+  border-radius: var(--r-pill);
+  color: var(--fg-muted);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .12s ease, color .12s ease;
+}
+.tabstrip .tab:hover { color: var(--accent-strong); }
+.tabstrip input:checked + .tab {
+  background: var(--bg);
+  color: var(--accent-strong);
+  box-shadow: var(--shadow-sm);
+}
+/* The keyboard reaches the radio, not the label, so the ring has to be drawn
+   on the label the radio names. */
+.tabstrip input:focus-visible + .tab { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.sources .panel { display: none; }
+.sources:has(#src-upload:checked) [data-panel="upload"],
+.sources:has(#src-path:checked) [data-panel="path"],
+.sources:has(#src-url:checked) [data-panel="url"] { display: block; }
+
+/* Only worth saying when the recorder hid itself, which is how recorder.js
+   reports that this browser will not hand over a microphone. */
+.no-recorder { display: none; }
+[data-panel="record"]:has([data-recorder][hidden]) .no-recorder { display: block; }
+
+/* ---- options, collapsed but answered ---- */
+
+details.options {
+  margin: 0 0 .9rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+}
+details.options > summary {
+  display: flex;
+  align-items: baseline;
+  gap: .6rem;
+  padding: .5rem .8rem;
+  cursor: pointer;
+  border-radius: var(--r-md);
+  list-style: none;
+}
+details.options > summary::-webkit-details-marker { display: none; }
+details.options > summary::before {
+  content: "▸";  /* the character itself; escaping it went wrong twice */
+  color: var(--fg-muted);
+  transition: transform .12s ease;
+}
+details.options[open] > summary::before { transform: rotate(90deg); }
+details.options > summary:hover { background: var(--accent-soft); }
+.summary-title { font-weight: 600; }
+/* The line that makes collapsing honest: what the options currently say. */
+.summary-line { color: var(--fg-muted); font-size: .9rem; }
+details.options[open] .summary-line { opacity: .6; }
+details.options > *:not(summary) { margin-left: .8rem; margin-right: .8rem; }
+details.options[open] > summary { border-bottom: 1px solid var(--line-soft); border-radius: var(--r-md) var(--r-md) 0 0; margin-bottom: .7rem; }
+details.options .field, details.options .check, details.options .tier { display: block; margin-top: .55rem; }
+details.options .tier { display: flex; flex-wrap: wrap; gap: .9rem; }
+details.options > *:last-child { margin-bottom: .8rem; }
+
+/* The folder select sits in the footer now: filing is a decision about this
+   upload, not a setting to be tucked away with the model tier. */
+.dialog-foot .field.folder { display: flex; align-items: center; gap: .4rem; margin: 0 auto 0 0; font-size: .9rem; }
+.dialog-foot .field.folder select { min-width: 10rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tabstrip .tab, details.options > summary::before { transition: none; }
+}
+
+/* ---- tables ---- */
+
+/* max-height matters: without it the wrapper grows to fit and never scrolls,
+   which turns the sticky header below into a no-op. */
+.table-wrap { max-height: 78vh; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--r-lg); background: var(--bg); box-shadow: var(--shadow-sm); }
+
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: .42rem .65rem; border-bottom: 1px solid var(--line-soft); text-align: left; white-space: nowrap; }
+thead th { position: sticky; top: 0; background: var(--bg-soft); font-weight: 600; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; color: var(--fg-muted); border-bottom-color: var(--line); }
+tbody tr:hover { background: var(--accent-soft); }
+tbody tr:last-child td { border-bottom: none; }
+.empty td { color: var(--fg-muted); text-align: center; padding: .8rem; }
+
+/* ---- library ---- */
+
+.library { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 1.2rem; align-items: start; }
+@media (max-width: 800px) { .library { grid-template-columns: 1fr; } }
+
+.sidebar { position: sticky; top: .5rem; font-size: 13px; }
+.sidebar h2 { margin: 1rem 0 .3rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); }
+.sidebar .views { display: flex; flex-direction: column; }
+.sidebar .views a, .sidebar .tree a { text-decoration: none; color: var(--fg); }
+.sidebar .views a { padding: .3rem .6rem; border-radius: var(--r-sm); }
+.sidebar .views a:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.sidebar .views a:hover, .sidebar .tree li:hover > a { background: var(--bg-soft); }
+.sidebar a[aria-current="page"] { background: var(--neutral-bg); font-weight: 600; }
+.sidebar .count { color: var(--fg-muted); font-variant-numeric: tabular-nums; font-size: .8rem; margin-left: .25rem; }
+
+/* The folder tree is one flat list; each item's depth comes from the
+   recursive query as a custom property and becomes indentation here. */
+.tree { list-style: none; margin: 0; padding: 0; }
+.tree li { display: flex; align-items: center; gap: .3rem; padding-left: calc(.5rem + var(--depth, 0) * .9rem); line-height: 1.7; }
+.tree li > a { padding: 0 .3rem; border-radius: var(--r-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree .menu-button { margin-left: auto; }
+.new-folder { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .6rem; }
+.new-folder input[type="text"] { flex: 1 1 8rem; min-width: 0; }
+
+.library-main { min-width: 0; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem; margin-bottom: .6rem; }
+.toolbar h1 { margin: 0; margin-right: auto; }
+.toolbar form { display: flex; align-items: center; gap: .3rem; margin: 0; }
+.toolbar input[type="search"] { min-width: 14rem; }
+/* The microphone: the accent's outline rather than its fill, so it reads as
+   the second way in and not as a rival to + Transcribe. The dot is red
+   because that is what a record dot is. */
+.button.mic { border-color: var(--accent-line); color: var(--accent-strong); font-weight: 600; }
+.button.mic::first-letter { color: var(--bad); }
+.bulk { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: 0 0 .5rem; }
+
+table.media th.check, table.media td.check, table.media th.actions, table.media td.actions { width: 1%; }
+table.media td.title a { color: var(--fg); text-decoration: none; }
+table.media td.title a:hover { text-decoration: underline; }
+table.media .mode { font-size: 1rem; }
+table.media thead a { color: var(--fg); text-decoration: none; }
+/* The arrow follows the direction the column actually sorts in (one fixed
+   direction per key, see library.SORTS), and aria-sort says the same thing
+   to a screen reader. */
+table.media th[aria-sort="descending"] a::after { content: " ▾"; color: var(--fg-muted); }
+table.media th[aria-sort="ascending"] a::after { content: " ▴"; color: var(--fg-muted); }
+table.media .badge { text-decoration: none; }
+
+/* The ⋯ menu floats over the page. It used to expand in place and push the
+   row taller, because .table-wrap scrolls and would clip anything positioned
+   over its edge - and it would: an absolutely positioned child is clipped by
+   an ancestor's overflow, whatever its z-index. The top layer is the way out.
+   `popover` puts the panel there, above every clip and every stacking
+   context, and popovertarget drives it declaratively: it opens, closes on
+   Escape and light-dismisses on an outside click with no script at all, which
+   is what keeps the library usable before app.js has loaded.
+
+   Where it lands is anchor positioning against the popover's implicit
+   anchor - the button that opened it - so no per-row anchor names and no
+   inline styles. A browser without anchor positioning still gets a working
+   menu: the @supports block below puts it in the middle of the screen
+   rather than nowhere. */
+.menu-button {
+  padding: .05rem .4rem;
+  border: none;
+  border-radius: var(--r-pill);
+  background: none;
+  box-shadow: none;
+  color: var(--fg-muted);
+  line-height: 1.2;
+}
+/* The pressed look while the panel is open. The browser exposes the
+   invoker's expanded state to assistive tech but writes no aria-expanded
+   attribute into the DOM (checked in Chrome 152), so CSS has to look at the
+   panel itself: the button that is followed by an open popover. */
+.menu-button:hover:enabled, .menu-button:has(+ [popover]:popover-open) { background: var(--bg-soft); color: var(--fg); }
+
+[popover].menu-body {
+  position: fixed;
+  inset: auto;
+  width: max-content;
+  max-width: min(22rem, 90vw);
+  margin: 0;
+  padding: .35rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-lg);
+}
+/* The layout goes on the OPEN state, never on the element.
+   `.menu-body { display: flex }` is an author rule and beats the browser's own
+   `[popover]:not(:popover-open) { display: none }`, so every panel in the table
+   stayed painted at once and open/closed changed nothing but the top layer.
+   Anything that sets `display` here has to say when. */
+[popover].menu-body:popover-open { display: flex; flex-direction: column; align-items: stretch; gap: .15rem; }
+.menu-body { white-space: normal; }
+/* Menu rows, not a column of pills: full width, flat until hovered, so the
+   panel reads as a list of things to pick rather than a pile of buttons. */
+.menu-body > a.button,
+.menu-body > button,
+.menu-body form > button:last-child {
+  justify-content: flex-start;
+  text-align: left;
+  padding: .3rem .5rem;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  box-shadow: none;
+  font-weight: 400;
+}
+.menu-body > a.button:hover,
+.menu-body > button:hover:enabled,
+.menu-body form > button:last-child:hover:enabled { background: var(--accent-soft); color: var(--accent-strong); }
+.menu-body .danger, .menu-body button.danger { color: var(--bad); }
+.menu-body .danger:hover, .menu-body button.danger:hover:enabled { background: var(--bad-bg); color: var(--bad); }
+/* The two rows that are a field plus its button - rename, move - stay on one
+   line so they read as one row like the rest. */
+.menu-body form { display: flex; align-items: center; gap: .25rem; margin: 0; padding: 0 .1rem; }
+.menu-body form > button:last-child { flex: none; }
+.menu-body input[type="text"], .menu-body select { flex: 1; min-width: 0; }
+.menu-body input[type="text"] { width: 10rem; }
+.menu-body hr { width: 100%; margin: .2rem 0; border: none; border-top: 1px solid var(--line-soft); }
+
+@supports (position-area: bottom) {
+  [popover].menu-body {
+    position-area: block-end span-inline-start;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+    margin-top: .25rem;
+  }
+}
+@supports not (position-area: bottom) {
+  /* No anchor positioning: centred beats a panel with no position at all. */
+  [popover].menu-body { inset: 50% auto auto 50%; translate: -50% -50%; }
+}
+
+.hits caption { caption-side: top; text-align: left; padding: .3rem .5rem; color: var(--fg-muted); }
+.hits td.snippet { white-space: normal; }
+mark { background: var(--warn-bg); color: inherit; padding: 0 .1em; border-radius: var(--r-xs); }
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---- dialogs ---- */
+
+dialog.dialog {
+  width: min(680px, 94vw);
+  max-height: 92vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  color: var(--fg);
+  overflow: auto;
+}
+dialog.dialog::backdrop { background: rgba(0, 0, 0, .45); }
+/* The same fragment as a page of its own, for a browser without scripting. */
+.dialog-page { max-width: 680px; }
+.dialog-page form { border: 1px solid var(--line); border-radius: var(--r-lg); }
+
+.dialog-head, .dialog-foot { display: flex; align-items: center; gap: .6rem; padding: .7rem 1rem; }
+.dialog-head { border-bottom: 1px solid var(--line); }
+.dialog-head h2 { margin: 0; margin-right: auto; font-size: 1.15rem; }
+.dialog-foot { border-top: 1px solid var(--line); justify-content: flex-end; }
+.dialog-foot progress { flex: 1; min-width: 0; accent-color: var(--accent); }
+.dialog-flash { margin: .6rem 1rem 0; padding: .4rem .6rem; border-radius: var(--r-sm); background: var(--bad-bg); color: var(--bad); }
+.dialog-flash:empty { display: none; }
+
+/* ---- transcribe dialog ---- */
+
+/* .source is the record dialog (one door), .sources the transcribe dialog (three
+   tabs). Both sit inside the form's edge and need its side margin; the tab
+   rename to .sources once left the transcribe dialog flush to the border. */
+.transcribe .source, .transcribe .sources { margin: .8rem 1rem 0; }
+.transcribe details.options { margin-left: 1rem; margin-right: 1rem; }
+.dropzone { border: 2px dashed var(--line); border-radius: var(--r-md); padding: 1rem; text-align: center; }
+.dropzone.over { border-color: var(--accent); background: var(--bg-soft); }
+.dropzone p { margin: 0 0 .5rem; }
+.dropzone .hint { margin: .5rem 0 0; }
+/* The label is the button; the input behind it still receives the picker's
+   files and the drop zone's, and stays in the form for a no-script post. */
+.dropzone input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.dropzone .check { margin-left: .8rem; }
+.or { text-align: center; color: var(--fg-muted); margin: .6rem 0 .4rem; font-size: .9rem; }
+.pick-path { display: flex; gap: .4rem; }
+.pick-path input { flex: 1; min-width: 0; font-family: var(--mono); }
+
+.fs-panel { margin: .5rem 0 0; }
+.fs-path { margin: 0 0 .25rem; font-size: .8rem; color: var(--fg-muted); word-break: break-all; }
+.fs-list { list-style: none; margin: 0; padding: 0; max-height: 13rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: 13px; }
+.fs-list li { display: flex; align-items: center; gap: .4rem; padding: .1rem .5rem; }
+.fs-list li:hover { background: var(--bg-soft); }
+.fs-list button { flex: 1; text-align: left; padding: .15rem .3rem; border: none; background: none; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-list button:hover { color: var(--accent); }
+.fs-list .size { margin-left: auto; font-size: .8rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fs-list .file:not(.media) { padding-left: .8rem; }
+
+/* The third door: a pasted link, and what a probe of it turned out to be. */
+.pick-url { display: flex; gap: .4rem; margin-top: .5rem; }
+.pick-url input { flex: 1; min-width: 0; font-family: var(--mono); }
+.url-preview:not(:empty) { margin: .4rem 0 0; padding: .4rem .6rem; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: 13px; }
+.url-preview p { margin: 0; }
+.url-preview .url-title { word-break: break-word; }
+.url-preview .url-playlist { margin-top: .3rem; color: var(--fg-muted); }
+.url-preview .url-bad { color: var(--bad); }
+.cookies { margin: .5rem 0 0; font-size: 13px; color: var(--fg-muted); }
+.cookies summary { cursor: pointer; }
+.cookies input { width: 100%; font-family: var(--mono); }
+
+/* The recorder, in its own dialog. The whole block is hidden until
+   recorder.js finds a browser that can record, so nothing on offer here is
+   ever a button that does nothing. */
+/* The scope is sized by CSS and drawn at device pixels by recorder.js, which
+   reads the accent tokens off this element - so the trace follows the theme
+   switch like everything else. */
+.recorder .scope {
+  display: block;
+  width: 100%;
+  height: 120px;
+  margin: 0 0 .5rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+}
+.recorder-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.recorder button.record::before { content: "\25CF"; color: var(--bad); margin-right: .35rem; }
+.recorder .level { flex: 1; min-width: 5rem; height: 1rem; }
+.recorder .elapsed { min-width: 3.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+.recorder label.field { margin-top: .5rem; }
+.recorder [data-record-device] { font-size: .78rem; overflow-wrap: anywhere; }
+.recorder [data-record-device]:empty { display: none; }
+.recorder .hint { margin: .4rem 0 0; }
+
+fieldset.options { margin: .8rem 1rem; padding: .6rem .8rem .8rem; border: 1px solid var(--line); border-radius: var(--r-md); display: grid; gap: .55rem; }
+fieldset.options legend { padding: 0 .3rem; color: var(--fg-muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+label.field { display: grid; gap: .2rem; }
+label.field select { max-width: 20rem; }
+label.check { display: inline-flex; align-items: center; gap: .35rem; }
+.tier { display: flex; flex-wrap: wrap; gap: 1.2rem; }
+fieldset.speakers { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: 0 0 0 1.4rem; padding: 0; border: none; }
+fieldset.speakers:disabled { opacity: .5; }
+fieldset.speakers input[type="number"] { width: 4.2rem; }
+
+/* ---- export dialog ---- */
+
+/* Wider than the transcribe dialog: eight formats, six groups of fields and
+   a preview want the room. */
+dialog.export-dialog { width: min(880px, 96vw); }
+.export .targets { margin: .4rem 1rem 0; }
+.preset-row { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; align-items: end; margin: .8rem 1rem 0; }
+.preset-row .field select { min-width: 12rem; }
+.preset-save { display: flex; gap: .3rem; }
+.preset-save input { width: 12rem; }
+.export .formats { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; }
+.export .show-all { margin-top: .5rem; font-size: .85rem; color: var(--fg-muted); }
+/* A group of options is shown while a format that reads it is ticked, and
+   folds to its legend otherwise - still there, still named, one tick away.
+   `:has()` cannot read the group's own list, so there is one selector per
+   format; it sets custom properties and the folded look hangs off those,
+   which is what keeps the list written once. A folded group is a line with
+   a name, not a box with nothing in it. */
+.export fieldset[data-for] {
+  --body: none;
+  --unused: inline;
+  border-color: var(--line-soft);
+  padding-top: 0;
+  padding-bottom: .25rem;
+  gap: 0;
+}
+.export:has([name="formats"][value="srt"]:checked) fieldset[data-for~="srt"],
+.export:has([name="formats"][value="vtt"]:checked) fieldset[data-for~="vtt"],
+.export:has([name="formats"][value="txt"]:checked) fieldset[data-for~="txt"],
+.export:has([name="formats"][value="md"]:checked) fieldset[data-for~="md"],
+.export:has([name="formats"][value="docx"]:checked) fieldset[data-for~="docx"],
+.export:has([name="formats"][value="html"]:checked) fieldset[data-for~="html"],
+.export:has([name="formats"][value="json"]:checked) fieldset[data-for~="json"],
+.export:has([name="formats"][value="csv"]:checked) fieldset[data-for~="csv"],
+.export:has([data-show-all-options]:checked) fieldset[data-for] {
+  --body: block;
+  --unused: none;
+  border-color: var(--line);
+  padding-top: .6rem;
+  padding-bottom: .8rem;
+  gap: .55rem;
+}
+.export fieldset[data-for] > .body { display: var(--body); }
+.export fieldset[data-for] > legend .unused { display: var(--unused); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.export .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .5rem .9rem; align-items: end; }
+.export .grid .checks { display: flex; flex-direction: column; gap: .3rem; }
+.export input[type="number"] { width: 6.5rem; }
+.export input[name="path"], .export input[name="filename_template"] { font-family: var(--mono); }
+.export input[name="path"] { width: 100%; }
+.export-preview-wrap { margin: .8rem 1rem 0; }
+.export-preview-wrap h3 { margin: 0 0 .3rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); }
+.export-preview { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); padding: .5rem .7rem; max-height: 18rem; overflow: auto; font-size: 13px; }
+.export-preview.htmx-request { opacity: .6; }
+.preview-head { margin: 0 0 .4rem; color: var(--fg-muted); }
+.preview-head .ok { color: var(--ok); }
+.preview-head .warn { color: var(--warn); font-weight: 600; }
+/* One cue per row: its number from the list, its timing, the rules it
+   breaks, and its lines as the subtitle would show them. */
+.cues { margin: 0; padding-left: 2.2rem; }
+.cue { padding: .15rem .3rem; border-left: 3px solid transparent; }
+.cue.bad { border-left-color: var(--warn); background: var(--warn-bg); }
+.cue .timing { font-size: .8rem; color: var(--fg-muted); margin-right: .5rem; }
+.cue .rules { font-size: .75rem; color: var(--warn); }
+.cue .text { display: block; }
+.cue .name { font-weight: 600; }
+.export-preview pre.lines { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; line-height: 1.45; }
+.export-result { margin: .6rem 1rem 0; }
+.export-result:empty { display: none; }
+.export-done { padding: .5rem .7rem; border: 1px solid var(--ok); border-radius: var(--r-md); background: var(--ok-bg); font-size: 13px; }
+.export-done p { margin: 0 0 .3rem; }
+.export-done ul { margin: 0; padding-left: 1.2rem; overflow-wrap: anywhere; }
+.export-done .warn { color: var(--warn); margin-top: .3rem; }
+
+/* ---- badges ---- */
+
+.badge {
+  display: inline-block;
+  padding: 0 .35rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--bg-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+/* One class per job status the schema allows; the words are the CHECK
+   constraint's, so a status the database accepts always has a colour. */
+.badge.s-queued { color: var(--fg-muted); }
+.badge.s-running { color: var(--accent); border-color: var(--accent); }
+.badge.s-done { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+.badge.s-failed { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); font-weight: 600; }
+.badge.s-cancelled { color: var(--fg-muted); }
+.badge.s-interrupted { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+
+/* ---- jobs ---- */
+
+.panel { margin: 0 0 1.1rem; }
+.panel h2 { margin: 0 0 .5rem; }
+.crumbs { margin: 0 0 .5rem; font-size: .9rem; }
+/* The way back is a button, not a bare link: it sits alone above a heading,
+   where underlined text at .9rem read as a caption. */
+.crumbs a {
+  display: inline-block;
+  padding: .25rem .8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+}
+.crumbs a:hover { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-strong); }
+
+/* The running-job card: the one thing on the board a person looks for first,
+   so it is a card and not a row. */
+.jobcard {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+  padding: .55rem .8rem;
+  margin-bottom: .5rem;
+}
+.jobcard-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; margin-bottom: .3rem; }
+.job-title { font-weight: 600; color: var(--fg); text-decoration: none; }
+.job-title:hover { text-decoration: underline; }
+.jobcard .actions, .job-panel .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0; }
+
+/* The stepper: one pill per stage, its state as a class. The words are
+   jobs_ui.stepper_steps' states, so every state the router can produce has
+   a colour. */
+.stepper { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; list-style: none; margin: .4rem 0; padding: 0; font-family: var(--mono); font-size: .8rem; }
+/* A mark before each name says the state without the colour: a tick, a dot
+   that pulses, a cross. Seven green pills in a row said "done" seven times
+   and nothing else. */
+.step { display: inline-flex; align-items: center; gap: .35rem; padding: .12rem .6rem .12rem .45rem; border: 1px solid var(--line-soft); border-radius: var(--r-pill); color: var(--fg-muted); background: transparent; }
+.step::before { content: "·"; display: inline-block; width: 1em; text-align: center; font-weight: 700; }
+.step.done { color: var(--ok); border-color: var(--ok-bg); background: var(--ok-bg); }
+.step.done::before { content: "✓"; }
+.step.active { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.step.active::before { content: "●"; animation: step-pulse 1.2s ease-in-out infinite; }
+.step.failed { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); font-weight: 600; }
+.step.failed::before { content: "✕"; }
+.step.stopped { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+.step.stopped::before { content: "■"; }
+/* Between two pills, a short line: the stages are a sequence, not a set. */
+.step + .step { position: relative; margin-left: .55rem; }
+.step + .step::after { content: ""; position: absolute; left: -.6rem; top: 50%; width: .5rem; border-top: 1px solid var(--line); }
+@keyframes step-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .step.active::before { animation: none; } }
+
+.stage-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: .2rem 0 .4rem; }
+.stage-progress { width: min(24rem, 100%); height: .7rem; accent-color: var(--accent); }
+.stage-label { font-size: .8rem; color: var(--fg-muted); }
+
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: .05rem .8rem; margin: 0 0 .4rem; font-size: .85rem; }
+.facts dt { color: var(--fg-muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.elapsed { font-variant-numeric: tabular-nums; }
+
+table.jobs td.summary, table.jobs td.err { white-space: normal; overflow-wrap: anywhere; max-width: 30rem; }
+table.jobs td.err { color: var(--bad); font-size: 12px; }
+table.jobs td.err code { font-weight: 600; }
+table.jobs th.actions, table.jobs td:last-child { width: 1%; }
+
+/* ---- job detail ---- */
+
+/* Three tabs over one screen. The page stacked status, parameters, events and
+   the live log, so watching a running job meant scrolling between the stepper
+   and the log and never seeing both. The status stays put; the details take
+   turns.
+
+   The radios sit outside both htmx regions (see job_detail.html), so the
+   checked state cannot be adjacent to its label - which rules out
+   `input:checked + .tab` and makes `:has()` on the group the way to light the
+   active one. */
+/* A content-sized segmented control, not a strip stretched to 32rem with the
+   words floating in it; the count on a tab says whether it is worth opening. */
+.jobtabs { margin-top: 1rem; }
+.jobtabs > .tabstrip { display: inline-flex; margin-bottom: 0; }
+.jobtabs > .tabstrip .tab { flex: 0 0 auto; }
+.jobtabs .tab .count { margin-left: .15rem; padding: 0 .4rem; border-radius: var(--r-pill); background: var(--line-soft); color: var(--fg-muted); font-size: .75rem; font-weight: 600; }
+.jobtabs [data-jobpanel] { margin-top: .6rem; padding-top: .6rem; border-top: 1px solid var(--line-soft); }
+.jobtabs:has(#jt-log:checked) [for="jt-log"],
+.jobtabs:has(#jt-events:checked) [for="jt-events"],
+.jobtabs:has(#jt-params:checked) [for="jt-params"] {
+  background: var(--bg);
+  color: var(--accent-strong);
+  box-shadow: var(--shadow-sm);
+}
+/* The keyboard reaches the radio, which is off screen; the ring has to be
+   drawn on the label it names, and only on that one. */
+.jobtabs:has(#jt-log:focus-visible) [for="jt-log"],
+.jobtabs:has(#jt-events:focus-visible) [for="jt-events"],
+.jobtabs:has(#jt-params:focus-visible) [for="jt-params"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.jobtabs [data-jobpanel] { display: none; }
+.jobtabs:has(#jt-log:checked) [data-jobpanel="log"],
+.jobtabs:has(#jt-events:checked) [data-jobpanel="events"],
+.jobtabs:has(#jt-params:checked) [data-jobpanel="params"] { display: block; }
+/* Whichever tab is open fills what is left of the window rather than the
+   fixed 20rem the log used to take: "mostly on a single screen" is a height
+   measured against the screen, not against a guess. */
+.jobtabs [data-jobpanel] .log { height: min(56vh, 40rem); }
+.jobtabs [data-jobpanel] .table-wrap { max-height: min(56vh, 40rem); }
+.jobtabs [data-jobpanel] > h3:first-child { margin-top: 0; }
+
+.job-head h1 { margin-bottom: .1rem; }
+.job-head .sub { margin: 0 0 .6rem; color: var(--fg-muted); }
+.banner { margin: .6rem 0; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--neutral-bg); }
+.banner.warn { background: var(--warn-bg); border-color: var(--warn); }
+
+.error-card { margin: .6rem 0; padding: .6rem .8rem; border: 1px solid var(--bad); border-radius: var(--r-md); background: var(--bad-bg); }
+.error-card h2 { color: var(--bad); }
+.error-card p { margin: 0 0 .4rem; overflow-wrap: anywhere; }
+.error-code { font-weight: 700; }
+.stderr summary { cursor: pointer; color: var(--fg-muted); }
+
+/* A traceback and the live log: pipeline text, wrapped, in a box. */
+.trace, .log {
+  margin: .4rem 0 0;
+  padding: .5rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.trace { max-height: 24rem; overflow: auto; }
+.log { height: 20rem; overflow: auto; margin-top: 0; }
+.log:empty::before { content: "…"; color: var(--fg-muted); }
+.log-head { margin: 0 0 .3rem; }
+
+.events-wrap { max-height: 24rem; }
+table.events td.detail { white-space: normal; overflow-wrap: anywhere; }
+table.events tr.kind-error td { color: var(--bad); }
+table.events tr.kind-stage td { font-weight: 600; }
+table.params td { white-space: normal; overflow-wrap: anywhere; }
+
+/* ---- transcript ---- */
+
+/* Typing over a word: the form sits inline where the word is, and the word
+   it replaces is dimmed rather than hidden, so the reader keeps the place. */
+#transcript .w.editing { opacity: .45; }
+form.correct-word { display: inline-flex; align-items: center; gap: .3rem; margin: 0 .3rem; vertical-align: baseline; }
+form.correct-word input[type="text"] { width: 11rem; padding: .15rem .4rem; font: inherit; }
+form.correct-word button { padding: .15rem .6rem; font-size: .85rem; }
+/* The offer after a save: one line above the words, with the one button that
+   does the same again everywhere. */
+.word-offer { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0 0 .6rem; padding: .4rem .7rem; border: 1px solid var(--accent-line); border-radius: var(--r-md); background: var(--accent-soft); font-size: .9rem; }
+.word-offer button { padding: .15rem .7rem; font-size: .85rem; }
+.word-offer [data-dismiss-offer] { margin-left: auto; }
+
+.transcript-layout { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 1.5rem; align-items: start; }
+@media (max-width: 900px) { .transcript-layout { grid-template-columns: 1fr; } }
+/* The transcript is the document this page exists for, so it gets the primary
+   surface. Without it the text sat straight on the page ground while the AI
+   rail beside it had white cards - which read as the rail being the content
+   and the transcript being the background. */
+.transcript-main {
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 1rem 1.15rem 1.2rem;
+}
+.transcript-head .sub { margin: 0 0 .6rem; }
+.transcript-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: 0 0 .8rem; padding: .4rem 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.transcript-tools .find input { min-width: 14rem; }
+.transcript-tools .legend { margin-left: auto; font-size: .8rem; }
+.transcript-tools .legend .w { cursor: default; }
+
+/* The words. content-visibility keeps a ten-hour transcript scrollable: a
+   paragraph far off screen is not laid out until it comes near. */
+.transcript { max-width: 46rem; font-size: 15px; line-height: 1.75; }
+.para { content-visibility: auto; contain-intrinsic-size: auto 8rem; margin: 0 0 1.1rem; }
+/* A heading is the speaker's name and the way to change it: click to rename.
+   A colour given to the speaker rides on the heading as a custom property. */
+.speaker { margin: 0 0 .15rem; font-size: .85rem; font-weight: 600; color: var(--speaker-color, var(--accent)); cursor: pointer; }
+.speaker:hover { text-decoration: underline dotted; }
+.rename-speaker { display: flex; flex-wrap: wrap; gap: .3rem; margin: 0 0 .4rem; }
+.rename-speaker input { min-width: 12rem; }
+.sentences { margin: 0; }
+.transcript .ts { display: inline-block; margin: 0 .3rem 0 .15rem; font-family: var(--mono); font-size: .72rem; color: var(--fg-muted); text-decoration: none; }
+.transcript .ts:hover { color: var(--accent); text-decoration: underline; }
+body.hide-ts .transcript .ts { display: none; }
+
+/* One class per confidence band render.confidence_band can produce. A sure
+   word is left alone; the tint marks what deserves a second listen. */
+.w { border-radius: var(--r-xs); cursor: pointer; }
+.w:hover { background: var(--bg-soft); }
+.w.band-mid { text-decoration: underline dotted var(--warn); text-underline-offset: .18em; }
+.w.band-low { background: var(--bad-bg); }
+/* A word the glossary corrected. The title attribute says what it used to be,
+   but a tooltip is a mouse affordance: without a mark on the page a reader
+   never learns there is anything to hover, and a corrected name passes for
+   Whisper's own. A border rather than an underline so it stacks with
+   band-mid's dotted underline instead of overwriting it. */
+.w[data-was] { border-bottom: 1px dotted var(--accent); }
+/* Reassignment: the anchor a plain click set, the range a shift-click
+   closed. The playhead's .current still wins, being later. */
+.w.anchor { outline: 1px dashed var(--accent); outline-offset: 1px; }
+.w.sel, .w.sel.band-low { background: var(--warn-bg); box-shadow: 0 0 0 1px var(--warn); }
+.w.current, .w.current.band-low { background: var(--accent); color: var(--accent-ink); }
+::highlight(transcript-search) { background-color: var(--warn-bg); color: inherit; }
+mark.find { background: var(--warn-bg); color: inherit; padding: 0; }
+
+/* The assign toolbar: sticky, so it is in view however far down the range
+   was chosen; bordered in the accent so it reads as a mode. */
+.assign { position: sticky; top: .4rem; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0 0 .8rem; padding: .45rem .7rem; border: 1px solid var(--accent); border-radius: var(--r-md); background: var(--bg-soft); }
+.assign .range { font-family: var(--mono); font-size: .8rem; color: var(--fg-muted); }
+.assign input[type="text"] { min-width: 12rem; }
+
+.not-transcribed { padding: .8rem 1rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); }
+
+/* The right rail: one action per row, the run's facts under them. */
+.rail { position: sticky; top: .5rem; display: flex; flex-direction: column; gap: .5rem; font-size: 13px; }
+/* Four subjects, four cards. The rail used to be one column under a single
+   "Actions" heading: the headings inside it had no surface of their own, so
+   an AI provider select and a rename box read as more of the same list, and
+   the one thing a reader wanted was found by scanning rather than by looking.
+   A card per subject costs a border and buys the grouping. */
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  padding: .6rem .7rem .7rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+}
+.rail-group > h2:first-child { margin-top: 0; }
+.rail-group > form { gap: .3rem; }
+/* Side by side: two ways of taking the same recording away, not a stack of
+   unrelated choices. */
+.rail-row { display: flex; flex-wrap: wrap; gap: .4rem; }
+/* One click, one file. Each row is a form, so the list has to be told not to
+   look like one: no bullets, no margins, and the button fills the row. */
+.quick-export { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .15rem; }
+.quick-export form { margin: 0; }
+.quick-export button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .3rem .45rem;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  box-shadow: none;
+  font-weight: 400;
+  text-align: left;
+}
+.quick-export button:hover:enabled { background: var(--accent-soft); color: var(--accent-strong); }
+/* The extension as a tag rather than a word: it is the one part of the row a
+   reader scans for. */
+.quick-export .ext {
+  flex: none;
+  min-width: 2.6rem;
+  padding: 0 .3rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-align: center;
+  text-transform: uppercase;
+}
+/* A second line under an action, for the thing that is worth knowing before
+   pressing it: how big the audio is, what the dialog adds over the four
+   one-click formats. */
+.rail-group .button { display: block; }
+.rail-group .button .sub { display: block; color: var(--fg-muted); font-size: .78rem; font-weight: 400; }
+/* Trash is in the File card because it is about this file, but it is the one
+   entry that does not come back, so it gets a rule above it rather than
+   sitting flush against Move. */
+.rail-destructive { margin-top: .2rem; padding-top: .5rem; border-top: 1px solid var(--line-soft); }
+.rail h2 { margin: .4rem 0 0; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); }
+
+/* Inside the rail the collapsed block is already on a card, so it drops the
+   second surface and keeps only the line. */
+.rail-group details.options { margin: .2rem 0 0; background: none; border-color: var(--line-soft); }
+.rail-group details.options > summary { padding: .35rem .4rem; }
+.rail-group details.options > *:not(summary) { margin-left: .4rem; margin-right: .4rem; }
+.rail-group details.options .summary-line { display: block; font-size: .8rem; overflow-wrap: anywhere; }
+.rail-group details.options > summary { flex-wrap: wrap; }
+.rail form { display: flex; flex-direction: column; gap: .3rem; margin: 0; }
+.rail form button, .rail > .button, .rail > button { align-self: flex-start; }
+.rail .facts { font-size: .85rem; }
+.rail .speakers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; }
+
+/* The player: the page's last child, stuck to the bottom of the viewport
+   while the transcript scrolls past it. The negative margins run it out to
+   the page's edges over .page's padding. */
+.player-bar { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: 1rem -1rem -1rem; padding: .5rem 1rem; background: var(--bg-soft); border-top: 1px solid var(--line); }
+.player-bar audio { flex: 1 1 20rem; min-width: 0; height: 2.2rem; }
+.speeds { display: flex; gap: .25rem; }
+.speed { padding: .2rem .45rem; font-family: var(--mono); font-size: .8rem; }
+.speed[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* ---- settings ---- */
+
+.settings { max-width: 62rem; }
+.settings .panel { margin-bottom: 1.4rem; }
+/* The dialog's fieldset spacing is a dialog's; on a page the panel provides it. */
+.settings fieldset.options { margin: 0 0 .8rem; }
+.settings textarea { width: min(40rem, 100%); font-family: var(--mono); font-size: 13px; }
+.form-foot { display: flex; gap: .5rem; }
+.doctor-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .6rem; }
+.gpu-checks h3 { margin: .9rem 0 .4rem; font-size: .9rem; }
+
+/* The check tables: name, verdict, what was found - and under a red one, what
+   to do about it. The verdict words are the doctor's own (OK / SKIP / FAIL). */
+table.checks td.detail, table.models td.path { white-space: normal; overflow-wrap: anywhere; }
+table.checks tr.fail td.detail { color: var(--bad); }
+table.checks .fix { color: var(--fg-muted); font-size: .85rem; }
+.badge.ok { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+.badge.fail { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); font-weight: 600; }
+.badge.skip { color: var(--fg-muted); }
+
+/* The export presets: a name, what it does, and the way out. */
+table.presets td.summary { white-space: normal; overflow-wrap: anywhere; color: var(--fg-muted); }
+table.presets th.actions, table.presets td.actions { width: 1%; }
+table.presets td.actions form { margin: 0; }
+
+/* ---- the AI panel, the answers and the chat ---- */
+
+/* The pin, wherever it shows: a lock is the whole word, so it stays legible
+   next to a title and inside a table cell. */
+.badge.private { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+.ai-panel .privacy { padding: .4rem .5rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-soft); }
+.ai-panel .privacy.on { border-color: var(--warn); background: var(--warn-bg); }
+.ai-panel .privacy-state { margin: 0 0 .3rem; font-size: .85rem; }
+/* The marker the plan asks for: red, next to the choice that sends the words
+   off this machine, not hidden in a tooltip. */
+.ai-panel .leaves { color: var(--bad); font-size: .8rem; margin: .1rem 0 .3rem; }
+.ai-panel .ai-actions { display: flex; flex-wrap: wrap; gap: .3rem; }
+.ai-panel textarea { width: 100%; font-size: 13px; }
+
+/* The answers: one card per kind, under the transcript and outside the panel
+   that re-fetches itself, so a rename cannot swap away an answer being made. */
+.ai-outputs { display: flex; flex-direction: column; gap: .8rem; margin: 1.2rem 0; }
+.ai-output { padding: .6rem .8rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); }
+.ai-output h3 { margin: 0; font-size: .95rem; }
+.ai-output .sub { margin: .1rem 0 0; font-size: .8rem; }
+.ai-output .ai-body { margin-top: .5rem; overflow-wrap: anywhere; }
+.ai-output .ai-body h4 { margin: .7rem 0 .2rem; font-size: .9rem; }
+/* The "who is speaking" answer: one row per cluster, a tick, the name the
+   model proposes, and the quote it rests on. */
+.suggestions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+.suggestion { padding: .4rem .6rem; border: 1px solid var(--line-soft); border-radius: var(--r-md); background: var(--bg); }
+.suggestion .check { display: flex; align-items: center; gap: .5rem; }
+.suggestion .current { color: var(--fg-muted); font-size: .85rem; }
+.suggestion .suggested { display: flex; align-items: center; gap: .4rem; margin: .3rem 0 0 1.4rem; }
+.suggestion .suggested input { max-width: 14rem; }
+.suggestion .badge.conf { color: var(--fg-muted); }
+.suggestion.conf-high .badge.conf { color: var(--ok); border-color: var(--ok); }
+.suggestion.conf-low .badge.conf { color: var(--warn); border-color: var(--warn); }
+.suggestion .evidence { margin: .25rem 0 0 1.4rem; font-size: .8rem; }
+.speaker-suggestions > .primary { margin-top: .6rem; }
+.ai-output .owner { color: var(--fg-muted); }
+.ai-output .working, .chat-page .working { color: var(--accent); }
+
+.chat-page { max-width: 52rem; }
+.chat-log { list-style: none; margin: 1rem 0; padding: 0; display: flex; flex-direction: column; gap: .8rem; }
+.chat-log .who { margin: 0 0 .2rem; font-size: .75rem; }
+.chat-log .bubble { padding: .5rem .7rem; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-panel); overflow-wrap: anywhere; }
+.chat-log .turn.asked .bubble { background: var(--bg-soft); }
+.chat-log .citations { margin: .25rem 0 0; font-size: .8rem; color: var(--fg-muted); }
+.chat-ask textarea { width: 100%; }
+.chat-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .5rem; }
+
+/* The provider table: the reason a row is not ready is the useful column, so
+   it wraps instead of being cut off. */
+table.providers td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+table.providers .why { color: var(--fg-muted); font-size: .85rem; }
+table.providers .key-source { margin: 0 0 .3rem; font-size: .8rem; }
+table.providers form { margin: 0; }
+/* A button in a narrow column wraps letter by letter; a control never wraps. */
+table.providers button { white-space: nowrap; }
+/* The hint under a button belongs to it: on its own line, close to it. */
+table.providers .under { display: block; margin: .3rem 0 0; font-size: .8rem; }
+table.providers .test-result { margin: .3rem 0 0; font-size: .8rem; }
+table.providers .test-result.fail .why { color: var(--bad); }
+
+/* A stale answer stays readable but never passes for current. */
+.ai-output .stale { color: var(--warn); }
+
+/* ---- the log page ---- */
+
+/* Dense on purpose: a log is read by scanning, and a row per line at 12px
+   monospace is what makes twenty seconds of a recording session fit on one
+   screen. Levels colour only the level cell, so a page of warnings is still
+   legible rather than a wall of amber. */
+.logpage .toolbar h1 { margin-right: 1rem; }
+.logfilter { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.logfilter input[type="search"] { min-width: 18rem; }
+.logpause { margin-left: auto; }
+.logpause[aria-pressed="true"] { border-color: var(--warn); color: var(--warn); }
+.logpath { margin: 0 0 .5rem; font-size: .78rem; overflow-wrap: anywhere; }
+.logwrap { max-height: 72vh; }
+table.log-lines { font-size: 12px; }
+table.log-lines td { padding: .18rem .5rem; vertical-align: top; }
+table.log-lines td.detail { white-space: normal; overflow-wrap: anywhere; }
+table.log-lines .kv { margin-right: .6rem; }
+table.log-lines .k { color: var(--fg-muted); }
+table.log-lines .ev { font-weight: 600; }
+table.log-lines tr.lv-debug td { color: var(--fg-muted); }
+table.log-lines tr.lv-warn td.lv { color: var(--warn); font-weight: 600; }
+table.log-lines tr.lv-error td.lv { color: var(--bad); font-weight: 700; }
+table.log-lines tr.lv-error td.ev { color: var(--bad); }
+
+/* ---- the settings page: a sidebar of categories, one card open ---- */
+
+/* The radios sit outside every self-refreshing partial (see settings.html),
+   so the active link cannot be `input:checked + label`; `:has()` on the
+   layout is what lights it and shows the matching card. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 1.4rem;
+  align-items: start;
+  max-width: none;
+}
+@media (max-width: 800px) { .settings-layout { grid-template-columns: 1fr; } }
+
+.settings-nav { position: sticky; top: .5rem; display: flex; flex-direction: column; gap: .15rem; }
+.settings-nav h1 { margin: 0 0 .6rem; padding: 0 .6rem; }
+.settings-link {
+  display: flex;
+  flex-direction: column;
+  gap: .05rem;
+  padding: .45rem .7rem;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  color: var(--fg);
+  border: 1px solid transparent;
+}
+.settings-link:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.settings-link-label { font-weight: 600; }
+.settings-link-hint { font-size: .78rem; color: var(--fg-muted); }
+.settings-link:hover .settings-link-hint { color: inherit; }
+/* One rule per category, generated the same way as the job tabs. */
+.settings-layout:has(#ss-defaults:checked) [for="ss-defaults"],
+.settings-layout:has(#ss-watch:checked) [for="ss-watch"],
+.settings-layout:has(#ss-glossary:checked) [for="ss-glossary"],
+.settings-layout:has(#ss-llm:checked) [for="ss-llm"],
+.settings-layout:has(#ss-presets:checked) [for="ss-presets"],
+.settings-layout:has(#ss-machine:checked) [for="ss-machine"] {
+  background: var(--bg);
+  border-color: var(--line-soft);
+  box-shadow: var(--shadow-sm);
+  color: var(--accent-strong);
+}
+/* The keyboard reaches the radio, which is off screen; the ring goes on
+   the label it names. */
+.settings-layout:has(#ss-defaults:focus-visible) [for="ss-defaults"],
+.settings-layout:has(#ss-watch:focus-visible) [for="ss-watch"],
+.settings-layout:has(#ss-glossary:focus-visible) [for="ss-glossary"],
+.settings-layout:has(#ss-llm:focus-visible) [for="ss-llm"],
+.settings-layout:has(#ss-presets:focus-visible) [for="ss-presets"],
+.settings-layout:has(#ss-machine:focus-visible) [for="ss-machine"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.settings-main { min-width: 0; }
+.settings-section { display: none; }
+.settings-layout:has(#ss-defaults:checked) [data-settings-section="defaults"],
+.settings-layout:has(#ss-watch:checked) [data-settings-section="watch"],
+.settings-layout:has(#ss-glossary:checked) [data-settings-section="glossary"],
+.settings-layout:has(#ss-llm:checked) [data-settings-section="llm"],
+.settings-layout:has(#ss-presets:checked) [data-settings-section="presets"],
+.settings-layout:has(#ss-machine:checked) [data-settings-section="machine"] { display: block; }
+
+/* A category is a card: the page is the ground, the card sits on it, and
+   the h2 inside is the card's title rather than a heading floating on grey. */
+.settings-section > .panel {
+  padding: 1rem 1.2rem 1.2rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+}
+.settings-section > .panel + .panel { margin-top: 1rem; }
+.settings-section .panel > h2 { margin: 0 0 .6rem; font-size: 1.15rem; }
+/* The one button that stores the card's form, at its foot. */
+.settings-section .form-foot { margin-top: .9rem; padding-top: .8rem; border-top: 1px solid var(--line-soft); }
+/* What follows a form is not part of it. */
+.settings-section form + .table-wrap { margin-top: 1rem; }
+/* On a card the page background is the card's, so a button painted --bg was
+   flat against it; the soft tone lifts it without making it a primary. */
+.settings-section button:not(.primary):not(.saved):not(.not-saved) { background: var(--bg-soft); }
+
+/* The button that just saved: green, and "Saved" for five seconds, then
+   itself again. A filled button, so the fill is --ok and the ink is the
+   accent's ink - measured 5.02:1 (white on #15803d) in light and 11.35:1
+   (#0c1424 on #5fe39b) in dark. */
+button.saved, button.saved:hover:enabled, .primary.saved {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--accent-ink);
+  transition: background-color .2s ease, border-color .2s ease;
+}
+/* And the refused one: red, "Not saved". The ink is the same accent ink -
+   measured 6.47:1 (white on #b91c1c) in light, 9.11:1 (#0c1424 on #ff9aa2)
+   in dark. */
+button.not-saved, button.not-saved:hover:enabled, .primary.not-saved {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: var(--accent-ink);
+  transition: background-color .2s ease, border-color .2s ease;
+}

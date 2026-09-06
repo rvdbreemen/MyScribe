@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Chat · {{ media.title }} - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The conversation about one recording.
+
+  Context (from scribe.web.ai_ui.chat_context):
+
+      media       the media row
+      run         the current run, or none when nothing has been transcribed
+      private     whether this recording is pinned; cloud options are then
+                  disabled and the POST refuses one anyway
+      providers   [{name, label, local, selected, disabled}]
+      provider, model, models   what the ask form opens with
+      job         the queued or running chat job, or none
+      poll        seconds between polls while one is running
+      messages    [{id, role, mine, created_at, html, citations}] oldest
+                  first; `html` is ai_ui.render_markdown of the stored text
+                  and `citations` are the seekable [m:ss] the answer carried
+
+  A page of its own rather than a panel on the transcript: a conversation is
+  read top to bottom and keeps growing, and the transcript page already has
+  the words, a rail and a player. A citation is a link to
+  /media/{id}#t=<seconds>, so following one lands on the transcript with the
+  player seeking to that moment - the same data-start the transcript's own
+  timestamps carry, so app.js seeks in place wherever the link is rendered.
+
+  While a chat job is running the whole panel polls itself and htmx picks
+  #chat-panel out of the answer (hx-select), so the page needs no fragment
+  template of its own. It stops as soon as the job leaves the queue, because
+  `job` is then none and the attributes are not rendered.
+#}
+{% import "_macros.html" as m %}
+<div id="chat-panel" class="chat-page"
+     {% if job %}hx-get="/media/{{ media.id }}/chat" hx-trigger="every {{ poll }}s" hx-select="#chat-panel" hx-swap="outerHTML"{% endif %}>
+  <p class="crumbs"><a href="/media/{{ media.id }}">← {{ media.title }}</a></p>
+
+  <header class="chat-head">
+    <h1>Chat with “{{ media.title }}”</h1>
+    <p class="sub muted">
+      {{ m.ts(media.duration) }}
+      {% if private %}· <span class="badge private" title="Pinned private">🔒 Private</span> this text stays on this machine{% endif %}
+    </p>
+  </header>
+
+  {% if not run %}
+  <p class="hint">Transcribe this file first; there is nothing to ask about yet.</p>
+  {% else %}
+
+  <ol class="chat-log">
+    {% for message in messages %}
+    <li class="turn {{ 'asked' if message.mine else 'answered' }}">
+      <p class="who muted">{{ 'You' if message.mine else 'Model' }} · {{ m.when(message.created_at) }}</p>
+      <div class="bubble">{{ message.html }}</div>
+      {% if message.citations %}
+      <p class="citations">Heard at
+        {% for c in message.citations %}<a class="ts" href="{{ c.href }}" data-start="{{ c.at }}">{{ c.label }}</a>{% if not loop.last %} {% endif %}{% endfor %}
+      </p>
+      {% endif %}
+    </li>
+    {% else %}
+    <li class="muted empty">Nothing asked yet. The model only answers from this transcript.</li>
+    {% endfor %}
+  </ol>
+
+  {% if job %}
+  <p class="hint working" aria-live="polite">Thinking… <a href="/jobs/{{ job.id }}">job {{ job.id }}</a></p>
+  {% endif %}
+
+  <form class="chat-ask" method="post" action="/media/{{ media.id }}/chat"
+        hx-post="/media/{{ media.id }}/chat" hx-target="#chat-panel" hx-select="#chat-panel" hx-swap="outerHTML">
+    <label class="field">Question
+      <textarea name="question" rows="3" maxlength="2000" required
+                placeholder="What did they decide about the budget?"></textarea>
+    </label>
+    <div class="chat-controls">
+      <label class="field">Provider
+        <select name="provider">
+          {% for p in providers %}
+          <option value="{{ p.name }}"{% if p.selected %} selected{% endif %}{% if p.disabled %} disabled{% endif %}>{{ p.label }}{% if not p.local %} · leaves your machine{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Model
+        <input type="text" name="model" value="{{ model }}" list="chat-models" autocomplete="off" spellcheck="false">
+      </label>
+      <datalist id="chat-models">
+        {% for name in models %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
+      <button type="submit" class="primary">Ask</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

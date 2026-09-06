@@ -1,0 +1,122 @@
+{#
+  The library table. This is what an htmx request for / receives on its own,
+  and what every file action answers with; library.html includes it for the
+  full page.
+
+  Context (from scribe.web.library.library_context):
+
+      state       the State shown (view, folder, sort, q)
+      rows        [{id, title, orig_name, folder_id, duration, created_at,
+                    trashed_at, private, run_model, job_id, job_status}]
+      folders     [{id, name, parent_id, depth}] for the Move select
+      sort_links  {sort key: URL of this view sorted by it}
+      oob         true to append the sidebar as an out-of-band swap, which
+                  a mutation does because the counts on it just changed
+      flash       optional: a line for the page's #flash region, swapped
+                  out of band alongside the sidebar
+
+  The whole element is #media-table and every swap replaces it outright
+  (hx-swap="outerHTML"), header included, so the sort links and the
+  select-all box are never older than the rows.
+
+  Row checkboxes belong to #bulk-form in library.html through the form=
+  attribute. That keeps the per-row action forms from nesting inside the bulk
+  form (nested forms are not HTML) while FormData still collects them.
+#}
+{% import "_macros.html" as m %}
+<div id="media-table" class="table-wrap">
+  <table class="media">
+    <thead>
+      <tr>
+        <th class="check"><input type="checkbox" data-select-all aria-label="Select all rows"></th>
+        <th{% if state.sort == 'title' %} aria-sort="ascending"{% endif %}><a href="{{ sort_links.title }}" hx-get="{{ sort_links.title }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'title' %} aria-current="true"{% endif %}>Title</a></th>
+        <th{% if state.sort == 'created_at' %} aria-sort="descending"{% endif %}><a href="{{ sort_links.created_at }}" hx-get="{{ sort_links.created_at }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'created_at' %} aria-current="true"{% endif %}>Uploaded</a></th>
+        <th class="num"{% if state.sort == 'duration' %} aria-sort="descending"{% endif %}><a href="{{ sort_links.duration }}" hx-get="{{ sort_links.duration }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'duration' %} aria-current="true"{% endif %}>Duration</a></th>
+        <th title="Model tier of the current transcript">Mode</th>
+        <th>Status</th>
+        <th class="actions"><span class="visually-hidden">Actions</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td class="check"><input type="checkbox" name="ids" value="{{ row.id }}" form="bulk-form" aria-label="Select {{ row.title }}"></td>
+        <td class="title">
+          <a href="/media/{{ row.id }}" title="{{ row.orig_name }}">{{ row.title }}</a>
+          {# The pin, where the library can see it. Only the file's own flag
+             shows here: a file inherits its folder's pin too, and the folder
+             wears that badge in the sidebar rather than every row repeating
+             it. #}
+          {% if row.private %}<span class="badge private" title="Pinned private: its text never leaves this machine">🔒</span>{% endif %}
+        </td>
+        <td>{{ m.when(row.created_at) }}</td>
+        <td class="num">{{ m.ts(row.duration) }}</td>
+        <td class="mode">{{ m.mode_icon(row.run_model) }}</td>
+        {% include "_media_status.html" %}
+        <td class="actions">
+          {# An overlay, not an expander. `popover` puts the panel in the top
+             layer, which is the only way out of .table-wrap's overflow: a
+             positioned child would be clipped at the wrapper's edge. It is
+             declarative - popovertarget needs no script, so the menu opens,
+             closes on Escape and light-dismisses before app.js has loaded.
+             No anchor names: a popover opened through popovertarget has its
+             invoker as implicit anchor, which keeps the markup free of
+             inline styles (and a future style-src 'self' possible). #}
+          <button type="button" class="menu-button" popovertarget="menu-media-{{ row.id }}"
+                  aria-label="Actions for {{ row.title }}" title="Actions">⋯</button>
+          <div id="menu-media-{{ row.id }}" popover class="menu-body" aria-label="Actions for {{ row.title }}">
+              <a class="button" href="/media/{{ row.id }}">Open</a>
+              {% if row.run_model %}
+              <a class="button" href="/media/{{ row.id }}/export" hx-get="/media/{{ row.id }}/export" hx-target="#export-dialog" hx-swap="innerHTML">Export</a>
+              {% else %}
+              <button type="button" disabled title="No transcript yet">Export</button>
+              {% endif %}
+              <form method="post" action="/media/{{ row.id }}/rename"
+                    hx-post="/media/{{ row.id }}/rename" hx-target="#media-table" hx-swap="outerHTML">
+                <input type="text" name="title" value="{{ row.title }}" required maxlength="300" aria-label="New title">
+                <button type="submit">Rename</button>
+              </form>
+              <form method="post" action="/media/{{ row.id }}/move"
+                    hx-post="/media/{{ row.id }}/move" hx-target="#media-table" hx-swap="outerHTML">
+                <select name="folder_id" aria-label="Move to folder">
+                  <option value=""{% if row.folder_id is none %} selected{% endif %}>Uncategorized</option>
+                  {% for folder in folders %}{{ m.folder_option(folder, row.folder_id) }}{% endfor %}
+                </select>
+                <button type="submit">Move</button>
+              </form>
+              <a class="button" href="/media/{{ row.id }}/download">Download audio</a>
+              <form method="post" action="/media/{{ row.id }}/private"
+                    hx-post="/media/{{ row.id }}/private" hx-target="#media-table" hx-swap="outerHTML">
+                <input type="hidden" name="private" value="{{ '0' if row.private else '1' }}">
+                <button type="submit">{{ 'Un-pin (allow the cloud)' if row.private else 'Pin private (this machine only)' }}</button>
+              </form>
+              {% if row.trashed_at %}
+              <form method="post" action="/media/{{ row.id }}/restore"
+                    hx-post="/media/{{ row.id }}/restore" hx-target="#media-table" hx-swap="outerHTML">
+                <button type="submit">Restore</button>
+              </form>
+              <form method="post" action="/media/{{ row.id }}/purge"
+                    hx-post="/media/{{ row.id }}/purge" hx-target="#media-table" hx-swap="outerHTML"
+                    hx-confirm="Delete “{{ row.title }}” for good? The file, its transcripts and its jobs are removed and cannot be recovered.">
+                <button type="submit" class="danger">Delete forever</button>
+              </form>
+              {% else %}
+              <form method="post" action="/media/{{ row.id }}/trash"
+                    hx-post="/media/{{ row.id }}/trash" hx-target="#media-table" hx-swap="outerHTML"
+                    hx-confirm="Move “{{ row.title }}” to the trash? It can be restored from there.">
+                <button type="submit" class="danger">Trash</button>
+              </form>
+              {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr class="empty">
+        <td colspan="7">{% if state.q %}No titles match “{{ state.q }}”.{% elif state.view == 'trash' %}The trash is empty.{% else %}Nothing here yet.{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if oob %}{% include "_sidebar.html" %}{% endif %}
+{% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}

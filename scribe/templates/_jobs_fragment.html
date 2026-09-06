@@ -1,0 +1,118 @@
+{#
+  The board's three sections. This is what GET /jobs/fragment (and an htmx
+  GET /jobs) returns, and what jobs.html includes for the full page.
+
+  Context (from scribe.web.jobs_ui.board_context):
+
+      running        [job view] the jobs holding the GPU, oldest first
+      queued         [job view + position] in claim order: next one first
+      history        [job view] terminal jobs, newest first, at most
+                     history_limit of them
+      active         running + queued: how many jobs are still going
+      stages         the stage names, in order
+      history_limit
+
+  A job view is the job row joined to its media plus title, summary
+  (params in one line), steps (for the stepper), elapsed, took, eta_left
+  and retryable - see scribe.web.jobs_ui.job_view.
+
+  The poll interval is part of this element: two seconds while anything is
+  running or queued, fifteen once the queue is idle. Every swap replaces
+  the whole element (outerHTML), so the interval that comes with the new
+  rows is the interval that applies from then on. `refresh` is what app.js
+  fires on this element after a Cancel or Retry has posted; `jobs-changed`
+  is the header the transcribe dialog's responses carry.
+#}
+{% import "_macros.html" as m %}
+<div id="jobs-live" hx-get="/jobs/fragment" hx-trigger="every {{ '2s' if active else '15s' }}, refresh, jobs-changed from:body" hx-swap="outerHTML">
+  <section id="running" class="panel">
+    <h2>Running</h2>
+    {% for job in running %}
+    <article class="jobcard">
+      <div class="jobcard-head">
+        <a class="job-title" href="/jobs/{{ job.id }}">{{ job.title }}</a>
+        <span class="badge s-{{ job.status }}">{{ 'cancelling…' if job.cancel_requested else job.status }}</span>
+        <span class="muted mono">job {{ job.id }}</span>
+        {% if job.summary %}<span class="muted">{{ job.summary }}</span>{% endif %}
+      </div>
+      {{ m.stepper(job.steps) }}
+      <div class="stage-bar">{{ m.stage_progress(job) }}</div>
+      <dl class="facts">
+        <dt>Elapsed</dt>
+        <dd><span class="elapsed live" data-since="{{ job.started_at }}">{{ job.elapsed|clock }}</span></dd>
+        <dt>ETA</dt>
+        <dd>{% if job.eta_left is not none %}≈ {{ job.eta_left|clock }} left in {{ job.stage }}{% else %}<span class="muted">no estimate yet: {{ job.stage }} has not run on this machine before</span>{% endif %}</dd>
+        <dt>Started</dt>
+        <dd>{{ m.when(job.started_at) }}</dd>
+      </dl>
+      <div class="actions">{{ m.cancel_form(job) }}</div>
+    </article>
+    {% else %}
+    <p class="hint">Nothing is running; the GPU is free.</p>
+    {% endfor %}
+  </section>
+
+  <section id="queued" class="panel">
+    <h2>Queued</h2>
+    <div class="table-wrap">
+      <table class="jobs">
+        <thead>
+          <tr>
+            <th class="num">#</th>
+            <th>File</th>
+            <th>Options</th>
+            <th>Queued</th>
+            <th class="actions"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in queued %}
+          <tr>
+            <td class="num">{{ job.position }}</td>
+            <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+            <td class="summary">{{ job.summary }}</td>
+            <td>{{ m.when(job.created_at) }}</td>
+            <td>{{ m.cancel_form(job) }}</td>
+          </tr>
+          {% else %}
+          <tr class="empty"><td colspan="5">The queue is empty.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="history" class="panel">
+    <h2>History <span class="muted">(last {{ history_limit }})</span></h2>
+    <div class="table-wrap">
+      <table class="jobs">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Outcome</th>
+            <th>Stage</th>
+            <th class="num">Took</th>
+            <th>Finished</th>
+            <th>Error</th>
+            <th class="actions"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in history %}
+          <tr>
+            <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+            <td>{{ m.job_badge(job.id, job.status) }}</td>
+            <td class="mono">{{ job.stage or '' }}</td>
+            <td class="num">{{ m.ts(job.took) }}</td>
+            <td>{{ m.when(job.finished_at) }}</td>
+            <td class="err">{% if job.error_code %}<code>{{ job.error_code }}</code> {{ job.error_detail or '' }}{% endif %}</td>
+            <td>{% if job.retryable %}{{ m.retry_form(job) }}{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr class="empty"><td colspan="7">No finished jobs yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Jobs - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The jobs board. Everything that changes on its own is inside
+  _jobs_fragment.html, which polls itself; this page is the frame around it.
+
+  Context: see _jobs_fragment.html (scribe.web.jobs_ui.board_context).
+#}
+<div class="jobs-page">
+  <h1>Jobs</h1>
+  <p class="hint">
+    One job holds the GPU at a time; the queue waits its turn. A job's stages
+    go {{ stages|join(' → ') }}.
+  </p>
+  {% include "_jobs_fragment.html" %}
+</div>
+{% endblock %}

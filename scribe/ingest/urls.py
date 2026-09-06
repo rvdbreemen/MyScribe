@@ -1,0 +1,678 @@
+"""yt-dlp, wrapped so a failure is a sentence rather than a stack trace.
+
+Three functions and a taxonomy. `probe` asks a URL what it is without
+downloading anything, `download` fetches the audio into a directory we own,
+and `hotword_terms` reads the names out of the metadata so the decoder can be
+biased towards them. Nothing here writes to the database and nothing here
+knows what a job is; `scribe/stages/url_stage.py` is what joins the two.
+
+**This module reaches the network, so it runs in a runner child** (ADR-001).
+The one exception the plan allows is the dialog's preview, which calls `probe`
+in a threadpool with a timeout - a read of a page, never a download.
+
+Everything a URL returns is untrusted input. A video title is chosen by a
+stranger and ends up in a filename, so the download lands on a fixed stem and
+is *then* renamed through the same Win32 scrub the exporters use; a title of
+``..\\..\\evil`` comes out as a name inside the destination directory. The real
+title still goes on the media row, where it is text and not a path.
+
+**yt-dlp ages by design.** Sites change their players and their APIs, and an
+extractor pinned three months ago stops working with no warning and no
+version bump on our side. This module pins nothing itself - `requirements.txt`
+does - but it does two things about it: `is_stale` says when the installed
+copy is old enough to be the likely culprit, and a failure whose message
+smells like a broken extractor says so in words, with the installed version
+and the command that fixes it. That sentence is the difference between "this
+app is broken" and "run one pip command".
+
+Windows note, and it is not a small one: `--cookies-from-browser` cannot read
+Chrome or Edge cookies since App-Bound Encryption (Chrome 127+). Firefox still
+works, and so does an exported `cookies.txt`. That is why `download_opts`
+takes a cookies *file* and the dialog offers a file field rather than a browser
+picker - a door that only sometimes works is worse than one that says what it
+needs.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from importlib import metadata
+from pathlib import Path
+from typing import Any, Callable, Literal
+from urllib.parse import urlparse
+
+from scribe import glossary
+
+# The name yt-dlp is installed under, which is not the name it is imported
+# under: `pip show yt-dlp`, `import yt_dlp`.
+DISTRIBUTION = "yt-dlp"
+
+# The stem every download lands on before it is renamed. Fixed on purpose: a
+# `%(title)s` in the output template would put a stranger's text straight into
+# a path, and yt-dlp's own sanitiser is not a promise we should be leaning on.
+DOWNLOAD_STEM = "download"
+
+# What a media file is called when the title scrubs away to nothing (a title of
+# "..." or of punctuation only). It still has to be a name.
+FALLBACK_STEM = "download"
+
+# Suffix yt-dlp gives the metadata sidecar it writes next to the media.
+INFO_JSON_SUFFIX = ".info.json"
+
+# Files in the download directory that are not the media: the sidecar, a
+# partial fragment, yt-dlp's own resume bookkeeping.
+_NOT_THE_MEDIA = (INFO_JSON_SUFFIX, ".part", ".ytdl", ".temp")
+
+# How long yt-dlp may be before a failure is worth blaming on it. Three months
+# is roughly the interval over which a big site has changed something that
+# mattered; it is a heuristic in a hint, not a gate on anything.
+STALE_DAYS = 90
+
+# Seconds to wait on a socket. Long enough for a slow server, short enough that
+# a hung connection does not become a job that never ends.
+SOCKET_TIMEOUT = 15
+
+# A run of letters, apostrophes and hyphens - what counts as a name here and
+# in the hotwords. One definition, in `scribe.glossary` (Phase 6 Task 5), which
+# is a module of rules and rows: importing it costs nothing, where importing
+# the transcribe stage for the same regex would pull numpy into a function that
+# only wants to find capitals.
+_WORD = glossary._WORD
+
+# yt-dlp lines that carry no information about what went wrong: its standard
+# request to file a bug. Dropped before the last line is taken as the reason,
+# so a two-line error reports the failure and not the boilerplate under it.
+_BOILERPLATE = (
+    "please report this issue",
+    "confirm you are on the latest version",
+    "make sure you are using the latest version",
+    "type  yt-dlp -u  to update",
+)
+
+# Messages that mean the video is gone, private, or not ours to fetch. Nothing
+# about the installation is wrong and updating will not help; the user needs a
+# different URL or an account.
+_UNAVAILABLE = (
+    "video unavailable",
+    "private video",
+    "video is private",
+    "has been removed",
+    "removed by the uploader",
+    "this video is not available",
+    "not made this video available in your country",
+    "not available in your country",
+    "members-only",
+    "join this channel",
+    "sign in to confirm your age",
+    "account associated with this video has been terminated",
+    "geo restricted",
+)
+
+# Messages that smell like an extractor that no longer matches the site. Every
+# one of them is yt-dlp failing to find something in a page it could read.
+_STALE_EXTRACTOR = (
+    "unable to extract",
+    "extraction failed",
+    "please report this issue",
+    "confirm you are on the latest version",
+    "no video formats found",
+    "failed to parse json",
+    "unable to recognize playlist",
+)
+
+
+# --- what can go wrong ---------------------------------------------------------
+
+
+class UrlError(RuntimeError):
+    """A URL could not be read or fetched. `code` is the job's error_code.
+
+    Three subclasses rather than three messages, because the three call for
+    three different actions: fix the URL, find another copy, or fix the tool.
+    `scribe.runner._ERROR_CODES` maps them onto the codes the jobs board shows.
+    """
+
+    code = "DOWNLOAD_FAILED"
+
+
+class UnsupportedUrl(UrlError):
+    """Not a URL yt-dlp can fetch - a bad scheme, or a site it has no extractor for."""
+
+    code = "UNSUPPORTED_URL"
+
+
+class Unavailable(UrlError):
+    """The URL is fine; what it points at is private, removed or region-locked."""
+
+    code = "UNAVAILABLE"
+
+
+class DownloadFailed(UrlError):
+    """Everything else: a network error, a refused request, a stale extractor."""
+
+    code = "DOWNLOAD_FAILED"
+
+
+class TooManyEntries(UrlError):
+    """A playlist with more entries than this app will queue in one go.
+
+    Its own code because nothing failed and nothing is wrong with the link:
+    what has to change is how much of it is asked for at once.
+    """
+
+    code = "TOO_MANY_ENTRIES"
+
+
+# --- what a URL turned out to be -----------------------------------------------
+
+
+@dataclass(frozen=True)
+class UrlInfo:
+    """What `probe` learned without downloading anything.
+
+    `entries` is empty for a single video and holds one ``{id, title, duration,
+    url}`` per item for a playlist - flat, because a playlist is expanded into
+    one job per entry and each of those probes its own URL properly.
+    """
+
+    kind: Literal["single", "playlist"]
+    title: str
+    duration: float | None
+    uploader: str
+    webpage_url: str
+    entries: list[dict] = field(default_factory=list)
+    info: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DownloadedMedia:
+    """A file on disk plus the metadata that came with it."""
+
+    path: Path
+    title: str
+    duration: float | None
+    uploader: str
+    info: dict
+
+
+# --- the yt-dlp seam -----------------------------------------------------------
+
+
+def build_ydl(opts: dict):
+    """A configured `yt_dlp.YoutubeDL`.
+
+    The one place yt-dlp is imported, and it is imported here rather than at
+    module scope for two reasons: importing it costs several hundred
+    milliseconds of extractor registration that a process which never fetches
+    a URL should not pay, and this module stays importable on a machine where
+    yt-dlp is not installed - which is what lets the doctor say so politely
+    instead of the app failing to start.
+
+    Tests replace this function; nothing else in the module reaches yt-dlp.
+    """
+    from yt_dlp import YoutubeDL
+
+    return YoutubeDL(opts)
+
+
+def installed_version() -> str | None:
+    """The installed yt-dlp's version string, or None if it is not installed.
+
+    Read from the distribution metadata, not from `yt_dlp.version`, and the
+    difference is the whole point: the doctor's `check_ytdlp` is a CPU check,
+    and the settings page runs those in the request. Importing the package to
+    read a string cost 554 ms of import time and left the whole of yt-dlp
+    resident in the web process for good - exactly the cost `build_ydl`'s
+    docstring says is deferred so a process that never fetches a URL does not
+    pay it. `importlib.metadata` reads the installed `METADATA` file instead.
+
+    The distribution is spelled `yt-dlp`; the module is `yt_dlp`.
+    """
+    try:
+        return str(metadata.version(DISTRIBUTION))
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def release_date(version: str | None) -> date | None:
+    """The release date a yt-dlp version encodes, or None if it does not.
+
+    Releases are dated (`2026.08.19`) and nightlies add a time (`.232303`), so
+    the first three dot-separated parts are the date in both. Read as parts
+    rather than as a fixed-width slice, because the distribution metadata
+    spells the same release the way PEP 440 normalises it - `2026.8.19`, one
+    character shorter - and a slice then cuts a nightly in the wrong place and
+    reports "release date unknown" for a copy installed yesterday.
+
+    Anything else - a fork, a git checkout, a string somebody edited - is None
+    rather than a guess.
+    """
+    parts = str(version or "").split(".")
+    if len(parts) < 3:
+        return None
+    try:
+        return date(int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+
+
+def age_days() -> int | None:
+    """How many days old the installed yt-dlp's release is, if it can be told."""
+    released = release_date(installed_version())
+    return None if released is None else (date.today() - released).days
+
+
+def is_stale() -> bool:
+    """Whether the installed yt-dlp is old enough to be the likely culprit.
+
+    A version we cannot date is not called stale: a false accusation sends
+    somebody chasing the wrong thing.
+    """
+    age = age_days()
+    return age is not None and age > STALE_DAYS
+
+
+def stale_note() -> str:
+    """The sentence appended to a failure that smells like a broken extractor."""
+    version = installed_version() or "unknown"
+    age = age_days()
+    old = f", released {age} days ago" if age is not None else ""
+    return (
+        f"This usually means yt-dlp's extractor for this site is out of date "
+        f"(yt-dlp {version} installed{old}); update it with: pip install -U yt-dlp"
+    )
+
+
+# --- the options ---------------------------------------------------------------
+
+
+def _common_opts() -> dict:
+    """What every call wants: quiet, no console progress bar, a socket timeout.
+
+    `noprogress` turns off yt-dlp's own terminal bar - the runner child has no
+    terminal, and progress belongs on the jobs board, through the hook.
+    """
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "consoletitle": False,
+        "socket_timeout": SOCKET_TIMEOUT,
+    }
+
+
+def probe_opts(cookies_file: str | None = None) -> dict:
+    """Options for asking what a URL is, without fetching it.
+
+    `extract_flat="in_playlist"` is the whole trick: a single video is
+    extracted properly, while a playlist yields its entries as stubs. Fetching
+    fifty videos' metadata to answer "is this a playlist" would make the
+    dialog's preview take a minute.
+
+    `noplaylist` is here for the same reason `download_opts` sets it, and it
+    matters more here: the probe is what *decides*. `url_stage.fetch` probes
+    first and returns without ever reaching `download` when the answer comes
+    back "playlist", so the guard on the download alone sat on a path this
+    input never takes - and the input is the URL YouTube actually gives you.
+    The address bar reads `watch?v=VIDEO&list=PLAYLIST` while you are watching
+    a video inside a playlist, and without this that paste probed as the whole
+    playlist and `register` fanned it out into one job per entry.
+
+    It cannot over-reach, because of how yt-dlp spends it (measured 2026-09-04
+    against yt-dlp 2026.08.19, `InfoExtractor._yes_playlist`): the option only
+    ever breaks a tie between a video id and a list id that arrived together.
+    A bare `/playlist?list=...`, or a channel URL, names no video, so it still
+    probes as a playlist and still fans out.
+    """
+    opts = {
+        **_common_opts(),
+        "skip_download": True,
+        "extract_flat": "in_playlist",
+        "playlist_items": None,
+        "noplaylist": True,
+    }
+    if cookies_file:
+        # A members-only video needs the cookie to say even what it is called.
+        opts["cookiefile"] = str(cookies_file)
+    return opts
+
+
+def download_opts(dest_dir: str | Path, cookies_file: str | None = None) -> dict:
+    """Options for fetching the audio of one video into ``dest_dir``.
+
+    `bestaudio/best` with an empty `postprocessors` list is the no-re-encode
+    rule: whatever the site already has (Opus in WebM, AAC in M4A) is taken as
+    it is. Asking for `--extract-audio` would run it through ffmpeg for no
+    gain - the prepare stage decodes to 16 kHz mono anyway, so a re-encode here
+    would only cost time and a generation of quality.
+
+    `noplaylist` matters more than it looks: a YouTube video URL usually
+    carries a `&list=` from wherever it was copied, and without this a single
+    video would quietly become the whole playlist.
+    """
+    opts = {
+        **_common_opts(),
+        "format": "bestaudio/best",
+        "outtmpl": str(Path(dest_dir) / f"{DOWNLOAD_STEM}.%(ext)s"),
+        "writeinfojson": True,
+        "noplaylist": True,
+        "postprocessors": [],
+        "overwrites": True,
+        "retries": 3,
+        "fragment_retries": 3,
+    }
+    if cookies_file:
+        # A file the user exported, never a browser: see the module docstring
+        # for why --cookies-from-browser is not on offer on Windows.
+        opts["cookiefile"] = str(cookies_file)
+    return opts
+
+
+# --- reading a URL -------------------------------------------------------------
+
+
+def ensure_http_url(url: str) -> str:
+    """``url`` if it is an http(s) URL; `UnsupportedUrl` otherwise.
+
+    The guard sits here rather than only in the route because this is where the
+    danger is: yt-dlp reads `file://` through its generic extractor and turns a
+    bare string into a search query, so an `ingest_url` job enqueued through
+    the JSON API could otherwise ask it to open a local file or search the web.
+    """
+    text = (url or "").strip()
+    scheme = urlparse(text).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise UnsupportedUrl(
+            f"{text or 'an empty string'} is not a web address; "
+            "paste an http:// or https:// link"
+        )
+    return text
+
+
+def probe(url: str, *, cookies_file: str | None = None, ydl=None) -> UrlInfo:
+    """What this URL is, without downloading a byte."""
+    url = ensure_http_url(url)
+    ydl = ydl if ydl is not None else build_ydl(probe_opts(cookies_file))
+    info = _extract(ydl, url, download=False)
+
+    entries = _entries(info)
+    return UrlInfo(
+        kind="playlist" if entries else "single",
+        title=str(info.get("title") or ""),
+        duration=_as_float(info.get("duration")),
+        uploader=_uploader(info),
+        webpage_url=str(info.get("webpage_url") or info.get("original_url") or url),
+        entries=entries,
+        info=info,
+    )
+
+
+def download(
+    url: str,
+    dest_dir: str | Path,
+    *,
+    on_progress: Callable[[float], None] | None = None,
+    cookies_file: str | None = None,
+    ydl=None,
+) -> DownloadedMedia:
+    """Fetch the audio of one video into ``dest_dir``; returns where it landed.
+
+    Progress is yt-dlp's own byte counts mapped onto 0..1, and it never goes
+    backwards - a fragment that restarts would otherwise walk the bar back.
+    When the server never said how big the file is, nothing is reported in
+    between and the stage simply completes: the house rule (see
+    `prepare.progress_fractions`) is that a stage which cannot measure itself
+    reports 0 and then 1 rather than a convincing-looking guess.
+
+    There is no cooperative cancel inside the download. yt-dlp wraps an
+    exception raised from a progress hook into a `DownloadError`, which would
+    land a cancelled job on the board as *failed* - so cancel is honoured at
+    the stage boundary instead, exactly as `prepare` does and for the same
+    reason.
+    """
+    url = ensure_http_url(url)
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    if ydl is None:
+        ydl = build_ydl(download_opts(dest, cookies_file))
+    if on_progress is not None:
+        ydl.add_progress_hook(_progress_hook(on_progress))
+
+    info = _extract(ydl, url, download=True)
+    path = _rename_to_title(_locate(dest, info), str(info.get("title") or ""))
+
+    if on_progress is not None:
+        # Unconditionally, the way `prepare.to_wav` closes: the file is here,
+        # whether or not the hook ever fired.
+        on_progress(1.0)
+
+    return DownloadedMedia(
+        path=path,
+        title=str(info.get("title") or path.stem),
+        duration=_as_float(info.get("duration")),
+        uploader=_uploader(info),
+        info=info,
+    )
+
+
+# --- names worth biasing the decoder towards -----------------------------------
+
+
+def hotword_terms(info: dict) -> list[str]:
+    """Capitalised words from the title, the uploader and the chapter titles.
+
+    Only capitalised ones, and no digits, by the same rule
+    `transcribe.name_candidates` applies to a filename: a lowercase word is
+    not a name, and the hotword budget it would eat belongs to terms somebody
+    actually chose. The description is deliberately not read - it is long,
+    mostly links, and would swamp the budget with sponsors.
+
+    Task 5's `glossary.compose_hotwords` is what spends these. Note the seam:
+    the info-json lives in the job's work directory, which the runner deletes
+    when the job ends, so whatever a later phase wants from it has to be taken
+    while the `ingest_url` job is still running.
+    """
+    sources: list[str] = [
+        str((info or {}).get("title") or ""),
+        _uploader(info or {}),
+    ]
+    for chapter in (info or {}).get("chapters") or []:
+        if isinstance(chapter, dict):
+            sources.append(str(chapter.get("title") or ""))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for text in sources:
+        for token in _WORD.findall(text):
+            key = token.casefold()
+            if len(token) >= 2 and token[0].isupper() and key not in seen:
+                seen.add(key)
+                out.append(token)
+    return out
+
+
+# --- the plumbing --------------------------------------------------------------
+
+
+def _extract(ydl, url: str, *, download: bool) -> dict:
+    """`ydl.extract_info`, with every yt-dlp failure mapped onto a `UrlError`."""
+    try:
+        info = ydl.extract_info(url, download=download)
+    except Exception as exc:  # noqa: BLE001 - classified below, never swallowed
+        raise _classify(exc) from exc
+    if not isinstance(info, dict):
+        raise DownloadFailed(f"yt-dlp returned nothing for {url}")
+    return info
+
+
+def _classify(exc: BaseException) -> UrlError:
+    """Which of the three this yt-dlp exception is, and what to tell the user."""
+    if isinstance(exc, UrlError):
+        return exc
+
+    original = exc
+    exc_info = getattr(exc, "exc_info", None)
+    if isinstance(exc_info, tuple) and len(exc_info) >= 2 and isinstance(exc_info[1], BaseException):
+        original = exc_info[1]
+
+    whole = f"{exc}\n{original}".lower()
+    reason = _reason(str(exc))
+
+    if _is_unsupported(original) or "unsupported url" in whole:
+        return UnsupportedUrl(reason)
+    if any(smell in whole for smell in _UNAVAILABLE):
+        return Unavailable(reason)
+    # Only the message decides this, never `is_stale()` on its own: blaming a
+    # timeout on an old yt-dlp would send somebody to run a pip command that
+    # cannot help, and would make this classification depend on the calendar.
+    if any(smell in whole for smell in _STALE_EXTRACTOR):
+        return DownloadFailed(f"{reason} - {stale_note()}")
+    return DownloadFailed(reason)
+
+
+def _is_unsupported(exc: BaseException) -> bool:
+    """yt-dlp's own "no extractor for this" class, without importing it eagerly."""
+    try:
+        from yt_dlp.utils import UnsupportedError
+    except ImportError:  # pragma: no cover - yt-dlp raised it, so it is installed
+        return False
+    return isinstance(exc, UnsupportedError)
+
+
+def _reason(message: str) -> str:
+    """The useful line of a yt-dlp error message.
+
+    The last line, per the plan - but boilerplate lines are dropped first, so a
+    two-line failure reports "Unable to extract nsig function" rather than the
+    request to file a bug underneath it. `ERROR:` goes too: it is yt-dlp
+    shouting, not information.
+    """
+    lines = [line.strip() for line in str(message).strip().splitlines() if line.strip()]
+    useful = [
+        line for line in lines
+        if not any(line.lower().startswith(prefix) for prefix in _BOILERPLATE)
+    ]
+    line = (useful or lines or ["yt-dlp failed without saying why"])[-1]
+    return line.removeprefix("ERROR:").strip()
+
+
+def _entries(info: dict) -> list[dict]:
+    """A playlist's items as ``{id, title, duration, url}``; empty for a video.
+
+    An entry with no URL to follow is dropped rather than kept: it would
+    become a job whose only possible outcome is a failure.
+    """
+    raw = info.get("entries")
+    if not raw:
+        return []
+
+    entries: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url") or entry.get("webpage_url")
+        if not url:
+            continue
+        entries.append(
+            {
+                "id": str(entry.get("id") or ""),
+                "title": str(entry.get("title") or ""),
+                "duration": _as_float(entry.get("duration")),
+                "url": str(url),
+            }
+        )
+    return entries
+
+
+def _uploader(info: dict) -> str:
+    for key in ("uploader", "channel", "creator", "uploader_id"):
+        value = (info or {}).get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _progress_hook(on_progress: Callable[[float], None]) -> Callable[[dict], None]:
+    """yt-dlp's progress dicts as monotonic 0..1 fractions."""
+    highest = 0.0
+
+    def hook(status: dict) -> None:
+        nonlocal highest
+        if not isinstance(status, dict):
+            return
+        total = _as_float(status.get("total_bytes")) or _as_float(
+            status.get("total_bytes_estimate")
+        )
+        done = _as_float(status.get("downloaded_bytes"))
+        if not total or total <= 0 or done is None or done < 0:
+            return  # a size nobody knows is not a fraction
+        fraction = min(1.0, done / total)
+        if fraction < highest:
+            return  # a fragment restarting is not the download going backwards
+        highest = fraction
+        on_progress(fraction)
+
+    return hook
+
+
+def _locate(dest: Path, info: dict) -> Path:
+    """The file yt-dlp just wrote, whatever it decided to call it.
+
+    yt-dlp reports it in `requested_downloads`; the glob is the fallback for a
+    build or an extractor that does not, and it is why the output template uses
+    a fixed stem - there is exactly one candidate to find.
+    """
+    for entry in info.get("requested_downloads") or []:
+        if isinstance(entry, dict) and entry.get("filepath"):
+            candidate = Path(entry["filepath"])
+            if candidate.is_file():
+                return candidate
+
+    found = [
+        path
+        for path in sorted(dest.glob(f"{DOWNLOAD_STEM}.*"))
+        if path.is_file() and not any(path.name.endswith(s) for s in _NOT_THE_MEDIA)
+    ]
+    if not found:
+        raise DownloadFailed(
+            f"yt-dlp reported success but left no media file in {dest}"
+        )
+    return found[0]
+
+
+def _rename_to_title(path: Path, title: str) -> Path:
+    """Rename the download to the scrubbed title; carries the sidecar with it.
+
+    The scrub is the exporters' (`exports.options.scrub`): forbidden Win32
+    characters, path separators and trailing dots gone, reserved device names
+    suffixed. That is what makes a title of ``..\\..\\evil`` a name inside this
+    directory rather than a way out of it.
+
+    Imported here rather than at module scope on purpose: `scribe.exports`
+    pulls python-docx and lxml in through its writer registry, and a download
+    has no business loading a Word writer to find out what a filename may
+    contain. `media.private_default` sets the same precedent.
+    """
+    from scribe.exports.options import scrub
+
+    stem = scrub(title) or FALLBACK_STEM
+    target = path.with_name(f"{stem}{path.suffix}")
+    if target == path:
+        return path
+
+    os.replace(path, target)
+    sidecar = path.with_suffix(INFO_JSON_SUFFIX)
+    if sidecar.is_file():
+        os.replace(sidecar, target.with_suffix(INFO_JSON_SUFFIX))
+    return target
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

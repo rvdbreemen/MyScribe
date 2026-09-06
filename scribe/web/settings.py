@@ -1,0 +1,912 @@
+"""Settings: what this machine has, and what the next transcription gets.
+
+Everything about this machine on one page, and none of it loads a model in
+the web process (ADR-001):
+
+* **The doctor.** The CPU checks (`doctor.CPU_CHECKS`: python, sqlite,
+  ffmpeg, the data directory, disk, database) run in the request; they take
+  under a second and touch nothing a browser could not. The GPU checks load a
+  model and transcribe a clip, which is exactly what this process never does,
+  so they are a job: `POST /settings/doctor` with `gpu=1` queues a `doctor`
+  job, the runner child runs `doctor.gpu_stage` and stores what it found in
+  the `doctor_last` setting, and this page shows that result - and the job it
+  came from - the next time it is asked. One such job at a time: a second one
+  would only measure the first one's card.
+* **The models on disk.** `doctor.installed_models` reads the Hugging Face
+  hub cache and the app's own weights directory. Measured, never opened; the
+  names of the runtimes that would open them do not appear in this module.
+* **The store.** How much MEDIA_DIR holds and how much room is left on its
+  drive, so a disk filling up is visible before a job finds out.
+* **The defaults.** Language, tier and speakers are the same `setting` rows
+  the transcribe dialog reads (`transcribe_dialog.read_defaults`) and writes
+  back on every submit; saving here is the same write. The browse roots are
+  `fsbrowse.SETTING_KEY`, one absolute directory per line, checked to exist
+  before they are stored - the user is at the form, so a typo can be named
+  now rather than surface as a 403 in the dialog later. A blank field
+  deletes the row and the default root returns.
+* **The watch folders.** Folders that ingest by themselves: a file dropped
+  in one becomes a recording and a queued job without anybody opening the
+  dialog. The rows are `watch_folder`, added and switched off here and read
+  by the watcher thread the lifespan starts; each carries its own transcribe
+  options, because nobody is at the dialog when the file lands. A path is
+  checked against `fsbrowse`'s roots, against being inside `DATA_DIR` (the
+  app's own scratch is full of things that look like media), and against
+  already being watched - all three at the form, where a mistake can be
+  named, rather than in a thread where it would be a log line.
+* **The glossary.** The names this machine should get right, spent on both
+  sides of the decode (`scribe.glossary`): as `hotwords` while a recording is
+  transcribed, and afterwards as a correction layer over the words it
+  produced. Terms are `vocab` rows, added one at a time or pasted in one per
+  line. Nothing is corrected here - re-applying the glossary reads whole
+  transcripts, so the button queues one `correct` job per recording that has
+  one and the runner children do the work (ADR-001). Removing a term takes its
+  corrections out on the next such re-run, because each job replaces its run's
+  layer outright rather than adding to it.
+* **The export presets.** One `export_preset` row per saved set of export
+  options, read and written through `scribe.web.exports_ui` so the export
+  dialog and this page cannot disagree about what a preset is. Saving takes
+  a name and either the option fields (what the dialog posts) or one
+  ``options`` field of JSON (this page's form); a saved name cannot be one
+  of the built-ins and cannot be taken twice.
+
+Every mutation is a POST with a form body that answers twice: an htmx post
+gets the section it changed re-rendered, with a flash out of band for the
+page's status region; a plain post gets a 303 back to the page. A preset
+saved from the export dialog is the one exception: the dialog targets its
+preset select (`HX-Target` names it), and gets that select back with the
+new preset chosen, so the fields the user just filled in stay as they are.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sqlite3
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import RedirectResponse, Response
+
+from scribe import db, doctor, fsbrowse, glossary, jobs, paths
+from scribe.exports.options import PRESETS
+from scribe.ingest import watching
+from scribe.llm import base as llm_base
+from scribe.options import parse_options
+from scribe.stages import correct, transcribe
+from scribe.web import ai_ui, exports_ui, library, render, transcribe_dialog
+from scribe.web.transcribe_dialog import human_size
+
+router = APIRouter()
+
+# The form field carrying the browse roots is named after the setting it sets.
+FIELD_ROOTS = fsbrowse.SETTING_KEY
+# The form field on the doctor form that asks for the GPU job as well.
+FIELD_GPU = "gpu"
+
+FLASH_SAVED = "Settings saved."
+FLASH_PRESET_SAVED = "Preset saved."
+FLASH_PRESET_DELETED = "Preset deleted."
+FLASH_WATCH_ADDED = "Watching that folder. Anything already in it is picked up shortly."
+FLASH_WATCH_ENABLED = "Watching that folder again."
+FLASH_WATCH_DISABLED = "Stopped watching that folder."
+FLASH_WATCH_REMOVED = "Folder removed. Everything already transcribed stays in the library."
+FLASH_TERM_ADDED = "Added to the glossary. It biases the next transcription and corrects the ones already here."
+FLASH_TERM_REMOVED = "Term removed. Re-run the corrections to take its changes back out of the transcripts."
+
+# The form field carrying the folder to watch, and the one carrying its switch.
+FIELD_WATCH_PATH = "path"
+FIELD_WATCH_ENABLED = "enabled"
+
+# The glossary form's fields: one term with its weight and known misspellings,
+# or a whole list pasted into the import box.
+FIELD_TERM = "term"
+FIELD_WEIGHT = "weight"
+FIELD_VARIANTS = "variants"
+FIELD_TERM_LIST = "terms"
+
+
+# --- what the page shows ---------------------------------------------------------
+
+
+def store_usage(root: Path) -> dict:
+    """What the media store holds and what its drive has left.
+
+    ``bytes`` is the sum of the files under ``root``, links counted as links;
+    a recording hardlinked in from elsewhere on the same volume counts its
+    full size, which is what the store would hold if the original went away.
+    ``free`` and ``total`` are the drive's, measured at ``root`` or, before
+    the store exists, at its parent. Never raises: a store that cannot be
+    measured shows zeros, not an error page.
+    """
+    files = 0
+    total = 0
+    if root.is_dir():
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for filename in filenames:
+                try:
+                    total += os.lstat(os.path.join(dirpath, filename)).st_size
+                except OSError:
+                    continue
+                files += 1
+    probe = root if root.exists() else root.parent
+    try:
+        disk = shutil.disk_usage(probe)
+        free, disk_total = disk.free, disk.total
+    except OSError:
+        free, disk_total = 0, 0
+    return {"path": root, "files": files, "bytes": total, "free": free, "total": disk_total}
+
+
+def pending_doctor_job(conn: sqlite3.Connection) -> dict | None:
+    """The doctor job still queued or running, if there is one."""
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT id, status FROM job WHERE type=? AND status IN ('queued', 'running')"
+            " ORDER BY id LIMIT 1",
+            (doctor.JOB_TYPE,),
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def queue_gpu_checks(conn: sqlite3.Connection) -> tuple[int, bool]:
+    """Queue the doctor job; returns (job id, whether it is new).
+
+    A job already waiting or running is returned instead of a second one:
+    the answer would be the same card measured twice, a minute apart.
+    """
+    pending = pending_doctor_job(conn)
+    if pending is not None:
+        return pending["id"], False
+    return jobs.enqueue(conn, doctor.JOB_TYPE), True
+
+
+def _roots_setting(conn: sqlite3.Connection) -> str | None:
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT value FROM setting WHERE key=?", (fsbrowse.SETTING_KEY,)
+        ).fetchone()
+    return None if row is None else row["value"]
+
+
+def doctor_context(
+    conn: sqlite3.Connection,
+    *,
+    cpu_checks: list[doctor.Check] | None = None,
+    flash: str | None = None,
+) -> dict:
+    """What _doctor_panel.html renders from. ``cpu_checks`` are run here
+    unless the caller already has them."""
+    return {
+        "cpu_checks": doctor.checks(include_gpu=False) if cpu_checks is None else cpu_checks,
+        "gpu_last": doctor.last_run(conn),
+        "gpu_job": pending_doctor_job(conn),
+        "flash": flash,
+    }
+
+
+def defaults_context(conn: sqlite3.Connection, *, flash: str | None = None) -> dict:
+    """What _settings_defaults.html renders from: the dialog's defaults and
+    the browse roots, stored and effective."""
+    return {
+        "options": transcribe_dialog.read_defaults(conn),
+        "languages": transcribe.LANGUAGE_CHOICES,
+        "roots_text": _roots_setting(conn) or "",
+        "roots": fsbrowse.allowed_roots(conn),
+        "default_roots": fsbrowse.ALLOWED_ROOTS,
+        "flash": flash,
+    }
+
+
+def models_context() -> dict:
+    """The weights on this machine, sizes already formatted for the table."""
+    local = doctor.local_weights_dir()
+    return {
+        "models": [
+            {
+                "name": model.name,
+                "path": model.path,
+                "size": human_size(model.size_bytes),
+                "source": model.source,
+            }
+            for model in doctor.installed_models()
+        ],
+        "cache_dir": doctor.hf_cache_dir(),
+        "local_weights": local if local.is_dir() else None,
+    }
+
+
+def storage_context() -> dict:
+    usage = store_usage(paths.MEDIA_DIR)
+    return {
+        "storage": {
+            **usage,
+            "size": human_size(usage["bytes"]),
+            "free_size": human_size(usage["free"]),
+            "total_size": human_size(usage["total"]),
+        }
+    }
+
+
+def presets_context(conn: sqlite3.Connection, *, flash: str | None = None) -> dict:
+    """What _settings_presets.html renders from: the saved presets, each
+    with a one-line summary, and the built-ins by name."""
+    return {
+        "presets": [
+            {**preset, "summary": exports_ui.describe(preset["options"])}
+            for preset in exports_ui.saved_presets(conn)
+        ],
+        "builtin_presets": [
+            {"name": name, "label": exports_ui.PRESET_LABELS.get(name, name)} for name in PRESETS
+        ],
+        "flash": flash,
+    }
+
+
+def describe_options(options) -> str:
+    """One line saying what a watched folder transcribes with.
+
+    The tier's own label, never the model it maps to: this sits next to a
+    folder path, where a checkpoint name answers a question nobody asked - and
+    ADR-004 keeps that name spelled in exactly one module anyway.
+    """
+    language = dict(transcribe.LANGUAGE_CHOICES).get(options.language, "Auto-detect")
+    tier = "Maximaal" if options.tier == "max" else "Turbo"
+    speakers = "speakers recognised" if options.diarize else "no speaker recognition"
+    return f"{language}, {tier}, {speakers}"
+
+
+def watch_context(
+    conn: sqlite3.Connection,
+    *,
+    watcher: "watching.Watcher | None" = None,
+    flash: str | None = None,
+) -> dict:
+    """What _settings_watch.html renders from: the folders, each with its
+    options summarised and every reason it might not be doing anything.
+
+    Three ways a row that says "On" can still be taking nothing in, and the
+    page has to say which:
+      missing       - not on this machine right now
+      outside_roots - the browse roots were narrowed and no longer cover it,
+                      so `watching.watchable` skips it (folders() computes
+                      this as `allowed`)
+      unwatchable   - the observer refused to open a watch on it. Files
+                      already there are still found by the startup reconcile;
+                      new ones are not noticed until the next start.
+    `watcher` is None when the app runs without a supervisor, and then
+    `unwatchable` stays False: nothing has tried, which is not the same as
+    tried and refused.
+    """
+    return {
+        "watch_folders": [
+            {
+                "id": folder["id"],
+                "path": folder["path"],
+                "enabled": bool(folder["enabled"]),
+                "missing": not Path(folder["path"]).is_dir(),
+                "outside_roots": not folder.get("allowed", True),
+                "unwatchable": bool(watcher and watcher.cannot_watch(folder["path"])),
+                "summary": describe_options(folder["options"]),
+            }
+            for folder in watching.folders(conn, enabled_only=False)
+        ],
+        "quiesce_seconds": int(watching.QUIESCE_SECONDS),
+        # What the add-form opens with. Named apart from `defaults_context`'s
+        # `options` so the two sections cannot shadow each other in
+        # `page_context`, even though today they hold the same defaults.
+        "watch_options": transcribe_dialog.read_defaults(conn),
+        "languages": transcribe.LANGUAGE_CHOICES,
+        "flash": flash,
+    }
+
+
+def glossary_context(conn: sqlite3.Connection, *, flash: str | None = None) -> dict:
+    """What _glossary.html renders from: the terms, heaviest first, and how
+    much of the library a re-run would cover."""
+    return {
+        "glossary_terms": [
+            {
+                "id": entry.id,
+                "term": entry.term,
+                "weight": entry.weight,
+                "variants": ", ".join(entry.variants),
+            }
+            for entry in glossary.terms(conn)
+        ],
+        "transcribed_media": len(glossary.media_with_transcripts(conn)),
+        "hotword_limit": glossary.HOTWORD_TOKEN_LIMIT,
+        "flash": flash,
+    }
+
+
+def page_context(
+    conn: sqlite3.Connection, *, watcher: "watching.Watcher | None" = None
+) -> dict:
+    """Everything settings.html renders from.
+
+    `watcher` is threaded through for `watch_context` alone: whether a folder
+    is being watched live is a fact about the running process, not about the
+    database, so it cannot be read back from `conn`.
+    """
+    return {
+        **doctor_context(conn),
+        **models_context(),
+        **storage_context(),
+        **defaults_context(conn),
+        **watch_context(conn, watcher=watcher),
+        **glossary_context(conn),
+        **presets_context(conn),
+        **ai_ui.settings_context(conn),
+        "oob": False,
+    }
+
+
+# --- the browse roots ----------------------------------------------------------------
+
+
+def parse_roots(text: str | None) -> tuple[Path, ...]:
+    """The browse roots a form posted: one absolute, existing directory per
+    line, blank lines ignored. A 400 names the first line that is not."""
+    roots: list[Path] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        path = Path(line)
+        if not path.is_absolute():
+            raise HTTPException(
+                status_code=400,
+                detail=f"browse root {line} is not an absolute path; give the whole path from the drive",
+            )
+        if not path.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"browse root {line} is not a directory on this machine",
+            )
+        roots.append(path)
+    return tuple(roots)
+
+
+def save_roots(conn: sqlite3.Connection, roots: tuple[Path, ...]) -> None:
+    """Store the roots one per line; none at all removes the row, so the
+    default root applies again rather than a stored empty string."""
+    with db.LOCK:
+        if roots:
+            conn.execute(
+                "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+                (fsbrowse.SETTING_KEY, "\n".join(str(root) for root in roots)),
+            )
+        else:
+            conn.execute("DELETE FROM setting WHERE key=?", (fsbrowse.SETTING_KEY,))
+        conn.commit()
+
+
+# --- routes ------------------------------------------------------------------------------
+
+
+# The categories of the settings page, in sidebar order: key, label, and the
+# one line under the label that says what is in there. One section is shown
+# at a time; the key is what `?section=` and the URL hash carry.
+SECTIONS: tuple[tuple[str, str, str], ...] = (
+    ("defaults", "Transcription", "Language, model tier, speakers, browse roots"),
+    ("watch", "Watch folders", "Folders that transcribe by themselves"),
+    ("glossary", "Glossary", "Names and terms Whisper gets wrong"),
+    ("llm", "AI providers", "Ollama, OpenAI, OpenRouter and their keys"),
+    ("presets", "Export presets", "Saved export settings"),
+    ("machine", "This machine", "Doctor, models on disk, storage"),
+)
+DEFAULT_SECTION = SECTIONS[0][0]
+
+
+def opening_section(request: Request) -> str:
+    """Which category the page opens on: `?section=<key>`, or the first. An
+    unknown key is a hand-edited URL and opens the first, not an error."""
+    asked = str(request.query_params.get("section") or "").strip().lower()
+    return asked if asked in {key for key, _, _ in SECTIONS} else DEFAULT_SECTION
+
+
+@router.get("/settings", include_in_schema=False)
+def settings_page(request: Request) -> Response:
+    conn = request.app.state.conn
+    return render(
+        request,
+        "settings.html",
+        sections=SECTIONS,
+        section=opening_section(request),
+        **page_context(conn, watcher=getattr(request.app.state, "watcher", None)),
+    )
+
+
+@router.post("/settings", include_in_schema=False)
+async def save_settings(request: Request) -> Response:
+    """Save the defaults and, when the form carries the field, the browse
+    roots. Everything is validated before anything is written, so a bad
+    root does not half-save the language next to it."""
+    conn = request.app.state.conn
+    form = await request.form()
+    fields = transcribe_dialog._fields(form)
+    options = parse_options(fields)
+    roots = parse_roots(fields[FIELD_ROOTS]) if FIELD_ROOTS in fields else None
+
+    transcribe_dialog.save_defaults(conn, options)
+    if roots is not None:
+        save_roots(conn, roots)
+
+    if library._is_htmx(request):
+        return render(
+            request, "_settings_defaults.html", oob=True, **defaults_context(conn, flash=FLASH_SAVED)
+        )
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/doctor", include_in_schema=False)
+async def run_doctor(request: Request) -> Response:
+    """Run the CPU checks now and answer with their table; with ``gpu=1``
+    also queue the doctor job for the GPU checks.
+
+    The checks run in a thread: ffmpeg and ffprobe are subprocesses, and the
+    event loop has a jobs board to keep answering while they start. A plain
+    post is sent back to the page, which runs the checks for itself.
+    """
+    conn = request.app.state.conn
+    form = await request.form()
+    fields = transcribe_dialog._fields(form)
+    gpu = library._truthy(fields.get(FIELD_GPU))
+
+    flash = None
+    if gpu:
+        job_id, fresh = queue_gpu_checks(conn)
+        flash = (
+            f"GPU checks queued as job {job_id}."
+            if fresh
+            else f"GPU checks are already waiting as job {job_id}."
+        )
+
+    if not library._is_htmx(request):
+        return RedirectResponse("/settings", status_code=303)
+
+    results = await run_in_threadpool(doctor.checks, include_gpu=False)
+    response = render(
+        request,
+        "_doctor_panel.html",
+        oob=True,
+        **doctor_context(conn, cpu_checks=results, flash=flash),
+    )
+    if gpu:
+        response.headers["HX-Trigger"] = "jobs-changed"
+    return response
+
+
+# --- watch folders --------------------------------------------------------------------------
+#
+# A folder that ingests by itself is the one door with nobody standing at it,
+# so everything knowable is checked here, at the form, where it can be named -
+# rather than in the watcher thread, where the only place to say it would be a
+# log line nobody reads. The watcher itself starts in the lifespan
+# (`scribe.app.create_app`) and picks up a folder added here within one poll
+# interval; `scribe/ingest/watching.py` owns the rules about what it takes in.
+
+
+def _watch_answer(request: Request, conn: sqlite3.Connection, *, flash: str) -> Response:
+    """The section re-rendered for htmx; a 303 back to the page otherwise."""
+    if not library._is_htmx(request):
+        return RedirectResponse("/settings#watch-folders", status_code=303)
+    return render(
+        request,
+        "_settings_watch.html",
+        oob=True,
+        **watch_context(
+            conn, watcher=getattr(request.app.state, "watcher", None), flash=flash
+        ),
+    )
+
+
+def parse_watch_path(conn: sqlite3.Connection, raw: str | None) -> Path:
+    """The folder a form asked to watch, or a 4xx saying why it will not be.
+
+    Four noes, and each one is a mistake the user can fix from where they are
+    standing:
+
+    * not an absolute path that exists as a directory - a typo, or a drive
+      that is not mounted, and the watcher would silently watch nothing;
+    * outside `fsbrowse`'s roots - the same rule the transcribe dialog's path
+      field and `POST /api/media` apply, so all three doors agree about what
+      this app may read;
+    * inside `paths.DATA_DIR` - the store, the per-job scratch and the
+      microphone chunks all live there and all look like media, so watching it
+      would have the app ingesting its own working files, forever;
+    * already registered - the column is UNIQUE, and two rows over one folder
+      would be two ingests of every file that lands in it.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="give the folder to watch as a full path")
+    path = Path(text)
+    if not path.is_absolute():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{text} is not an absolute path; give the whole path from the drive",
+        )
+    if not path.is_dir():
+        raise HTTPException(status_code=400, detail=f"{path} is not a folder on this machine")
+    if not fsbrowse.is_allowed(path, fsbrowse.allowed_roots(conn)):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{path} is outside the folders this app may read from; widen them under Settings",
+        )
+    if watching.in_data_dir(path):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{path} is inside this app's own data directory; watching it would"
+                " have MyScribe ingesting its own working files"
+            ),
+        )
+    return path
+
+
+def _get_watch_folder(conn: sqlite3.Connection, folder_id: int) -> dict:
+    for folder in watching.folders(conn, enabled_only=False):
+        if folder["id"] == folder_id:
+            return folder
+    raise HTTPException(status_code=404, detail=f"no watched folder with id {folder_id}")
+
+
+@router.post("/settings/watch", include_in_schema=False)
+async def add_watch_folder(request: Request) -> Response:
+    """Watch a folder, with the options everything found in it gets.
+
+    The options are the transcribe dialog's own fields, validated by
+    `parse_options` and stored as `TranscribeOptions.model_dump()` - the
+    form's vocabulary, not the job's, so this form can render them back and
+    the tier is still mapped to a model at enqueue time (ADR-004).
+    """
+    conn = request.app.state.conn
+    fields = transcribe_dialog._fields(await request.form())
+    path = parse_watch_path(conn, fields.get(FIELD_WATCH_PATH))
+    options = parse_options(fields)
+
+    try:
+        watching.add_folder(conn, path, options)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"{path} is already being watched") from None
+    return _watch_answer(request, conn, flash=FLASH_WATCH_ADDED)
+
+
+@router.post("/settings/watch/{folder_id}", include_in_schema=False)
+async def toggle_watch_folder(folder_id: int, request: Request) -> Response:
+    """Switch one folder on or off, keeping its path and its options.
+
+    Off rather than removed is the useful state for a folder on a drive that
+    is not always plugged in: the options survive, and so does the row the
+    page shows.
+    """
+    conn = request.app.state.conn
+    _get_watch_folder(conn, folder_id)
+    fields = transcribe_dialog._fields(await request.form())
+    enabled = library._truthy(fields.get(FIELD_WATCH_ENABLED))
+
+    watching.set_enabled(conn, folder_id, enabled)
+    return _watch_answer(
+        request, conn, flash=FLASH_WATCH_ENABLED if enabled else FLASH_WATCH_DISABLED
+    )
+
+
+@router.post("/settings/watch/{folder_id}/delete", include_in_schema=False)
+def delete_watch_folder(folder_id: int, request: Request) -> Response:
+    """Stop watching a folder. Nothing already in the library is touched."""
+    conn = request.app.state.conn
+    _get_watch_folder(conn, folder_id)
+    watching.remove_folder(conn, folder_id)
+    return _watch_answer(request, conn, flash=FLASH_WATCH_REMOVED)
+
+
+# --- the glossary --------------------------------------------------------------------------
+#
+# One list of names, spent on both sides of the decode (`scribe.glossary`): as
+# `hotwords` before a transcription and as a reversible correction layer after
+# it. Nothing here corrects anything - the pass reads a whole transcript and a
+# library-wide re-run reads all of them, which is a runner child's work and not
+# a request's (ADR-001). This page only edits rows and queues jobs.
+
+
+def _glossary_answer(request: Request, conn: sqlite3.Connection, *, flash: str) -> Response:
+    """The section re-rendered for htmx; a 303 back to the page otherwise."""
+    if not library._is_htmx(request):
+        return RedirectResponse("/settings#glossary", status_code=303)
+    return render(request, "_glossary.html", oob=True, **glossary_context(conn, flash=flash))
+
+
+def parse_weight(raw: str | None) -> float:
+    """A term's weight as the form sends it; 1.0 when it sends nothing.
+
+    Weight only ever orders the list, and the list is truncated at the hotword
+    budget - so a heavier term is one that survives a tight budget, not one the
+    decoder believes more. Refused above zero only: a zero or negative weight
+    would sort a term below every other and look like a bug.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return 1.0
+    try:
+        weight = float(text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{text!r} is not a number") from None
+    if weight <= 0:
+        raise HTTPException(status_code=400, detail="a weight has to be greater than zero")
+    return weight
+
+
+def queue_recorrect(conn: sqlite3.Connection) -> list[int]:
+    """One `correct` job per transcribed media; returns the ids queued.
+
+    A media that already has one waiting is skipped rather than given a second:
+    both would read the same glossary and write the same rows, and the second
+    would only be the first one's work done twice.
+    """
+    with db.LOCK:
+        pending = {
+            row["media_id"]
+            for row in conn.execute(
+                "SELECT DISTINCT media_id FROM job WHERE type=?"
+                " AND status IN ('queued', 'running')",
+                (correct.JOB_TYPE,),
+            ).fetchall()
+        }
+    return [
+        jobs.enqueue(conn, correct.JOB_TYPE, media_id=media_id)
+        for media_id in glossary.media_with_transcripts(conn)
+        if media_id not in pending
+    ]
+
+
+@router.post("/settings/glossary", include_in_schema=False)
+async def add_glossary_term(request: Request) -> Response:
+    """Add one term, with its weight and any misspellings already known.
+
+    The variants field is comma-separated because that is how a person writes
+    a short list; they are looked for by the correction pass and deliberately
+    kept out of the hotwords, where they would bias the decoder towards the
+    very spellings we are trying to get rid of.
+    """
+    conn = request.app.state.conn
+    fields = transcribe_dialog._fields(await request.form())
+    text = (fields.get(FIELD_TERM) or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="give the term to add")
+    variants = [part.strip() for part in (fields.get(FIELD_VARIANTS) or "").split(",")]
+
+    try:
+        glossary.add(conn, text, weight=parse_weight(fields.get(FIELD_WEIGHT)), variants=variants)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"{text} is already in the glossary") from None
+    return _glossary_answer(request, conn, flash=FLASH_TERM_ADDED)
+
+
+@router.post("/settings/glossary/import", include_in_schema=False)
+async def import_glossary(request: Request) -> Response:
+    """A pasted list, one term per line. Terms already there keep their weights."""
+    conn = request.app.state.conn
+    fields = transcribe_dialog._fields(await request.form())
+    added = glossary.import_terms(conn, fields.get(FIELD_TERM_LIST) or "")
+    return _glossary_answer(
+        request, conn, flash=f"{added} term(s) added; anything already listed was left as it was."
+    )
+
+
+@router.post("/settings/glossary/{term_id}/delete", include_in_schema=False)
+def delete_glossary_term(term_id: int, request: Request) -> Response:
+    """Remove one term. The corrections it already made stay until the next
+    re-run, which is the button below the list - deleting them here would mean
+    reading every transcript in the library inside this request."""
+    conn = request.app.state.conn
+    if not glossary.remove(conn, term_id):
+        raise HTTPException(status_code=404, detail=f"no glossary term with id {term_id}")
+    return _glossary_answer(request, conn, flash=FLASH_TERM_REMOVED)
+
+
+@router.post("/settings/glossary/recorrect", include_in_schema=False)
+def recorrect_library(request: Request) -> Response:
+    """Re-apply the glossary to every transcript there is, as one job each.
+
+    One job per media rather than one job for the library: a failure then costs
+    one recording rather than all of them, and the jobs board shows progress
+    that means something. Each job replaces its run's whole correction layer,
+    so this is also how a term deleted from the list stops changing anything.
+    """
+    conn = request.app.state.conn
+    queued = queue_recorrect(conn)
+    flash = (
+        f"Re-running corrections on {len(queued)} recording(s)."
+        if queued
+        else "Nothing to re-run: every transcript already has a correction job waiting."
+    )
+    response = _glossary_answer(request, conn, flash=flash)
+    if library._is_htmx(request):
+        response.headers["HX-Trigger"] = "jobs-changed"
+    return response
+
+
+# --- export presets ------------------------------------------------------------------------
+
+
+def _presets_answer(
+    request: Request, conn: sqlite3.Connection, *, flash: str, selected: str | None = None
+) -> Response:
+    """The section re-rendered for htmx - or, when the post came from the
+    export dialog's save button, its preset select with ``selected``
+    chosen; a 303 back to the page for a plain post."""
+    if not library._is_htmx(request):
+        return RedirectResponse("/settings", status_code=303)
+    if request.headers.get("HX-Target") == exports_ui.PRESET_SELECT_ID:
+        return render(
+            request,
+            "_export_presets.html",
+            presets=exports_ui.preset_choices(conn),
+            selected=selected,
+            preset_select_id=exports_ui.PRESET_SELECT_ID,
+        )
+    return render(request, "_settings_presets.html", oob=True, **presets_context(conn, flash=flash))
+
+
+@router.post("/settings/presets", include_in_schema=False)
+async def save_preset(request: Request) -> Response:
+    """Save a preset: ``name`` plus the export option fields, or ``name``
+    plus ``options`` as JSON. Validated whole before the row is written."""
+    conn = request.app.state.conn
+    form = await request.form()
+    options = exports_ui.preset_options_from(form)
+    name = exports_ui.save_preset(
+        conn, transcribe_dialog._fields(form).get(exports_ui.PRESET_NAME_FIELD), options
+    )
+    return _presets_answer(request, conn, flash=FLASH_PRESET_SAVED, selected=name)
+
+
+@router.post("/settings/presets/{preset_id}/delete", include_in_schema=False)
+def delete_preset(preset_id: int, request: Request) -> Response:
+    conn = request.app.state.conn
+    exports_ui.delete_preset(conn, preset_id)
+    return _presets_answer(request, conn, flash=FLASH_PRESET_DELETED)
+
+
+# --- AI providers ---------------------------------------------------------------------------
+#
+# The rows are read and written through `scribe.web.ai_ui`, the same module the
+# transcript rail asks for its provider list, so the page and the panel cannot
+# disagree about what the default is. Nothing here calls a model (ADR-001):
+# `available()` answers from a key or a loopback probe, and `models()` is a
+# listing, asked for only when the user presses Refresh.
+
+
+def _llm_answer(request: Request, conn: sqlite3.Connection, *, flash: str) -> Response:
+    """The section re-rendered for htmx; a 303 back to the page otherwise."""
+    if not library._is_htmx(request):
+        return RedirectResponse("/settings#llm-providers", status_code=303)
+    return render(request, "_settings_llm.html", oob=True, **ai_ui.settings_context(conn, flash=flash))
+
+
+@router.post("/settings/llm", include_in_schema=False)
+async def save_llm_defaults(request: Request) -> Response:
+    """The default provider, and one model per provider.
+
+    One model row per provider rather than a single "default model": model ids
+    are provider-scoped, so a shared row would name a model that is a 404 the
+    moment the provider changes (`base.retarget` exists for the same reason).
+    """
+    conn = request.app.state.conn
+    fields = transcribe_dialog._fields(await request.form())
+
+    wanted = (fields.get("provider") or "").strip()
+    if wanted:
+        if wanted not in ai_ui.llm.PROVIDERS:
+            raise HTTPException(status_code=400, detail=f"unknown LLM provider {wanted!r}")
+        ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, wanted)
+
+    for name in ai_ui.llm.PROVIDERS:
+        field = f"{ai_ui.MODEL_FIELD_PREFIX}{name}"
+        if field not in fields:
+            continue
+        model = (fields[field] or "").strip()
+        key = ai_ui.MODEL_SETTING_PREFIX + name
+        if model:
+            ai_ui.setting_put(conn, key, model)
+        else:  # blank means "whatever the provider's own default is"
+            ai_ui.setting_drop(conn, key)
+
+    # The form sends a hidden `0` ahead of the checkbox and `_fields` keeps the
+    # last value, so an unticked box arrives as "0" rather than as silence -
+    # the same convention the transcribe dialog uses for its checkboxes.
+    if ai_ui.PRIVATE_DEFAULT_FIELD in fields:
+        ai_ui.set_private_default(
+            conn, library._truthy(fields[ai_ui.PRIVATE_DEFAULT_FIELD])
+        )
+
+    return _llm_answer(request, conn, flash=ai_ui.FLASH_LLM_SAVED)
+
+
+@router.post("/settings/llm/{provider}/key", include_in_schema=False)
+async def save_llm_key(provider: str, request: Request) -> Response:
+    """Store a key for one provider, or clear it back to the environment.
+
+    The value is written to `setting` as plain text and is never read back to
+    the page - `_settings_llm.html` shows dots and the *source name* instead.
+    Nothing here logs it, and it appears in no response, error or event.
+    """
+    conn = request.app.state.conn
+    if provider not in ai_ui.llm.PROVIDERS:
+        raise HTTPException(status_code=404, detail=f"unknown LLM provider {provider!r}")
+    fields = transcribe_dialog._fields(await request.form())
+    row = llm_base.setting_key(provider)
+
+    if library._truthy(fields.get("clear")):
+        ai_ui.setting_drop(conn, row)
+        return _llm_answer(request, conn, flash=ai_ui.FLASH_KEY_CLEARED)
+
+    value = (fields.get("key") or "").strip()
+    if not value:
+        raise HTTPException(
+            status_code=400,
+            detail="paste a key to save, or use Clear to fall back to the environment",
+        )
+    ai_ui.setting_put(conn, row, value)
+    return _llm_answer(request, conn, flash=ai_ui.FLASH_KEY_SAVED)
+
+
+@router.post("/settings/llm/{provider}/models", include_in_schema=False)
+async def refresh_llm_models(provider: str, request: Request) -> Response:
+    """Ask a provider what models it has, and remember the answer.
+
+    Asked for, never automatic: OpenRouter's list is 423 ids over the internet,
+    and a settings page that fetched it on every load would wait on somebody
+    else's DNS to draw a dropdown. The list is stored, so every later render
+    populates the field from a row; a provider that cannot answer leaves the
+    field as free text and the reason in the flash, which is the honest state -
+    this app does not know what that endpoint has.
+
+    In a thread, because for a cloud provider this is a request over the
+    network and the event loop has a jobs board to keep answering.
+    """
+    conn = request.app.state.conn
+    if provider not in ai_ui.llm.PROVIDERS:
+        raise HTTPException(status_code=404, detail=f"unknown LLM provider {provider!r}")
+
+    instance = ai_ui.llm.PROVIDERS[provider](conn)
+    try:
+        found = await run_in_threadpool(instance.models)
+    except llm_base.LlmError as exc:
+        return _llm_answer(request, conn, flash=f"{provider}: {exc}")
+    ai_ui.remember_models(conn, provider, found)
+    return _llm_answer(request, conn, flash=f"{provider}: {len(found)} model(s) offered.")
+
+
+@router.post("/settings/llm/{provider}/test", include_in_schema=False)
+def test_llm_provider(provider: str, request: Request) -> Response:
+    """Ask this provider to say one word, as a job.
+
+    The only question the rest of this table cannot answer: `available()` says
+    a key was found and `models()` says a list came back, and neither has ever
+    completed anything - so a stopped daemon, a stale environment key
+    outranking the one just typed, and a plausible model id that 404s all pass
+    both and fail the first real request.
+
+    Nothing is asked of a provider here (ADR-001): this writes a `job` row and
+    the runner child makes the call, exactly as a rail action does. The result
+    lands in a `setting` row and the row below the button says how it went;
+    the jobs board carries the failure, because `llm_stage.probe_store` records
+    the verdict before it raises.
+    """
+    conn = request.app.state.conn
+    if provider not in ai_ui.llm.PROVIDERS:
+        raise HTTPException(status_code=404, detail=f"unknown LLM provider {provider!r}")
+
+    job_id, fresh = ai_ui.queue_provider_test(conn, provider)
+    flash = (
+        f"{provider}: test queued as job {job_id}."
+        if fresh
+        else f"{provider}: a test is already waiting as job {job_id}."
+    )
+    response = _llm_answer(request, conn, flash=flash)
+    if library._is_htmx(request):
+        response.headers["HX-Trigger"] = "jobs-changed"
+    return response

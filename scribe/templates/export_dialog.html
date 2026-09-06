@@ -1,0 +1,229 @@
+{#
+  The Advanced Export dialog: what GET /media/{id}/export (one recording) and
+  GET /export?ids=... (a selection) return into a page's
+  <dialog id="export-dialog">, and what export.html wraps for a browser
+  without scripting.
+
+  Context (from scribe.web.exports_ui.dialog_context):
+
+      bulk            whether this is a selection posting to /media/bulk
+      targets         [{id, title, has_transcript}] the recordings to export
+      action_url      /media/{id}/export, or /media/bulk with action=export
+      preview_url     /media/{id}/export/preview of the first target that
+                      has a transcript, or none when none has
+      formats         [{name, label, extension}] the registry, in order
+      presets         [{name, label, options_json, builtin}] for the select
+      options         ExportOptions - the values the fields open with
+      choices         {field: (values...)} for the Literal fields
+      default_path    the folder the recording lives in
+      written, skipped, folder   set by export.html after a plain
+                      write-to-folder; the fragment ignores them
+
+  One form, three doors, all posting these same fields:
+
+  * Download is the form's own submit - a plain post, on purpose, because a
+    file (or a ZIP) has to reach the browser as a navigation and htmx cannot
+    swap one in. The response is an attachment, so the page stays.
+  * Write to folder is a submit button with its own hx-post: htmx posts the
+    form with destination=folder and puts the list of written files into
+    #export-result. Without scripting the same button posts natively and the
+    route answers with this dialog as a page.
+  * Save preset posts the fields to /settings/presets (formaction without
+    scripting, hx-post with) and gets the preset select back with the new
+    one chosen; the settings page lists and deletes them.
+
+  The preview pane posts the form to preview_url when it loads and whenever
+  any field changes (hx-trigger "change from:closest form"); hx-sync
+  replaces a request still in flight, so the pane always shows the latest
+  fields - a preset applied by app.js fires one change after filling them.
+
+  Each checkbox that stands for a boolean option is preceded by a hidden
+  field of the same name carrying 0: an unticked box posts nothing, and the
+  route takes the last value it sees. The format checkboxes share one name
+  and are read as a list. Field names are ExportOptions' own, so the same
+  parser serves every door. The dialog is marked data-stay-open: app.js
+  closes other dialogs after a successful post from inside them, and here
+  every preview is one.
+#}
+<form id="export-form" class="export" method="post" action="{{ action_url }}">
+  <header class="dialog-head">
+    <h2>Export{% if bulk %} {{ targets|length }} file{{ '' if targets|length == 1 else 's' }}{% else %}: {{ targets[0].title }}{% endif %}</h2>
+    <button type="button" data-close-dialog aria-label="Close">×</button>
+  </header>
+
+  <p class="dialog-flash" data-dialog-flash role="alert"></p>
+
+  {% if bulk %}
+  <input type="hidden" name="action" value="export">
+  {% for t in targets %}
+  <input type="hidden" name="ids" value="{{ t.id }}">
+  {% endfor %}
+  <p class="hint targets">
+    {% for t in targets %}
+    {% if t.has_transcript %}<span>{{ t.title }}</span>{% else %}<span class="muted" title="Skipped: no transcript yet">{{ t.title }} (no transcript yet, skipped)</span>{% endif %}{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+  {% endif %}
+
+  <div class="preset-row">
+    <label class="field">Preset
+      {% include "_export_presets.html" %}
+    </label>
+    <label class="field">Save these options as
+      <span class="preset-save">
+        <input type="text" name="name" maxlength="100" placeholder="Preset name" autocomplete="off" aria-label="Preset name">
+        <button type="submit" formaction="/settings/presets" hx-post="/settings/presets" hx-target="#{{ preset_select_id }}" hx-swap="outerHTML">Save preset</button>
+      </span>
+    </label>
+  </div>
+
+  {# Each group below says which formats read it (data-for), and the
+     stylesheet shows a group only while one of those formats is ticked -
+     `:has()` on the checkboxes, no script, like the transcribe dialog's
+     tabs. Exporting one SRT used to mean scrolling past the Markdown and
+     CSV settings; now it means the subtitle settings and the file ones.
+     The tick here is the way back: every group, whatever is chosen. Its
+     name is not an ExportOptions field, so `parse_options` never sees it. #}
+  <fieldset class="options">
+    <legend>Formats</legend>
+    <div class="formats">
+      {% for f in formats %}
+      <label class="check"><input type="checkbox" name="formats" value="{{ f.name }}"{% if f.name in options.formats %} checked{% endif %}> {{ f.label }} <span class="muted mono">.{{ f.extension }}</span></label>
+      {% endfor %}
+    </div>
+    <label class="check show-all"><input type="checkbox" data-show-all-options> Show every option, not only what these formats use</label>
+  </fieldset>
+
+  <fieldset class="options" data-for="txt md docx html">
+    <legend>Timestamps<span class="unused muted"> · not used by the ticked formats</span></legend>
+    <div class="body">
+    <div class="grid">
+      <label class="field">Where
+        <select name="timestamps">
+          {% for value in choices.timestamps %}
+          <option value="{{ value }}"{% if value == options.timestamps %} selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Format
+        <select name="timestamp_format">
+          {% for value in choices.timestamp_format %}
+          <option value="{{ value }}"{% if value == options.timestamp_format %} selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Interval (seconds)
+        <input type="number" name="interval_seconds" min="1" step="1" value="{{ options.interval_seconds }}">
+      </label>
+    </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="options" data-for="srt vtt txt md docx html json csv">
+    <legend>Speakers<span class="unused muted"> · not used by the ticked formats</span></legend>
+    <div class="body">
+    <input type="hidden" name="speakers" value="0">
+    <label class="check"><input type="checkbox" name="speakers" value="1"{% if options.speakers %} checked{% endif %}> Speaker names <span class="muted">(SRT prefix, VTT voice tags, headings in text)</span></label>
+    </div>
+  </fieldset>
+
+  <fieldset class="options" data-for="srt vtt">
+    <legend>Subtitles<span class="unused muted"> · not used by the ticked formats</span></legend>
+    <div class="body">
+    <div class="grid">
+      <label class="field">Characters per line
+        <input type="number" name="cpl" min="10" step="1" value="{{ options.cpl }}">
+      </label>
+      <label class="field">Lines per cue
+        <input type="number" name="max_lines" min="1" step="1" value="{{ options.max_lines }}">
+      </label>
+      <label class="field">Reading speed (cps)
+        <input type="number" name="max_cps" min="1" step="0.5" value="{{ options.max_cps }}">
+      </label>
+      <label class="field">Shortest cue (s)
+        <input type="number" name="min_duration" min="0" step="0.01" value="{{ options.min_duration }}">
+      </label>
+      <label class="field">Longest cue (s)
+        <input type="number" name="max_duration" min="0.1" step="0.1" value="{{ options.max_duration }}">
+      </label>
+      <label class="field">Gap between cues (s)
+        <input type="number" name="cue_gap" min="0" step="0.01" value="{{ options.cue_gap }}">
+      </label>
+    </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="options" data-for="txt md csv json">
+    <legend>Text<span class="unused muted"> · not used by the ticked formats</span></legend>
+    <div class="body">
+    <div class="grid">
+      <label class="field">TXT layout
+        <select name="txt_layout">
+          {% for value in choices.txt_layout %}
+          <option value="{{ value }}"{% if value == options.txt_layout %} selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <span class="checks">
+        <input type="hidden" name="front_matter" value="0">
+        <label class="check"><input type="checkbox" name="front_matter" value="1"{% if options.front_matter %} checked{% endif %}> YAML front matter (Markdown)</label>
+        <input type="hidden" name="include_confidence" value="0">
+        <label class="check"><input type="checkbox" name="include_confidence" value="1"{% if options.include_confidence %} checked{% endif %}> Confidence columns (CSV, JSON)</label>
+      </span>
+    </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="options" data-for="srt vtt txt md docx html json csv">
+    <legend>File<span class="unused muted"> · not used by the ticked formats</span></legend>
+    <div class="body">
+    <div class="grid">
+      <label class="field">Encoding
+        <select name="encoding">
+          {% for value in choices.encoding %}
+          <option value="{{ value }}"{% if value == options.encoding %} selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+        <span class="muted">CSV always gets a BOM under utf-8, for Excel; JSON and HTML are always UTF-8.</span>
+      </label>
+      <label class="field">Filename
+        <input type="text" name="filename_template" value="{{ options.filename_template }}" spellcheck="false" autocomplete="off" title="{title} {date} {model} {lang}">
+      </label>
+      <span class="checks">
+        <input type="hidden" name="crlf" value="0">
+        <label class="check"><input type="checkbox" name="crlf" value="1"{% if options.crlf %} checked{% endif %}> Windows line endings (CRLF)</label>
+      </span>
+    </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="options" data-for="srt vtt txt md docx html json csv">
+    <legend>Destination<span class="unused muted"> · not used by the ticked formats</span></legend>
+    <div class="body">
+    <p class="hint">Download hands the file to the browser - several formats as one ZIP. Write to folder puts the files on this machine, under the folders Settings allows or where the recording is stored.</p>
+    <label class="field">Folder
+      <input type="text" name="path" value="{{ default_path }}" spellcheck="false" autocomplete="off" aria-describedby="export-path-hint">
+    </label>
+    <p id="export-path-hint" class="hint">An existing folder; a file of the same name there is replaced.</p>
+    </div>
+  </fieldset>
+
+  <section class="export-preview-wrap">
+    <h3>Preview</h3>
+    {% if preview_url %}
+    <div id="export-preview" class="export-preview" hx-post="{{ preview_url }}" hx-trigger="load, change from:closest form" hx-swap="innerHTML" hx-sync="this:replace" aria-live="polite">
+      <p class="hint">Loading the preview…</p>
+    </div>
+    {% else %}
+    <div id="export-preview" class="export-preview"><p class="hint">Nothing to preview: none of the selected files has a transcript yet.</p></div>
+    {% endif %}
+  </section>
+
+  <div id="export-result" class="export-result" aria-live="polite"></div>
+
+  <footer class="dialog-foot">
+    <button type="button" data-close-dialog>Close</button>
+    <button type="submit" name="destination" value="folder" hx-post="{{ action_url }}" hx-target="#export-result" hx-swap="innerHTML">Write to folder</button>
+    <button type="submit" name="destination" value="download" class="primary">Download</button>
+  </footer>
+</form>

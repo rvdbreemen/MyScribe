@@ -1,0 +1,515 @@
+{
+  "$schema": "../../schemas/adr-index.schema.json",
+  "schema_version": 2,
+  "adrs": [
+    {
+      "id": "ADR-001",
+      "title": "One web process, a supervisor thread, and a runner child per job",
+      "path": "ADR-001-one-web-process-a-supervisor-thread-and-a-runner-child-per-job.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-03",
+      "decision_summary": "Chosen option: one FastAPI process + supervisor thread + runner child per job, because it keeps the GPU isolation the...",
+      "topics": [
+        "gpu",
+        "job-orchestration",
+        "process-architecture"
+      ],
+      "aliases": [
+        "process model",
+        "runner child",
+        "supervisor"
+      ],
+      "components": [
+        "scribe.app",
+        "scribe.runner",
+        "scribe.supervisor"
+      ],
+      "symbols": [
+        "reconcile",
+        "runner.main",
+        "Supervisor"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "GPU work runs only inside scribe.runner children; the web process and the supervisor thread never import fasterwhisper, ctranslate2, or torch.",
+          "The supervisor spawns at most one GPU runner at a time.",
+          "A runner writes its own terminal verdict; the supervisor only supplies the RUNNERDIED safety net when the child exits without one.",
+          "Startup runs reconcile() before accepting work."
+        ],
+        "must_not": [
+          "Keep a model resident in the web process between jobs.",
+          "Add a second long-lived worker process without superseding this ADR."
+        ],
+        "exceptions": [
+          "None. Overlapping the next job's CPU prework with the running GPU job was considered and deliberately not wired (see Open Questions)."
+        ],
+        "verification": [
+          "tests/testsupervisor.py, tests/testrunner.py, tests/testapp.py::teststartupreconcilesorphanedrunningjobs.",
+          "grep -n \"fasterwhisper\\|ctranslate2\\|import torch\" scribe/app.py scribe/supervisor.py scribe/web/ returns nothing."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/app.py",
+          "scribe/supervisor.py",
+          "scribe/web/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-002",
+      "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner",
+      "path": "ADR-002-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-03",
+      "decision_summary": "Chosen option: SQLite WAL with atomic SQL, because the two hard problems are each one statement:",
+      "topics": [
+        "concurrency",
+        "job-orchestration",
+        "storage"
+      ],
+      "aliases": [
+        "atomic claim",
+        "first verdict wins",
+        "job queue"
+      ],
+      "components": [
+        "scribe.db",
+        "scribe.jobs"
+      ],
+      "symbols": [
+        "claim_next",
+        "db.LOCK",
+        "finish"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Job claims use begin immediate plus update … returning.",
+          "Terminal verdicts are written with a status guard so the first one wins.",
+          "db.LOCK (the one module-level lock in scribe.db) is the only lock guarding the database connection, and every database access in the web process holds it. A lock around a different resource is fine - scribe/web/transcript.py keeps one pe...",
+          "job.status stays constrained by a check (a rule SQLite enforces on every write) to exactly queued, running, done, failed, cancelled, interrupted."
+        ],
+        "must_not": [
+          "Introduce a second queue or a message broker for job state.",
+          "Store media bytes or transcript artifacts in the database."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testjobs.py::testclaimisatomicunderconcurrentthreads (name as in the suite), tests/testjobs.py first-verdict tests, tests/testdb.py::testwalandfkon."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/[!d]*.py",
+          "scribe/*/**",
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-003",
+      "title": "Words are the canonical transcript; every grouping is derived at render time",
+      "path": "ADR-003-words-are-the-canonical-transcript-every-grouping-is-derived-at-render-time.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-03",
+      "decision_summary": "Chosen option: words are canonical.",
+      "topics": [
+        "data-model",
+        "exports",
+        "transcripts"
+      ],
+      "aliases": [
+        "derived segmentation",
+        "no resegment button",
+        "words canonical"
+      ],
+      "components": [
+        "scribe.db",
+        "scribe.render",
+        "scribe.stages.attribute",
+        "scribe.stages.transcribe"
+      ],
+      "symbols": [
+        "segment",
+        "speaker_label",
+        "word"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Persist every word with its probability and speaker.",
+          "Compute paragraphs, sentences and cues from words at render/export time.",
+          "Apply speaker display names from speakerlabel at render time."
+        ],
+        "must_not": [
+          "Create a table for paragraphs, cues, sentences, or any other grouping as a source of truth.",
+          "Rewrite word or segment text on rename or reassignment.",
+          "Offer a \"Resegment\" action — there is nothing to resegment."
+        ],
+        "exceptions": [
+          "A cache of derived output is allowed, keyed by (run id, rules version) and invalidated on edit. None exists today and none is needed: measured on 2026-09-03, grouping 6,477 words into 125 paragraphs takes 21 ms, and render.py says in its..."
+        ],
+        "verification": [
+          "grep -n \"create table\" -i scribe/db.py lists no paragraph, cue or sentence table.",
+          "tests/testpipelinee2e.py, tests/testattribution.py, tests/testrender.py."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-004",
+      "title": "large-v3-turbo is the default model and translate substitutes large-v3",
+      "path": "ADR-004-large-v3-turbo-is-the-default-model-and-translate-substitutes-large-v3.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-03",
+      "decision_summary": "Chosen option: turbo default with large-v3 substitution for translate.",
+      "topics": [
+        "asr",
+        "models",
+        "performance"
+      ],
+      "aliases": [
+        "model tiers",
+        "turbo",
+        "Turbo and Maximaal"
+      ],
+      "components": [
+        "scribe.doctor",
+        "scribe.stages.transcribe"
+      ],
+      "symbols": [
+        "DEFAULT_MODEL",
+        "perf_model_for",
+        "resolve_model"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "DEFAULTMODEL == \"large-v3-turbo\", defined once in scribe.stages.transcribe.",
+          "Any model whose name contains turbo is substituted by large-v3 when task == \"translate\", and the substitution is recorded on the run.",
+          "stageperf writes and ETA (estimated time of arrival) reads use the same key: perfmodelfor(params) by default, or ctx.state[\"model\"] when a stage sets one. The LLM stage must set one - its model is not a Whisper tier, and reading it throu..."
+        ],
+        "must_not": [
+          "Expose tiny/base/small as user-facing quality tiers.",
+          "Spell the default model name anywhere except transcribe.DEFAULTMODEL."
+        ],
+        "exceptions": [
+          "small may be used as a hidden CPU (processor-only) fallback or preview engine."
+        ],
+        "verification": [
+          "tests/teststagetranscribe.py (resolvemodel table), tests/testrunner.py::teststageperfforadefaultjobisfiledundertheresolvedmodel, tests/testapp.py::testetaforadefaultjobusesthemodeltherunnerfilesunder.",
+          "grep -rn \"large-v3-turbo\" scribe/ matches only scribe/stages/transcribe.py."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/app.py",
+          "scribe/doctor.py",
+          "scribe/runner.py",
+          "scribe/web/**",
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-005",
+      "title": "Diarization receives a preloaded waveform because torchcodec cannot open files here",
+      "path": "ADR-005-diarization-receives-a-preloaded-waveform-because-torchcodec-cannot-open-files-here.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-06",
+      "decision_summary": "Chosen option: preloaded waveform, diarize stage only.",
+      "topics": [
+        "dependencies",
+        "diarization",
+        "windows"
+      ],
+      "aliases": [
+        "pyannote audio loading",
+        "torchcodec WinError 127",
+        "waveform dict"
+      ],
+      "components": [
+        "scribe.stages.diarize"
+      ],
+      "symbols": [
+        "diarize.diarize",
+        "load_pipeline"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "scribe.stages.diarize passes {\"waveform\", \"samplerate\"} to the pipeline.",
+          "The waveform tensor is released (deleted, gc.collect(), torch.cuda.emptycache()) before the stage returns.",
+          "Only the diarize stage may load a whole audio file into memory."
+        ],
+        "must_not": [
+          "Read the whole file into RAM in any other stage.",
+          "Add torchaudio/torchcodec file decoding anywhere; ffmpeg subprocesses remain the decoder."
+        ],
+        "exceptions": [
+          "None beyond the diarize stage itself."
+        ],
+        "verification": [
+          "tests/teststagediarize.py (waveform-dict path asserted, path call absent).",
+          "grep -rn \"torchaudio.load\\|torchcodec\" scribe/ returns nothing."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-006",
+      "title": "Pin the CUDA stack and register torch's DLL directory before CTranslate2 loads",
+      "path": "ADR-006-pin-the-cuda-stack-and-register-torch-s-dll-directory-before-ctranslate2-loads.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-06",
+      "decision_summary": "Chosen option: the cu128 pin set with torch/lib registration, frozen in requirements-gpu.txt on 2026-09-02 after the...",
+      "topics": [
+        "dependencies",
+        "gpu",
+        "windows"
+      ],
+      "aliases": [
+        "cuda_setup",
+        "cudnn_ops64_9.dll",
+        "requirements-gpu"
+      ],
+      "components": [
+        "scribe.cuda_setup",
+        "scribe.doctor"
+      ],
+      "symbols": [
+        "ensure_cuda_libs",
+        "gpu_smoke"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Install the GPU (graphics processing unit) stack from requirements-gpu.txt with the CUDA index URL (uniform resource locator) in its header.",
+          "Call cudasetup.ensurecudalibs() before importing fasterwhisper or ctranslate2 in any process that will use the GPU.",
+          "doctor.checkgpuruntime fails when torch.version.cuda is None."
+        ],
+        "must_not": [
+          "Import fasterwhisper at module level in any module the web process imports.",
+          "File the doctor smoke timing under stage transcribe (it is warmup-dominated and would poison the ETA (estimated time of arrival) median)."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "python -m scribe.doctor exit 0; tests/testcudasetup.py; tests/testdoctor.py::testsmoketimingsneverlandunderthetranscribestage."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/doctor.py",
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-007",
+      "title": "The application log is observation: nothing reads it to decide anything",
+      "path": "ADR-007-the-application-log-is-observation-nothing-reads-it-to-decide-anything.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-06",
+      "decision_summary": "Chosen option: the JSON-Lines file with a bounded lock and the observation rule, because a log that lives in the data...",
+      "topics": [
+        "logging",
+        "observability",
+        "process-model",
+        "windows-file-locking"
+      ],
+      "aliases": [
+        "app.log",
+        "application log",
+        "applog",
+        "log page",
+        "runner stderr"
+      ],
+      "components": [
+        "scribe/applog.py",
+        "scribe/web/logs_ui.py"
+      ],
+      "symbols": [
+        "applog._append",
+        "applog.log",
+        "applog.tail",
+        "supervisor._report_exit"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Every line is one write of a complete JSON document ending in \\n, made while holding the byte lock on app.log.lock - a file nothing reads.",
+          "The lock wait is bounded (LOCKWAITS) and non-blocking; on expiry the writer writes anyway. A rare spliced line is accepted over a stalled process.",
+          "applog.log never raises. A failure to write is reported on stderr once and swallowed.",
+          "The writer name in proc is thread-local with a process-wide default; a thread that shares a process with request threads names only itself.",
+          "Retention is a cap: MAXBYTES, one previous file. The file is renamed, never truncated.",
+          "Field names containing key, token, secret, password or authorization are redacted; URL query strings and cookie-file paths are redacted by shape."
+        ],
+        "must_not": [
+          "Nothing in scribe/ may read app.log to make a decision: not the supervisor, not the runner, not a route. The only readers are /logs and a human.",
+          "The lock must not be taken on app.log itself, and must not be a blocking LKLOCK.",
+          "The log must not be a second record of job state. Transitions may appear in both places; progress (percentages, ETA (estimated time of arrival) samples) appears only in the event log."
+        ],
+        "exceptions": [
+          "tests/ may read the file to assert on it."
+        ],
+        "verification": [
+          "tests/testapplog.py::testtwoprocessesappendingatonceinterleavenothing",
+          "tests/testapplog.py::testthesupervisorthreadnamesitselfwithoutrenamingthewebprocess",
+          "tests/testapplog.py::testwritersholdthecrossprocessmutexwhiledecidingtorotate",
+          "Source anchor: scribe/applog.py::append"
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**",
+          "scribe/[!w]*/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "source": "ADR-001",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-001",
+      "target": "ADR-006",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-002",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-002",
+      "target": "ADR-003",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-003",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-004",
+      "target": "ADR-006",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-005",
+      "target": "ADR-006",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-006",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-006",
+      "target": "ADR-005",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-007",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-007",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    }
+  ]
+}

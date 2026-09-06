@@ -1,0 +1,335 @@
+{
+  "media": {
+    "created_at": "2026-09-02T12:00:00Z",
+    "duration": 30.0,
+    "id": 1,
+    "orig_name": "Clip.wav",
+    "sha256": "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f",
+    "size_bytes": 4242,
+    "title": "Clip"
+  },
+  "run": {
+    "compute_type": "float16",
+    "created_at": "2026-09-02T12:00:00Z",
+    "engine": "faster-whisper",
+    "id": 1,
+    "language": "en",
+    "model": "large-v3-turbo",
+    "params": {},
+    "task": "transcribe",
+    "xrt": 14.5
+  },
+  "schema_version": 1,
+  "segments": [
+    {
+      "end": 4.9,
+      "idx": 0,
+      "start": 0.0,
+      "text": "Don't panic, the towel is still the most important item."
+    },
+    {
+      "end": 9.9,
+      "idx": 1,
+      "start": 5.0,
+      "text": "The answer to life, the universe and everything is forty-two."
+    },
+    {
+      "end": 14.9,
+      "idx": 2,
+      "start": 10.0,
+      "text": "Marvin says the improbability drive makes him even more depressed."
+    },
+    {
+      "end": 19.9,
+      "idx": 3,
+      "start": 15.0,
+      "text": "Vogon poetry is the third worst in the known universe."
+    }
+  ],
+  "speakers": {
+    "SPEAKER_00": "Arthur",
+    "SPEAKER_01": "Speaker 2"
+  },
+  "words": [
+    {
+      "end": 0.4,
+      "idx": 0,
+      "speaker": "SPEAKER_00",
+      "start": 0.0,
+      "text": " Don't"
+    },
+    {
+      "end": 0.9,
+      "idx": 1,
+      "speaker": "SPEAKER_00",
+      "start": 0.5,
+      "text": " panic,"
+    },
+    {
+      "end": 1.4,
+      "idx": 2,
+      "speaker": "SPEAKER_00",
+      "start": 1.0,
+      "text": " the"
+    },
+    {
+      "end": 1.9,
+      "idx": 3,
+      "speaker": "SPEAKER_00",
+      "start": 1.5,
+      "text": " towel"
+    },
+    {
+      "end": 2.4,
+      "idx": 4,
+      "speaker": "SPEAKER_00",
+      "start": 2.0,
+      "text": " is"
+    },
+    {
+      "end": 2.9,
+      "idx": 5,
+      "speaker": "SPEAKER_00",
+      "start": 2.5,
+      "text": " still"
+    },
+    {
+      "end": 3.4,
+      "idx": 6,
+      "speaker": "SPEAKER_00",
+      "start": 3.0,
+      "text": " the"
+    },
+    {
+      "end": 3.9,
+      "idx": 7,
+      "speaker": "SPEAKER_00",
+      "start": 3.5,
+      "text": " most"
+    },
+    {
+      "end": 4.4,
+      "idx": 8,
+      "speaker": "SPEAKER_00",
+      "start": 4.0,
+      "text": " important"
+    },
+    {
+      "end": 4.9,
+      "idx": 9,
+      "speaker": "SPEAKER_00",
+      "start": 4.5,
+      "text": " item."
+    },
+    {
+      "end": 5.4,
+      "idx": 10,
+      "speaker": "SPEAKER_00",
+      "start": 5.0,
+      "text": " The"
+    },
+    {
+      "end": 5.9,
+      "idx": 11,
+      "speaker": "SPEAKER_00",
+      "start": 5.5,
+      "text": " answer"
+    },
+    {
+      "end": 6.4,
+      "idx": 12,
+      "speaker": "SPEAKER_00",
+      "start": 6.0,
+      "text": " to"
+    },
+    {
+      "end": 6.9,
+      "idx": 13,
+      "speaker": "SPEAKER_00",
+      "start": 6.5,
+      "text": " life,"
+    },
+    {
+      "end": 7.4,
+      "idx": 14,
+      "speaker": "SPEAKER_00",
+      "start": 7.0,
+      "text": " the"
+    },
+    {
+      "end": 7.9,
+      "idx": 15,
+      "speaker": "SPEAKER_00",
+      "start": 7.5,
+      "text": " universe"
+    },
+    {
+      "end": 8.4,
+      "idx": 16,
+      "speaker": "SPEAKER_00",
+      "start": 8.0,
+      "text": " and"
+    },
+    {
+      "end": 8.9,
+      "idx": 17,
+      "speaker": "SPEAKER_00",
+      "start": 8.5,
+      "text": " everything"
+    },
+    {
+      "end": 9.4,
+      "idx": 18,
+      "speaker": "SPEAKER_00",
+      "start": 9.0,
+      "text": " is"
+    },
+    {
+      "end": 9.9,
+      "idx": 19,
+      "speaker": "SPEAKER_00",
+      "start": 9.5,
+      "text": " forty-two."
+    },
+    {
+      "end": 10.4,
+      "idx": 20,
+      "speaker": "SPEAKER_01",
+      "start": 10.0,
+      "text": " Marvin"
+    },
+    {
+      "end": 10.9,
+      "idx": 21,
+      "speaker": "SPEAKER_01",
+      "start": 10.5,
+      "text": " says"
+    },
+    {
+      "end": 11.4,
+      "idx": 22,
+      "speaker": "SPEAKER_01",
+      "start": 11.0,
+      "text": " the"
+    },
+    {
+      "end": 11.9,
+      "idx": 23,
+      "speaker": "SPEAKER_01",
+      "start": 11.5,
+      "text": " improbability"
+    },
+    {
+      "end": 12.4,
+      "idx": 24,
+      "speaker": "SPEAKER_01",
+      "start": 12.0,
+      "text": " drive"
+    },
+    {
+      "end": 12.9,
+      "idx": 25,
+      "speaker": "SPEAKER_01",
+      "start": 12.5,
+      "text": " makes"
+    },
+    {
+      "end": 13.4,
+      "idx": 26,
+      "speaker": "SPEAKER_01",
+      "start": 13.0,
+      "text": " him"
+    },
+    {
+      "end": 13.9,
+      "idx": 27,
+      "speaker": "SPEAKER_01",
+      "start": 13.5,
+      "text": " even"
+    },
+    {
+      "end": 14.4,
+      "idx": 28,
+      "speaker": "SPEAKER_01",
+      "start": 14.0,
+      "text": " more"
+    },
+    {
+      "end": 14.9,
+      "idx": 29,
+      "speaker": "SPEAKER_01",
+      "start": 14.5,
+      "text": " depressed."
+    },
+    {
+      "end": 15.4,
+      "idx": 30,
+      "speaker": "SPEAKER_01",
+      "start": 15.0,
+      "text": " Vogon"
+    },
+    {
+      "end": 15.9,
+      "idx": 31,
+      "speaker": "SPEAKER_01",
+      "start": 15.5,
+      "text": " poetry"
+    },
+    {
+      "end": 16.4,
+      "idx": 32,
+      "speaker": "SPEAKER_01",
+      "start": 16.0,
+      "text": " is"
+    },
+    {
+      "end": 16.9,
+      "idx": 33,
+      "speaker": "SPEAKER_01",
+      "start": 16.5,
+      "text": " the"
+    },
+    {
+      "end": 17.4,
+      "idx": 34,
+      "speaker": "SPEAKER_01",
+      "start": 17.0,
+      "text": " third"
+    },
+    {
+      "end": 17.9,
+      "idx": 35,
+      "speaker": "SPEAKER_01",
+      "start": 17.5,
+      "text": " worst"
+    },
+    {
+      "end": 18.4,
+      "idx": 36,
+      "speaker": "SPEAKER_01",
+      "start": 18.0,
+      "text": " in"
+    },
+    {
+      "end": 18.9,
+      "idx": 37,
+      "speaker": "SPEAKER_01",
+      "start": 18.5,
+      "text": " the"
+    },
+    {
+      "end": 19.4,
+      "idx": 38,
+      "speaker": "SPEAKER_01",
+      "start": 19.0,
+      "text": " known"
+    },
+    {
+      "end": 19.9,
+      "idx": 39,
+      "speaker": "SPEAKER_01",
+      "start": 19.5,
+      "text": " universe."
+    }
+  ]
+}
