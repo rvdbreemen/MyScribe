@@ -22,10 +22,18 @@ report.
 
 Transcription is faster-whisper on CTranslate2. On a CUDA card it runs
 `large-v3-turbo` in float16 (about 14x realtime on the 3080); on a CPU it runs
-int8, several times slower than realtime on a laptop. CTranslate2 has no Metal
-backend, so an Apple GPU does not help transcription; PyTorch's MPS backend
-exists but the diarization pipeline is run on the CPU everywhere but CUDA, on
-purpose, until somebody measures it.
+int8, several times slower than realtime on a laptop.
+
+**Apple Silicon** gets the GPU another way. CTranslate2 has no Metal backend,
+so on a Mac the app swaps in `mlx-whisper` (Apple's MLX framework) for
+transcription when it is installed - the same Whisper weights, converted, on
+the Apple GPU, with word timestamps. Diarization (pyannote, PyTorch) runs on
+Metal through MPS; OpenTranscribe measured an M2 Max at 2-3.5x slower than an
+RTX 3080 on the GPU-bound stages and faster on the CPU-bound ones. The
+doctor's `accel` line says what was picked: `transcription on mlx,
+diarization on mps` is the good outcome. Written without a Mac (2026-09-07);
+the first doctor run on one is the acceptance test, and its output is the
+bug report if it is not.
 
 ## Install
 
@@ -45,6 +53,14 @@ python3 -m venv .venv
 tags. On Linux, PyPI's torch depends on the `nvidia-*` wheels, so a machine
 with an NVIDIA driver gets the GPU without an extra index; the doctor says
 which device it found. On macOS the same file installs the CPU + MPS build.
+
+On an Apple Silicon Mac add the third file for the Metal transcription
+backend, then run the doctor and read its `accel` and `gpu-runtime` lines:
+
+```sh
+.venv/bin/pip install -r requirements-macos.txt
+.venv/bin/python -m scribe.doctor
+```
 
 If `python3 -m venv` gives you a venv without `pip` (Debian and Ubuntu do
 that until `python3-venv` is installed), either install that package or

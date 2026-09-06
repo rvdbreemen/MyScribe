@@ -50,7 +50,8 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 
 import numpy as np
 
-from scribe import cuda_setup, db, glossary, jobs
+from scribe import accel, cuda_setup, db, glossary, jobs
+from scribe.stages import mlx_backend
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
     from scribe.runner import RunnerContext
@@ -337,6 +338,15 @@ def iter_windows(
             offset_frames += cut
 
 
+def read_wav(wav: str | Path) -> "np.ndarray":
+    """The whole prepared wav as float32 samples - for a caller that has one
+    short clip and a backend that takes arrays rather than paths (MLX). The
+    stage itself never uses this: it windows with `iter_windows`."""
+    with wave.open(str(wav), "rb") as source:
+        frames = source.readframes(source.getnframes())
+    return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+
+
 def collect_segments(
     segments: Iterable[Any],
     duration: float,
@@ -441,11 +451,17 @@ def load_model(
     all, because CTranslate2 delay-loads cuDNN and a late fix arrives after the
     DLL search has already failed.
     """
+    if device is None:
+        device = accel.transcription_backend()
+    if device == mlx_backend.DEVICE:
+        # Apple Silicon: the same weights on the Apple GPU through Metal.
+        # CTranslate2 has no Metal backend, so faster-whisper is not an option
+        # there; mlx_backend gives mlx-whisper faster-whisper's shape.
+        return mlx_backend.MlxWhisperModel(model_name), device, mlx_backend.COMPUTE_TYPE
+
     cuda_setup.ensure_cuda_libs()
     from faster_whisper import WhisperModel
 
-    if device is None:
-        device = "cuda" if _cuda_available() else "cpu"
     if compute_type is None:
         compute_type = "float16" if device.startswith("cuda") else "int8"
 

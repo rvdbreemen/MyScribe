@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
-from scribe import cuda_setup, db, jobs, paths
+from scribe import accel, cuda_setup, db, jobs, paths
 from scribe.ingest import urls  # version and age only; nothing here fetches a URL
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
@@ -250,6 +250,20 @@ def check_gpu_runtime() -> Check:
         return Check(name="gpu-runtime", ok=False, detail=f"torch not installed ({exc})", fix_hint=_PIN_HINT)
 
     if torch.version.cuda is None:
+        if accel.is_apple_silicon():
+            # No CUDA to be had here; what counts is Metal, twice over.
+            mlx = accel.mlx_available()
+            mps = accel.mps_available()
+            return Check(
+                name="gpu-runtime",
+                ok=mlx and mps,
+                detail=(
+                    f"torch {torch.__version__} on Apple Silicon: "
+                    f"MLX {'available' if mlx else 'missing'} for transcription, "
+                    f"MPS {'available' if mps else 'missing'} for diarization"
+                ),
+                fix_hint=None if (mlx and mps) else "pip install -r requirements-macos.txt",
+            )
         return Check(
             name="gpu-runtime",
             ok=False,
@@ -288,21 +302,27 @@ def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None) -> Chec
             fix_hint="Re-cut it: ffmpeg -i <any audio> -t 30 -ac 1 -ar 16000 tests/fixtures/clip30.wav",
         )
 
-    try:
-        cuda_setup.ensure_cuda_libs()
-        from faster_whisper import WhisperModel
-    except ImportError as exc:
-        return Check(name="gpu-smoke", ok=False, detail=f"faster-whisper not installed ({exc})", fix_hint=_PIN_HINT)
+    # The backend the app itself would pick - CUDA, MLX on Apple Silicon, or
+    # the CPU - through the same `load_model` the transcribe stage calls, so
+    # what this measures is what a job gets. A CPU machine is slow here and
+    # says so; that is the honest number.
+    from scribe.stages import transcribe as transcribe_stage
 
     try:
         load_start = time.perf_counter()
-        model = WhisperModel(model_name, device="cuda", compute_type="float16")
+        model, device, compute_type = transcribe_stage.load_model(model_name)
         load_seconds = time.perf_counter() - load_start
 
         run_start = time.perf_counter()
-        segments, info = model.transcribe(str(clip), word_timestamps=True, vad_filter=True)
+        segments, info = model.transcribe(
+            transcribe_stage.read_wav(clip) if device == "mlx" else str(clip),
+            word_timestamps=True,
+            vad_filter=True,
+        )
         words = sum(len(seg.words or []) for seg in segments)
         wall = time.perf_counter() - run_start
+    except ImportError as exc:
+        return Check(name="gpu-smoke", ok=False, detail=f"not installed ({exc})", fix_hint=_PIN_HINT)
     except Exception as exc:  # noqa: BLE001 - any GPU failure is a red check, not a crash
         return Check(
             name="gpu-smoke",
@@ -341,11 +361,17 @@ def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None) -> Chec
         name="gpu-smoke",
         ok=True,
         detail=(
-            f"{model_name}: {words} words from {info.duration:.0f}s in {wall:.1f}s "
-            f"(load {load_seconds:.1f}s; short-clip timing is warmup-dominated, "
+            f"{model_name} on {device}/{compute_type}: {words} words from {info.duration:.0f}s "
+            f"in {wall:.1f}s (load {load_seconds:.1f}s; short-clip timing is warmup-dominated, "
             f"not a throughput measure)"
         ),
     )
+
+
+def check_accelerators() -> Check:
+    """What each stage will run on, as `scribe.accel` decides it. Always OK:
+    this is information, and the gpu-runtime check is the one that judges."""
+    return Check(name="accel", ok=True, detail=accel.describe())
 
 
 def check_gpu_smoke() -> Check:
@@ -361,6 +387,7 @@ CPU_CHECKS = (
     check_data_dir_writable,
     check_disk_space,
     check_database,
+    check_accelerators,
 )
 
 GPU_CHECKS = (

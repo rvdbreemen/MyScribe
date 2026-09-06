@@ -54,7 +54,7 @@ import wave
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
-from scribe import cuda_setup, db, jobs, paths
+from scribe import accel, cuda_setup, db, jobs, paths
 from scribe.stages.attribute import Turn, turns_from_diarization
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
@@ -293,6 +293,10 @@ def open_pipeline(source: str | Path, *, device: str, token: str | None) -> Any 
     # anybody about the files it is given. setdefault, so an operator who wants
     # to send them can still say so in the environment.
     os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
+    # Apple Silicon: a handful of pyannote's ops have no Metal kernel, and
+    # without this PyTorch raises on the first one instead of running it on
+    # the CPU. Read at import, so it has to be set before torch is.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     cuda_setup.ensure_cuda_libs()
     import torch
     from pyannote.audio import Pipeline
@@ -417,7 +421,7 @@ def resolve_device(device: str | None) -> str:
     """
     if device:
         return device
-    return "cuda" if _cuda_available() else "cpu"
+    return accel.diarization_device()
 
 
 # --- the embeddings ---------------------------------------------------------------
