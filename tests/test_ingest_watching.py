@@ -47,6 +47,19 @@ from scribe.stages import transcribe
 HX = {"HX-Request": "true"}
 
 
+@pytest.fixture(autouse=True)
+def tmp_inside_the_roots(tmp_path, monkeypatch):
+    """pytest's tmp_path has to lie under a browse root, or the watcher refuses
+    every file these tests drop - by design (`watching` takes nothing from
+    outside the roots). On Windows the default root is the whole profile
+    drive and the temp directory is on it; on Linux and macOS the default is
+    the home directory and the temp directory is /tmp or /private/var, which
+    is outside. So the roots are widened to include tmp_path here, the way
+    test_web_exports and test_pipeline_e2e already set them. Tests that want
+    a folder *outside* the roots narrow them explicitly (`narrow_roots`)."""
+    monkeypatch.setattr(fsbrowse, "ALLOWED_ROOTS", (*fsbrowse.ALLOWED_ROOTS, tmp_path))
+
+
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     data = tmp_path / "data"
@@ -1410,12 +1423,17 @@ def test_a_file_that_leaves_the_roots_through_a_junction_is_not_taken_in(
     drop(outside, "confidential.mp3", b"not yours to read" * 64)  # settled, or
     junction = watched / "shortcut"  # the quiescence gate would defer it and
     # this test would pass without ever reaching the decision it is about
+    # A junction is a Windows thing: os.walk does not follow a POSIX symlink,
+    # so there is no equivalent door to test elsewhere, and `cmd` does not
+    # exist there to ask - the skip has to come before the call, not after.
+    if sys.platform != "win32":
+        pytest.skip("directory junctions are Windows-only; os.walk does not follow symlinks")
     made = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
         capture_output=True,
         text=True,
     )
-    if made.returncode != 0:  # not Windows, or junctions unavailable here
+    if made.returncode != 0:  # junctions unavailable here
         pytest.skip(f"could not create a junction: {made.stderr.strip() or made.stdout.strip()}")
 
     assert any(

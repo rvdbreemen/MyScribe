@@ -50,7 +50,8 @@ the speaker name on every cue. Both passed review.
 ## Commands
 
 - `.venv/Scripts/python -m pytest -q` — the suite. **Never bare `python`**: that is
-  C:\Python312 without the dependencies.
+  C:\Python312 without the dependencies. On Linux and macOS the venv is
+  `.venv/bin/python`; README.md has the per-platform install.
 - The whole-suite run stalls intermittently on Windows (CPython's socketpair
   emulation behind TestClient; see pytest.ini). If a run passes ~4 minutes, kill it
   and run halves: `tests/test_[a-r]*.py` then `tests/test_[s-z]*.py`.
