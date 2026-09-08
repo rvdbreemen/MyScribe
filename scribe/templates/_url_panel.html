@@ -8,37 +8,90 @@
 
       preview  {state: "ok"|"error"|"empty", …}
                ok:    kind ("single"|"playlist"), title, uploader,
-                      duration (seconds or none), entries (count)
-               error: message - the reason, in words
+                      duration (seconds or none); for a playlist also
+                      entries ([{title, duration, timestamp, state, value}]),
+                      count, total (or none), truncated, feed_url,
+                      feed_title, cap (the most one import may queue)
+               error: message - the reason, in words; retry - whether to
+                      offer the patient listing
                empty: message - the hint under an empty field
 
   Everything on show came back from a stranger's web page and is escaped by
   the environment like every other string in this app. The page URL yt-dlp
   reports is deliberately not rendered: the only thing to do with a URL in a
   template is make it a link, and autoescaping quotes an href correctly while
-  doing nothing about a javascript: scheme.
+  doing nothing about a javascript: scheme. The feed's URL is echoed back only
+  as a hidden field's value, which is an attribute and not a link.
 
-  The playlist line is the confirmation the plan asks for: nothing here can be
-  fetched a little at a time, so the count and the words "all N" have to be in
-  front of the user before the button is pressed, not after fifty jobs appear.
+  The list is the picker (TASK-021). Each row's checkbox carries the entry as
+  JSON in its value; the browser posts the ticked ones back to
+  /transcribe/url, which queues one job each. The row button beside the
+  field hides while a list is on screen (app.css, :has(.episodes)), so there
+  is one import action and it honours the ticks.
+
+  Every button this panel renders is type="button" - All shown, None, the
+  patient retry - because the panel is swapped into the dialog's form, where
+  an untyped button is a submit that Enter presses and that app.js treats as
+  "close the dialog" on the 200 the preview always returns. The one submit is
+  Import, with the row button's own attributes (formaction for scripting
+  off, hx-params="not files" so chosen files stay out of the post). The
+  filter input carries no name: the server never sees it.
+
+  The retry names both fields in hx-params. htmx 2.0.10 filters after
+  merging hx-vals, so an allow-list of "url" alone would drop `patient`;
+  and `patient` cannot ride on the field's own trigger, which posts with
+  hx-params="url". hx-sync on the field and on this button means a keystroke
+  during a patient listing aborts it in the browser and the new link
+  previews; without it the first of two answers wins and the second is
+  dropped.
 #}
 <div id="url-preview" class="url-preview">
   {% if preview.state == 'ok' %}
+  {% if preview.kind == 'playlist' %}
+  <div class="episodes-head">
+    <p class="url-title"><strong>{{ preview.title or 'Untitled' }}</strong>{% if preview.uploader %} <span class="muted">· {{ preview.uploader }}</span>{% endif %}</p>
+    <p class="muted">
+      {% if preview.truncated %}the first {{ preview.count }}{% if preview.total %} of {{ preview.total }}{% endif %} episodes{% else %}{{ preview.count }} episode{{ '' if preview.count == 1 else 's' }}{% endif %}
+      · at most {{ preview.cap }} per import
+    </p>
+  </div>
+  <div class="episodes-tools" data-episodes>
+    <input type="search" data-episode-filter placeholder="filter by title or date…" aria-label="Filter the episodes" autocomplete="off" spellcheck="false">
+    <button type="button" data-episodes-all>All shown</button>
+    <button type="button" data-episodes-none>None</button>
+    <span class="muted" data-episodes-count data-max="{{ preview.cap }}">0 selected</span>
+  </div>
+  <ul class="episodes">
+    {% for e in preview.entries %}
+    <li><label class="episode" data-search="{{ (e.title ~ ' ' ~ (e.timestamp|localtime('%Y-%m-%d') if e.timestamp else ''))|trim|lower }}">
+      <input type="checkbox" name="entry" value="{{ e.value }}">
+      <span class="ep-title">{{ e.title or 'Untitled' }}</span>
+      <span class="ep-meta muted">{% if e.timestamp %}{{ e.timestamp|localtime('%Y-%m-%d') }}{% endif %}{% if e.timestamp and e.duration %} · {% endif %}{% if e.duration %}{{ e.duration|clock }}{% endif %}</span>
+      {% if e.state == 'library' %}<span class="ep-state">in library</span>{% elif e.state == 'trash' %}<span class="ep-state">in trash</span>{% elif e.state == 'queued' %}<span class="ep-state">queued</span>{% endif %}
+    </label></li>
+    {% endfor %}
+  </ul>
+  <input type="hidden" name="feed_url" value="{{ preview.feed_url }}">
+  <input type="hidden" name="feed_title" value="{{ preview.feed_title }}">
+  <p class="episodes-foot">
+    <button type="submit" data-episodes-submit formaction="/transcribe/url" hx-post="/transcribe/url" hx-params="not files">Import selected</button>
+  </p>
+  {% else %}
   <p class="url-title"><strong>{{ preview.title or 'Untitled' }}</strong></p>
   {% if preview.uploader or preview.duration %}
   <p class="muted">
     {{ preview.uploader }}{% if preview.uploader and preview.duration %} · {% endif %}{{ preview.duration | clock }}
   </p>
   {% endif %}
-  {% if preview.kind == 'playlist' %}
-  <p class="url-playlist">
-    A playlist of {{ preview.entries }} video{{ '' if preview.entries == 1 else 's' }}.
-    Fetching it queues all {{ preview.entries }}, one job each, so each one
-    downloads, succeeds or fails on its own.
-  </p>
   {% endif %}
   {% elif preview.state == 'error' %}
   <p class="url-bad" role="alert">{{ preview.message }}</p>
+  {% if preview.retry %}
+  <p class="url-retry">
+    <button type="button" hx-post="/transcribe/url/preview" hx-params="url,patient" hx-vals='{"patient": "1"}' hx-target="#url-preview" hx-swap="outerHTML" hx-disabled-elt="this" hx-sync="closest [data-panel]:replace" hx-indicator="#url-listing">List the episodes anyway</button>
+    <span id="url-listing" class="spinner">Listing… this can take a minute</span>
+  </p>
+  {% endif %}
   {% else %}
   <p class="muted">{{ preview.message }}</p>
   {% endif %}

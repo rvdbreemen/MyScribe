@@ -611,6 +611,25 @@ dialog.dialog::backdrop { background: rgba(0, 0, 0, .45); }
 .cookies summary { cursor: pointer; }
 .cookies input { width: 100%; font-family: var(--mono); }
 
+/* The list a feed or channel turns into (TASK-021). The row button hides
+   while a list is on screen: one import action, and it honours the ticks.
+   The rule reads the panel's state the way the tabs do, with :has(). */
+[data-panel="url"]:has(.episodes) [data-url-submit] { display: none; }
+.episodes-head { margin: .3rem 0; }
+.episodes-head p { margin: 0; }
+.episodes-tools { display: flex; gap: .4rem; align-items: center; margin: .3rem 0; font-size: 13px; }
+.episodes-tools input { flex: 1; min-width: 0; }
+.episodes-tools button { padding: .15rem .5rem; font-size: 13px; }
+.episodes { list-style: none; margin: 0; padding: 0; max-height: 18rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.episode { display: flex; align-items: center; gap: .5rem; padding: .15rem .5rem; cursor: pointer; }
+.episode:hover { background: var(--bg-soft); }
+.episode .ep-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.episode .ep-meta { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ep-state { font-size: .75rem; padding: 0 .35rem; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--fg-muted); white-space: nowrap; }
+.episodes-foot { margin: .4rem 0 0; }
+[data-episodes-count].over { color: var(--bad); }
+.url-retry { margin-top: .3rem; display: flex; align-items: center; gap: .5rem; }
+
 /* The recorder, in its own dialog. The whole block is hidden until
    recorder.js finds a browser that can record, so nothing on offer here is
    ever a button that does nothing. */
