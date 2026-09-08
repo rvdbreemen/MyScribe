@@ -373,3 +373,35 @@ def test_fts_triggers_sync(conn):
         ).fetchone()[0]
         == 0
     )
+
+
+def test_schema_v10_gives_media_two_nullable_provenance_columns(conn):
+    """The feed import (TASK-021) writes where a recording came from, so the
+    dialog can say "in library" the next time the feed is listed. Both are
+    nullable because an upload, a path, a recording and a watch folder know
+    no source."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 10
+    assert {"source_url", "source_id"} <= _columns(conn, "media")
+
+
+def test_migrate_walks_a_v9_database_up_to_the_provenance_columns(tmp_path):
+    """A library from before the feed import is at user_version 9. It gains
+    the two columns and every recording it already holds reads as "arrived
+    without a source", which is the truth: nothing wrote one down."""
+    path = tmp_path / "v9.db"
+    old = db.connect(path)
+    for script in db._MIGRATIONS[:9]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 9")
+    old.commit()
+    _seed_media_and_run(old)
+    assert "source_url" not in _columns(old, "media")
+
+    db.migrate(old)
+
+    assert old.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    row = old.execute("SELECT source_url, source_id FROM media").fetchone()
+    assert (row["source_url"], row["source_id"]) == (None, None)
+    old.close()

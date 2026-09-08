@@ -296,3 +296,53 @@ def test_queue_position_none_when_not_queued(conn):
     jobs.claim_next(conn)
     assert jobs.queue_position(conn, job_id) is None
     assert jobs.queue_position(conn, 999) is None
+
+
+# --- many jobs in one transaction (TASK-021) --------------------------------
+
+
+def test_enqueue_many_inserts_every_row_with_consecutive_ids(conn):
+    import json
+
+    ids = jobs.enqueue_many(conn, "ingest_url", [{"url": f"https://x.test/{i}"} for i in range(5)])
+
+    assert ids == list(range(ids[0], ids[0] + 5))
+    rows = conn.execute("SELECT id, type, status, params_json FROM job ORDER BY id").fetchall()
+    assert [r["id"] for r in rows] == ids
+    assert [r["status"] for r in rows] == ["queued"] * 5
+    assert [r["type"] for r in rows] == ["ingest_url"] * 5
+    assert json.loads(rows[3]["params_json"]) == {"url": "https://x.test/3"}
+
+
+def test_enqueue_many_is_all_or_nothing(conn):
+    """A feed import queues one job per ticked episode; a failure halfway
+    through must not leave half of them queued with no answer."""
+    import sqlite3
+
+    class Flaky:
+        """The connection, with its third INSERT INTO job blowing up."""
+
+        def __init__(self, real):
+            self._real = real
+            self.inserts = 0
+
+        def execute(self, sql, *args):
+            if sql.lstrip().startswith("INSERT INTO job"):
+                self.inserts += 1
+                if self.inserts == 3:
+                    raise sqlite3.OperationalError("disk I/O error")
+            return self._real.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    with pytest.raises(sqlite3.OperationalError):
+        jobs.enqueue_many(Flaky(conn), "ingest_url", [{"url": f"https://x.test/{i}"} for i in range(5)])
+
+    assert conn.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0
+    assert not conn.in_transaction
+
+
+def test_enqueue_many_with_nothing_to_enqueue_inserts_nothing(conn):
+    assert jobs.enqueue_many(conn, "ingest_url", []) == []
+    assert conn.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0

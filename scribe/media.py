@@ -106,17 +106,25 @@ def ingest_path(
     title: str | None = None,
     folder_id: int | None = None,
     link: bool = True,
+    source_url: str | None = None,
+    source_id: str | None = None,
 ) -> dict:
     """Take a file already on disk into the store; returns the media row.
 
     Known content short-circuits: the existing row comes back with
     ``deduped=True``, and neither the store nor the source file is touched.
+    The one thing a duplicate may add is provenance it lacked - see
+    `_fill_source`.
+
+    ``source_url`` and ``source_id`` say where the bytes came from when they
+    came over the network (the feed import writes them; an upload or a path
+    passes nothing). Compared by the dialog's listing, rendered nowhere.
     """
     src = Path(src)
     sha256 = hash_file(src)
     existing = _existing_row(conn, sha256)
     if existing is not None:
-        return existing
+        return _fill_source(conn, existing, source_url, source_id)
 
     dst = store_path_for(sha256, _suffix_of(src.name))
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +139,42 @@ def ingest_path(
         title=title,
         folder_id=folder_id,
         size_bytes=src.stat().st_size,
+        source_url=source_url,
+        source_id=source_id,
     )
+
+
+def _fill_source(
+    conn: sqlite3.Connection, row: dict, source_url: str | None, source_id: str | None
+) -> dict:
+    """A known recording gains the provenance it lacked; a set one stands.
+
+    Title, folder and the privacy pin stay as the first arrival chose them,
+    and so does a source that is already there. But a row that arrived
+    through an upload, a watch folder or a version before v10 has NULL here,
+    and NULL is no provenance: without this it would never be marked "in
+    library", however often a feed re-imported it. The `IS NULL` guard is in
+    the SQL because two fan-out children can dedupe the same bytes at once;
+    the second one's update matches no row, which is the right answer.
+    """
+    wanted = {
+        column: value
+        for column, value in (("source_url", source_url), ("source_id", source_id))
+        if value and not row.get(column)
+    }
+    if not wanted:
+        return row
+    with db.LOCK:
+        for column, value in wanted.items():
+            conn.execute(
+                f"UPDATE media SET {column}=? WHERE id=? AND {column} IS NULL",
+                (value, row["id"]),
+            )
+        conn.commit()
+        fresh = conn.execute(
+            "SELECT source_url, source_id FROM media WHERE id=?", (row["id"],)
+        ).fetchone()
+    return {**row, "source_url": fresh["source_url"], "source_id": fresh["source_id"]}
 
 
 def ingest_stream(
@@ -242,12 +285,15 @@ def _insert_media(
     title: str | None,
     folder_id: int | None,
     size_bytes: int,
+    source_url: str | None = None,
+    source_id: str | None = None,
 ) -> dict:
     with db.LOCK:
         try:
             cur = conn.execute(
                 "INSERT INTO media(sha256, store_path, orig_name, title, folder_id,"
-                " size_bytes, private, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " size_bytes, private, created_at, source_url, source_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     sha256,
                     _relative_store_path(store_path),
@@ -262,6 +308,8 @@ def _insert_media(
                     # a library that is already there.
                     1 if private_default(conn) else 0,
                     time.time(),
+                    source_url or None,
+                    source_id or None,
                 ),
             )
         except sqlite3.IntegrityError:

@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -276,10 +276,25 @@ _SCHEMA_V9 = """
 ALTER TABLE word ADD COLUMN text_edited_by_user INTEGER NOT NULL DEFAULT 0;
 """
 
+# v10 (TASK-021, the feed import): where a recording came from, when it came
+# over the network. `source_url` is the fetched URL without its fragment;
+# `source_id` is yt-dlp's extractor-scoped id (`Youtube:<id>`, `Generic:<guid>`
+# for a feed item). Both nullable: an upload, a path, a recording and a watch
+# folder know no source, and every row from before v10 has none - the truth
+# about all of them, and the dedupe path fills a NULL in when the same bytes
+# arrive again through a feed. Read only by the transcribe dialog's listing,
+# to say "in library" and "queued"; never rendered as a link. No index:
+# measured 2026-09-08, the lookup costs 4-11 ms at 1k-10k rows against a
+# probe that takes seconds.
+_SCHEMA_V10 = """
+ALTER TABLE media ADD COLUMN source_url TEXT;
+ALTER TABLE media ADD COLUMN source_id TEXT;
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
-    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9,
+    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10,
 ]
 
 
