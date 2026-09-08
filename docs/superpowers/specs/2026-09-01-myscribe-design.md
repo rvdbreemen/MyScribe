@@ -292,6 +292,13 @@ is the point), in-app delete-everything.
 The line: a v1 feature is a projection of data already on disk; anything that
 needs a second model, a second runtime, or a second venv waits.
 
+**Amendment 2026-09-08 (TASK-021).** RSS ingest moves out of Deferred. It
+turned out to need no second parser: yt-dlp's generic extractor already reads
+a podcast feed into a playlist, so the link door lists a feed's or a
+channel's episodes and imports the ticked ones, one `ingest_url` job each.
+Design: `2026-09-08-feed-episode-import-design.md`; decision: ADR-008.
+Subscribing to a feed (a table, a poller) stays deferred.
+
 ## 10. Package layout
 
 ```

@@ -442,6 +442,78 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-008",
+      "title": "A feed or channel is listed in the web process and chosen in the browser; each chosen episode is one ingest_url job",
+      "path": "ADR-008-a-feed-or-channel-is-listed-in-the-web-process-and-chosen-in-the-browser-each-chosen-episode-is-one-ingest-url-job.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-08",
+      "decision_summary": "Chosen option: yt-dlp lists, the browser holds the selection, the media row remembers where it came from, because it...",
+      "topics": [
+        "feeds",
+        "ingest",
+        "provenance",
+        "yt-dlp"
+      ],
+      "aliases": [
+        "channel import",
+        "episode list",
+        "feed import",
+        "podcast import",
+        "RSS import"
+      ],
+      "components": [
+        "scribe.ingest.urls",
+        "scribe.stages.url_stage",
+        "scribe.web.ingest_ui"
+      ],
+      "symbols": [
+        "add_url",
+        "enqueue_many",
+        "known_sources",
+        "probe_in_slot",
+        "source_id_for"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "A feed, a channel or a playlist is listed by yt-dlp through urls.probe(limit=…); no other feed or HTML parser is added to scribe.",
+          "The listing runs only under ingestui.probeinslot: a budget, a slot taken and released inside the thread, MAXLISTED as the ceiling on one listing's work, and one listing per URL at a time.",
+          "An entry's URL is fetched verbatim by the runner child; anything that compares or stores it strips the fragment first.",
+          "Every posted entry passes parseentry (size cap, JSON without NaN/Infinity, a dict, a string URL through ensurehttpurl, a title cut at library.MAXNAME) before any job is queued, and the jobs of one import are inserted by jobs.enqueuemany...",
+          "The media row's sourceurl and sourceid are compared by knownsources and never rendered as an href; the same holds for every URL that came over the network.",
+          "The listing's title names the media row; the download's title is the fallback."
+        ],
+        "must_not": [
+          "Add a feed table, a subscription, or a poller without superseding this ADR.",
+          "Render the checkbox value with |tojson (Markup, unescaped quotes); it is json.dumps output autoescaped as an attribute.",
+          "Read the ticked entries through fields, which keeps the last value per name."
+        ],
+        "exceptions": [
+          "The fan-out inside the runner child (urlstage.fanout) still queues its children one jobs.enqueue at a time: it runs where the cost falls on nobody, and switching it is tidiness, not this decision."
+        ],
+        "verification": [
+          "tests/testingesturls.py::testafeedentrykeepsitssmuggledurlandgetstheguidasitssourceid, ::testregisternamesafeedepisodeafterthefeednotthecdn, ::testytdlphonoursplaylistendonaflatplaylistandstillreportsthetotal.",
+          "tests/testweburldialog.py::testapatientpreviewattachestothelistingalreadyrunning, ::testafollowerholdsnoslot, ::testonebadentryamonggoodonesqueuesnoneofthem, ::testawholelistingpostedatonceisrefusedbythisroutenotbystarlette, ::testnotemp...",
+          "grep -rn \"feedparser\" scribe/ returns nothing."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/templates/_url_panel.html",
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -507,6 +579,18 @@
     },
     {
       "source": "ADR-007",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-008",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-008",
       "target": "ADR-002",
       "type": "related",
       "resolved": true
