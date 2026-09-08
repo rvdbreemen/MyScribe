@@ -535,7 +535,9 @@ it from lying:
   than making every test spell it out.
 
 Measured 2026-09-04 on this machine: the four Node tests here run in about
-0.6 s together, one `node` process each.
+0.6 s together, one `node` process each. TASK-021 added seven more (the
+episode list's filter, All shown, the cap, the patient retry, a dropped link)
+and three lines to the stub: `checked` on inputs, `dispatchEvent`, `Event`.
 """
 
 STATIC = Path(__file__).resolve().parent.parent / "scribe" / "static"
@@ -649,11 +651,17 @@ function el(tag, attrs) {
   node.click = function () { node.clicked += 1; };
   node.close = function () { node.closed += 1; node.open = false; };
   node.showModal = function () { node.open = true; };
+  node.focus = function () { node.focused = (node.focused || 0) + 1; };
+  /* dispatchEvent calls the listeners registered on this node, and nothing
+     else - the same "never propagated" rule as fire(). app.js dispatches an
+     `input` on the link field after a drop, so the field's own trigger runs. */
+  node.dispatchEvent = function (ev) { return fire(node, ev.type, ev); };
   /* A <button> with no type attribute submits, and an <input> with none is
      text. Those two defaults are the whole point of the rule app.js applies,
-     so the stub has them rather than every fixture spelling them out. */
+     so the stub has them rather than every fixture spelling them out. A
+     checkbox starts unticked, which is the default that matters to a count. */
   if (node.tagName === 'BUTTON') { node.type = node.attrs.type || 'submit'; }
-  if (node.tagName === 'INPUT') { node.type = node.attrs.type || 'text'; }
+  if (node.tagName === 'INPUT') { node.type = node.attrs.type || 'text'; node.checked = false; }
   return node;
 }
 
@@ -698,6 +706,15 @@ function event(props) {
   ev.stopPropagation = function () { ev.stopped += 1; };
   return ev;
 }
+
+/* `new Event('input', {bubbles: true})` as app.js writes it: the same plain
+   object event() builds, with its type on it, so dispatchEvent can route it. */
+function Event(type, props) {
+  const ev = event(props);
+  ev.type = type;
+  return ev;
+}
+globalThis.Event = Event;
 
 /* ---- the page ------------------------------------------------------------ */
 
@@ -1585,3 +1602,194 @@ def test_no_template_binds_an_href_to_a_stranger_s_url():
 
     assert offenders == []
     assert mentions > 0, "the guard tests nothing if no template names one of these"
+
+
+# --- the episode list's conveniences, which live in JavaScript (TASK-021) -------------
+
+EPISODES_FIXTURE = r"""
+    /* The URL panel as _url_panel.html renders a listing into it: the
+       sources block with the link tab's radio, the panel with the toolbar,
+       three rows whose data-search carries a date, and the Import submit.
+       data-max is 2 so the cap is reachable with three rows. */
+    const sources = form.append(el('div', { 'data-sources': '' }));
+    const srcUrl = sources.append(el('input', { type: 'radio', id: 'src-url', name: 'source_tab' }));
+    sources.append(urlRow.remove());
+    const panel = sources.append(el('div', { id: 'url-preview', 'data-panel': 'url' }));
+    const tools = panel.append(el('div', { 'data-episodes': '' }));
+    const filter = tools.append(el('input', { type: 'search', 'data-episode-filter': '' }));
+    const allShown = tools.append(el('button', { type: 'button', 'data-episodes-all': '' }));
+    const none = tools.append(el('button', { type: 'button', 'data-episodes-none': '' }));
+    const count = tools.append(el('span', { 'data-episodes-count': '', 'data-max': '2' }));
+    const list = panel.append(el('ul', { class: 'episodes' }));
+    function row(search) {
+      const li = list.append(el('li'));
+      const label = li.append(el('label', { class: 'episode', 'data-search': search }));
+      const box = label.append(el('input', { type: 'checkbox', name: 'entry', value: '{}' }));
+      return { label: label, box: box };
+    }
+    const r1 = row('love in the time of palantir 2025-03-14');
+    const r2 = row('the indicator crossover 2026-08-28');
+    const r3 = row('vogon poetry slam 2026-09-01');
+    const importIt = panel.append(el('button', { type: 'submit', 'data-episodes-submit': '' }));
+    function tick(r, on) {
+      r.box.checked = on;
+      fire(document, 'input', event({ target: r.box }));
+    }
+    function typeFilter(text) {
+      filter.value = text;
+      fire(document, 'input', event({ target: filter }));
+    }
+"""
+
+
+@needs_node
+def test_the_filter_matches_the_date_so_a_year_selects_that_years_episodes(tmp_path):
+    """No digits in any title, so a match on "2025" can only come from the
+    date the row carries beside it - "filter on 2025, All shown, Import" is
+    the flow the list is sold on."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    typeFilter('2025');
+    const hidden = [r1.label.hidden, r2.label.hidden, r3.label.hidden];
+    fire(document, 'click', event({ target: allShown }));
+    done({ hidden: hidden, ticked: [r1.box.checked, r2.box.checked, r3.box.checked], count: count.textContent });
+""",
+    )
+
+    assert result["hidden"] == [False, True, True]
+    assert result["ticked"] == [True, False, False]
+    assert result["count"] == "1 selected"
+
+
+@needs_node
+def test_all_shown_ticks_only_what_the_filter_left_and_none_clears(tmp_path):
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    typeFilter('palantir');
+    fire(document, 'click', event({ target: allShown }));
+    const afterAll = [r1.box.checked, r2.box.checked, r3.box.checked];
+    typeFilter('');
+    const shownAgain = [r1.label.hidden, r2.label.hidden, r3.label.hidden];
+    fire(document, 'click', event({ target: none }));
+    done({ afterAll: afterAll, shownAgain: shownAgain,
+           afterNone: [r1.box.checked, r2.box.checked, r3.box.checked], count: count.textContent });
+""",
+    )
+
+    assert result["afterAll"] == [True, False, False]
+    assert result["shownAgain"] == [False, False, False]
+    assert result["afterNone"] == [False, False, False]
+    assert result["count"] == "0 selected"
+
+
+@needs_node
+def test_ticking_past_the_cap_disables_import_and_says_so(tmp_path):
+    """The server's 400 with the count is the backstop; with scripting on the
+    cap is shown where the decision is made, before the press."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    tick(r1, true); tick(r2, true); tick(r3, true);
+    const over = { disabled: importIt.disabled, count: count.textContent, marked: count.classList.contains('over') };
+    tick(r3, false);
+    done({ over: over, back: { disabled: importIt.disabled, count: count.textContent, marked: count.classList.contains('over') } });
+""",
+    )
+
+    assert result["over"] == {"disabled": True, "count": "3 selected - at most 2 in one go", "marked": True}
+    assert result["back"] == {"disabled": False, "count": "2 selected", "marked": False}
+
+
+@needs_node
+def test_listing_the_episodes_anyway_does_not_close_the_dialog_and_import_does(tmp_path):
+    """CR-001's class again: the retry is a POST that always answers 200 and
+    must leave the dialog open; Import is the work being done and closes it."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    const retry = panel.append(el('button', { type: 'button' }));
+    fire(document.body, 'htmx:afterRequest', event({
+      detail: { elt: retry, successful: true, requestConfig: { verb: 'POST' } }
+    }));
+    const afterRetry = dialog.closed;
+    fire(document.body, 'htmx:afterRequest', event({
+      detail: { elt: importIt, successful: true, requestConfig: { verb: 'POST' } }
+    }));
+    done({ afterRetry: afterRetry, afterImport: dialog.closed });
+""",
+    )
+
+    assert result == {"afterRetry": 0, "afterImport": 1}
+
+
+@needs_node
+def test_a_dropped_link_opens_the_link_tab_fills_the_field_and_previews(tmp_path):
+    """"Drop a URL", read literally: a link dragged from an address bar or a
+    feed icon onto the dialog lands in the link field, and the field's own
+    trigger (an `input` event) starts the preview. text/uri-list may carry
+    several lines and comments (RFC 2483); the first real line is the link."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    let previews = 0;
+    listen(urlField, 'input', function () { previews += 1; });
+    const over = event({ target: sources });
+    fire(document, 'dragover', over);
+    const drop = event({ target: sources, dataTransfer: { files: [], getData: function (kind) {
+      return kind === 'text/uri-list' ? '# from a feed icon\r\nhttps://feeds.npr.org/510289/podcast.xml\r\n' : '';
+    } } });
+    fire(document, 'drop', drop);
+    done({ dragPrevented: over.defaultPrevented, prevented: drop.defaultPrevented, tab: srcUrl.checked,
+           value: urlField.value, previews: previews, focused: urlField.focused || 0 });
+""",
+    )
+
+    assert result["dragPrevented"] == 1 and result["prevented"] == 1
+    assert result["tab"] is True
+    assert result["value"] == "https://feeds.npr.org/510289/podcast.xml"
+    assert result["previews"] == 1
+    assert result["focused"] == 1
+
+
+@needs_node
+def test_a_dropped_text_that_is_not_a_link_is_ignored(tmp_path):
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    const drop = event({ target: sources, dataTransfer: { files: [], getData: function (kind) {
+      return kind === 'text/plain' ? 'D:\\music\\x.mp3' : '';
+    } } });
+    fire(document, 'drop', drop);
+    done({ tab: srcUrl.checked, value: urlField.value });
+""",
+    )
+
+    assert result["tab"] is False
+    assert result["value"] == ""
+
+
+@needs_node
+def test_enter_in_the_link_field_with_a_list_present_still_presses_the_row_button(tmp_path):
+    """The row button hides under CSS while a list shows, but Enter still
+    clicks it - and that is harmless now, because the route it posts to
+    honours the ticks. The key must keep going to the row, not to the list."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    tick(r1, true);
+    const ev = event({ key: 'Enter', target: urlField });
+    fire(document, 'keydown', ev);
+    done({ fetchIt: fetchIt.clicked, importIt: importIt.clicked, addFile: addFile.clicked, prevented: ev.defaultPrevented });
+""",
+    )
+
+    assert result == {"fetchIt": 1, "importIt": 0, "addFile": 0, "prevented": 1}

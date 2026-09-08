@@ -682,12 +682,39 @@
     return event.target && event.target.closest ? event.target.closest('[data-dropzone]') : null;
   }
 
+  function sourcesOf(event) {
+    return event.target && event.target.closest ? event.target.closest('[data-sources]') : null;
+  }
+
+  /*
+    A link dropped on the dialog. "Drop a URL" read literally: an address
+    dragged from a browser's bar, a feed icon or a page link arrives as
+    text/uri-list - several lines allowed, '#' lines are comments (RFC 2483) -
+    or, from some sources, as text/plain. Only an http(s) address is taken;
+    the server's own scheme check still stands behind this one. A drop that
+    carries files goes to the drop zone as it always has.
+  */
+  function droppedLink(transfer) {
+    if (!transfer || typeof transfer.getData !== 'function') { return ''; }
+    var text = '';
+    try { text = String(transfer.getData('text/uri-list') || ''); } catch (err) { text = ''; }
+    var lines = text.split(/\r?\n/).filter(function (line) {
+      return line.trim() && line.trim().charAt(0) !== '#';
+    });
+    var candidate = lines.length ? lines[0].trim() : '';
+    if (!candidate) {
+      try { candidate = String(transfer.getData('text/plain') || '').trim(); } catch (err) { candidate = ''; }
+    }
+    return /^https?:\/\//i.test(candidate) ? candidate : '';
+  }
+
   function wireTranscribeDialog() {
     document.addEventListener('dragover', function (event) {
       var zone = dropzoneOf(event);
-      if (!zone) { return; }
-      event.preventDefault();
-      zone.classList.add('over');
+      var sources = sourcesOf(event);
+      if (!zone && !sources) { return; }
+      event.preventDefault();  /* or the browser navigates to the dropped link */
+      if (zone) { zone.classList.add('over'); }
     });
     document.addEventListener('dragleave', function (event) {
       var zone = dropzoneOf(event);
@@ -695,15 +722,99 @@
     });
     document.addEventListener('drop', function (event) {
       var zone = dropzoneOf(event);
-      if (!zone) { return; }
-      event.preventDefault();
-      zone.classList.remove('over');
-      var input = zone.querySelector('input[type="file"]');
       var files = event.dataTransfer ? event.dataTransfer.files : null;
-      if (input && files && files.length) {
-        input.files = files;
-        summarizeFiles(input);
+      if (zone) {
+        event.preventDefault();
+        zone.classList.remove('over');
+        var input = zone.querySelector('input[type="file"]');
+        if (input && files && files.length) {
+          input.files = files;
+          summarizeFiles(input);
+          return;
+        }
       }
+      var sources = sourcesOf(event);
+      if (!sources) { return; }
+      event.preventDefault();
+      var link = droppedLink(event.dataTransfer);
+      if (!link) { return; }
+      var tab = document.getElementById('src-url');
+      if (tab) { tab.checked = true; }
+      var form = sources.closest('form');
+      var field = form ? form.querySelector('input[name="url"]') : null;
+      if (!field) { return; }
+      field.value = link;
+      /* The field's own hx-trigger is `input changed`, so this is what
+         starts the preview - the same path a paste takes. */
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      field.focus();
+    });
+
+    /*
+      The episode list a feed or channel turns into (see _url_panel.html).
+      Three conveniences over a form that posts correctly without them: the
+      filter, All shown / None, and the live count with the cap. All three
+      are delegated to document like every listener here, and every check
+      below is a property (hidden, checked) or an attribute (data-search),
+      never a :checked / [hidden] selector - the Node harness the tests run
+      in models neither, and a stub that answers "no" to a question it did
+      not understand is how a broken script gets through.
+    */
+    function episodesPanel(el) {
+      return el && el.closest ? el.closest('[data-panel="url"]') : null;
+    }
+    function episodeRows(panel) {
+      return panel ? panel.querySelectorAll('.episode') : [];
+    }
+    function episodeBox(row) {
+      return row.querySelector('input[type="checkbox"]');
+    }
+    function recount(panel) {
+      if (!panel) { return; }
+      var out = panel.querySelector('[data-episodes-count]');
+      var submit = panel.querySelector('[data-episodes-submit]');
+      if (!out) { return; }
+      var ticked = 0;
+      episodeRows(panel).forEach(function (row) {
+        var box = episodeBox(row);
+        if (box && Boolean(box.checked)) { ticked += 1; }
+      });
+      var max = Number(out.getAttribute('data-max')) || 0;
+      var over = max > 0 && ticked > max;
+      out.textContent = over
+        ? ticked + ' selected - at most ' + max + ' in one go'
+        : ticked + ' selected';
+      if (over) { out.classList.add('over'); } else { out.classList.remove('over'); }
+      if (submit) { submit.disabled = over; }
+    }
+    document.addEventListener('input', function (event) {
+      var el = event.target;
+      if (!el || typeof el.matches !== 'function') { return; }
+      if (el.matches('[data-episode-filter]')) {
+        var needle = String(el.value || '').trim().toLowerCase();
+        var panel = episodesPanel(el);
+        episodeRows(panel).forEach(function (row) {
+          var hay = String(row.getAttribute('data-search') || '');
+          row.hidden = needle !== '' && hay.indexOf(needle) === -1;
+        });
+        recount(panel);
+      } else if (el.matches('input[type="checkbox"][name="entry"]')) {
+        recount(episodesPanel(el));
+      }
+    });
+    document.addEventListener('click', function (event) {
+      var el = event.target;
+      if (!el || typeof el.closest !== 'function') { return; }
+      var all = el.closest('[data-episodes-all]');
+      var none = el.closest('[data-episodes-none]');
+      if (!all && !none) { return; }
+      var panel = episodesPanel(el);
+      episodeRows(panel).forEach(function (row) {
+        var box = episodeBox(row);
+        if (!box) { return; }
+        if (none) { box.checked = false; } else if (!row.hidden) { box.checked = true; }
+      });
+      recount(panel);
     });
 
     document.addEventListener('change', function (event) {
