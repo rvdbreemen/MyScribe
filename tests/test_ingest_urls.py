@@ -1120,3 +1120,108 @@ def test_an_empty_hint_falls_back_to_the_site_s_title(tmp_path, monkeypatch):
     got = urls.download("https://example.test/watch?v=abc123", tmp_path, title_hint="")
 
     assert got.path.stem == "Vogon Poetry Slam"
+
+
+# --- the job: an episode keeps its name and its provenance ------------------------
+
+
+def test_a_fan_out_child_carries_the_entry_s_title_and_the_feed_it_came_from(
+    conn, data_dir, monkeypatch
+):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(feed_info())))
+    job_id = url_job(conn, FEED_URL, options={"model": "large-v3"})
+
+    run_stages(make_ctx(conn, job_id))
+
+    children = [
+        json.loads(row["params_json"])
+        for row in conn.execute(
+            "SELECT params_json FROM job WHERE type=? AND id<>? ORDER BY id",
+            (url_stage.JOB_TYPE, job_id),
+        )
+    ]
+    assert len(children) == 4
+    assert children[1]["entry"] == {"title": "Lecture 1", "source_id": "Generic:guid-1"}
+    assert children[1]["source"] == {"url": FEED_URL, "title": "The Hitchhiker Lectures"}
+    assert children[1]["url"].startswith("https://cdn.test/ep/default.mp3?d=1&e=1#__youtubedl_smuggle=")
+    assert children[1]["from_playlist"] is True
+    assert children[1]["options"] == {"model": "large-v3"}
+
+
+def test_register_names_a_feed_episode_after_the_feed_not_the_cdn(conn, data_dir, monkeypatch):
+    """A bare enclosure probes as its CDN filename (measured 2026-09-08:
+    `default.mp3_ywr3ahjkcgo_…`, no uploader); the feed knew the episode's
+    name and the child carries it. The feed's own title stands in for the
+    missing uploader, so the decoder is biased towards "Hitchhiker"."""
+    fake = FakeYdl(
+        single_info(title="default.mp3_ywr3ahjkcgo_6c70", uploader="", extractor_key="Generic", id="guid-1"),
+        files=("download.mp3", "download.info.json"),
+    )
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(
+        conn,
+        "https://cdn.test/ep/default.mp3?d=1&e=1#__youtubedl_smuggle=x",
+        from_playlist=True,
+        options={"model": "large-v3"},
+        entry={"title": "Lecture 1", "source_id": "Generic:guid-1"},
+        source={"url": FEED_URL, "title": "The Hitchhiker Lectures"},
+    )
+
+    run_stages(make_ctx(conn, job_id))
+
+    row = conn.execute("SELECT * FROM media").fetchone()
+    assert row["title"] == "Lecture 1"
+    assert row["orig_name"] == "Lecture 1.mp3"
+    assert row["source_url"] == "https://cdn.test/ep/default.mp3?d=1&e=1"  # no fragment, ever
+    assert row["source_id"] == "Generic:guid-1"
+    queued = conn.execute("SELECT params_json FROM job WHERE type='transcribe'").fetchone()
+    assert json.loads(queued["params_json"])["extra_hotwords"] == [
+        "Lecture", "The", "Hitchhiker", "Lectures",
+    ]
+
+
+def test_register_takes_the_download_s_extractor_id_when_the_entry_has_none(
+    conn, data_dir, monkeypatch
+):
+    fake = FakeYdl(single_info(extractor_key="Youtube"), files=("download.m4a",))
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(conn, "https://youtu.be/abc123#t=42")
+
+    run_stages(make_ctx(conn, job_id))
+
+    row = conn.execute("SELECT source_url, source_id FROM media").fetchone()
+    assert row["source_url"] == "https://youtu.be/abc123"
+    assert row["source_id"] == "Youtube:abc123"
+
+
+def test_register_stores_no_id_for_a_generic_download_without_an_entry(
+    conn, data_dir, monkeypatch
+):
+    """The generic extractor's id for a bare file is its filename, which would
+    mark the wrong episode as known; a typed mp3 link is matched by URL only."""
+    fake = FakeYdl(single_info(extractor_key="Generic", id="default"), files=("download.mp3",))
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(conn, "https://cdn.test/some.mp3")
+
+    run_stages(make_ctx(conn, job_id))
+
+    assert conn.execute("SELECT source_id FROM media").fetchone()["source_id"] is None
+
+
+def test_register_keeps_the_download_s_uploader_when_it_has_one(conn, data_dir, monkeypatch):
+    """The source title is a fallback, not an override: a YouTube video from a
+    channel listing keeps its channel as the uploader for the hotwords."""
+    fake = FakeYdl(single_info(extractor_key="Youtube"), files=("download.m4a",))
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(
+        conn, "https://example.test/watch?v=abc123", from_playlist=True,
+        entry={"title": "Vogon Poetry Slam", "source_id": "Youtube:abc123"},
+        source={"url": "https://example.test/@channel", "title": "Megadodo Publications"},
+    )
+
+    run_stages(make_ctx(conn, job_id))
+
+    queued = conn.execute("SELECT params_json FROM job WHERE type='transcribe'").fetchone()
+    assert json.loads(queued["params_json"])["extra_hotwords"] == [
+        "Vogon", "Poetry", "Slam", "Prostetnic", "Jeltz",
+    ]
