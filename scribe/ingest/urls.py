@@ -174,8 +174,9 @@ class UrlInfo:
     """What `probe` learned without downloading anything.
 
     `entries` is empty for a single video and holds one ``{id, title, duration,
-    url}`` per item for a playlist - flat, because a playlist is expanded into
-    one job per entry and each of those probes its own URL properly.
+    url, timestamp, source_id}`` per item for a playlist - flat, because a
+    playlist is expanded into one job per entry and each of those probes its
+    own URL properly.
     """
 
     kind: Literal["single", "playlist"]
@@ -185,6 +186,15 @@ class UrlInfo:
     webpage_url: str
     entries: list[dict] = field(default_factory=list)
     info: dict = field(default_factory=dict)
+    total: int | None = None
+    """yt-dlp's `playlist_count`: the whole source's length, whatever `limit`
+    cut the listing to. A feed is a list and always reports one; a paginated
+    channel does not, so None there means "unknown", never "zero"."""
+    truncated: bool = False
+    """Whether `limit` cut the listing short. From `total` when there is one;
+    otherwise the count reaching the limit is the only signal, and a channel
+    of exactly `limit` videos reads as cut - the honest answer, since nothing
+    can tell the two apart."""
 
 
 @dataclass(frozen=True)
@@ -304,13 +314,21 @@ def _common_opts() -> dict:
     }
 
 
-def probe_opts(cookies_file: str | None = None) -> dict:
+def probe_opts(cookies_file: str | None = None, *, limit: int | None = None) -> dict:
     """Options for asking what a URL is, without fetching it.
 
     `extract_flat="in_playlist"` is the whole trick: a single video is
     extracted properly, while a playlist yields its entries as stubs. Fetching
     fifty videos' metadata to answer "is this a playlist" would make the
     dialog's preview take a minute.
+
+    ``limit`` becomes `playlistend`, and what it bounds depends on the source.
+    A channel is paginated - yt-dlp stops asking for pages once it has enough
+    entries, so the limit bounds the *work* (measured 2026-09-08: about 40
+    entries a second, so 2500 is about a minute). A feed is one document,
+    read whole and only trimmed afterwards; the limit bounds nothing but the
+    length of the answer. yt-dlp honours `playlistend` only while
+    `playlist_items` is None, which is why that key is spelled out below.
 
     `noplaylist` is here for the same reason `download_opts` sets it, and it
     matters more here: the probe is what *decides*. `url_stage.fetch` probes
@@ -334,6 +352,8 @@ def probe_opts(cookies_file: str | None = None) -> dict:
         "playlist_items": None,
         "noplaylist": True,
     }
+    if limit is not None:
+        opts["playlistend"] = int(limit)
     if cookies_file:
         # A members-only video needs the cookie to say even what it is called.
         opts["cookiefile"] = str(cookies_file)
@@ -392,13 +412,31 @@ def ensure_http_url(url: str) -> str:
     return text
 
 
-def probe(url: str, *, cookies_file: str | None = None, ydl=None) -> UrlInfo:
-    """What this URL is, without downloading a byte."""
+def probe(
+    url: str,
+    *,
+    cookies_file: str | None = None,
+    limit: int | None = None,
+    ydl=None,
+) -> UrlInfo:
+    """What this URL is, without downloading a byte.
+
+    ``limit`` caps a playlist's listing (see `probe_opts`) and is what
+    `truncated` is judged against. `returned` is yt-dlp's raw count, before
+    `_entries` drops the items nobody could fetch: the question is whether
+    the *site* had more, not whether every item was usable.
+    """
     url = ensure_http_url(url)
-    ydl = ydl if ydl is not None else build_ydl(probe_opts(cookies_file))
+    ydl = ydl if ydl is not None else build_ydl(probe_opts(cookies_file, limit=limit))
     info = _extract(ydl, url, download=False)
 
     entries = _entries(info)
+    returned = len(info.get("entries") or [])
+    total = _as_int(info.get("playlist_count"))
+    if total is not None:
+        truncated = total > returned
+    else:
+        truncated = limit is not None and returned >= limit
     return UrlInfo(
         kind="playlist" if entries else "single",
         title=str(info.get("title") or ""),
@@ -407,6 +445,8 @@ def probe(url: str, *, cookies_file: str | None = None, ydl=None) -> UrlInfo:
         webpage_url=str(info.get("webpage_url") or info.get("original_url") or url),
         entries=entries,
         info=info,
+        total=total,
+        truncated=truncated,
     )
 
 
@@ -417,8 +457,18 @@ def download(
     on_progress: Callable[[float], None] | None = None,
     cookies_file: str | None = None,
     ydl=None,
+    title_hint: str | None = None,
 ) -> DownloadedMedia:
     """Fetch the audio of one video into ``dest_dir``; returns where it landed.
+
+    ``title_hint`` names the file when given: a feed knows what its episode is
+    called, and a bare enclosure does not (measured 2026-09-08: it probes as
+    `default.mp3_ywr3ahjkcgo_…`, the CDN's name for it). The hint is a
+    stranger's text posted back by a browser and goes through the same scrub
+    as a site's title; an empty hint means "not given", and one that scrubs
+    away to nothing gets `FALLBACK_STEM`, exactly as a title does. The
+    returned `title` stays the site's own - what the library calls the
+    recording is the register stage's decision, not this function's.
 
     Progress is yt-dlp's own byte counts mapped onto 0..1, and it never goes
     backwards - a fragment that restarts would otherwise walk the bar back.
@@ -443,7 +493,7 @@ def download(
         ydl.add_progress_hook(_progress_hook(on_progress))
 
     info = _extract(ydl, url, download=True)
-    path = _rename_to_title(_locate(dest, info), str(info.get("title") or ""))
+    path = _rename_to_title(_locate(dest, info), title_hint or str(info.get("title") or ""))
 
     if on_progress is not None:
         # Unconditionally, the way `prepare.to_wav` closes: the file is here,
@@ -560,11 +610,56 @@ def _reason(message: str) -> str:
     return line.removeprefix("ERROR:").strip()
 
 
+def source_id_for(entry: dict) -> str | None:
+    """The extractor-scoped identity of a listed entry, or None.
+
+    `Youtube:kVXp6UNVPTo` for a flat YouTube entry (its `ie_key` and `id`);
+    `Generic:<guid>` for a feed item, whose guid yt-dlp smuggles into the
+    enclosure URL's fragment so that its own id is the guid and not the CDN's
+    filename. Scoped by extractor because ids are unique only within one.
+    Compared by the dialog's listing to say "in library", stored on the media
+    row by the register stage; rendered nowhere.
+    """
+    ie_key, ident = entry.get("ie_key"), entry.get("id")
+    if ie_key and ident:
+        return f"{ie_key}:{ident}"
+    guid = _smuggled_video_id(str(entry.get("url") or ""))
+    return f"Generic:{guid}" if guid else None
+
+
+def _smuggled_video_id(url: str) -> str | None:
+    """The `force_videoid` yt-dlp smuggled into ``url``'s fragment, if any.
+
+    Read with yt-dlp's own reader rather than a copy of its format, imported
+    lazily like `_is_unsupported`: this runs inside `probe`, where yt-dlp is
+    already loaded, and never in a process that has not paid for it.
+    """
+    if "#__youtubedl_smuggle=" not in url:
+        return None
+    try:
+        from yt_dlp.utils import unsmuggle_url
+    except ImportError:  # pragma: no cover - the URL came out of yt-dlp
+        return None
+    _bare, data = unsmuggle_url(url, {})
+    value = (data or {}).get("force_videoid")
+    return str(value) if value else None
+
+
 def _entries(info: dict) -> list[dict]:
-    """A playlist's items as ``{id, title, duration, url}``; empty for a video.
+    """A playlist's items as ``{id, title, duration, url, timestamp,
+    source_id}``; empty for a video.
 
     An entry with no URL to follow is dropped rather than kept: it would
-    become a job whose only possible outcome is a failure.
+    become a job whose only possible outcome is a failure. The URL is kept
+    *verbatim*, fragment and all: yt-dlp smuggles a feed's guid, and other
+    extractors a referer or headers, into that fragment, and the child that
+    fetches the entry needs exactly what the listing said. Anything that
+    compares or stores the URL strips the fragment itself.
+
+    `timestamp` is epoch seconds from `timestamp`, else `release_timestamp`
+    (a scheduled premiere), else None. A feed has one (its `pubDate`);
+    YouTube's flat listing has none, and no flat source delivers an
+    `upload_date`, so there is no third fallback.
     """
     raw = info.get("entries")
     if not raw:
@@ -577,12 +672,17 @@ def _entries(info: dict) -> list[dict]:
         url = entry.get("url") or entry.get("webpage_url")
         if not url:
             continue
+        timestamp = _as_float(entry.get("timestamp"))
+        if timestamp is None:
+            timestamp = _as_float(entry.get("release_timestamp"))
         entries.append(
             {
                 "id": str(entry.get("id") or ""),
                 "title": str(entry.get("title") or ""),
                 "duration": _as_float(entry.get("duration")),
                 "url": str(url),
+                "timestamp": timestamp,
+                "source_id": source_id_for(entry),
             }
         )
     return entries
@@ -676,3 +776,12 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_int(value: Any) -> int | None:
+    """A count, or None: a negative number is no count at all."""
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out >= 0 else None

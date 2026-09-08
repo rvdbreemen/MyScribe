@@ -929,3 +929,194 @@ def test_the_staleness_threshold_is_measured_from_the_release_date(monkeypatch):
     assert urls.is_stale() is False
     monkeypatch.setattr(urls, "installed_version", lambda: old.strftime("%Y.%m.%d"))
     assert urls.is_stale() is True
+
+
+# --- the feed import (TASK-021): a listing with a total, entries that know who they are ---
+
+"""
+A podcast feed is the input the feed import is about, and it is not shaped
+like the YouTube playlists above: yt-dlp's generic extractor reads one into
+entries with a timestamp, a duration, **no id**, and an enclosure URL whose
+fragment carries the item's ``<guid>`` smuggled the yt-dlp way. `feed_info`
+below asks that extractor rather than restating its output, so if yt-dlp
+changes the shape the fixture changes with it and these tests say so. The
+XML it parses is the literal below, never a real feed.
+"""
+
+import xml.etree.ElementTree as ET
+
+FEED_URL = "https://feeds.test/podcast.xml"
+
+FEED_XML = """<?xml version="1.0"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel>
+<title>The Hitchhiker Lectures</title><description>Mostly harmless.</description>
+<item><title>Trump drinks Venezuela's milkshake &amp; "more" &lt;3 café</title><guid>guid-0</guid>
+  <pubDate>Fri, 04 Sep 2026 12:00:00 GMT</pubDate><itunes:duration>25:27</itunes:duration>
+  <enclosure url="https://cdn.test/ep/default.mp3?d=1&amp;e=0" type="audio/mpeg"/></item>
+<item><title>Lecture 1</title><guid>guid-1</guid><pubDate>Wed, 02 Sep 2026 12:00:00 GMT</pubDate>
+  <enclosure url="https://cdn.test/ep/default.mp3?d=1&amp;e=1" type="audio/mpeg"/></item>
+<item><title>Lecture 2</title><guid>guid-2</guid>
+  <enclosure url="https://cdn.test/ep/default.mp3?d=1&amp;e=2" type="audio/mpeg"/></item>
+<item><title>A page, not an enclosure</title><guid>guid-3</guid><link>https://example.test/page/3</link></item>
+<item><title>Nothing to fetch</title><guid>guid-4</guid></item>
+</channel></rss>"""
+
+
+def feed_info() -> dict:
+    """A feed as yt-dlp's own generic extractor reads one - derived, not mirrored.
+
+    Four entries come back from five items: the one with neither an enclosure
+    nor a link is skipped by yt-dlp itself, before anything of ours runs. The
+    `playlist_count` is set the way `YoutubeDL` fills it for a list-shaped
+    playlist, so the fixture answers "how long is the feed" like a real probe.
+    """
+    from yt_dlp.extractor.generic import GenericIE
+
+    info = GenericIE()._extract_rss(FEED_URL, None, ET.fromstring(FEED_XML))
+    info["extractor"] = "generic"
+    info["extractor_key"] = "Generic"
+    info["webpage_url"] = FEED_URL
+    info["playlist_count"] = len(info["entries"])
+    return info
+
+
+def test_probe_opts_limit_becomes_playlistend_and_leaves_playlist_items_alone():
+    # `playlistend` is honoured only while `playlist_items` is None; both are
+    # asserted so the guard cannot be lost in a later tidy-up.
+    assert urls.probe_opts(limit=5)["playlistend"] == 5
+    assert urls.probe_opts(limit=5)["playlist_items"] is None
+    assert urls.probe_opts().get("playlistend") is None
+
+
+def test_yt_dlp_honours_playlistend_on_a_flat_playlist_and_still_reports_the_total():
+    """Asked of yt-dlp itself, offline, the way the yes_playlist tests ask it:
+    a list-shaped playlist (a feed) cut at 5 still says it held 6. The
+    `FakeYdl` never trims, so this is the one place the cut is real."""
+    from yt_dlp import YoutubeDL
+
+    info = playlist_info(6)
+    info["extractor"], info["extractor_key"] = "generic", "Generic"
+    with YoutubeDL({**urls.probe_opts(limit=5)}) as ydl:
+        out = ydl.process_ie_result(dict(info), download=False)
+
+    assert len(out["entries"]) == 5
+    assert out["playlist_count"] == 6
+
+
+@pytest.mark.parametrize(
+    "count, playlist_count, limit, expected_truncated, expected_total",
+    [
+        (3, 7, 3, True, 7),  # the total says more was there
+        (3, 3, 3, False, 3),  # exactly the limit, and the total agrees: not cut
+        (3, None, 3, True, None),  # no total (a channel): the count is the signal
+        (3, None, None, False, None),
+        (2, None, 3, False, None),
+    ],
+)
+def test_truncated_follows_the_total_and_falls_back_to_the_limit(
+    count, playlist_count, limit, expected_truncated, expected_total
+):
+    info = playlist_info(count)
+    if playlist_count is not None:
+        info["playlist_count"] = playlist_count
+
+    probed = urls.probe(
+        "https://example.test/playlist?list=PL42", limit=limit, ydl=FakeYdl(info)
+    )
+
+    assert probed.truncated is expected_truncated
+    assert probed.total == expected_total
+
+
+def test_probe_passes_the_limit_to_the_options_it_builds(monkeypatch):
+    fake = FakeYdl(playlist_info(2))
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+
+    urls.probe("https://example.test/playlist?list=PL42", limit=42)
+
+    assert fake.opts["playlistend"] == 42
+
+
+def test_entries_carry_a_timestamp_from_either_field_and_none_otherwise():
+    info = playlist_info(3)
+    info["entries"][0]["timestamp"] = 1788523200
+    info["entries"][1]["release_timestamp"] = 1788350400
+
+    probed = urls.probe("https://example.test/playlist?list=PL42", ydl=FakeYdl(info))
+
+    assert [e["timestamp"] for e in probed.entries] == [1788523200.0, 1788350400.0, None]
+
+
+def test_a_feed_entry_keeps_its_smuggled_url_and_gets_the_guid_as_its_source_id():
+    probed = urls.probe(FEED_URL, ydl=FakeYdl(feed_info()))
+
+    first = probed.entries[0]
+    assert first["url"].startswith("https://cdn.test/ep/default.mp3?d=1&e=0#__youtubedl_smuggle=")
+    assert first["source_id"] == "Generic:guid-0"
+    assert first["title"] == 'Trump drinks Venezuela\'s milkshake & "more" <3 café'
+    assert first["timestamp"] == 1788523200.0
+    assert first["duration"] == 1527.0
+    assert probed.entries[2]["timestamp"] is None
+    assert probed.entries[3]["url"] == (
+        "https://example.test/page/3#__youtubedl_smuggle=%7B%22force_videoid%22%3A+%22guid-3%22%7D"
+    )
+    assert len(probed.entries) == 4
+    assert probed.total == 4
+    assert probed.truncated is False
+
+
+def test_a_youtube_entry_s_source_id_is_the_extractor_and_the_video_id():
+    info = playlist_info(1)
+    info["entries"][0]["ie_key"] = "Youtube"
+
+    probed = urls.probe("https://example.test/playlist?list=PL42", ydl=FakeYdl(info))
+
+    assert probed.entries[0]["source_id"] == "Youtube:vid0"
+
+
+def test_an_entry_with_neither_an_ie_key_nor_a_guid_has_no_source_id():
+    probed = urls.probe("https://example.test/playlist?list=PL42", ydl=FakeYdl(playlist_info(1)))
+
+    assert probed.entries[0]["source_id"] is None
+
+
+def test_download_names_the_file_and_its_sidecar_after_the_hint(tmp_path, monkeypatch):
+    fake = FakeYdl(single_info(), files=("download.m4a", "download.info.json"))
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+
+    got = urls.download(
+        "https://example.test/watch?v=abc123", tmp_path,
+        title_hint="Love in the time of Palantir",
+    )
+
+    assert got.path.name == "Love in the time of Palantir.m4a"
+    assert (tmp_path / "Love in the time of Palantir.info.json").is_file()
+    assert got.title == "Vogon Poetry Slam"  # the hint names the file, not the media
+
+
+def test_a_traversing_title_hint_cannot_escape_the_work_dir(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+
+    got = urls.download(
+        "https://example.test/watch?v=abc123", work, title_hint=r"..\..\evil"
+    )
+
+    assert got.path.resolve().is_relative_to(work.resolve())
+    assert got.path.is_file()
+
+
+def test_a_hint_that_scrubs_to_nothing_still_names_the_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+
+    got = urls.download("https://example.test/watch?v=abc123", tmp_path, title_hint="...")
+
+    assert got.path.stem == urls.FALLBACK_STEM
+
+
+def test_an_empty_hint_falls_back_to_the_site_s_title(tmp_path, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+
+    got = urls.download("https://example.test/watch?v=abc123", tmp_path, title_hint="")
+
+    assert got.path.stem == "Vogon Poetry Slam"
