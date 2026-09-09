@@ -175,11 +175,12 @@ MAX_LISTED = 2500
 
 Two costs, and the second is the binding one. A channel pages at about 40
 entries a second, so this is about a minute of listing - the patient budget.
-And every entry is a row swapped into a modal dialog: about 400-600 bytes
-each with a feed's tracking-laden enclosure URL, so about a megabyte at the
-cap, walked by the filter on every keystroke. The Daily's 2970-episode feed
-is not covered, and that is the trade; the header says "the first 2500 of
-2970" so nobody mistakes the cut for the whole."""
+And every entry is a row swapped into a modal dialog, walked by the filter
+on every keystroke: measured 2026-09-08, 920 Computerphile rows are 450 KB
+and 2500 rows of The Daily, whose enclosure URLs carry four tracking
+prefixes each, are 2.4 MB. That feed's 2970 episodes are not covered, and
+that is the trade; the header says "the first 2500 of 2970" so nobody
+mistakes the cut for the whole."""
 
 FORM_FIELD_CEILING = MAX_LISTED + 64
 """How many form fields the url route will read.
