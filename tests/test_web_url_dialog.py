@@ -1261,6 +1261,38 @@ def test_an_episode_row_shows_its_date_and_duration_and_copes_without_either(
     assert "None" not in rows[2] and "1970" not in rows[2]
 
 
+def test_an_episode_dated_before_1970_still_lists(client, monkeypatch):
+    """A feed sets pubDate and yt-dlp parses it with `unified_timestamp`, which
+    clamps nothing: a 1969 date is a negative epoch, and on Windows both
+    `time.localtime` and `datetime.fromtimestamp` refuse one with OSError
+    [Errno 22]. The panel renders the epoch twice per row (the search key and
+    the visible date), so one old episode turned this route into a 500 - and
+    this is the route whose docstring promises "Always a 200 ... The failure
+    *is* the content here". Measured on this machine 2026-09-09: an offset of
+    +0100 on epoch zero is enough (-3600), so a feed generator that emits "no
+    date" in any zone east of Greenwich reaches it without an archive in sight.
+    """
+    info = playlist_info(3)
+    info["entries"][0]["timestamp"] = -31536000.0        # 1969-01-01
+    info["entries"][1]["timestamp"] = -3600.0            # epoch zero, +0100
+    info["entries"][2]["timestamp"] = calendar.timegm((2026, 9, 4, 12, 0, 0))
+    _probing(monkeypatch, FakeYdl(info))
+
+    resp = _preview(client, PLAYLIST)
+
+    assert resp.status_code == 200
+    rows = _rows(resp.text)
+    # What every platform owes: the listing arrives, all three episodes are on
+    # it, and each is tickable. What the date cell says is deliberately not
+    # asserted - Windows cannot render a negative epoch and leaves it empty,
+    # Linux renders 1969-01-01, and both are correct. The invariant that the
+    # filters never raise is pinned in test_web_scaffold.py, where it bites on
+    # Windows and passes trivially on Linux.
+    assert len(rows) == 3
+    assert all(row.count('name="entry"') == 1 for row in rows)
+    assert "2026-09-04" in rows[2]
+
+
 def test_the_import_button_is_the_row_button_s_twin_and_the_tools_are_not_submits(
     client, monkeypatch
 ):
