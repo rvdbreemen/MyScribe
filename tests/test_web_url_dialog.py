@@ -1728,6 +1728,48 @@ def test_listing_the_episodes_anyway_does_not_close_the_dialog_and_import_does(t
     assert result == {"afterRetry": 0, "afterImport": 1}
 
 
+DROPZONE_FIXTURE = r"""
+    /* The file half of the dialog as transcribe_dialog.html builds it: the
+       drop zone, the file input inside it and the hint that names what was
+       chosen. */
+    const zone = form.append(el('div', { class: 'dropzone', 'data-dropzone': '' }));
+    const fileInput = zone.append(el('input', { type: 'file', name: 'files' }));
+    const fileSummary = zone.append(el('p', { class: 'hint', 'data-file-summary': '' }));
+    fileSummary.textContent = 'No files chosen yet.';
+"""
+
+
+@needs_node
+def test_a_dropped_file_still_reaches_the_file_input_and_leaves_the_link_field_alone(tmp_path):
+    """The drop listener took the link path on top of the file path, so this
+    pins the older half: files dropped on the zone go to the file input, the
+    hint names them, and nothing switches to the link tab. Both halves share
+    one listener now, and a `return` is all that separates them."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + DROPZONE_FIXTURE + r"""
+    load(APP);
+    const drop = event({ target: zone, dataTransfer: {
+      files: [{ name: 'vogon-poetry.m4a' }],
+      getData: function () { throw new Error('a file drop must not read the link formats'); }
+    } });
+    fire(document, 'drop', drop);
+    done({ prevented: drop.defaultPrevented, chosen: (fileInput.files || []).map(function (f) { return f.name; }),
+           summary: fileSummary.textContent, over: zone.classList.contains('over'),
+           tab: srcUrl.checked, url: urlField.value });
+""",
+    )
+
+    assert result == {
+        "prevented": 1,
+        "chosen": ["vogon-poetry.m4a"],
+        "summary": "vogon-poetry.m4a",
+        "over": False,
+        "tab": False,
+        "url": "",
+    }
+
+
 @needs_node
 def test_a_dropped_link_opens_the_link_tab_fills_the_field_and_previews(tmp_path):
     """"Drop a URL", read literally: a link dragged from an address bar or a
