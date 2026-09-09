@@ -13,4 +13,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-005 | Accepted | `scribe/**` | Chosen option: preloaded waveform, diarize stage only. |
 | ADR-006 | Accepted | `scribe/doctor.py`, `scribe/**` | Chosen option: the cu128 pin set with torch/lib registration, frozen in requirements-gpu.txt on 2026-09-02 after the... |
 | ADR-007 | Accepted | `scribe/**`, `scribe/[!w]*/**` | Chosen option: the JSON-Lines file with a bounded lock and the observation rule, because a log that lives in the data... |
-| ADR-008 | Proposed | `scribe/templates/_url_panel.html`, `scribe/**` | Chosen option: yt-dlp lists, the browser holds the selection, the media row remembers where it came from, because it... |
+| ADR-008 | Proposed | `scribe/templates/_url_panel.html`, `scribe/**` | Chosen: a feed is a row, polled by its own thread on a due-date, and every new episode is one ingesturl job, on top o... |

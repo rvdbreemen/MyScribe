@@ -445,33 +445,43 @@
     },
     {
       "id": "ADR-008",
-      "title": "A feed or channel is listed in the web process and chosen in the browser; each chosen episode is one ingest_url job",
-      "path": "ADR-008-a-feed-or-channel-is-listed-in-the-web-process-and-chosen-in-the-browser-each-chosen-episode-is-one-ingest-url-job.md",
+      "title": "A feed or channel is a subscription polled on a schedule; each new episode is one ingest_url job",
+      "path": "ADR-008-a-feed-or-channel-is-a-subscription-polled-on-a-schedule-each-new-episode-is-one-ingest-url-job.md",
       "format": "madr",
       "status": "Proposed",
-      "date": "2026-09-08",
-      "decision_summary": "Chosen option: yt-dlp lists, the browser holds the selection, the media row remembers where it came from, because it...",
+      "date": "2026-09-09",
+      "decision_summary": "Chosen: a feed is a row, polled by its own thread on a due-date, and every new episode is one ingesturl job, on top o...",
       "topics": [
         "feeds",
         "ingest",
         "provenance",
+        "scheduling",
+        "subscriptions",
         "yt-dlp"
       ],
       "aliases": [
         "channel import",
         "episode list",
         "feed import",
+        "feed polling",
+        "feed subscription",
+        "feeds page",
         "podcast import",
         "RSS import"
       ],
       "components": [
+        "scribe.app",
+        "scribe.ingest.feeds",
         "scribe.ingest.urls",
         "scribe.stages.url_stage",
+        "scribe.web.feeds_ui",
         "scribe.web.ingest_ui"
       ],
       "symbols": [
         "add_url",
+        "due_feeds",
         "enqueue_many",
+        "FeedWatcher",
         "known_sources",
         "probe_in_slot",
         "source_id_for"
@@ -479,24 +489,32 @@
       "context_scope": "selective",
       "decision_contract": {
         "must": [
-          "A feed, a channel or a playlist is listed by yt-dlp through urls.probe(limit=…); no other feed or HTML parser is added to scribe.",
-          "The listing runs only under ingestui.probeinslot: a budget, a slot taken and released inside the thread, MAXLISTED as the ceiling on one listing's work, and one listing per URL at a time.",
+          "A feed, a channel or a playlist is listed by yt-dlp through urls.probe(limit=...); no other feed or HTML parser is added to scribe.",
+          "An interactive listing runs only under ingestui.probeinslot.",
           "An entry's URL is fetched verbatim by the runner child; anything that compares or stores it strips the fragment first.",
-          "Every posted entry passes parseentry (size cap, JSON without NaN/Infinity, a dict, a string URL through ensurehttpurl, a title cut at library.MAXNAME) before any job is queued, and the jobs of one import are inserted by jobs.enqueuemany...",
-          "The media row's sourceurl and sourceid are compared by knownsources and never rendered as an href; the same holds for every URL that came over the network.",
-          "The listing's title names the media row; the download's title is the fallback."
+          "Every posted entry passes parseentry before any job is queued, and the jobs of one import are inserted by jobs.enqueuemany in one transaction.",
+          "The media row's sourceurl and sourceid are compared by knownsources and never rendered as an href.",
+          "The listing's title names the media row; the download's title is the fallback.",
+          "Periodic feed work runs in FeedWatcher's own thread with its own connection, every step wrapped so one bad feed cannot end the loop.",
+          "A feed's next poll is decided by its stored checkedat and interval, not by elapsed process time.",
+          "Nothing is queued for an episode knownsources already knows, and one poll queues at most MAXNEWPERPOLL jobs.",
+          "Subscribing queues nothing by itself: the episodes present at subscription time are recorded as known."
         ],
         "must_not": [
-          "Add a feed table, a subscription, or a poller without superseding this ADR.",
-          "Render the checkbox value with |tojson (Markup, unescaped quotes); it is json.dumps output autoescaped as an attribute.",
-          "Read the ticked entries through fields, which keeps the last value per name."
+          "Add periodic work to supervisor.loop, or express a schedule as a job that re-queues itself.",
+          "Poll a feed the person paused, or keep polling one whose probe has failed past the recorded limit without saying so on the Feeds page.",
+          "Render the checkbox value with |tojson; it is json.dumps output autoescaped as an attribute.",
+          "Read the ticked entries through fields, which keeps the last value per name.",
+          "Let a feed's own text - its title, an episode title - reach a template unescaped, or a shell in any form."
         ],
         "exceptions": [
-          "The fan-out inside the runner child (urlstage.fanout) still queues its children one jobs.enqueue at a time: it runs where the cost falls on nobody, and switching it is tidiness, not this decision."
+          "The fan-out inside the runner child (urlstage.fanout) still queues its children one jobs.enqueue at a time: it runs where the cost falls on nobody.",
+          "A person pressing \"poll now\" on the Feeds page bypasses the due check - that is the point of the button - but not the per-poll cap."
         ],
         "verification": [
           "tests/testingesturls.py::testafeedentrykeepsitssmuggledurlandgetstheguidasitssourceid, ::testregisternamesafeedepisodeafterthefeednotthecdn, ::testytdlphonoursplaylistendonaflatplaylistandstillreportsthetotal.",
-          "tests/testweburldialog.py::testapatientpreviewattachestothelistingalreadyrunning, ::testafollowerholdsnoslot, ::testonebadentryamonggoodonesqueuesnoneofthem, ::testawholelistingpostedatonceisrefusedbythisroutenotbystarlette, ::testnotemp...",
+          "tests/testweburldialog.py::testapatientpreviewattachestothelistingalreadyrunning, ::testonebadentryamonggoodonesqueuesnoneofthem, ::testnotemplatebindsanhreftoastrangersurl.",
+          "tests/testfeeds.py::testanewsubscriptionqueuesnothing, ::testonlyoverduefeedsarepolled, ::testanepisodealreadyinthelibraryorthetrashisnotqueuedagain, ::testapollqueuesatmostthecapandsaysso, ::testafeedwhoseproberaisesdoesnotendtheloop.",
           "grep -rn \"feedparser\" scribe/ returns nothing."
         ]
       },
