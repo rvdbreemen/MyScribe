@@ -887,3 +887,141 @@ def test_the_flash_region_is_filled_not_replaced():
     # And at least one template does flash out of band, or this tests nothing.
     assert any('hx-swap-oob="innerHTML:#flash"' in p.read_text(encoding="utf-8")
                for p in Path(web.TEMPLATES_DIR).glob("*.html"))
+
+
+# --- labels as a facet (TASK-023) --------------------------------------------------
+
+
+def _attach_label(conn, media_id, name, source="llm"):
+    with db.LOCK:
+        conn.execute("INSERT OR IGNORE INTO label(name, created_at) VALUES (?, 0.0)", (name,))
+        conn.execute(
+            "INSERT OR IGNORE INTO media_label(media_id, label_id, source, created_at)"
+            " SELECT ?, id, ?, 0.0 FROM label WHERE name = ? COLLATE NOCASE",
+            (media_id, source, name),
+        )
+        conn.commit()
+
+
+def test_filtering_on_a_label_lists_only_the_recordings_that_carry_it(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+    _attach_label(conn, library["beta"], "cooking")
+
+    body = client.get("/?label=hacking").text
+
+    assert "Alpha" in body and "Gamma" in body
+    assert "Beta" not in body
+
+
+def test_a_label_filter_crosses_folders(client, conn, library):
+    """The point of a label: Alpha is in Docs and Gamma is in no folder, and
+    one click gathers both. A folder cannot do that."""
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+
+    body = client.get("/?label=hacking").text
+
+    assert "Alpha" in body and "Gamma" in body
+    # Beta carries no label: without this the test passes on a page that
+    # ignored the filter and listed the whole library.
+    assert "Beta" not in body
+
+
+def test_a_label_matches_regardless_of_case(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+
+    body = client.get("/?label=Hacking").text
+
+    assert "Alpha" in body
+    assert "Beta" not in body and "Gamma" not in body
+
+
+def test_the_sidebar_lists_every_label_with_how_many_carry_it(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+    _attach_label(conn, library["beta"], "cooking")
+
+    ctx = web_library.sidebar_context(conn, web_library.State())
+
+    assert ctx["labels"] == [
+        {"name": "hacking", "count": 2},
+        {"name": "cooking", "count": 1},
+    ]
+
+
+def test_the_sidebar_renders_the_labels_as_links_that_filter(client, conn, library):
+    """The context test above proves the query; this proves the markup, which
+    is the half a person actually clicks."""
+    _attach_label(conn, library["alpha"], "hacker history")
+
+    body = client.get("/").text
+
+    assert "<h2>Labels</h2>" in body
+    assert 'href="/?label=hacker%20history"' in body
+    assert "hacker history" in body
+
+
+def test_the_labels_heading_is_absent_when_nothing_is_labelled(client, library):
+    assert "<h2>Labels</h2>" not in client.get("/").text
+
+
+def test_a_trashed_recording_does_not_count_toward_a_label(client, conn, library):
+    """The sidebar counts what a click would show, and a click does not show
+    the trash - the same rule the folder counts already follow."""
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["trashed"], "hacking")
+
+    ctx = web_library.sidebar_context(conn, web_library.State())
+
+    assert ctx["labels"] == [{"name": "hacking", "count": 1}]
+    assert "Trashed" not in client.get("/?label=hacking").text
+
+
+def test_a_label_that_nothing_carries_is_not_offered(client, conn, library):
+    """A label whose last recording was purged is not wrong, only unused, and
+    a sidebar row that always answers "nothing here" is noise."""
+    with db.LOCK:
+        conn.execute("INSERT INTO label(name, created_at) VALUES ('orphan', 0.0)")
+        conn.commit()
+
+    ctx = web_library.sidebar_context(conn, web_library.State())
+
+    assert ctx["labels"] == []
+
+
+def test_a_label_filter_and_a_title_filter_narrow_together(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+
+    body = client.get("/?label=hacking&q=Alph").text
+
+    assert "Alpha" in body
+    # Gamma has the label but not the title; Beta has neither.
+    assert "Gamma" not in body and "Beta" not in body
+
+
+def test_an_unknown_label_shows_an_empty_table_rather_than_an_error(client, library):
+    """A folder id that does not exist is a 404 because it came from the app's
+    own markup. A label comes from a URL a person may type, and "no results"
+    is the honest answer to a word nothing carries."""
+    resp = client.get("/?label=nothing-uses-this")
+
+    assert resp.status_code == 200
+    assert "Alpha" not in resp.text
+
+
+def test_the_heading_names_the_label_being_filtered_on(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+
+    ctx = web_library.library_context(conn, web_library.State(label="hacking"))
+
+    assert ctx["heading"] == "hacking"
+
+
+def test_the_label_survives_a_sort_link(conn, library):
+    """Every link the page builds carries the state it was built from; a sort
+    that silently dropped the filter would be a different page."""
+    state = web_library.State(label="hacking")
+
+    assert "label=hacking" in state.url(sort="title")

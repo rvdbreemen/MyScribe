@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:40'
-updated_date: '2026-09-10 04:56'
+updated_date: '2026-09-10 10:54'
 labels: []
 dependencies: []
 type: feature
@@ -51,4 +51,34 @@ A recording is findable today by its folder, its title and full-text search over
 Slice 1 (schema v11) green: tests/test_db.py 23 passed. Five tests written red first (no such table: label), then _SCHEMA_V11. label.name is UNIQUE COLLATE NOCASE so 'Hacking' cannot fork from 'hacking'; media_label's primary key is the pair so a re-run cannot double a label; source CHECK('llm','human') is what lets an automatic pass refuse to overwrite a person; the cascade is asymmetric on purpose - purging a recording drops its links and leaves the vocabulary.
 
 Slice 2 (the kind) green: 248 passed over test_llm_tasks, test_web_ai, test_llm_labels, test_db, test_llm_speakers. Added: Labels/LabelGuess schemas, the 'labels' TaskSpec (with_speakers=False), prompts/labels.md, known_labels threaded onto TaskPlan so both the single-call and the combine site see one list per run, and vocabulary/apply_labels/labels_for. The cap on invented labels is enforced in apply_labels rather than asked for in the prompt, and the schema deliberately has no 'is this new' field - the thing being capped would otherwise be self-reporting. Protecting a hand-typed label needs no special case: the link is INSERT OR IGNORE, so an existing pair keeps its source. Three of the project's own tripwires fired and were right to: the sample-answer guard in test_web_ai, the canonical kind list, and the prompt digest. The digest one only anticipated an EDITED template; adding one has the opposite answer (record the digest, leave PROMPT_VERSION alone, because bumping would change the storage key of every other kind and orphan answers that are still answers to the question that was asked). That distinction is now in the test's docstring.
+
+REAL RUN 2026-09-10, against the live library (schema migrated to v11 in passing; the app does that at boot and was down).
+
+media 10 'The history of Michael Lenz', 9984 words, on an EMPTY vocabulary:
+  ollama qwen3.5:4b -> ContextTooLong, refused in 0.1s before sending anything: 6 chunks, 24000 tokens of notes through an 8192-token window with room for 3477.
+  openrouter/auto  -> 40.3s, 16084 prompt / 5651 completion. Six labels with [m:ss] evidence: cybersecurity careers, security conferences, community building, professional networking, incident response, computer forensics.
+  apply_labels: created 3, dropped 3 ('professional networking', 'incident response', 'computer forensics').
+
+media 11 'The history of Jeff Man', 10601 words, vocabulary now 3:
+  openrouter/auto -> 28.8s, 16936 prompt / 2949 completion.
+  apply_labels: reused ['cybersecurity careers', 'security conferences'], created ['hacker history', 'penetration testing', 'cryptography'], dropped none.
+  Reuse-first works against a real model, not just a fake one.
+
+TWO FINDINGS NO FAKE PROVIDER COULD HAVE GIVEN.
+
+1. A LOCAL PROVIDER CANNOT LABEL A FULL EPISODE. qwen3.5:4b's 8192-token window cannot take the combine call for a 10k-word transcript, and the budget guard refuses before spending anything (correct behaviour, existing code). This matters beyond convenience: llm.privacy refuses cloud providers for a private recording, so a PRIVATE recording longer than a few thousand words cannot be labelled at all today. AC6 says the refusal must be visible rather than silent - it is, as a job failure - but the feature's coverage on private media is effectively zero unless a local model with a larger window is configured. qwen3.5:9b is installed and untested for this.
+
+2. THE CAP HAS A COLD-START COST. On an empty vocabulary every label is new, so the first recording kept 3 of 6 good labels; by the second, reuse absorbed most of the answer and nothing was dropped. The cap self-corrects as the vocabulary fills, but the earliest recordings in a library end up thinner than the later ones - and on a 50-episode backfill the order decides which episodes are thin. Worth a decision before the backfill runs.
+
+Slice 3 (the cap made warm) and slice 4 (the library facet) green.
+
+The cap now depends on how full the vocabulary is: MAX_NEW_LABELS_COLD=6 below VOCABULARY_ESTABLISHED=20 labels, MAX_NEW_LABELS=3 at or above it, via new_label_allowance(). Robert's call after seeing the real run drop three good labels into an empty library. Reuse stays uncapped either way - the ceiling was always on invention. VOCABULARY_ESTABLISHED is a judgement, not a measurement, and its docstring says so.
+
+The facet: State.label, one more clause in _where (EXISTS, not a JOIN - that builder feeds a SELECT which already joins a job and a run, and a join would multiply the row list rather than narrow it), label_counts() beside folder_counts() with the same two rules (trash excluded, unused labels omitted), the heading, and a Labels list in _sidebar.html. label= is deliberately NOT whitelisted the way view= and sort= are: those name things the page offers so a bad value is a broken link, while a label is a word somebody may type, and an empty table is the honest answer.
+
+Three of the facet tests were written weak first and caught in review: they asserted only that the labelled recordings appeared, which passes on a page that ignores the filter entirely. Fixed to assert the non-carrier is absent.
+
+Evidence: tests/test_web_library.py 63 passed (12 new). Broad run over tests/test_web_*.py + test_llm_*.py + test_db.py: 827 passed, 1 failed - test_web_settings.py::test_the_web_process_never_imports_a_model_runtime, the pre-existing TASK-022 failure that reproduces on main.
+
+Still open on this task: adding and removing a label by hand (AC5) and the backfill over the recordings already in the library.
 <!-- SECTION:NOTES:END -->

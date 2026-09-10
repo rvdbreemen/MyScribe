@@ -98,6 +98,7 @@ class State:
     folder: int | None = None
     sort: str = DEFAULT_SORT
     q: str = ""  # title filter
+    label: str = ""  # label name, matched case-insensitively
 
     @property
     def query(self) -> dict[str, str]:
@@ -110,6 +111,8 @@ class State:
             out["sort"] = self.sort
         if self.q:
             out["q"] = self.q
+        if self.label:
+            out["label"] = self.label
         return out
 
     def url(self, **changes: object) -> str:
@@ -150,7 +153,17 @@ def parse_state(params: Mapping[str, str], *, strict: bool = True) -> State:
             )
         sort = DEFAULT_SORT
 
-    return State(view=view, folder=folder, sort=sort, q=(params.get("q") or "").strip())
+    return State(
+        view=view,
+        folder=folder,
+        sort=sort,
+        q=(params.get("q") or "").strip(),
+        # Not whitelisted, unlike view and sort: those name things the page
+        # offers, so a value outside the list came from a broken link. A label
+        # is a word, and a word nothing carries deserves an empty table rather
+        # than an error page.
+        label=(params.get("label") or "").strip()[:MAX_NAME],
+    )
 
 
 # --- reading the library ---------------------------------------------------------
@@ -196,6 +209,28 @@ def folder_counts(conn: sqlite3.Connection) -> tuple[dict[int | None, int], dict
     return live, total
 
 
+def label_counts(conn: sqlite3.Connection) -> list[dict]:
+    """Every label something live carries, with how many carry it.
+
+    Two rules it shares with the folder counts, for the same reason: the trash
+    is excluded, because the sidebar counts what a click would show; and a
+    label nothing carries is left out entirely, because a row that always
+    answers "nothing here" is noise rather than information. A label with no
+    recordings is not wrong - the vocabulary outlives a purge on purpose - it
+    simply has nothing to offer this sidebar today.
+    """
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT l.name AS name, COUNT(*) AS count"
+            " FROM media_label ml"
+            " JOIN label l ON l.id = ml.label_id"
+            " JOIN media m ON m.id = ml.media_id AND m.trashed_at IS NULL"
+            " GROUP BY l.id, l.name"
+            " ORDER BY count DESC, l.name COLLATE NOCASE"
+        ).fetchall()
+    return [{"name": str(row["name"]), "count": int(row["count"])} for row in rows]
+
+
 def trash_count(conn: sqlite3.Connection) -> int:
     with db.LOCK:
         return conn.execute(
@@ -217,6 +252,15 @@ def _where(state: State) -> tuple[str, list]:
         escaped = state.q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         clauses.append("m.title LIKE ? ESCAPE '\\'")
         args.append(f"%{escaped}%")
+    if state.label:
+        # EXISTS rather than a JOIN: this builder feeds a SELECT that already
+        # joins a job and a run, and a join here would multiply the row list by
+        # however many links matched instead of narrowing it.
+        clauses.append(
+            "EXISTS (SELECT 1 FROM media_label ml JOIN label l ON l.id = ml.label_id"
+            " WHERE ml.media_id = m.id AND l.name = ? COLLATE NOCASE)"
+        )
+        args.append(state.label)
     return " AND ".join(clauses), args
 
 
@@ -251,6 +295,8 @@ def _heading(state: State, folders: list[dict]) -> str:
         return "Uncategorized"
     if state.view == "trash":
         return "Trash"
+    if state.label:
+        return state.label
     if state.folder is not None:
         for folder in folders:
             if folder["id"] == state.folder:
@@ -274,6 +320,7 @@ def sidebar_context(conn: sqlite3.Connection, state: State) -> dict:
         "uncategorized_count": live.get(None, 0),
         "total_count": sum(live.values()),
         "trash_count": trash_count(conn),
+        "labels": label_counts(conn),
     }
 
 

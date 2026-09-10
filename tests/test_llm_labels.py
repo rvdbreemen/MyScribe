@@ -134,18 +134,41 @@ def test_prose_instead_of_labels_fails_with_its_own_text(conn, media, monkeypatc
 # --- applying it -------------------------------------------------------------------
 
 
-def test_reuse_is_free_and_invention_stops_at_three(conn, media):
-    """Four labels the library knows and four it does not: every known one
-    lands, and only three of the strangers do."""
-    for name in ("hacking", "security", "interview", "opensource"):
+def _fill_vocabulary(conn, count: int) -> None:
+    """`count` labels nobody will answer with, to age the vocabulary past the
+    point where the cold allowance applies."""
+    for i in range(count):
+        _label(conn, f"filler {i}")
+
+
+def test_a_cold_library_lets_more_new_labels_through(conn, media):
+    """Measured on the real run 2026-09-10: the first recording in an empty
+    library answered with six good labels and the flat cap kept three -
+    'incident response' and 'computer forensics' were dropped for want of room
+    they were not competing for. Nothing can be reused when there is nothing to
+    reuse, so capping invention there only loses what the pass found."""
+    payload = tasks.Labels.model_validate_json(
+        _answer(["one", "two", "three", "four", "five", "six", "seven"])
+    )
+
+    report = tasks.apply_labels(conn, media, payload)
+
+    assert report["created"] == ["one", "two", "three", "four", "five", "six"]
+    assert report["dropped"] == ["seven"]
+
+
+def test_an_established_vocabulary_tightens_the_allowance(conn, media):
+    """Once the library has words of its own, a new one has to earn its place:
+    the risk the cap exists for - a subject arriving under four spellings -
+    only exists when there is something to fragment against."""
+    _fill_vocabulary(conn, tasks.VOCABULARY_ESTABLISHED)
+    for name in ("hacking", "security"):
         _label(conn, name)
     payload = tasks.Labels.model_validate_json(
         _answer(
             [
                 "hacking",
                 "security",
-                "interview",
-                "opensource",
                 "phreaking",
                 "bbs culture",
                 "lockpicking",
@@ -156,10 +179,30 @@ def test_reuse_is_free_and_invention_stops_at_three(conn, media):
 
     report = tasks.apply_labels(conn, media, payload)
 
-    assert report["reused"] == ["hacking", "security", "interview", "opensource"]
+    assert report["reused"] == ["hacking", "security"]
     assert report["created"] == ["phreaking", "bbs culture", "lockpicking"]
     assert report["dropped"] == ["social engineering"]
-    assert len(tasks.labels_for(conn, media)) == 7
+
+
+def test_reuse_is_free_however_full_the_vocabulary_is(conn, media):
+    """The cap is on invention only. A recording that genuinely touches ten
+    subjects the library already names carries all ten."""
+    _fill_vocabulary(conn, tasks.VOCABULARY_ESTABLISHED)
+    known = [f"filler {i}" for i in range(10)]
+    payload = tasks.Labels.model_validate_json(_answer(known))
+
+    report = tasks.apply_labels(conn, media, payload)
+
+    assert report["reused"] == known
+    assert report["created"] == [] and report["dropped"] == []
+    assert len(tasks.labels_for(conn, media)) == 10
+
+
+def test_the_allowance_is_the_cold_one_right_up_to_the_threshold(conn):
+    assert tasks.new_label_allowance(0) == tasks.MAX_NEW_LABELS_COLD
+    assert tasks.new_label_allowance(tasks.VOCABULARY_ESTABLISHED - 1) == tasks.MAX_NEW_LABELS_COLD
+    assert tasks.new_label_allowance(tasks.VOCABULARY_ESTABLISHED) == tasks.MAX_NEW_LABELS
+    assert tasks.new_label_allowance(500) == tasks.MAX_NEW_LABELS
 
 
 def test_a_case_variant_lands_on_the_label_that_exists(conn, media):

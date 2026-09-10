@@ -1535,19 +1535,49 @@ def run_task(
 # --- the labels a recording carries ------------------------------------------------------
 
 MAX_NEW_LABELS = 3
-"""How many labels one pass may add to the vocabulary.
+"""How many labels one pass may add once the vocabulary is established.
 
 The prompt asks the model to reuse what exists; this is what makes it true.
 A prompt rule is a request and a code rule is a guarantee, and the thing being
 capped is exactly the thing that would be doing the self-reporting - so the
 model is never asked whether a label is new. `apply_labels` decides that
-against the vocabulary it read, and stops at this number.
+against the vocabulary it read, and stops at the allowance.
 
 Three because the failure it prevents is one-sided: a recording that gets one
 label too few is found by its other labels and by full-text search, while a
 vocabulary that grows a label per recording stops being a filter at all - fifty
 episodes of one podcast would end in "hacking", "hackers", "hacker culture",
 "hacker history" and nothing to click on."""
+
+MAX_NEW_LABELS_COLD = 6
+"""The allowance while the library is still learning its own words.
+
+Measured on the first real run, 2026-09-10: an episode answered into an *empty*
+library with six labels that were all good, and a flat cap of three dropped
+"incident response" and "computer forensics" for want of room they were not
+competing for. Nothing can be reused when there is nothing to reuse, so a cap
+there does not prevent fragmentation - it only loses what the pass found. The
+next episode, with three labels to work from, reused two and invented three,
+and dropped nothing.
+
+Six rather than unlimited because a cold library is exactly where a talkative
+model would do the most damage: every label it invents becomes the vocabulary
+the next recording is asked to reuse."""
+
+VOCABULARY_ESTABLISHED = 20
+"""Where "still learning" ends and "has words of its own" begins.
+
+A judgement, not a measurement, and the reasoning is worth more than the
+number: the risk the cap exists for is a subject arriving under four
+spellings, and that risk needs something to fragment *against*. Two episodes
+of one podcast produced six distinct labels here, so twenty leaves room for a
+second and third source to establish their own words before the cap tightens.
+Moving it is one constant and breaks nothing."""
+
+
+def new_label_allowance(known: int) -> int:
+    """How many new labels a pass may add, given how many the library has."""
+    return MAX_NEW_LABELS if known >= VOCABULARY_ESTABLISHED else MAX_NEW_LABELS_COLD
 
 MAX_LABEL_LENGTH = 40
 """A label is a subject, not a sentence. Longer than this is the model
@@ -1602,6 +1632,7 @@ def apply_labels(
     """
     stamp = time.time() if now is None else now
     known = {name.casefold(): name for name in vocabulary(conn)}
+    allowance = new_label_allowance(len(known))
 
     reused: list[str] = []
     created: list[str] = []
@@ -1616,7 +1647,7 @@ def apply_labels(
         seen.add(name.casefold())
         if name.casefold() in known:
             reused.append(known[name.casefold()])
-        elif len(created) < MAX_NEW_LABELS:
+        elif len(created) < allowance:
             created.append(name)
         else:
             dropped.append(name)
