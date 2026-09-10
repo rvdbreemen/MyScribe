@@ -1,0 +1,255 @@
+"""Feeds as subscriptions: what is due, what is new, and what that queues.
+
+ADR-008 (revised 2026-09-09). A feed you started with stays watched, and every
+episode that appears afterwards becomes one `ingest_url` job like any other.
+
+Three decisions shape this file, and each answers a way it could go wrong.
+
+**Due-ness is a date, not a countdown.** `feed.checked_at` is compared against
+the clock; nothing sleeps for a day. This is a desktop app that is off more
+than it is on, so a laptop closed for a week has to come back and find
+everything overdue, and a restart must lose nothing. "Check daily" and "check
+at startup" are then the same code rather than two mechanisms that can
+disagree, and `checked_at IS NULL` - a feed nobody has looked at yet - is
+exactly the feed to look at.
+
+**New means unknown to the library, not merely unseen here.** `feed_seen`
+records what a feed held the day it was subscribed, so following The Daily does
+not queue its 2970 back episodes. But the real test is `known_sources`, which
+asks the media rows and the live jobs: an episode already downloaded, already
+queued, or in the trash is not queued again whatever this table remembers.
+Deleting something was a decision.
+
+**A poll is bounded.** `MAX_NEW_PER_POLL` caps what one check may start,
+because a feed that rewrites its guids looks entirely new and the alternative
+is a night of unattended transcription. The cap is reported rather than hidden:
+the feed's last result says it was hit.
+
+Nothing here opens a socket by itself - `probe` is passed in, so the tests
+drive it and the watcher supplies the real one.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from typing import Callable, Sequence
+
+from scribe import applog, db, jobs
+from scribe.ingest import urls
+from scribe.stages import url_stage
+
+MAX_NEW_PER_POLL = 25
+"""How many episodes one check of one feed may queue.
+
+A feed that changed its guids, or a channel that reordered, looks entirely new;
+without a ceiling the next unattended poll would start hundreds of downloads
+and the transcriptions behind them. Twenty-five is a fortnight of a daily
+podcast and several months of a weekly one, so a feed that genuinely raced
+ahead still catches up over a few polls, while a feed that broke its own
+identity stops at something a person can look at and undo."""
+
+DEFAULT_INTERVAL_SECONDS = 86400
+"""A day. Robert asked for daily or at startup, and due-dates give both."""
+
+MAX_FAILURES_REPORTED = 5
+"""After this many consecutive failures the Feeds page stops saying "trying
+again" and starts saying the feed is not answering. It keeps polling: a podcast
+host that is down for a week is not a reason to forget the podcast."""
+
+
+def subscribe(
+    conn: sqlite3.Connection,
+    url: str,
+    *,
+    title: str = "",
+    folder_id: int | None = None,
+    entries: Sequence[dict] = (),
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
+    now: float | None = None,
+) -> int:
+    """Start watching a feed, and queue nothing.
+
+    The episodes it holds today are recorded as seen. Subscribing is a promise
+    about the future, not a request for the archive - and an existing
+    subscription is updated rather than duplicated, because a person who
+    imports from the same feed twice meant to follow it, not to follow it
+    twice.
+    """
+    stamp = time.time() if now is None else now
+    with db.LOCK:
+        row = conn.execute("SELECT id FROM feed WHERE url=?", (url,)).fetchone()
+        if row is None:
+            feed_id = int(
+                conn.execute(
+                    "INSERT INTO feed(url, title, interval_seconds, folder_id, created_at)"
+                    " VALUES (?, ?, ?, ?, ?) RETURNING id",
+                    (url, title[:200], int(interval_seconds), folder_id, stamp),
+                ).fetchone()["id"]
+            )
+        else:
+            feed_id = int(row["id"])
+            conn.execute(
+                "UPDATE feed SET title=COALESCE(NULLIF(?, ''), title),"
+                " folder_id=COALESCE(?, folder_id), paused=0 WHERE id=?",
+                (title[:200], folder_id, feed_id),
+            )
+        for entry in entries:
+            source_id = str(entry.get("source_id") or "").strip()
+            if source_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO feed_seen(feed_id, source_id) VALUES (?, ?)",
+                    (feed_id, source_id),
+                )
+        conn.commit()
+    return feed_id
+
+
+def unsubscribe(conn: sqlite3.Connection, feed_id: int) -> None:
+    """Stop watching. The episodes it brought in stay: they are yours, and they
+    still say where they came from (media.source_url, media.source_id)."""
+    with db.LOCK:
+        conn.execute("DELETE FROM feed WHERE id=?", (feed_id,))
+        conn.commit()
+
+
+def set_paused(conn: sqlite3.Connection, feed_id: int, paused: bool) -> None:
+    with db.LOCK:
+        conn.execute("UPDATE feed SET paused=? WHERE id=?", (1 if paused else 0, feed_id))
+        conn.commit()
+
+
+def all_feeds(conn: sqlite3.Connection) -> list[dict]:
+    with db.LOCK:
+        rows = conn.execute("SELECT * FROM feed ORDER BY title COLLATE NOCASE, id").fetchall()
+    return [dict(row) for row in rows]
+
+
+def due_feeds(conn: sqlite3.Connection, *, now: float | None = None) -> list[dict]:
+    """The feeds it is time to check.
+
+    A feed never checked is due, which is what makes a fresh subscription and a
+    restart behave the same. A paused one never is.
+    """
+    stamp = time.time() if now is None else now
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT * FROM feed WHERE paused = 0"
+            " AND (checked_at IS NULL OR checked_at + interval_seconds <= ?)"
+            " ORDER BY checked_at IS NOT NULL, checked_at, id",
+            (stamp,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _record(
+    conn: sqlite3.Connection, feed_id: int, *, result: str, failed: bool, now: float
+) -> None:
+    with db.LOCK:
+        conn.execute(
+            "UPDATE feed SET checked_at=?, last_result=?,"
+            " failures = CASE WHEN ? THEN failures + 1 ELSE 0 END WHERE id=?",
+            (now, result[:500], 1 if failed else 0, feed_id),
+        )
+        conn.commit()
+
+
+def new_entries(
+    conn: sqlite3.Connection, feed_id: int, entries: Sequence[dict], known: set[str]
+) -> list[dict]:
+    """The entries this feed has not already accounted for.
+
+    Two questions, and both have to say yes. `feed_seen` remembers what was
+    there when the subscription started; `known` is what the library and the
+    live jobs already hold, passed in so this stays a pure function over sets.
+    An entry with no source id at all is skipped rather than guessed at - it
+    would be queued again on every poll for ever.
+    """
+    with db.LOCK:
+        seen = {
+            str(row["source_id"])
+            for row in conn.execute(
+                "SELECT source_id FROM feed_seen WHERE feed_id=?", (feed_id,)
+            )
+        }
+    out: list[dict] = []
+    for entry in entries:
+        source_id = str(entry.get("source_id") or "").strip()
+        if not source_id or source_id in seen or source_id in known:
+            continue
+        seen.add(source_id)  # one poll must not queue the same episode twice
+        out.append(entry)
+    return out
+
+
+def poll(
+    conn: sqlite3.Connection,
+    feed: dict,
+    *,
+    probe: Callable[..., urls.UrlInfo],
+    known_sources: Callable[[sqlite3.Connection, Sequence[str]], set[str]],
+    options: dict,
+    now: float | None = None,
+) -> dict:
+    """Check one feed and queue what is new. Returns what it did.
+
+    Every exit records `checked_at`, including the failures: a feed whose host
+    is down must not be retried in a tight loop, and the next attempt is one
+    interval away like any other.
+    """
+    stamp = time.time() if now is None else now
+    feed_id = int(feed["id"])
+    try:
+        info = probe(feed["url"], limit=None)
+    except Exception as exc:  # noqa: BLE001 - any failure is the feed's failure
+        result = f"{type(exc).__name__}: {exc}"
+        _record(conn, feed_id, result=result[:200], failed=True, now=stamp)
+        return {"queued": [], "new": 0, "error": result}
+
+    entries = list(info.entries or [])
+    if info.kind != "playlist":
+        result = "answered as a single item, not a feed"
+        _record(conn, feed_id, result=result, failed=True, now=stamp)
+        return {"queued": [], "new": 0, "error": result}
+
+    known = known_sources(conn, [str(e.get("source_id") or "") for e in entries])
+    fresh = new_entries(conn, feed_id, entries, known)
+    capped = fresh[:MAX_NEW_PER_POLL]
+
+    params_list = [
+        {
+            "url": entry["url"],
+            "folder_id": feed["folder_id"],
+            url_stage.OPTIONS_KEY: options,
+            "from_playlist": True,
+            url_stage.ENTRY_KEY: {
+                "title": entry.get("title") or "",
+                "source_id": entry.get("source_id") or "",
+            },
+            url_stage.SOURCE_KEY: {"url": feed["url"], "title": info.title or feed["title"]},
+        }
+        for entry in capped
+    ]
+    queued = jobs.enqueue_many(conn, url_stage.JOB_TYPE, params_list) if params_list else []
+
+    with db.LOCK:
+        for entry in capped:
+            conn.execute(
+                "INSERT OR IGNORE INTO feed_seen(feed_id, source_id) VALUES (?, ?)",
+                (feed_id, str(entry.get("source_id") or "")),
+            )
+        conn.commit()
+
+    if not fresh:
+        result = "nothing new"
+    elif len(fresh) > len(capped):
+        result = (
+            f"{len(fresh)} new, queued {len(capped)} - the rest wait for the next check"
+        )
+    else:
+        result = f"{len(capped)} new" if capped else "nothing new"
+    _record(conn, feed_id, result=result, failed=False, now=stamp)
+
+    if queued:
+        applog.log("feeds.poll", feed=feed["url"], new=len(fresh), queued=len(queued))
+    return {"queued": queued, "new": len(fresh), "capped": len(fresh) > len(capped)}

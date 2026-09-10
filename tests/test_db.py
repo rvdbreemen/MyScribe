@@ -26,6 +26,8 @@ EXPECTED_TABLES = {
     "label",
     "media_label",
     "clean_reading",
+    "feed",
+    "feed_seen",
 }
 
 
@@ -642,3 +644,113 @@ def test_losing_the_analysis_keeps_the_reading(conn):
 
     row = conn.execute("SELECT text, llm_output_id FROM clean_reading").fetchone()
     assert (row["text"], row["llm_output_id"]) == ("cleaned", None)
+
+
+def test_schema_v14_makes_a_feed_a_row_you_can_come_back_to(conn):
+    """TASK-025. A subscription outlives the dialog that created it, so it is
+    a row rather than something re-derived from the library each time."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 14
+    assert {
+        "url", "title", "interval_seconds", "checked_at", "last_result",
+        "failures", "paused", "folder_id", "created_at",
+    } <= _columns(conn, "feed")
+
+
+def test_one_row_per_feed_url(conn):
+    """Two rows for one feed would poll it twice and race themselves into
+    queueing every new episode twice - the one mistake this table has to make
+    impossible."""
+    db.migrate(conn)
+    conn.execute(
+        "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+        )
+
+
+def test_a_new_feed_has_never_been_checked_and_is_not_paused(conn):
+    """NULL checked_at is 'never', which every due test must treat as overdue:
+    a feed nobody has looked at yet is exactly the one to look at."""
+    db.migrate(conn)
+    conn.execute("INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)")
+
+    row = conn.execute("SELECT * FROM feed").fetchone()
+    assert row["checked_at"] is None
+    assert (row["paused"], row["failures"], row["last_result"]) == (0, 0, "")
+    assert row["interval_seconds"] == 86400  # a day
+
+
+def test_unsubscribing_does_not_disown_the_episodes_the_feed_brought_in(conn):
+    """A recording keeps its own provenance (media.source_url, source_id from
+    v10). Dropping the subscription drops the watching, not the library."""
+    db.migrate(conn)
+    _seed_media_and_run(conn)
+    conn.execute(
+        "UPDATE media SET source_url='https://cdn.test/ep1.mp3', source_id='Generic:g1'"
+    )
+    conn.execute("INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)")
+    conn.commit()
+
+    conn.execute("DELETE FROM feed")
+    conn.commit()
+
+    row = conn.execute("SELECT source_url, source_id FROM media").fetchone()
+    assert row["source_id"] == "Generic:g1"
+    assert conn.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 1
+
+
+def test_a_feed_may_name_a_folder_and_survives_that_folder_being_deleted(conn):
+    """Deleting a folder is a tidying decision, not an instruction to stop
+    following a podcast."""
+    db.migrate(conn)
+    folder = conn.execute("INSERT INTO folder(name) VALUES ('Podcasts') RETURNING id").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO feed(url, folder_id, created_at) VALUES ('https://example.test/f.xml', ?, 0.0)",
+        (folder,),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM folder WHERE id=?", (folder,))
+    conn.commit()
+
+    row = conn.execute("SELECT url, folder_id FROM feed").fetchone()
+    assert row["url"] == "https://example.test/f.xml"
+    assert row["folder_id"] is None
+
+
+def test_the_episodes_present_at_subscription_are_recorded_as_seen(conn):
+    """How subscribing imports no back catalogue. Following The Daily must not
+    queue its 2970 episodes; only what appears afterwards is new."""
+    db.migrate(conn)
+    feed_id = conn.execute(
+        "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+        " RETURNING id"
+    ).fetchone()["id"]
+    conn.execute("INSERT INTO feed_seen(feed_id, source_id) VALUES (?, 'Generic:g1')", (feed_id,))
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO feed_seen(feed_id, source_id) VALUES (?, 'Generic:g1')", (feed_id,)
+        )
+
+
+def test_unsubscribing_forgets_what_that_feed_had_seen(conn):
+    """The memory is about watching a feed, so it goes when the watching does.
+    The library keeps its own record of what it holds."""
+    db.migrate(conn)
+    feed_id = conn.execute(
+        "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+        " RETURNING id"
+    ).fetchone()["id"]
+    conn.execute("INSERT INTO feed_seen(feed_id, source_id) VALUES (?, 'Generic:g1')", (feed_id,))
+    conn.commit()
+
+    conn.execute("DELETE FROM feed WHERE id=?", (feed_id,))
+    conn.commit()
+
+    assert conn.execute("SELECT COUNT(*) FROM feed_seen").fetchone()[0] == 0

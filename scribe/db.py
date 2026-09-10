@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -396,10 +396,64 @@ CREATE TABLE clean_reading(
   created_at REAL NOT NULL);
 """
 
+# v14 (TASK-025, feeds as subscriptions): a feed you started with stays
+# watched. ADR-008 revised, 2026-09-09.
+#
+# One row per source URL. `url` is UNIQUE because a second row for the same
+# feed would poll it twice and race itself into queueing every new episode
+# twice - the one mistake this table must make impossible.
+#
+# `checked_at` is the whole scheduling mechanism. Due-ness is compared against
+# it rather than counted down in a sleeping thread, because this is a desktop
+# app that is off more than it is on: a laptop closed for a week must come back
+# and find everything overdue, and a restart must lose nothing. "Check daily"
+# and "check at startup" are then the same code rather than two mechanisms
+# that can disagree.
+#
+# `paused` is the per-feed switch, and `failures` with `last_result` are what
+# the Feeds page shows: a feed whose probe keeps failing has to say so rather
+# than going quiet, which is how a subscription becomes a surprise.
+#
+# `feed_seen` is how subscribing imports no back catalogue. The episodes on a
+# feed the day you subscribe are recorded as seen and never queued; only what
+# appears afterwards is new. Without it, following The Daily would queue its
+# 2970 episodes at once, which is the opposite of what subscribing means.
+#
+# It holds source ids rather than URLs because that is what identifies an
+# episode across a CDN move (v10), and it is a second line of defence rather
+# than the only one: `known_sources` still asks the library and the live jobs,
+# so an episode already downloaded is not queued twice even if this table
+# somehow lost it.
+#
+# No cascade to media. A recording keeps its own provenance in media.source_url
+# and media.source_id (v10), so unsubscribing from a feed does not disown the
+# episodes it brought in - they are still yours, and still say where they came
+# from.
+_SCHEMA_V14 = """
+CREATE TABLE feed(
+  id INTEGER PRIMARY KEY,
+  url TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL DEFAULT '',
+  interval_seconds INTEGER NOT NULL DEFAULT 86400,
+  checked_at REAL,
+  last_result TEXT NOT NULL DEFAULT '',
+  failures INTEGER NOT NULL DEFAULT 0,
+  paused INTEGER NOT NULL DEFAULT 0,
+  folder_id INTEGER REFERENCES folder(id) ON DELETE SET NULL,
+  created_at REAL NOT NULL);
+
+CREATE INDEX idx_feed_due ON feed(checked_at) WHERE paused = 0;
+
+CREATE TABLE feed_seen(
+  feed_id INTEGER NOT NULL REFERENCES feed(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL,
+  PRIMARY KEY(feed_id, source_id));
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
-    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
+    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13, _SCHEMA_V14,
 ]
 
 

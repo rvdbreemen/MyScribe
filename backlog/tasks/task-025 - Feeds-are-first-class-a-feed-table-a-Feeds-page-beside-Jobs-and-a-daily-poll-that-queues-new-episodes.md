@@ -3,10 +3,11 @@ id: TASK-025
 title: >-
   Feeds are first-class: a feed table, a Feeds page beside Jobs, and a daily
   poll that queues new episodes
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
+updated_date: '2026-09-10 16:28'
 labels: []
 dependencies: []
 type: feature
