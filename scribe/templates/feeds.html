@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Feeds - MyScribe{% endblock %}
+
+{% block content %}
+{#
+  The Feeds page. Everything that changes on its own is inside
+  _feeds_fragment.html, which polls itself; this page is the frame around it.
+
+  Context: see _feeds_fragment.html (scribe.web.feeds_ui.board_context).
+#}
+<div class="feeds-page">
+  <h1>Feeds</h1>
+  <p class="hint">
+    A feed you imported from is checked every {{ interval_hours }} hours, and
+    when the app starts. Each new episode becomes a download job of its own,
+    at most {{ cap }} per check - the rest wait for the next one.
+  </p>
+  {% include "_feeds_fragment.html" %}
+</div>
+{% endblock %}

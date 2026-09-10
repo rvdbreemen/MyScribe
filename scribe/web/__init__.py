@@ -45,6 +45,7 @@ STATIC_DIR = PACKAGE_DIR / "static"
 NAV: tuple[tuple[str, str], ...] = (
     ("Library", "/"),
     ("Jobs", "/jobs"),
+    ("Feeds", "/feeds"),
     ("Log", "/logs"),
     ("Settings", "/settings"),
 )
@@ -183,6 +184,7 @@ def mount(app: FastAPI) -> None:
     from scribe.web import (
         ai_ui,
         exports_ui,
+        feeds_ui,
         ingest_ui,
         jobs_ui,
         library,
@@ -197,6 +199,7 @@ def mount(app: FastAPI) -> None:
     app.include_router(transcribe_dialog.router)
     app.include_router(ingest_ui.router)
     app.include_router(jobs_ui.router)
+    app.include_router(feeds_ui.router)
     app.include_router(transcript.router)
     app.include_router(exports_ui.router)
     app.include_router(ai_ui.router)

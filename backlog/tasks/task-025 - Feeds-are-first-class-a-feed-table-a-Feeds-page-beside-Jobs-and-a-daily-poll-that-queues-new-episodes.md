@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
-updated_date: '2026-09-10 16:28'
+updated_date: '2026-09-10 16:50'
 labels: []
 dependencies: []
 type: feature
@@ -31,3 +31,21 @@ TASK-021 shipped one-shot feed import: paste an RSS feed or a YouTube channel, s
 - [ ] #7 A Feeds page beside Jobs lists each feed with its last check and what it found, and offers pause, poll now and unsubscribe; a feed whose probe keeps failing says so there
 - [ ] #8 Tests cover due selection with a frozen clock, the no-back-catalogue rule, the per-poll cap, a poll that finds nothing, a poll whose probe raises, and the page's actions; a real run against a live feed is in the notes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Page, watcher and checkbox green: 202 passed over test_feeds, test_web_feeds, test_web_url_dialog, test_db, test_app and test_web_scaffold.
+
+The Feeds page is the jobs board's shape - one module, one NAV entry, a page and a self-polling fragment - but it polls every 60s rather than every 2s: a feed changes on the hour, and asking every two seconds about something that moves once a day is only noise. It shows the three things a subscription owes a reader, and each is a way one becomes a surprise when missing: when it last looked and what it found, when it stopped answering, and a way out. The feed's URL is never an href - it came over the network from a stranger, the same rule the episode list follows.
+
+'Check now' bypasses the schedule but NOT the cap. The reason for the ceiling does not become a good idea because somebody is watching this time.
+
+TWO WRONG ASSUMPTIONS THE TESTS CAUGHT, both about contracts I had not read.
+
+render() is render(request, name, **ctx), not (request, name, ctx). Eleven tests failed at once, which is what a wrong call signature looks like.
+
+known_sources(conn, entries) takes the entry DICTS and returns one state per entry - 'queued', 'library', 'trash' or None - not a set of ids. I had written poll() against a signature I imagined. Fixing it made the code better than my version: the poll now calls exactly the function the episode list calls, with the same argument, which is what stops the marks a person sees and the poller's judgement from drifting apart. That was ADR-008's intent and I had quietly broken it while thinking I was following it.
+
+The checkbox is ticked by default and subscribing queues nothing: the entries on screen are recorded as seen, so only what appears after today is new. Unticking it imports without following, which is how one episode gets plucked from a feed without binding yourself to it.
+<!-- SECTION:NOTES:END -->

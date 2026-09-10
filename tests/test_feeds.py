@@ -48,8 +48,10 @@ def probing(info, *, raises: Exception | None = None):
     return probe
 
 
-def nothing_known(conn, source_ids):
-    return set()
+def nothing_known(conn, entries):
+    """`known_sources`' shape: one state per entry, None meaning the library
+    has never decided anything about it."""
+    return [None] * len(entries)
 
 
 def _queued(conn) -> list[dict]:
@@ -174,8 +176,10 @@ def test_an_episode_already_in_the_library_is_not_queued_again(conn):
     trash counts as known too: deleting it was a decision."""
     feed_id = feeds.subscribe(conn, FEED_URL)
 
-    def knows_two(conn, source_ids):
-        return {"Generic:g2"}
+    def knows_two(conn, entries):
+        return [
+            "library" if e.get("source_id") == "Generic:g2" else None for e in entries
+        ]
 
     report = _poll(conn, feed_id, playlist(entry(1), entry(2)), known=knows_two)
 

@@ -74,6 +74,15 @@
   <input type="hidden" name="feed_url" value="{{ preview.feed_url }}">
   <input type="hidden" name="feed_title" value="{{ preview.feed_title }}">
   <p class="episodes-foot">
+    {# Ticked by default (ADR-008): "once you start with a feed it stays
+       watched" is the wanted behaviour, and this is where a person can say
+       otherwise - so one episode can be plucked from a feed without binding
+       yourself to it. Subscribing queues nothing by itself; only what appears
+       after today counts as new. #}
+    <label class="check">
+      <input type="checkbox" name="follow_feed" value="1" checked>
+      keep following this feed
+    </label>
     <button type="submit" data-episodes-submit formaction="/transcribe/url" hx-post="/transcribe/url" hx-params="not files">Import selected</button>
   </p>
   {% else %}

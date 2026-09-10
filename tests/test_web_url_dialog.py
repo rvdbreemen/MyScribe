@@ -1910,3 +1910,61 @@ def test_enter_in_the_link_field_with_a_list_present_still_presses_the_row_butto
     )
 
     assert result == {"fetchIt": 1, "importIt": 0, "addFile": 0, "prevented": 1}
+
+
+# --- keeping the feed (TASK-025) ---------------------------------------------------
+
+
+def _feeds(conn):
+    from scribe.ingest import feeds as feeds_mod
+
+    return feeds_mod.all_feeds(conn)
+
+
+def test_importing_follows_the_feed_by_default(client, conn):
+    """ADR-008: once you start with a feed it stays watched. The box is ticked
+    unless a person unticks it."""
+    _post_episodes(client, _entries(2), follow_feed="1")
+
+    followed = _feeds(conn)
+    assert [f["url"] for f in followed] == [FEED_URL]
+    assert followed[0]["title"] == "The Hitchhiker Lectures"
+
+
+def test_the_panel_offers_the_box_ready_ticked(client, monkeypatch):
+    _probing(monkeypatch, FakeYdl(playlist_info(2)))
+
+    body = _preview(client, PLAYLIST).text
+
+    assert 'name="follow_feed"' in body
+    assert "keep following this feed" in body
+
+
+def test_unticking_it_imports_without_following(client, conn):
+    """So one episode can be plucked from a feed without binding yourself to
+    it - an unchecked box sends nothing at all."""
+    _post_episodes(client, _entries(1))
+
+    assert _feeds(conn) == []
+
+
+def test_following_records_what_is_on_screen_so_the_back_catalogue_stays_put(
+    client, conn
+):
+    """Subscribing queues nothing by itself. The episodes listed today are
+    accounted for; only what appears after today is new."""
+    _post_episodes(client, _entries(3), follow_feed="1")
+
+    feed_id = _feeds(conn)[0]["id"]
+    seen = {
+        row["source_id"]
+        for row in conn.execute("SELECT source_id FROM feed_seen WHERE feed_id=?", (feed_id,))
+    }
+    assert seen == {"Generic:g0", "Generic:g1", "Generic:g2"}
+
+
+def test_importing_from_the_same_feed_again_follows_it_once(client, conn):
+    _post_episodes(client, _entries(1), follow_feed="1")
+    _post_episodes(client, _entries(2), follow_feed="1")
+
+    assert len(_feeds(conn)) == 1

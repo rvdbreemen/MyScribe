@@ -158,14 +158,21 @@ def _record(
 
 
 def new_entries(
-    conn: sqlite3.Connection, feed_id: int, entries: Sequence[dict], known: set[str]
+    conn: sqlite3.Connection,
+    feed_id: int,
+    entries: Sequence[dict],
+    states: Sequence[str | None],
 ) -> list[dict]:
     """The entries this feed has not already accounted for.
 
-    Two questions, and both have to say yes. `feed_seen` remembers what was
-    there when the subscription started; `known` is what the library and the
-    live jobs already hold, passed in so this stays a pure function over sets.
-    An entry with no source id at all is skipped rather than guessed at - it
+    Two questions, and both have to say yes. `feed_seen` remembers what the
+    feed held when the subscription started; `states` is `known_sources`'
+    answer per entry - "queued", "library", "trash" or None - which is the
+    same answer the episode list shows a person. Anything but None means the
+    library has already decided about this episode, the trash included:
+    deleting it was a decision.
+
+    An entry with no source id at all is skipped rather than guessed at; it
     would be queued again on every poll for ever.
     """
     with db.LOCK:
@@ -176,9 +183,9 @@ def new_entries(
             )
         }
     out: list[dict] = []
-    for entry in entries:
+    for entry, state in zip(entries, list(states) + [None] * len(entries)):
         source_id = str(entry.get("source_id") or "").strip()
-        if not source_id or source_id in seen or source_id in known:
+        if not source_id or source_id in seen or state is not None:
             continue
         seen.add(source_id)  # one poll must not queue the same episode twice
         out.append(entry)
@@ -190,7 +197,7 @@ def poll(
     feed: dict,
     *,
     probe: Callable[..., urls.UrlInfo],
-    known_sources: Callable[[sqlite3.Connection, Sequence[str]], set[str]],
+    known_sources: Callable[[sqlite3.Connection, list[dict]], Sequence[str | None]],
     options: dict,
     now: float | None = None,
 ) -> dict:
@@ -215,8 +222,12 @@ def poll(
         _record(conn, feed_id, result=result, failed=True, now=stamp)
         return {"queued": [], "new": 0, "error": result}
 
-    known = known_sources(conn, [str(e.get("source_id") or "") for e in entries])
-    fresh = new_entries(conn, feed_id, entries, known)
+    # The listing's own function, given the same shape it gets there: the
+    # entries themselves, and one state back per entry. Using it rather than a
+    # query of our own is what stops the marks a person sees and the poller's
+    # judgement from ever drifting apart (ADR-008).
+    states = known_sources(conn, list(entries))
+    fresh = new_entries(conn, feed_id, entries, states)
     capped = fresh[:MAX_NEW_PER_POLL]
 
     params_list = [
@@ -292,7 +303,7 @@ def _poll_one(
     conn: sqlite3.Connection,
     feed: dict,
     probe: Callable[..., urls.UrlInfo],
-    known_sources: Callable[[sqlite3.Connection, Sequence[str]], set[str]],
+    known_sources: Callable[[sqlite3.Connection, list[dict]], Sequence[str | None]],
     options: dict,
 ) -> dict:
     """`poll` with its keyword collaborators bound, so `_survive` can take it.

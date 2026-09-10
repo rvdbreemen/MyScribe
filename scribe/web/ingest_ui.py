@@ -106,7 +106,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
 from scribe import applog, db, fsbrowse, jobs
-from scribe.ingest import recording, urls
+from scribe.ingest import feeds, recording, urls
 from scribe.options import parse_options
 from scribe.stages import url_stage
 from scribe.web import library, render
@@ -403,6 +403,20 @@ async def _add_episodes(
 
     queued = await run_in_threadpool(jobs.enqueue_many, conn, url_stage.JOB_TYPE, params_list)
     save_defaults(conn, options)
+
+    # "Keep following this feed", ticked by default (ADR-008). Subscribing
+    # queues nothing by itself: the entries on screen right now are recorded as
+    # seen, so only what appears after today counts as new. The ones just
+    # queued are among them, which is exactly right - they are accounted for.
+    if str(fields.get("follow_feed") or "").strip() not in ("", "0", "false"):
+        feeds.subscribe(
+            conn,
+            feed_url,
+            title=feed_title,
+            folder_id=folder_id,
+            entries=entries,
+        )
+
     applog.log("ingest.episodes", feed=feed_url, title=feed_title, count=len(queued),
                first=queued[0], last=queued[-1])
 
