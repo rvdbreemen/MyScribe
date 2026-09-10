@@ -134,6 +134,26 @@
     <h4>{{ panel.view.title }}</h4>
     {{ panel.view.html }}
 
+    {% elif panel.view.shape == 'labels' %}
+    {# What the pass decided, with the quote it decided on. This panel reports;
+       the labels themselves were already written by apply_labels, and the
+       library sidebar is where they are used. A label dropped for want of room
+       never reaches this view - it is not on the recording, so showing it here
+       would claim otherwise. #}
+    {% if panel.view.labels %}
+    <ul class="labels">
+      {% for entry in panel.view.labels %}
+      <li>
+        <span class="label-chip">{{ entry.label }}</span>
+        {% if entry.confidence %}<span class="muted">{{ entry.confidence }}</span>{% endif %}
+        {% if entry.evidence %}<blockquote>{{ entry.evidence }}</blockquote>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">The pass found nothing to label this recording with.</p>
+    {% endif %}
+
     {% elif panel.view.shape == 'speakers' %}
     {# Suggestions, not names: nothing is written until the form is sent, and
        the form sends only the ticked rows. A row already named by a person

@@ -246,7 +246,8 @@ def rows(conn, media_id, kind: str | None = None) -> list[dict]:
 
 def test_the_kinds_are_the_ones_the_rail_offers_with_custom_last():
     assert set(tasks.TASKS) == {
-        "summary", "action_items", "chapters", "minutes", "blog", "speakers", "cleanup", "custom"
+        "summary", "action_items", "chapters", "minutes", "blog", "speakers", "labels",
+        "cleanup", "custom",
     }
     assert tasks.KINDS[-1] == "custom"
     assert tasks.PROMPT_VERSION and isinstance(tasks.PROMPT_VERSION, str)
@@ -264,7 +265,7 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "09f02a9823b38e0864cc303136e27ec640858107af8e254650b439cf19e92a0b"
+PROMPTS_DIGEST = "b14594c8fe73fcac348cd46313ba2db45a8132a973d577589245b3ee2d2df92d"
 """sha256 over the prompt templates, for PROMPT_VERSION "1". Line endings are
 normalised first, because git rewrites them on checkout here.
 
@@ -282,6 +283,13 @@ def test_editing_a_template_means_bumping_the_prompt_version():
 
     If this fails and you did edit a template: bump `tasks.PROMPT_VERSION`, then
     put the new digest below. If you did not edit one, something else did.
+
+    *Adding* a template is the other case, and it has the opposite answer:
+    record the new digest and leave the version alone. A new kind has no stored
+    answers to be confused with, while bumping the version would change the key
+    of every *other* kind - orphaning answers that were paid for and are still
+    answers to exactly the question that was asked. TASK-023 added `labels.md`
+    on 2026-09-10 and did not bump.
     """
     digest = hashlib.sha256()
     for path in sorted(tasks.PROMPTS_DIR.glob("*.md")):

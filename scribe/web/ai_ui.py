@@ -422,6 +422,20 @@ def output_view(media_id: int, kind: str, content: str) -> dict:
             "title": str(data.get("title") or ""),
             "html": render_markdown(str(data.get("body") or "")),
         }
+    if kind == "labels" and isinstance(data, dict):
+        entries = data.get("labels")
+        return {
+            "shape": kind,
+            "labels": [
+                {
+                    "label": str(entry.get("label") or ""),
+                    "confidence": str(entry.get("confidence") or ""),
+                    "evidence": str(entry.get("evidence") or ""),
+                }
+                for entry in (entries if isinstance(entries, list) else [])
+                if isinstance(entry, dict) and str(entry.get("label") or "").strip()
+            ],
+        }
     if kind == "speakers" and isinstance(data, dict):
         return {
             "shape": kind,

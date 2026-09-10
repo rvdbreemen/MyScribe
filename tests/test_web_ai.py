@@ -226,7 +226,19 @@ def test_rail_lists_every_ai_action_each_posting_to_its_own_kind(client, media):
     for kind in tasks.KINDS:
         assert f'formaction="/media/{media}/ai/{kind}"' in body, kind
         assert tasks.TASKS[kind].label in body
-    assert len(tasks.KINDS) == 8
+    # Every kind, named: a count alone would pass a rename, and the point of
+    # this line is that adding a kind means facing this test.
+    assert tasks.KINDS == (
+        "summary",
+        "action_items",
+        "chapters",
+        "minutes",
+        "blog",
+        "speakers",
+        "labels",
+        "cleanup",
+        "custom",
+    )
 
 
 def test_the_panel_offers_every_provider_and_marks_the_ones_that_leave_the_machine(client, media):
@@ -483,6 +495,7 @@ def sample_answer(kind: str) -> tuple[str, str]:
                 tasks.SpeakerGuess(cluster="SPEAKER_09", name="Nobody"),
             ],
         ),
+        "labels": json.dumps({"labels": [{"label": "towels", "confidence": "high"}]}),
         "cleanup": "**Arthur:** Don't panic. The towel is the most important item.",
         "custom": "A towel is the most useful thing an interstellar hitchhiker can carry.",
     }
@@ -493,6 +506,7 @@ def sample_answer(kind: str) -> tuple[str, str]:
         "minutes": "Always carry one",
         "blog": "Why a towel",
         "speakers": 'value="Arthur"',
+        "labels": "towels",
         "cleanup": "The towel is the most important item.",
         "custom": "the most useful thing an interstellar hitchhiker can carry",
     }

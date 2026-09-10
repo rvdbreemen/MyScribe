@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -291,10 +291,50 @@ ALTER TABLE media ADD COLUMN source_url TEXT;
 ALTER TABLE media ADD COLUMN source_id TEXT;
 """
 
+# v11 (TASK-023, content labels): what a recording is about, as a thing several
+# recordings share rather than a column one recording owns. Hence a table and a
+# link table: "show me everything about lockpicking" is then a join instead of a
+# scan over text.
+#
+# Three details carry the weight.
+#
+# `name` is UNIQUE COLLATE NOCASE because the vocabulary is only useful as a
+# filter if it does not fork. The pass hands the model the labels that exist and
+# asks it to reuse them; a model that answers "Hacking" where the library holds
+# "hacking" means the one that exists, and NOCASE is what makes the insert say
+# so instead of quietly creating a second row that splits the count.
+#
+# The link's primary key is the pair, so re-running the pass over a recording
+# cannot double what it already decided. `INSERT OR IGNORE` is then the whole
+# idempotency story.
+#
+# `source` says who decided - 'llm' or 'human' - and exists so an automatic run
+# can never overwrite a person's judgement. Without it the only way to protect a
+# hand-typed label would be to not re-run at all.
+#
+# The cascade is deliberately asymmetric: purging a recording drops its links
+# but leaves the labels, because the vocabulary goes on describing everything
+# else. A label nobody uses any more is not wrong, only unused.
+_SCHEMA_V11 = """
+CREATE TABLE label(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  created_at REAL NOT NULL);
+
+CREATE TABLE media_label(
+  media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+  label_id INTEGER NOT NULL REFERENCES label(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK(source IN ('llm', 'human')),
+  created_at REAL NOT NULL,
+  PRIMARY KEY(media_id, label_id));
+
+CREATE INDEX idx_media_label_label ON media_label(label_id);
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
-    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10,
+    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11,
 ]
 
 

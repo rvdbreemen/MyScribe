@@ -23,6 +23,8 @@ EXPECTED_TABLES = {
     "watch_folder",
     "word_correction",
     "segment_fts",
+    "label",
+    "media_label",
 }
 
 
@@ -404,4 +406,88 @@ def test_migrate_walks_a_v9_database_up_to_the_provenance_columns(tmp_path):
     assert old.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     row = old.execute("SELECT source_url, source_id FROM media").fetchone()
     assert (row["source_url"], row["source_id"]) == (None, None)
+    old.close()
+
+
+def test_schema_v11_gives_labels_their_own_table_and_a_link_to_media(conn):
+    """TASK-023. A label is a thing a recording *has*, and several recordings
+    share one - so a table and a link, not a comma-separated column. `source`
+    records who decided: an LLM pass may not quietly overwrite a name a person
+    typed, and that rule needs somewhere to read the answer from."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 11
+    assert {"id", "name", "created_at"} <= _columns(conn, "label")
+    assert {"media_id", "label_id", "source", "created_at"} <= _columns(conn, "media_label")
+
+
+def test_two_labels_that_differ_only_in_case_are_one_label(conn):
+    """The vocabulary is only useful as a filter if it does not fork. A model
+    that answers "Hacking" where the library already holds "hacking" must land
+    on the row that exists, so the uniqueness is NOCASE rather than exact."""
+    db.migrate(conn)
+    conn.execute("INSERT INTO label(name, created_at) VALUES ('hacking', 0.0)")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO label(name, created_at) VALUES ('Hacking', 0.0)")
+
+
+def test_a_recording_holds_one_row_per_label(conn):
+    """Re-running the pass must not double what it already decided."""
+    db.migrate(conn)
+    media_id = _seed_media_and_run(conn) and conn.execute(
+        "SELECT id FROM media"
+    ).fetchone()["id"]
+    conn.execute("INSERT INTO label(name, created_at) VALUES ('hacking', 0.0)")
+    label_id = conn.execute("SELECT id FROM label").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO media_label(media_id, label_id, source, created_at) VALUES (?,?,'llm',0.0)",
+        (media_id, label_id),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO media_label(media_id, label_id, source, created_at)"
+            " VALUES (?,?,'human',0.0)",
+            (media_id, label_id),
+        )
+
+
+def test_deleting_a_recording_takes_its_label_links_but_not_the_labels(conn):
+    """A purged recording must not leave a dangling link, and must not take
+    the vocabulary down with it: the label goes on describing the others."""
+    db.migrate(conn)
+    _seed_media_and_run(conn)
+    media_id = conn.execute("SELECT id FROM media").fetchone()["id"]
+    conn.execute("INSERT INTO label(name, created_at) VALUES ('hacking', 0.0)")
+    label_id = conn.execute("SELECT id FROM label").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO media_label(media_id, label_id, source, created_at) VALUES (?,?,'llm',0.0)",
+        (media_id, label_id),
+    )
+
+    conn.execute("DELETE FROM media WHERE id=?", (media_id,))
+
+    assert conn.execute("SELECT COUNT(*) FROM media_label").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM label").fetchone()[0] == 1
+
+
+def test_migrate_walks_a_v10_database_up_to_the_labels(tmp_path):
+    """A library from the feed-import build is at user_version 10. It gains
+    two empty tables and loses nothing: every recording it holds reads as
+    unlabelled, which is the truth."""
+    path = tmp_path / "v10.db"
+    old = db.connect(path)
+    for script in db._MIGRATIONS[:10]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 10")
+    old.commit()
+    _seed_media_and_run(old)
+
+    db.migrate(old)
+
+    assert old.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    assert old.execute("SELECT COUNT(*) FROM label").fetchone()[0] == 0
+    assert old.execute("SELECT COUNT(*) FROM media_label").fetchone()[0] == 0
+    assert old.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 1
     old.close()

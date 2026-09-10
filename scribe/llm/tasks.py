@@ -56,7 +56,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Sequence
 
 import jinja2
 from pydantic import BaseModel, BeforeValidator, ValidationError
@@ -191,6 +191,26 @@ class Speakers(BaseModel):
     speakers: list[SpeakerGuess] = []
 
 
+class LabelGuess(BaseModel):
+    label: str
+    confidence: str = "low"
+    evidence: str = ""
+
+
+class Labels(BaseModel):
+    """What a recording is about, in words the library can be filtered by.
+
+    Deliberately no `new` flag for the model to set. Whether a label is one the
+    library already holds is a fact about the database, not a claim the answer
+    gets to make, and asking the model to self-report it would put the cap on
+    invented labels at the mercy of the thing being capped. `apply_labels`
+    decides reuse against the vocabulary it read, and enforces the ceiling
+    itself - the prompt asks, the code guarantees.
+    """
+
+    labels: list[LabelGuess] = []
+
+
 # --- the six kinds -----------------------------------------------------------------------
 
 DEFAULT_MAX_OUTPUT_TOKENS = 4000
@@ -290,6 +310,20 @@ TASKS: dict[str, TaskSpec] = {
             "the quote and its time"
         ),
         with_speakers=True,
+    ),
+    "labels": TaskSpec(
+        kind="labels",
+        label="Labels",
+        template="labels",
+        schema=Labels,
+        goal=(
+            "name what this recording is about in a handful of short labels, reusing the ones "
+            "the library already has wherever they fit"
+        ),
+        # Who spoke is noise here: a label describes the subject, and a
+        # transcript carrying SPEAKER_00 in front of every line spends budget
+        # on something the answer never mentions.
+        with_speakers=False,
     ),
     "cleanup": TaskSpec(
         kind="cleanup",
@@ -517,18 +551,24 @@ def user_prompt(
     duration: float,
     custom_prompt: str | None = None,
     notes_from: int = 0,
+    known_labels: Sequence[str] = (),
 ) -> str:
     """The kind's own prompt over `transcript`.
 
     Used twice: over the transcript when it fits in one call, and over the
     combined notes when it did not. The task is the same either way, which is
     why there is one template rather than two that can drift.
+
+    `known_labels` is handed to every template and read by the one that asks
+    for it, the same way `prompt` is: a template that does not mention it
+    renders exactly as before.
     """
     return render_prompt(
         spec.template,
         transcript=transcript,
         source_label=source_label(title, duration, notes_from=notes_from),
         prompt=(custom_prompt or "").strip(),
+        known_labels=list(known_labels),
     )
 
 
@@ -725,6 +765,12 @@ class TaskPlan:
     budget_tokens: int
     max_output_tokens: int
     custom_prompt: str | None = None
+    known_labels: tuple[str, ...] = ()
+    """The vocabulary the library already uses, for the kinds whose prompt
+    offers it. Read once when the plan is made rather than at each call, so
+    every call in one run sees the same list - a chunked recording that grew
+    its own vocabulary halfway through would be asked to reuse labels it had
+    just invented, from a run that has not finished deciding them yet."""
     provider_supports_schema: bool = False
     note_budget: int = 0
     """The answer cap for one chunk's notes, decided here rather than in
@@ -855,6 +901,7 @@ def plan_task(
         budget_tokens=budget_tokens,
         max_output_tokens=output_tokens,
         custom_prompt=(custom_prompt or "").strip() or None,
+        known_labels=vocabulary(conn) if spec.kind == "labels" else (),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
         note_budget=note_budget,
     )
@@ -1201,6 +1248,7 @@ def generate(
                 title=plan.title,
                 duration=plan.duration,
                 custom_prompt=plan.custom_prompt,
+                known_labels=plan.known_labels,
             ),
             max_output_tokens=plan.max_output_tokens,
             json_schema=schema,
@@ -1245,6 +1293,7 @@ def generate(
         duration=plan.duration,
         custom_prompt=plan.custom_prompt,
         notes_from=len(notes),
+        known_labels=plan.known_labels,
     )
     response = _ask(
         conn,
@@ -1481,3 +1530,120 @@ def run_task(
     )
     result = generate(conn, plan, on_progress=on_progress, **provider_kwargs)
     return store_output(conn, plan, result)
+
+
+# --- the labels a recording carries ------------------------------------------------------
+
+MAX_NEW_LABELS = 3
+"""How many labels one pass may add to the vocabulary.
+
+The prompt asks the model to reuse what exists; this is what makes it true.
+A prompt rule is a request and a code rule is a guarantee, and the thing being
+capped is exactly the thing that would be doing the self-reporting - so the
+model is never asked whether a label is new. `apply_labels` decides that
+against the vocabulary it read, and stops at this number.
+
+Three because the failure it prevents is one-sided: a recording that gets one
+label too few is found by its other labels and by full-text search, while a
+vocabulary that grows a label per recording stops being a filter at all - fifty
+episodes of one podcast would end in "hacking", "hackers", "hacker culture",
+"hacker history" and nothing to click on."""
+
+MAX_LABEL_LENGTH = 40
+"""A label is a subject, not a sentence. Longer than this is the model
+answering the wrong question, and a sidebar cannot show it anyway."""
+
+
+def vocabulary(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Every label the library already uses, most-used first.
+
+    Ordered by use because it is handed to a model with a budget: when the list
+    ever grows past what a prompt should carry, the labels that earn their place
+    are the ones that already describe the most recordings.
+    """
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT l.name AS name, COUNT(ml.media_id) AS uses"
+            " FROM label l LEFT JOIN media_label ml ON ml.label_id = l.id"
+            " GROUP BY l.id, l.name ORDER BY uses DESC, l.name"
+        ).fetchall()
+    return tuple(str(row["name"]) for row in rows)
+
+
+def _clean_label(raw: Any) -> str:
+    """One label as it should be stored, or "" when it is not one at all."""
+    text = " ".join(str(raw or "").split())
+    text = text.strip().strip(".,;:!?").strip()
+    return text[:MAX_LABEL_LENGTH].strip()
+
+
+def apply_labels(
+    conn: sqlite3.Connection,
+    media_id: int,
+    payload: Any,
+    *,
+    now: float | None = None,
+) -> dict[str, list[str]]:
+    """Write a labels answer onto a recording, and say what it did.
+
+    Reuse is free and invention is capped: a label that matches one the library
+    already holds - case-insensitively, because "Hacking" and "hacking" are the
+    same subject - lands on the existing row however many there are, while a
+    label nobody has used before is taken only while under `MAX_NEW_LABELS`.
+
+    Nothing here overwrites: the link is written `INSERT OR IGNORE`, so a pair
+    that exists already keeps the `source` it has. That is the whole mechanism
+    protecting a label a person typed from a later automatic run - the row a
+    human made simply survives, and this function never needs to know which
+    rows those are.
+
+    Returns the three lists a caller wants to report: what was reused, what was
+    created, and what was dropped for want of room.
+    """
+    stamp = time.time() if now is None else now
+    known = {name.casefold(): name for name in vocabulary(conn)}
+
+    reused: list[str] = []
+    created: list[str] = []
+    dropped: list[str] = []
+    seen: set[str] = set()
+
+    guesses = getattr(payload, "labels", None) or []
+    for guess in guesses:
+        name = _clean_label(getattr(guess, "label", None) or (guess or {}).get("label"))
+        if not name or name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        if name.casefold() in known:
+            reused.append(known[name.casefold()])
+        elif len(created) < MAX_NEW_LABELS:
+            created.append(name)
+        else:
+            dropped.append(name)
+
+    with db.LOCK:
+        for name in created:
+            conn.execute(
+                "INSERT OR IGNORE INTO label(name, created_at) VALUES (?, ?)", (name, stamp)
+            )
+        for name in reused + created:
+            conn.execute(
+                "INSERT OR IGNORE INTO media_label(media_id, label_id, source, created_at)"
+                " SELECT ?, id, 'llm', ? FROM label WHERE name = ? COLLATE NOCASE",
+                (media_id, stamp, name),
+            )
+        conn.commit()
+
+    return {"reused": reused, "created": created, "dropped": dropped}
+
+
+def labels_for(conn: sqlite3.Connection, media_id: int) -> list[dict]:
+    """The labels on one recording, with who decided each."""
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT l.name AS name, ml.source AS source FROM media_label ml"
+            " JOIN label l ON l.id = ml.label_id WHERE ml.media_id = ?"
+            " ORDER BY l.name",
+            (media_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
