@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -365,10 +365,41 @@ ALTER TABLE speaker_label ADD COLUMN llm_output_id INTEGER
 ALTER TABLE speaker_label ADD COLUMN confidence REAL;
 """
 
+# v13 (TASK-026, the cleaned reading): a second way to read a transcript,
+# beside the words rather than instead of them.
+#
+# ADR-003 makes words canonical and every grouping derived at render time. A
+# cleaned transcript is a grouping in that sense - the same recording, read
+# differently - so it lives here and the words are never touched. That choice
+# is what makes Robert's undo free: refusing a bad cleaning means not writing
+# this row, and nothing has to be put back.
+#
+# Keyed by run, one reading each, because a cleaning is about the words a
+# particular run produced. Re-transcribing gives a new run and the old
+# reading stays with the old words, which is the truth about both.
+# ON DELETE CASCADE: a reading of words that no longer exist is not history,
+# it is a claim about a transcript nobody can check.
+#
+# `llm_output_id` is the receipt - which answer this text came from, with its
+# model and prompt version - and SET NULL for the reason speaker_label uses:
+# losing the receipt must not delete the reading. `words_in` and `words_out`
+# are what the gate measured, kept so a reader can see how much shorter this
+# is without counting, and so a refusal and an acceptance are recorded in the
+# same units.
+_SCHEMA_V13 = """
+CREATE TABLE clean_reading(
+  run_id INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  llm_output_id INTEGER REFERENCES llm_output(id) ON DELETE SET NULL,
+  words_in INTEGER NOT NULL,
+  words_out INTEGER NOT NULL,
+  created_at REAL NOT NULL);
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
-    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12,
+    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
 ]
 
 

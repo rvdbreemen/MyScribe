@@ -25,6 +25,7 @@ EXPECTED_TABLES = {
     "segment_fts",
     "label",
     "media_label",
+    "clean_reading",
 }
 
 
@@ -567,3 +568,77 @@ def test_a_speaker_label_source_is_one_of_two_words(conn):
             " VALUES (?, 'SPEAKER_00', 'Arthur', 'guessed')",
             (run_id,),
         )
+
+
+def test_schema_v13_puts_a_cleaned_reading_beside_the_words_not_over_them(conn):
+    """TASK-026. ADR-003 makes words canonical, so a cleaned transcript is a
+    second way to read the same run - a row of its own, keyed by run."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 13
+    assert {"run_id", "text", "llm_output_id", "words_in", "words_out", "created_at"} <= _columns(
+        conn, "clean_reading"
+    )
+
+
+def test_a_run_has_at_most_one_cleaned_reading(conn):
+    """Re-cleaning is a correction, not a second opinion to keep beside the
+    first: the reading is derived and regenerable, unlike the analysis it came
+    from, which llm_output keeps forever."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    conn.execute(
+        "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+        " VALUES (?, 'first', 10, 8, 0.0)",
+        (run_id,),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+            " VALUES (?, 'second', 10, 8, 0.0)",
+            (run_id,),
+        )
+
+
+def test_deleting_a_run_takes_its_reading_with_it(conn):
+    """A reading of words that no longer exist is not history, it is a claim
+    about a transcript nobody can check."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    conn.execute(
+        "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+        " VALUES (?, 'x', 10, 8, 0.0)",
+        (run_id,),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM run WHERE id=?", (run_id,))
+    conn.commit()
+
+    assert conn.execute("SELECT COUNT(*) FROM clean_reading").fetchone()[0] == 0
+
+
+def test_losing_the_analysis_keeps_the_reading(conn):
+    """Same asymmetry as a speaker's name: the receipt may go, the thing it
+    vouched for stays."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    media_id = conn.execute("SELECT id FROM media").fetchone()["id"]
+    cur = conn.execute(
+        "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+        " content, created_at) VALUES (?, 'cleanup', 'p', 'm', '1', 'x', 0.0)",
+        (media_id,),
+    )
+    conn.execute(
+        "INSERT INTO clean_reading(run_id, text, llm_output_id, words_in, words_out, created_at)"
+        " VALUES (?, 'cleaned', ?, 10, 8, 0.0)",
+        (run_id, cur.lastrowid),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM llm_output WHERE id=?", (cur.lastrowid,))
+    conn.commit()
+
+    row = conn.execute("SELECT text, llm_output_id FROM clean_reading").fetchone()
+    assert (row["text"], row["llm_output_id"]) == ("cleaned", None)

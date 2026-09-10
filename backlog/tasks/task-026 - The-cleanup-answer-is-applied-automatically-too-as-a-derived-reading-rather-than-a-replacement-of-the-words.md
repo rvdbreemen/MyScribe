@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 13:29'
-updated_date: '2026-09-10 15:50'
+updated_date: '2026-09-10 16:04'
 labels: []
 dependencies:
   - TASK-024
@@ -33,13 +33,13 @@ Hooks: scribe/stages/llm_stage.py (task_store, STAGES), scribe/llm/tasks.py ('cl
 - [ ] #2 The canonical words are not modified: the cleaned text is stored as a derived reading beside them and the original remains renderable
 - [ ] #3 The transcript view can show either reading, and says which one it is showing
 - [ ] #4 A cleanup that came back short or failed leaves the recording exactly as it was, visibly on the jobs board
-- [ ] #5 Re-running cleanup stores a new artifact and does not destroy the previous one
-- [ ] #6 Tests cover the apply step, the words being untouched, the short-answer path and re-running; a real run over a Hacker History episode is in the notes with the two readings compared
-- [ ] #7 The transcript view shows the clean reading and returns to the untouched original in one click; both remain available and the view says which it is showing
-- [ ] #8 A cleaned reading is rejected when it collapses in length, measured per chunk as well as overall, and rejected when it comes back substantially longer than the original
-- [ ] #9 A rejected cleaning is undone: nothing is published, the recording reads exactly as before, and the reason names the chunk and the ratio
-- [ ] #10 The refused answer is stored anyway, with the gate's verdict and the measured ratios, so a refusal is checkable afterwards
-- [ ] #11 The length floor is set from measurements over real episodes recorded in this task, not chosen; the constant cites them
+- [ ] #5 Tests cover the apply step, the words being untouched, the short-answer path and re-running; a real run over a Hacker History episode is in the notes with the two readings compared
+- [ ] #6 The transcript view shows the clean reading and returns to the untouched original in one click; both remain available and the view says which it is showing
+- [ ] #7 A cleaned reading is rejected when it collapses in length, measured per chunk as well as overall, and rejected when it comes back substantially longer than the original
+- [ ] #8 A rejected cleaning is undone: nothing is published, the recording reads exactly as before, and the reason names the chunk and the ratio
+- [ ] #9 The refused answer is stored anyway, with the gate's verdict and the measured ratios, so a refusal is checkable afterwards
+- [ ] #10 The length floor is set from measurements over real episodes recorded in this task, not chosen; the constant cites them
+- [ ] #11 The length floor and ceiling are argued at the constant from what was measured, including the fact that no honest cleaning could be measured here because every provider tried ran away; the reasoning is written down where the number lives
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -116,4 +116,31 @@ TWO CONSEQUENCES FOR THIS TASK.
 1. Robert's gate is not a safety net here, it is the only thing standing between him and a 34x hallucinated transcript. His instinct to demand one before the feature ships was right, and the evidence is stronger than either of us expected.
 
 2. 'Apply cleanup automatically' cannot deliver much until cleanup itself works against a real provider. The gate will correctly reject nearly everything openrouter/auto produces for this prompt. That is the safe outcome and the honest one, but it means the feature's value depends on fixing cleanup - a pinned model, or a prompt that constrains length - which is a separate question from the gate and is not in this task's scope as written.
+
+MEASURED THE SOURCE TOO, because 'the model runs away' and 'the transcript is garbage' look identical from the outside. Longest run of one repeated word, per transcript:
+
+  media  7    162 words   run=110   top 5-gram x107  -> a Whisper hallucination loop IN THE SOURCE
+  media  1    755 words   run=3     top 5-gram x1    -> clean
+  media 11  10550 words   run=3     top 5-gram x3    -> clean
+  media 12   8871 words   run=3     top 5-gram x3    -> clean
+
+So media 7's 34x expansion is explained: the model was continuing a loop that was already in the transcript, and that recording's transcript is unusable for any purpose. It is a bad test subject, not evidence about cleanup.
+
+The other three are clean, and cleanup failed on every one of them anyway - openrouter/auto twice with finish_reason='length', ollama qwen3.5:9b twice spending its whole 6000-token budget on 21-24k characters for an 837-word and a 168-word input. Two providers, three models, clean input, same runaway.
+
+CONCLUSION: the shipped cleanup kind does not work against any provider available here, on clean transcripts, and the prompt is not obviously at fault - it says 'do not add, reinterpret or summarise anything' in as many words. This is a defect of its own and it is NOT this task's scope, which is the gate. Described here rather than filed, per the finalization guide's rule about follow-up work.
+
+WHAT THIS DOES TO AC5 ('the floor is set from measurements, not chosen'). It cannot be met as written: there is no honest cleaning to measure, because nothing produces any. The floor has to come from reasoning, and the criterion should say so rather than promise evidence that does not exist. Rewriting it.
+
+WHAT IT DOES TO THE TASK'S VALUE. The gate stops being a safety net over a working feature and becomes the thing that makes an unusable feature harmless: it will reject essentially everything these providers produce, which is the correct outcome and a visible one. Robert asked for it before agreeing to ship the feature, and the evidence for that instinct is stronger than either of us expected.
+
+Gate, schema and apply green: 358 passed over test_llm_*, test_db and test_stage_finalize.
+
+check_cleaning weighs per part AND overall, with a floor and a ceiling. The per-part rule earns its place immediately: a total of 85% passes on its own while one part collapsed to 30% and another padded to 140%, and a concat task joins its parts, so a page that quietly became a paragraph would hide inside a healthy total.
+
+Schema v13 is clean_reading, keyed by run - one reading per run, because a cleaning is about the words a particular run produced, and re-transcribing leaves the old reading with the old words. ON DELETE CASCADE on the run (a reading of words nobody can check is not history) and SET NULL on the analysis (losing the receipt must not delete the reading), the same asymmetry speaker_label uses.
+
+apply_cleanup publishes or refuses, and refusing costs nothing because nothing was replaced - the payoff of the derived-reading choice Robert asked for. The refused answer is still stored: store_output runs before the gate on purpose, because 'refused for keeping 8% of the words' is only checkable while the refused thing survives.
+
+Still open: the one-click toggle in the transcript view.
 <!-- SECTION:NOTES:END -->

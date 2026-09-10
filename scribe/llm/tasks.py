@@ -1882,3 +1882,177 @@ def library_max_name() -> int:
 
 
 TASKS["speakers"] = replace(TASKS["speakers"], apply=apply_speakers)
+
+
+# --- the cleaning gate --------------------------------------------------------------------
+
+CLEAN_MIN_RATIO = 0.55
+"""How short a cleaned reading may be, as a share of the words that went in.
+
+Robert's rule: a clean version stays as close to the original as it can and
+must not collapse in length; when it does, the cleaning is undone.
+
+This number is ARGUED, not measured, and the honest reason is written here
+rather than implied. The plan was to measure it - run cleanup over real
+episodes, take the ratio of answers a person judged good, put the floor under
+the worst of them. That measurement could not be taken on 2026-09-10: nothing
+produced an honest cleaning to measure. openrouter/auto died twice on
+finish_reason='length'; ollama qwen3.5:9b twice spent its entire answer budget,
+21-24k characters for inputs of 837 and 168 words. Clean transcripts, two
+providers, three models.
+
+So the number comes from what the two failures cost instead. Honest cleaning
+deletes real words - filler, repetition, false starts, restarts - and on spoken
+English that is commonly a fifth of them and can be more in a rambling stretch.
+A summary of the same material is a different order of magnitude: a tenth, a
+twentieth. 0.55 sits in the gap with room on both sides. It forgives a cleaner
+that removed nearly half of what was said, and refuses anything that kept less
+than half, which no cleaning does and every summary does.
+
+Replace it the day there is a measurement, and cite the run here."""
+
+CLEAN_MAX_RATIO = 1.15
+"""How long a cleaned reading may be, for the same reason in the other
+direction: a rewrite that comes back longer than what went in did not clean, it
+invented. Punctuation and a spelled-out contraction cost a few words; a
+sixth more is already somebody writing rather than tidying.
+
+Not hypothetical. Every runaway measured here failed on this side - one
+recording of 168 words came back as 5742."""
+
+
+def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
+    """Does this cleaned reading still say what the transcript said?
+
+    Word counts, per chunk and overall. Per chunk matters because a concat task
+    joins its parts: one chunk that collapsed into a summary hides inside an
+    otherwise healthy total, and the overall ratio would pass while a page of
+    the transcript had quietly become a paragraph.
+
+    Returns a verdict with its numbers, so a refusal can say which chunk and by
+    how much rather than only that it happened.
+    """
+    per_chunk = [
+        {
+            "index": i,
+            "words_in": len(a.split()),
+            "words_out": len(b.split()),
+            "ratio": len(b.split()) / len(a.split()) if a.split() else 0.0,
+        }
+        for i, (a, b) in enumerate(zip(source, cleaned))
+    ]
+    total_in = sum(part["words_in"] for part in per_chunk)
+    total_out = sum(part["words_out"] for part in per_chunk)
+    overall = total_out / total_in if total_in else 0.0
+
+    reasons: list[str] = []
+    if len(source) != len(cleaned):
+        reasons.append(
+            f"the cleaning came back in {len(cleaned)} part(s) where the transcript "
+            f"was cut into {len(source)}"
+        )
+    if overall < CLEAN_MIN_RATIO:
+        reasons.append(f"the whole reading kept {overall:.0%} of the words, under {CLEAN_MIN_RATIO:.0%}")
+    if overall > CLEAN_MAX_RATIO:
+        reasons.append(f"the whole reading is {overall:.0%} of the words, over {CLEAN_MAX_RATIO:.0%}")
+    for part in per_chunk:
+        if part["ratio"] < CLEAN_MIN_RATIO:
+            reasons.append(
+                f"part {part['index']} kept {part['ratio']:.0%} of its words "
+                f"({part['words_in']} -> {part['words_out']})"
+            )
+        elif part["ratio"] > CLEAN_MAX_RATIO:
+            reasons.append(
+                f"part {part['index']} is {part['ratio']:.0%} of its words "
+                f"({part['words_in']} -> {part['words_out']})"
+            )
+
+    return {
+        "ok": not reasons,
+        "overall": overall,
+        "words_in": total_in,
+        "words_out": total_out,
+        "chunks": per_chunk,
+        "reasons": reasons,
+    }
+
+
+def cleaned_parts(conn: sqlite3.Connection, plan: "TaskPlan", payload: Any) -> list[str]:
+    """The cleaning, in the same pieces the transcript was cut into.
+
+    A one-call cleaning is one part and it is the answer itself. A chunked one
+    was stored piece by piece as it was made - that is what makes the job
+    resumable - so the pieces are read back rather than recovered by splitting
+    the joined text, which would come apart on any part that contains a blank
+    line.
+    """
+    if len(plan.chunks) <= 1:
+        return [str(payload)]
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT kind, content FROM llm_output WHERE media_id=? AND run_id=?"
+            " AND kind LIKE ? ORDER BY id",
+            (plan.media_id, plan.run_id, f"{plan.kind}{CHUNK_KIND_SEPARATOR}%"),
+        ).fetchall()
+    by_kind = {str(row["kind"]): str(row["content"]) for row in rows}
+    return [
+        by_kind[key]
+        for i in range(len(plan.chunks))
+        if (key := chunk_kind(plan.kind, i, plan.note_question)) in by_kind
+    ]
+
+
+def apply_cleanup(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> dict:
+    """Publish the cleaned reading, or refuse it and publish nothing.
+
+    Robert's rule, and the whole reason the reading is derived rather than a
+    replacement: when a cleaning collapses in length, or pads itself out, the
+    cleaning is undone. Undoing costs nothing here because nothing was replaced
+    - the words are untouched either way, and refusing means this row is not
+    written. A recording whose cleaning was refused reads exactly as it did
+    before, and says so.
+
+    The verdict is returned whatever it decides, and the job records it, so a
+    refusal can be read afterwards with the numbers it rested on. The refused
+    answer itself is already stored: `store_output` ran before this stage, and
+    that is deliberate - "this cleaning was refused for shrinking part three to
+    22 percent" is only checkable while the thing that was refused survives.
+    """
+    parts = cleaned_parts(conn, plan, payload)
+    verdict = check_cleaning([chunk.text for chunk in plan.chunks], parts)
+
+    if not verdict["ok"]:
+        return {"published": False, **verdict}
+
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO clean_reading(run_id, text, llm_output_id, words_in, words_out,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(run_id) DO UPDATE SET text=excluded.text,"
+            " llm_output_id=excluded.llm_output_id, words_in=excluded.words_in,"
+            " words_out=excluded.words_out, created_at=excluded.created_at",
+            (
+                plan.run_id,
+                "\n\n".join(parts),
+                output_id,
+                verdict["words_in"],
+                verdict["words_out"],
+                time.time(),
+            ),
+        )
+        conn.commit()
+    return {"published": True, **verdict}
+
+
+def clean_reading(conn: sqlite3.Connection, run_id: int) -> dict | None:
+    """The cleaned reading for a run, when one was published."""
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT * FROM clean_reading WHERE run_id=?", (run_id,)
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+TASKS["cleanup"] = replace(TASKS["cleanup"], apply=apply_cleanup)
