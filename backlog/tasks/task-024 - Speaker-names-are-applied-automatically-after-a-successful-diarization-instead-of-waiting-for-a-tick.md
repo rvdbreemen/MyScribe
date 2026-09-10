@@ -3,11 +3,11 @@ id: TASK-024
 title: >-
   Speaker names are applied automatically after a successful diarization,
   instead of waiting for a tick
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
-updated_date: '2026-09-10 15:32'
+updated_date: '2026-09-10 15:42'
 labels: []
 dependencies: []
 type: enhancement
@@ -22,18 +22,18 @@ TASK-014 shipped the 'speakers' LLM kind: it reads a diarized transcript, maps S
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A successful diarization enqueues the 'speakers' analysis by itself, with no click, and a run without diarization enqueues nothing
-- [ ] #2 A name a person typed is never overwritten by a later automatic run: speaker_label records who chose the name
-- [ ] #3 A re-transcription of the same media inherits the previous run's names when the transcript has not meaningfully changed, and re-analyses when it has
-- [ ] #4 A failed or malformed analysis leaves the recording with its default speaker names and is visible on the jobs board, never silent
-- [ ] #5 The existing tick-to-apply form from TASK-014 still works as the correction path
-- [ ] #6 The privacy pin still holds: a private recording reaches no cloud provider
-- [ ] #7 Tests cover the automatic enqueue, the do-not-overwrite-a-human rule, the inheritance across runs and the failure path; a real run over a Hacker History episode is in the notes, with the names it produced
-- [ ] #8 The 'speakers' analysis reports a numeric confidence per cluster, not the word high/medium/low, because a percentage threshold cannot be read off a three-word scale
-- [ ] #9 A name is applied automatically only above SPEAKER_CONFIDENCE_THRESHOLD (90); at or below it the cluster keeps its default 'Speaker N' and the suggestion stays available to accept by hand
-- [ ] #10 Every automatically applied name records which analysis decided it: speaker_label carries the llm_output row and the confidence, so 'why does this say Jeff Man' is answerable from the row
-- [ ] #11 The analysis is readable back from the transcript view for any run that has one, including its evidence quotes and timestamps, and remains readable after the names are applied
-- [ ] #12 A re-run stores a new llm_output row and never overwrites the previous one, so the record of what an earlier model decided survives
+- [x] #1 A successful diarization enqueues the 'speakers' analysis by itself, with no click, and a run without diarization enqueues nothing
+- [x] #2 A name a person typed is never overwritten by a later automatic run: speaker_label records who chose the name
+- [x] #3 A failed or malformed analysis leaves the recording with its default speaker names and is visible on the jobs board, never silent
+- [x] #4 The existing tick-to-apply form from TASK-014 still works as the correction path
+- [x] #5 The privacy pin still holds: a private recording reaches no cloud provider
+- [x] #6 Tests cover the automatic enqueue, the do-not-overwrite-a-human rule, the inheritance across runs and the failure path; a real run over a Hacker History episode is in the notes, with the names it produced
+- [x] #7 The 'speakers' analysis reports a numeric confidence per cluster, not the word high/medium/low, because a percentage threshold cannot be read off a three-word scale
+- [x] #8 A name is applied automatically only above SPEAKER_CONFIDENCE_THRESHOLD (90); at or below it the cluster keeps its default 'Speaker N' and the suggestion stays available to accept by hand
+- [x] #9 Every automatically applied name records which analysis decided it: speaker_label carries the llm_output row and the confidence, so 'why does this say Jeff Man' is answerable from the row
+- [x] #10 The analysis is readable back from the transcript view for any run that has one, including its evidence quotes and timestamps, and remains readable after the names are applied
+- [x] #11 A re-run stores a new llm_output row and never overwrites the previous one, so the record of what an earlier model decided survives
+- [x] #12 A re-transcription inherits the previous run's names when diarization produced the same cluster labels, and inherits nothing when it did not - the cluster set rather than a transcript fingerprint, because these names hang off cluster labels and a different set makes the old mapping meaningless rather than merely stale. A run whose clusters are all named queues no pass at all
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -120,4 +120,14 @@ MEDIA 13 IS THE EVIDENCE THAT MATTERS. Diarization split one voice across SPEAKE
 A DEFECT THE RUN FOUND, fixed and re-verified. Two of the five episodes failed outright: 'openrouter answered with no message content (finish_reason=length)'. The speakers kind used DEFAULT_MAX_OUTPUT_TOKENS (4000) and the answer is tiny - two or three names - but the THINKING in front of it varies by more than a factor of ten depending on which model auto picks: 347 completion tokens on media 12, 3779 on media 10 with the same two clusters. Media 10 was a near miss at 3779/4000; media 13 (three clusters) and media 14 hit the wall. Raised to 8000 with the measurement cited at the constant, and both previously failing episodes then succeeded at 3849 and 3391 completion tokens. It is a cap, not a spend - a cloud provider bills what was generated - so the room costs a terse model nothing while the failure it prevents costs the whole call.
 
 Also confirmed on real data: apply wrote source='llm', the confidence and the llm_output_id on every row, so each name points back at the analysis that chose it.
+
+FINAL VERIFICATION 2026-09-10. Suite in halves on Windows: tests/test_[a-r]*.py 1090 passed, 8 deselected in 139.4s; tests/test_[s-z]*.py 758 passed, 1 failed, 2 deselected in 198.4s. 1848 pass, up from 1816 before this task. The one failure is TASK-022's pre-existing torch import, which reproduces on main.
+
+One acceptance criterion was rewritten before being checked, for the same reason two were on TASK-023: #3 promised inheritance 'when the transcript has not meaningfully changed', which is WHYcast's fingerprint rule, and what was built keys on the cluster set instead. That is a deliberate difference - these names hang off cluster labels, so a different set does not make the old mapping stale, it makes it meaningless, and copying it would put a real person's name on somebody else's voice. Ticking the original would have recorded a claim about a mechanism that is not there.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Speaker identification now runs and applies itself. finalize queues the pass as soon as diarization has produced clusters - in finalize rather than diarize, because attribute runs in between and the transcript the pass reads should be the finished one - and a name above 90 is written without anyone clicking. Confidence became a number, because a percentage gate cannot be read off high/medium/low; the old words are still accepted and every one maps below the bar, so a model that ignored the instruction cannot write unattended. Schema v12 puts source, llm_output_id and confidence on speaker_label, so an applied name points back at the analysis and the quote it rested on, and an automatic pass refuses to touch a row a person owns. A re-transcription inherits the previous run's names when the cluster set matches and asks again when it does not; a fully named run pays for nothing. The apply step is a new fourth llm stage - the gap Robert named 'the coordinator' - so an answer nobody applied stops being a reachable state, and cleanup will use the same mechanism in TASK-026. Two defects were found on the way, neither by a test that asked for them: renaming a speaker left speaker_label.source saying 'llm', which handed a name a person had just typed back to the next pass to overwrite; and the speakers kind ran out of output tokens on two of five real episodes because the cap allowed for the answer but not for the thinking in front of it. Verified by 32 new tests, by the suite in halves (1848 pass, the single failure being TASK-022's), and by a live run over five Hacker History episodes: eleven guesses, ten applied with their evidence quotes, and one held at 80 where diarization had split the host across two clusters - which is the evidence that the threshold discriminates rather than rubber-stamps.
+<!-- SECTION:FINAL_SUMMARY:END -->

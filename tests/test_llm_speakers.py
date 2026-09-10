@@ -402,3 +402,73 @@ def test_running_it_again_updates_rather_than_duplicates(conn, media, monkeypatc
 
     named = _named(conn, _run_id(conn, media))
     assert named == {"SPEAKER_00": ("Zaphod", "llm", 97.0)}
+
+
+def test_a_failed_analysis_leaves_the_speakers_as_they_were(conn, media, monkeypatch):
+    """The failure path, seen twice for real on 2026-09-10 when two episodes
+    came back truncated. Nothing half-applied, nothing silently renamed: the
+    job fails carrying the model's own words, and the run keeps its defaults
+    for a person to sort out."""
+    provider, _ = fake_provider(["I could not work out who anybody is, sorry."])
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse):
+        tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, _run_id(conn, media)) == {}
+
+
+def test_the_analysis_is_still_readable_after_its_names_were_applied(conn, media, monkeypatch):
+    """Accountability outlives the act. The row that got the name points at
+    the analysis, and the analysis still holds the quote it rested on."""
+    provider, _ = fake_provider(
+        [
+            _answer(
+                {
+                    "cluster": "SPEAKER_00",
+                    "name": "Arthur",
+                    "confidence": 97,
+                    "evidence": '[0:07] "My name is Arthur."',
+                }
+            )
+        ]
+    )
+    register(monkeypatch, provider)
+
+    output_id = tasks.run_task(
+        conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1"
+    )
+
+    (row,) = rows(conn, media, "speakers")
+    assert row["id"] == output_id
+    stored = json.loads(row["content"])
+    assert stored["speakers"][0]["evidence"] == '[0:07] "My name is Arthur."'
+
+    label = conn.execute(
+        "SELECT llm_output_id, confidence FROM speaker_label WHERE cluster_label='SPEAKER_00'"
+    ).fetchone()
+    assert (label["llm_output_id"], label["confidence"]) == (output_id, 97.0)
+
+
+def test_a_second_analysis_does_not_erase_the_first(conn, media, monkeypatch):
+    """One key, never an overwrite. What an earlier model decided is evidence
+    about that model on that day, and a table that replaced it would be making
+    a claim about the present instead of keeping a record."""
+    provider, _ = fake_provider(
+        [
+            _answer({"cluster": "SPEAKER_00", "name": "Arthur", "confidence": 95}),
+            _answer({"cluster": "SPEAKER_00", "name": "Zaphod", "confidence": 99}),
+        ]
+    )
+    register(monkeypatch, provider)
+
+    first = tasks.run_task(
+        conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1"
+    )
+    second = tasks.run_task(
+        conn, media_id=media, kind="speakers", provider_name="fake", model="fake-2"
+    )
+
+    stored = rows(conn, media, "speakers")
+    assert {row["id"] for row in stored} == {first, second}
+    assert first != second

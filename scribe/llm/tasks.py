@@ -952,6 +952,14 @@ def plan_task(
         # Each chunk comes back about as long as it went in, so a chunk may
         # not be bigger than the answer cap; and a seam repeated in two
         # answers would be a sentence said twice, so no overlap.
+        #
+        # Note for the next person to suspect this line, measured 2026-09-10:
+        # cleanup failing with finish_reason='length' against openrouter/auto
+        # is NOT this. Chunk size is not the cause and neither is the cap - a
+        # 168-word recording in one chunk came back as 5742 words, 34 times its
+        # input, and a 837-word one hit the cap and died. The model runs away
+        # on this prompt whatever it is given, and more room only buys more
+        # runaway. TASK-026's length gate is what catches it.
         budget_tokens = min(budget_tokens, output_tokens)
         overlap_segments = 0
     chunks = chunking.plan(
