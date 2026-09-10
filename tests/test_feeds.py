@@ -169,6 +169,9 @@ def test_a_poll_queues_one_job_per_new_episode(conn):
     ]
     assert queued[0][url_stage.ENTRY_KEY] == {"title": "Episode 2", "source_id": "Generic:g2"}
     assert queued[0][url_stage.SOURCE_KEY]["url"] == FEED_URL
+    # What tells the register stage nobody asked for this one by hand, so a
+    # download that turns out to be known content is not transcribed twice.
+    assert queued[0][url_stage.FEED_KEY] == feed_id
 
 
 def test_an_episode_already_in_the_library_is_not_queued_again(conn):

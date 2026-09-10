@@ -1225,3 +1225,68 @@ def test_register_keeps_the_download_s_uploader_when_it_has_one(conn, data_dir, 
     assert json.loads(queued["params_json"])["extra_hotwords"] == [
         "Vogon", "Poetry", "Slam", "Prostetnic", "Jeltz",
     ]
+
+
+# --- the job: content the library already has ------------------------------------
+
+
+def _transcribe_jobs(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM job WHERE type='transcribe'").fetchone()[0]
+
+
+def _url_event(conn, job_id) -> dict:
+    (event,) = [e for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "url"]
+    return event["payload"]
+
+
+def test_a_feed_episode_the_library_already_has_is_not_transcribed_again(
+    conn, data_dir, monkeypatch
+):
+    """The watcher's rule is a watched folder's rule: unattended ingestion of
+    content the library already holds queues nothing. A feed that rewrote its
+    guids - the case MAX_NEW_PER_POLL exists for - looks entirely new by id and
+    entirely known by content, and without this every one of those episodes
+    goes through the GPU a second time with nobody having asked."""
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+    run_stages(make_ctx(conn, url_job(conn)))
+    assert _transcribe_jobs(conn) == 1
+    again = url_job(
+        conn,
+        "https://example.test/watch?v=rewritten",
+        from_playlist=True,
+        entry={"title": "Vogon Poetry Slam", "source_id": "Generic:rewritten-guid"},
+        source={"url": FEED_URL, "title": "The Hitchhiker Lectures"},
+        **{url_stage.FEED_KEY: 7},
+    )
+
+    run_stages(make_ctx(conn, again))
+
+    assert _transcribe_jobs(conn) == 1
+    assert conn.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 1
+    event = _url_event(conn, again)
+    assert event["deduped"] is True
+    assert event["transcribe_job"] is None
+
+
+def test_asking_again_by_hand_still_transcribes_what_the_library_has(
+    conn, data_dir, monkeypatch
+):
+    """The other half of the rule, and app.py's: asking to transcribe a file
+    you already have is a perfectly good request - a new model, a glossary
+    that has grown. Only the watcher is refused, because nobody asked it."""
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+    run_stages(make_ctx(conn, url_job(conn)))
+    again = url_job(
+        conn,
+        "https://example.test/watch?v=abc123",
+        from_playlist=True,
+        entry={"title": "Vogon Poetry Slam", "source_id": "Youtube:abc123"},
+        source={"url": FEED_URL, "title": "The Hitchhiker Lectures"},
+    )
+
+    run_stages(make_ctx(conn, again))
+
+    assert _transcribe_jobs(conn) == 2
+    event = _url_event(conn, again)
+    assert event["deduped"] is True
+    assert isinstance(event["transcribe_job"], int)

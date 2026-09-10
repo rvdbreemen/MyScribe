@@ -241,6 +241,7 @@ def poll(
                 "source_id": entry.get("source_id") or "",
             },
             url_stage.SOURCE_KEY: {"url": feed["url"], "title": info.title or feed["title"]},
+            url_stage.FEED_KEY: feed_id,
         }
         for entry in capped
     ]

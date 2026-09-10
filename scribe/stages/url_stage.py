@@ -85,6 +85,16 @@ stands in for the uploader when the download reports none (a feed enclosure
 never does), so "Planet Money" biases the decoder for a podcast the way a
 channel name does for a video."""
 
+FEED_KEY = "feed_id"
+"""The subscription that queued this job, when the feed watcher did.
+
+Its presence is what says nobody asked for this episode by hand, and that is
+the whole of its use: `register` transcribes a download the library already
+holds only when a person asked for it (see app.py's upload rule), the way a
+watched folder never re-queues a file it has seen. A feed that rewrote its
+guids looks new by id and known by content, and would otherwise put every
+episode it already had through the GPU a second time."""
+
 MAX_FAN_OUT = 500
 """The most entries one link may become jobs for, inclusive.
 
@@ -176,7 +186,8 @@ def register(ctx: "RunnerContext") -> None:
     because a video from a channel listing still knows its channel and an
     enclosure knows nothing. The provenance written here is what the dialog's
     next listing compares - the fetched URL without its fragment, and the
-    listing's id when it had one.
+    listing's id when it had one. Content the library already holds is
+    transcribed again only when a person asked for it (`FEED_KEY`).
     """
     playlist = ctx.state.get("playlist")
     if playlist is not None:
@@ -198,12 +209,14 @@ def register(ctx: "RunnerContext") -> None:
     )
     uploader = downloaded.uploader or str(source.get("title") or "")
     terms = urls.hotword_terms({**downloaded.info, "title": title, "uploader": uploader})
-    queued = jobs.enqueue(
-        ctx.conn,
-        TRANSCRIBE_JOB_TYPE,
-        media_id=row["id"],
-        params=transcribe_params(ctx.params, terms),
-    )
+    queued = None
+    if not (row.get("deduped") and ctx.params.get(FEED_KEY)):
+        queued = jobs.enqueue(
+            ctx.conn,
+            TRANSCRIBE_JOB_TYPE,
+            media_id=row["id"],
+            params=transcribe_params(ctx.params, terms),
+        )
 
     jobs.emit(
         ctx.conn,
