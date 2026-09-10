@@ -130,27 +130,12 @@ def setting_drop(conn: sqlite3.Connection, key: str) -> None:
         conn.commit()
 
 
-def default_provider(conn: sqlite3.Connection) -> str:
-    """The provider a new request opens with.
-
-    A stored name that is no longer registered falls back to the shipped
-    default rather than raising: a provider can be removed from `PROVIDERS` by
-    a later version, and a settings row from before that must not break every
-    transcript page.
-    """
-    stored = (setting_get(conn, PROVIDER_SETTING) or "").strip()
-    if stored in llm.PROVIDERS:
-        return stored
-    return tasks.DEFAULT_PROVIDER
-
-
-def default_model(conn: sqlite3.Connection, provider_name: str) -> str:
-    """The model this provider opens with: the saved one, else its own default."""
-    stored = (setting_get(conn, MODEL_SETTING_PREFIX + provider_name) or "").strip()
-    if stored:
-        return stored
-    cls = llm.PROVIDERS.get(provider_name)
-    return cls.default_model if cls is not None else ""
+# Both of these moved to `scribe.llm` in TASK-024, so the runner child can ask
+# the same question without importing the web layer. Re-exported here because
+# this module's readers - the panel, the settings page, the bulk pass - name
+# them through `ai_ui`, and one spelling in two places is how they drift.
+default_provider = llm.default_provider
+default_model = llm.default_model
 
 
 def known_models(conn: sqlite3.Connection, provider_name: str) -> list[str]:

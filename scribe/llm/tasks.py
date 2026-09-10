@@ -54,7 +54,7 @@ import json
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, Any, Callable, Sequence
 
@@ -67,7 +67,7 @@ from scribe.llm import base, chunking, ollama, openai_like, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
 """Bumped whenever a template in `prompts/` changes, because it is part of the
 stored key: answers to an edited question are not answers to the old one, and a
 panel showing both without saying so would be comparing two different things."""
@@ -172,11 +172,66 @@ class Blog(BaseModel):
     body: str
 
 
+SPEAKER_CONFIDENCE_THRESHOLD = 90.0
+"""How sure the pass must be before a name is written without being asked.
+
+Robert's number (TASK-024). Worth being honest about what it is: a model
+answering 96 is answering a question about its own certainty, and nothing
+trained it to answer that well. This is a policy dial, not a probability, and
+the real check on an applied name is the quote with its [m:ss] that the answer
+carries and `speaker_label.llm_output_id` points back to."""
+
+_WORD_CONFIDENCE = {"high": 85.0, "medium": 50.0, "low": 20.0}
+"""What the older three-word scale maps to.
+
+Every one of them lands BELOW the threshold on purpose. A model that answered
+"high" where a number was asked for has not given the evidence an automatic
+write needs, so its guess is shown and can be accepted by hand, but nothing is
+written unattended on the strength of a word. Tolerated rather than refused,
+because refusing would turn a model that answered the older way into a failed
+job while its answer is still perfectly useful to a person."""
+
+
+def _confidence(value: Any) -> float:
+    """A confidence as a number out of a hundred; anything unreadable is zero.
+
+    Zero rather than a middling default: an answer that did not say how sure it
+    was has not earned a write, and a default that could clear a threshold is
+    how a gate stops being one.
+
+    A fraction is read as a percentage. 0.96 and 96 mean the same thing to the
+    person reading them, and that must not be the difference between naming a
+    speaker and leaving them anonymous.
+    """
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            return 0.0
+        if 0.0 < number <= 1.0:
+            number *= 100.0
+        return max(0.0, min(100.0, number))
+    if isinstance(value, str):
+        text = value.strip().rstrip("%").strip()
+        word = _WORD_CONFIDENCE.get(text.lower())
+        if word is not None:
+            return word
+        try:
+            return _confidence(float(text))
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+Confidence = Annotated[float, BeforeValidator(_confidence)]
+
+
 class SpeakerGuess(BaseModel):
     cluster: str
     name: str = ""
     role: str = ""
-    confidence: str = "low"
+    confidence: Confidence = 0.0
     evidence: str = ""
     notes: str = ""
 
@@ -258,6 +313,23 @@ class TaskSpec:
     kind's own prompt over each chunk and the answers joined in order - for a
     task whose answer *is* the transcript, rewritten, where notes would lose
     the words."""
+    apply: Callable[[sqlite3.Connection, "TaskPlan", Any, int], dict] | None = None
+    """What to do with the answer once it is stored, for the kinds that change
+    something rather than only report.
+
+    Until TASK-024 there was no such thing: a job stored its answer and ended,
+    so `speakers` produced a mapping nobody applied and `labels` produced labels
+    nobody attached, and every kind that *did* something needed a person to
+    press a button afterwards. An artifact nobody applied was a reachable state
+    of the system, and this is what stops it being one.
+
+    Called as `(conn, plan, payload, output_id)` and returns a small report the
+    job emits. The whole plan rather than a media id, because what an answer
+    belongs to is the *run* it was made from: `speaker_label` hangs off a run,
+    and a re-transcription that landed while the analysis was in flight must
+    not have its clusters named from an answer about the previous one. It runs inside the job that produced the answer, on purpose:
+    a failure to apply then lands on the jobs board beside the analysis it came
+    from, rather than in a second job that can be cancelled or lost."""
 
 
 TASKS: dict[str, TaskSpec] = {
@@ -1510,11 +1582,17 @@ def run_task(
     budget_tokens: int | None = None,
     **provider_kwargs: Any,
 ) -> int:
-    """Plan, call, store; returns the new `llm_output.id`.
+    """Plan, call, store, apply; returns the new `llm_output.id`.
 
-    The three steps are separate functions because the `llm` job runs them as
-    three stages, and one composed function is the only way the job and a
-    direct caller cannot drift apart.
+    The steps are separate functions because the `llm` job runs them as
+    stages, and one composed function is the only way the job and a direct
+    caller cannot drift apart.
+
+    The apply step is here for that reason and no other. It has no production
+    callers - every real request goes through the job - so this function exists
+    to be the same thing the job is. A version of it that stopped at `store`
+    would quietly make every test that uses it a test of three quarters of the
+    pipeline, and the quarter it skipped is the one that changes the library.
     """
     plan = plan_task(
         conn,
@@ -1529,7 +1607,10 @@ def run_task(
         budget_tokens=budget_tokens,
     )
     result = generate(conn, plan, on_progress=on_progress, **provider_kwargs)
-    return store_output(conn, plan, result)
+    output_id = store_output(conn, plan, result)
+    if plan.spec.apply is not None:
+        plan.spec.apply(conn, plan, result.payload, output_id)
+    return output_id
 
 
 # --- the labels a recording carries ------------------------------------------------------
@@ -1668,6 +1749,16 @@ def apply_labels(
     return {"reused": reused, "created": created, "dropped": dropped}
 
 
+def _apply_labels(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> dict:
+    """The `labels` kind's apply hook. `output_id` is unused here: which
+    analysis chose a label is not recorded on the link today, unlike a speaker
+    name, because a label is a word several passes may reach independently
+    while a name is one decision about one person."""
+    return apply_labels(conn, plan.media_id, payload)
+
+
 def labels_for(conn: sqlite3.Connection, media_id: int) -> list[dict]:
     """The labels on one recording, with who decided each."""
     with db.LOCK:
@@ -1678,3 +1769,93 @@ def labels_for(conn: sqlite3.Connection, media_id: int) -> list[dict]:
             (media_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# The apply hooks, attached here rather than in the TASKS literal because the
+# functions they name are defined below it. `dataclasses.replace` keeps the
+# spec frozen: the entry is swapped for a new one, never mutated.
+TASKS["labels"] = replace(TASKS["labels"], apply=_apply_labels)
+
+
+# --- naming the speakers ------------------------------------------------------------------
+
+
+def apply_speakers(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> dict:
+    """Write the confident names onto the run the analysis was made from.
+
+    Three rules, and each of them is the answer to a way this could go wrong.
+
+    **Only above the threshold.** A cluster the model was not sure about keeps
+    its "Speaker 2" and stays a suggestion the panel offers. The bar is
+    exclusive: 90 does not clear 90, because a number chosen as the bar should
+    not also be the first value that passes it.
+
+    **Never over a person.** A row whose source is 'human' is left exactly as
+    it is, however sure the model claims to be. This is the rule that makes
+    running the pass unattended safe: the worst it can do to a name somebody
+    typed is nothing.
+
+    **A role is not a name.** "Guest" replaces "Speaker 2" with something no
+    more informative and harder to spot as a default, so a guess with no actual
+    name is skipped whatever its confidence.
+
+    Every row written records `llm_output_id` and the confidence, so a name can
+    be traced back to the analysis that chose it and the quote that analysis
+    rested on. That trace is the real safeguard here - a model's confidence is
+    a claim about itself, not a probability.
+    """
+    run_id = plan.run_id
+    guesses = getattr(payload, "speakers", None) or []
+
+    with db.LOCK:
+        human = {
+            str(row["cluster_label"])
+            for row in conn.execute(
+                "SELECT cluster_label FROM speaker_label WHERE run_id=? AND source='human'",
+                (run_id,),
+            )
+        }
+
+        named: list[str] = []
+        left: list[str] = []
+        for guess in guesses:
+            cluster = str(getattr(guess, "cluster", "") or "").strip()
+            name = " ".join(str(getattr(guess, "name", "") or "").split())
+            confidence = float(getattr(guess, "confidence", 0.0) or 0.0)
+            if not cluster:
+                continue
+            if cluster in human:
+                left.append(cluster)
+                continue
+            if not name or confidence <= SPEAKER_CONFIDENCE_THRESHOLD:
+                left.append(cluster)
+                continue
+            conn.execute(
+                "INSERT INTO speaker_label(run_id, cluster_label, display_name, source,"
+                " llm_output_id, confidence) VALUES (?, ?, ?, 'llm', ?, ?)"
+                " ON CONFLICT(run_id, cluster_label) DO UPDATE SET"
+                " display_name=excluded.display_name, source='llm',"
+                " llm_output_id=excluded.llm_output_id, confidence=excluded.confidence",
+                (run_id, cluster, name[:library_max_name()], output_id, confidence),
+            )
+            named.append(cluster)
+        conn.commit()
+
+    return {"named": named, "left": left, "threshold": SPEAKER_CONFIDENCE_THRESHOLD}
+
+
+def library_max_name() -> int:
+    """The cap a display name shares with every other name in this app.
+
+    Imported lazily and through a function: `scribe.web.library` imports this
+    module's siblings, and a top-level import here would be a cycle for the
+    sake of one integer.
+    """
+    from scribe.web import library
+
+    return int(library.MAX_NAME)
+
+
+TASKS["speakers"] = replace(TASKS["speakers"], apply=apply_speakers)

@@ -265,7 +265,7 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "b14594c8fe73fcac348cd46313ba2db45a8132a973d577589245b3ee2d2df92d"
+PROMPTS_DIGEST = "797bc9b36e5d58cbf3fb881a5524eee3b582b8c81a4be8b292cb2372ab8c416f"
 """sha256 over the prompt templates, for PROMPT_VERSION "1". Line endings are
 normalised first, because git rewrites them on checkout here.
 
@@ -1172,8 +1172,16 @@ def test_a_private_media_still_runs_on_a_local_provider(conn, media, monkeypatch
 # --- the job type ---------------------------------------------------------------------------------
 
 
-def test_the_runner_knows_the_llm_job_type_and_its_three_stages():
-    assert [name for name, _fn in runner.STAGES["llm"]] == ["prepare", "generate", "store"]
+def test_the_runner_knows_the_llm_job_type_and_its_four_stages():
+    """`apply` joined the three in TASK-024. It is a no-op for the kinds that
+    only answer a question, and the step that used to be a person clicking for
+    the kinds that change something."""
+    assert [name for name, _fn in runner.STAGES["llm"]] == [
+        "prepare",
+        "generate",
+        "store",
+        "apply",
+    ]
     assert runner.STAGES["llm"] is llm_stage.STAGES
     assert all(callable(fn) for _name, fn in llm_stage.STAGES)
 
@@ -1199,7 +1207,7 @@ def test_an_llm_job_runs_end_to_end_and_leaves_one_output_row(conn, media, monke
     stage_names = [
         e["payload"]["name"] for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "stage"
     ]
-    assert stage_names == ["prepare", "generate", "store"]
+    assert stage_names == ["prepare", "generate", "store", "apply"]
     finished = [e for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "llm"]
     assert finished and finished[-1]["payload"]["output_id"] == stored[0]["id"]
 
@@ -1372,5 +1380,5 @@ def test_the_llm_stages_file_their_timings_under_the_model_that_answered(conn, m
     assert runner.main([str(job_id)]) == 0
 
     perf = [dict(r) for r in conn.execute("SELECT stage, model FROM stage_perf ORDER BY id")]
-    assert [r["stage"] for r in perf] == ["prepare", "generate", "store"]
+    assert [r["stage"] for r in perf] == ["prepare", "generate", "store", "apply"]
     assert {r["model"] for r in perf} == {"fake-1"}

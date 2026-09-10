@@ -491,3 +491,79 @@ def test_migrate_walks_a_v10_database_up_to_the_labels(tmp_path):
     assert old.execute("SELECT COUNT(*) FROM media_label").fetchone()[0] == 0
     assert old.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 1
     old.close()
+
+
+def test_schema_v12_says_who_named_a_speaker_and_what_they_named_it_from(conn):
+    """TASK-024. Once a pass writes speaker names unattended, the row has to
+    answer two questions a hand-typed name never had to: why does it say this,
+    and may an automatic run overwrite it."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 12
+    assert {"source", "llm_output_id", "confidence"} <= _columns(conn, "speaker_label")
+
+
+def test_a_speaker_name_that_predates_the_pass_reads_as_a_persons_choice(tmp_path):
+    """Every name in the table before v12 was typed by somebody - nothing else
+    could have written one - so 'human' is the truth about all of them, not a
+    convenient default."""
+    path = tmp_path / "v11.db"
+    old = db.connect(path)
+    for script in db._MIGRATIONS[:11]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 11")
+    old.commit()
+    run_id = _seed_media_and_run(old)
+    old.execute(
+        "INSERT INTO speaker_label(run_id, cluster_label, display_name)"
+        " VALUES (?, 'SPEAKER_00', 'Arthur')",
+        (run_id,),
+    )
+    old.commit()
+
+    db.migrate(old)
+
+    row = old.execute("SELECT * FROM speaker_label").fetchone()
+    assert (row["display_name"], row["source"]) == ("Arthur", "human")
+    assert row["llm_output_id"] is None and row["confidence"] is None
+    old.close()
+
+
+def test_losing_the_analysis_loses_the_receipt_but_not_the_name(conn):
+    """ON DELETE SET NULL, not CASCADE: a speaker who was correctly identified
+    does not become anonymous because somebody purged an old analysis."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    media_id = conn.execute("SELECT id FROM media").fetchone()["id"]
+    cur = conn.execute(
+        "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+        " content, created_at) VALUES (?, 'speakers', 'p', 'm', '1', '{}', 0.0)",
+        (media_id,),
+    )
+    output_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO speaker_label(run_id, cluster_label, display_name, source,"
+        " llm_output_id, confidence) VALUES (?, 'SPEAKER_00', 'Arthur', 'llm', ?, 96.0)",
+        (run_id, output_id),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM llm_output WHERE id=?", (output_id,))
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM speaker_label").fetchone()
+    assert row["display_name"] == "Arthur"
+    assert row["llm_output_id"] is None
+    assert row["source"] == "llm"
+
+
+def test_a_speaker_label_source_is_one_of_two_words(conn):
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source)"
+            " VALUES (?, 'SPEAKER_00', 'Arthur', 'guessed')",
+            (run_id,),
+        )

@@ -3,11 +3,11 @@ id: TASK-024
 title: >-
   Speaker names are applied automatically after a successful diarization,
   instead of waiting for a tick
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
-updated_date: '2026-09-10 13:28'
+updated_date: '2026-09-10 15:11'
 labels: []
 dependencies: []
 type: enhancement
@@ -36,6 +36,26 @@ TASK-014 shipped the 'speakers' LLM kind: it reads a diarized transcript, maps S
 - [ ] #12 A re-run stores a new llm_output row and never overwrites the previous one, so the record of what an earlier model decided survives
 <!-- AC:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Schema v12: speaker_label gains source TEXT CHECK('llm','human') DEFAULT 'human', llm_output_id INTEGER REFERENCES llm_output(id) ON DELETE SET NULL, and confidence REAL. Existing rows read as 'human' because every name in the table today was typed by one. SET NULL rather than CASCADE: losing the analysis must not silently unname a speaker, it must only lose the receipt.
+
+2. The speakers schema gains a number. SpeakerGuess.confidence becomes numeric 0-100 with the word kept as a separate field for display, and prompts/speakers.md asks for both. PROMPT_VERSION is bumped this time - unlike adding labels.md, this EDITS a template that already has stored answers, and those answers were given to a different question.
+
+3. The apply mechanism, which is the part Robert calls 'the coordinator'. TaskSpec gains an optional apply hook; llm_stage grows a fourth stage after task_store that runs it when the spec has one. Inside the same job, so a failure to apply is reported where the analysis is, and a stored-but-unapplied answer stops being a reachable state.
+
+4. apply_speakers: writes speaker_label for every cluster above SPEAKER_CONFIDENCE_THRESHOLD (90), recording llm_output_id and the confidence; leaves a cluster at or below it with its default; never overwrites a row whose source is 'human'.
+
+5. The chain: a transcribe job whose diarize stage produced clusters enqueues the speakers pass itself. No diarization means no clusters means nothing to enqueue.
+
+6. Inheritance across runs: a new run over the same media adopts the previous run's names when the transcript has not meaningfully changed, so a re-transcription does not pay a model to rediscover names that were already right.
+
+7. Reading it back: the transcript view shows which analysis named a speaker and with what confidence, and the analysis stays readable after the names are applied.
+
+8. Evidence: tests per slice, then a real run over a Hacker History episode with the names it produced and the confidences it claimed - and an honest note that a model's self-reported confidence is not calibrated, so the threshold is a policy dial and the evidence quote is the real check.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
@@ -58,4 +78,22 @@ scribe/stages/llm_stage.py task_store() is the last stage of an llm job. It call
 So the mechanism this task needs is not speakers-specific: a kind should be able to declare an apply step that the runner performs after the answer is stored, inside the same job, with the same failure reporting. Build it once here, and TASK-026 uses it for cleanup.
 
 Ordering that follows from it: register -> transcribe -> diarize -> (speakers analysis + apply) is one chain, and the apply belongs in the llm job that produced the answer rather than in a fourth job, because a stored answer nobody applied is exactly the state this is meant to end.
+
+Slices 1-5 green: 430 passed over test_llm_*, test_stage_finalize, test_db and test_web_ai.
+
+v12 puts source, llm_output_id and confidence on speaker_label. Existing rows read 'human' because that is what every one of them is. ON DELETE SET NULL on the analysis link: losing the receipt must never unname a speaker who was correctly identified.
+
+Confidence became a number. _confidence() takes 96, 0.96, '87%' and the old words; every word maps BELOW the threshold on purpose, because a model that answered 'high' where a number was asked for has not given the evidence an automatic write needs - its guess is still shown and can still be accepted by hand. Anything unreadable is 0, never a middling default that could clear a bar. PROMPT_VERSION bumped to 2, because this EDITS a template with stored answers, unlike adding labels.md.
+
+The apply mechanism - Robert's 'coordinator'. TaskSpec.apply, a fourth llm stage, and the same call added to run_task. That last one mattered more than it looked: run_task has no production callers and exists only so a direct caller and the job cannot drift, and a version stopping at store would have made every test using it a test of three quarters of the pipeline - the missing quarter being the one that changes the library. Its own docstring already said so.
+
+The hook takes the PLAN, not a media id: speaker_label hangs off a run, and a re-transcription landing while an analysis is in flight must not have its clusters named from an answer about the previous run.
+
+apply_speakers: above the threshold only (exclusive - 90 does not clear 90), never over a row whose source is 'human', and a role without a name is skipped because 'Guest' replaces 'Speaker 2' with something no more informative and harder to spot as a default.
+
+finalize.queue_speaker_pass closes the chain. In finalize rather than diarize because attribute runs in between, so by then the words carry their cluster and the transcript the pass reads is finished. No clusters, no question. And a private recording is not sent to an external provider by a pipeline step - Robert's bulk rule, binding harder here, because a pipeline step is the least conscious act there is.
+
+Five of this project's tripwires fired across the four commits and every one was right to: the sample-answer guard, the canonical kind list, the prompt digest, and the three-stage assertions in test_llm_tasks and test_llm_chat.
+
+Incidental: scribe.web.ai_ui's default_provider/default_model moved to scribe.llm so a runner stage can ask the same question without importing the web layer; ai_ui re-exports them so there is still one spelling.
 <!-- SECTION:NOTES:END -->

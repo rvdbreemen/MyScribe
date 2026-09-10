@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -331,10 +331,44 @@ CREATE TABLE media_label(
 CREATE INDEX idx_media_label_label ON media_label(label_id);
 """
 
+# v12 (TASK-024, speaker names applied automatically): who decided a speaker's
+# name, and what they decided it from.
+#
+# Until now a speaker_label row was just a name, and that was honest because a
+# person had typed every one of them. Once a pass writes them unattended the
+# row has to answer two more questions, and both are asked in anger rather than
+# in theory.
+#
+# "Why does this say Jeff Man?" - `llm_output_id` points at the analysis, which
+# holds the model, the prompt version, the tokens, the timestamp and the quote
+# with its [m:ss]. That is the whole accountability story, and it works because
+# tasks.py never overwrites an output row: a re-run adds one and the earlier
+# decision survives to be compared against.
+#
+# "May I overwrite this?" - `source`. An automatic pass must never quietly
+# replace a name a person chose. Existing rows default to 'human' because that
+# is what every one of them is: nothing else could have written them yet.
+#
+# ON DELETE SET NULL, not CASCADE. Losing the analysis must lose the receipt,
+# never the name - a speaker who was correctly identified does not become
+# anonymous because somebody purged an old llm_output row.
+#
+# `confidence` is what the model claimed, kept beside the name so the threshold
+# that let it through is visible afterwards. It is NOT a probability: a model
+# answering 95 is answering a question about its own certainty that nothing
+# trained it to answer well. It is stored for the audit, not for arithmetic.
+_SCHEMA_V12 = """
+ALTER TABLE speaker_label ADD COLUMN source TEXT NOT NULL DEFAULT 'human'
+  CHECK(source IN ('llm', 'human'));
+ALTER TABLE speaker_label ADD COLUMN llm_output_id INTEGER
+  REFERENCES llm_output(id) ON DELETE SET NULL;
+ALTER TABLE speaker_label ADD COLUMN confidence REAL;
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
-    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11,
+    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12,
 ]
 
 

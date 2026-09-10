@@ -29,7 +29,7 @@ Answer with one JSON object of exactly this shape:
       "cluster": "SPEAKER_00",
       "name": "Sarah",
       "role": "host | co-host | guest | expert | other",
-      "confidence": "high | medium | low",
+      "confidence": 96,
       "evidence": "[1:23] \"I'm Sarah, and with me today is…\"",
       "notes": "what else is known: company, expertise, title"
     }
@@ -40,9 +40,12 @@ Answer with one JSON object of exactly this shape:
 - `name`: the actual first name (or title and surname) when the transcript
   supports it; otherwise a short role word - `Host`, `Co-host`, `Guest`,
   `Expert` - and never a guess at a name. One or two words. No brackets.
-- `confidence`: `high` when named in the text and the label matches
-  unambiguously; `medium` when the name is there but the attribution rests on
-  reading the conversation; `low` when only a role can be given.
+- `confidence`: a number from 0 to 100, not a word. Above 90 means the name is
+  said in the transcript and the label it belongs to is unambiguous - a name
+  above 90 will be written to the recording without anyone checking it first,
+  so reserve it for what the quote actually proves. Between 50 and 90 when the
+  name is there but the attribution rests on reading the conversation. Below 50
+  when only a role can be given. Say 0 rather than guess.
 - `evidence`: the quote or quotes, with their `[m:ss]`, that the name or role
   rests on. Empty string when there is none.
 

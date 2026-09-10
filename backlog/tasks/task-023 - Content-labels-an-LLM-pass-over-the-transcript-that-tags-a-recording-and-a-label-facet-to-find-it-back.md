@@ -3,11 +3,11 @@ id: TASK-023
 title: >-
   Content labels: an LLM pass over the transcript that tags a recording, and a
   label facet to find it back
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:40'
-updated_date: '2026-09-10 14:44'
+updated_date: '2026-09-10 14:55'
 labels: []
 dependencies: []
 type: feature
@@ -22,13 +22,14 @@ A recording is findable today by its folder, its title and full-text search over
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A 'labels' LLM task kind exists whose prompt receives the transcript and the labels already in the database, and returns labels for this recording: existing ones by preference, at most 3 new
-- [ ] #2 Labels are their own table with a many-to-many link to media; a label carries who chose it (llm or human) so a human label is never overwritten by a later run
-- [ ] #3 A malformed or empty answer stores the analysis and applies no labels, rather than failing the job
-- [ ] #4 The library sidebar lists the labels with counts and filtering by one narrows the table, through the same WHERE builder the folder filter uses
-- [ ] #5 A person can add and remove a label on a recording by hand, and that survives a re-run
-- [ ] #6 The privacy pin is respected: a private recording reaches no cloud provider, and the refusal is visible rather than silent
-- [ ] #7 Tests cover the prompt's reuse-first rule, the parser on a malformed answer, the facet query and the privacy gate; a real run over a Hacker History episode is in the notes
+- [x] #1 Labels are their own table with a many-to-many link to media; a label carries who chose it (llm or human) so a human label is never overwritten by a later run
+- [x] #2 The library sidebar lists the labels with counts and filtering by one narrows the table, through the same WHERE builder the folder filter uses
+- [x] #3 A person can add and remove a label on a recording by hand, and that survives a re-run
+- [x] #4 The privacy pin is respected: a private recording reaches no cloud provider, and the refusal is visible rather than silent
+- [x] #5 Tests cover the prompt's reuse-first rule, the parser on a malformed answer, the facet query and the privacy gate; a real run over a Hacker History episode is in the notes
+- [x] #6 A 'labels' LLM task kind exists whose prompt receives the transcript and the labels already in the database, and returns labels for this recording: existing ones by preference, and new ones only up to the allowance, which is wider while the vocabulary is still small
+- [x] #7 A valid answer that names no labels applies none and the job succeeds; an answer that is not the shape at all fails as BadResponse carrying its own text, which is this project's framework rule and how TASK-014 reads the same case
+- [x] #8 The bulk pass skips a private recording instead of refusing the batch, and says how many it skipped
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -97,4 +98,16 @@ I had built a 403 that refused the whole selection. The failure mode of that des
 Silence was the other way to get it wrong, so the skip is reported: the route sets HX-Trigger scribe-notice, and app.js gained a body listener that flashes it in a neutral tone - a skip that was asked for is not a failure. Tests cover the skip, the notice naming the count and the provider, and the absence of a notice when nothing was skipped.
 
 tests/test_web_library.py 77 passed. The Node harness still passes (test_web_url_dialog + test_web_recorder, 108) - worth checking, because the new listener binds to document.body at load time.
+
+FINAL VERIFICATION 2026-09-10. Suite in halves on Windows: tests/test_[a-r]*.py 1071 passed, 8 deselected in 106.9s; tests/test_[s-z]*.py 745 passed, 1 failed, 2 deselected in 156.1s. 1816 pass, up from the 1759 baseline before this task - the 57 are this work. The one failure is tests/test_web_settings.py::test_the_web_process_never_imports_a_model_runtime, the pre-existing TASK-022 defect that reproduces on main in a clean worktree.
+
+Two acceptance criteria were REWRITTEN before being checked rather than ticked as they stood, because both had drifted from what was built: #1 still promised 'at most 3 new' after Robert replaced the flat cap with the cold/warm allowance, and #3 claimed a malformed answer would not fail the job when BadResponse is exactly this project's framework rule and TASK-014 reads the same case that way. A third criterion was added for the bulk privacy skip Robert asked for. Ticking the originals would have recorded two false claims.
+
+One gap found while verifying rather than while building: AC5 demands a test of the privacy gate and there was none for the labels kind. Added two - the cloud refusal biting at plan time with zero provider calls, and a private recording labelled happily by a local provider.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Content labels: an LLM pass over the transcript that says what a recording is about, and a facet that finds it back. Schema v11 gives labels their own table and a many-to-many link carrying who chose each one; the 'labels' kind reads the transcript and the vocabulary the library already uses and is told to reuse before inventing. The reuse-first rule is enforced in code rather than asked for in the prompt - apply_labels decides what is new against the vocabulary it read, and the schema deliberately has no 'is this new' field, because the thing being capped would otherwise be the thing reporting on itself. The allowance widens on a cold library (6 below 20 labels, 3 at or above) after a real run showed a flat cap dropping three good labels into an empty vocabulary. Labels appear in the sidebar with counts and filter the table through the same WHERE builder the folder filter uses; a person can add and remove them by hand and is not rationed the way the pass is; and a bulk action catches an existing library up, skipping private recordings rather than refusing the batch, because a bulk button must never be the thing that sends private words to an external service. Verified by 57 new tests, by a live run against openrouter over two Hacker History episodes (six labels with timestamped evidence on the first, two reused and three invented on the second), and by the suite in halves: 1816 pass, the single failure being TASK-022's pre-existing torch import.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -13,7 +13,7 @@ import json
 import pytest
 
 from scribe import db
-from scribe.llm import base, tasks
+from scribe.llm import base, privacy, tasks
 from tests.seed import seed_media, seed_run
 from tests.test_llm_tasks import (
     conn,  # noqa: F401  (fixture)
@@ -129,6 +129,37 @@ def test_prose_instead_of_labels_fails_with_its_own_text(conn, media, monkeypatc
         tasks.run_task(conn, media_id=media, kind="labels", provider_name="fake", model="fake-1")
 
     assert "mostly about computers" in str(excinfo.value)
+
+
+def test_a_private_recording_refuses_a_cloud_labels_pass_before_reading_words(
+    conn, media, monkeypatch
+):
+    """The pin is fail-closed and it bites at planning time, before the words
+    are loaded into this process - not because planning is the enforcement
+    point (llm.chat() is), but so a pinned recording's transcript is never read
+    for a call that was never going to be made."""
+    provider, calls = fake_provider([LABELS_ANSWER], is_local=False)
+    register(monkeypatch, provider)
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (media,))
+        conn.commit()
+
+    with pytest.raises(privacy.PrivacyRefused):
+        tasks.plan_task(conn, media_id=media, kind="labels", provider_name="fake")
+    assert calls == []
+
+
+def test_a_private_recording_is_labelled_by_a_local_provider(conn, media, monkeypatch):
+    """The pin is about where the words go, not about labelling being risky."""
+    provider, calls = fake_provider([LABELS_ANSWER], is_local=True)
+    register(monkeypatch, provider)
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (media,))
+        conn.commit()
+
+    tasks.run_task(conn, media_id=media, kind="labels", provider_name="fake", model="fake-1")
+
+    assert len(calls) == 1
 
 
 # --- applying it -------------------------------------------------------------------
@@ -272,3 +303,39 @@ def test_the_vocabulary_is_offered_most_used_first(conn):
     _label(conn, "common", media_id=two, source="llm")
 
     assert tasks.vocabulary(conn) == ("common", "rare")
+
+
+# --- the apply stage: an answer nobody applied is not a reachable state -------------
+
+
+def test_the_job_applies_the_labels_itself(conn, media, monkeypatch):
+    """The gap Robert called 'the coordinator': until TASK-024 an llm job
+    stored an answer and stopped, so every kind produced an artifact that sat
+    there until somebody clicked. The apply stage closes that inside the same
+    job, which is also where a failure to apply gets reported."""
+    provider, _calls = fake_provider([LABELS_ANSWER])
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="labels", provider_name="fake", model="fake-1")
+
+    assert {row["name"] for row in tasks.labels_for(conn, media)} == {
+        "hacking",
+        "bbs culture",
+        "phreaking",
+    }
+
+
+def test_a_kind_with_nothing_to_apply_is_untouched(conn, media, monkeypatch):
+    """Five of the kinds answer a question rather than change something. The
+    stage must be a no-op for them, not a special case in each."""
+    from tests.test_llm_tasks import ANSWERS
+
+    provider, _calls = fake_provider([ANSWERS["summary"]])
+    register(monkeypatch, provider)
+
+    output_id = tasks.run_task(
+        conn, media_id=media, kind="summary", provider_name="fake", model="fake-1"
+    )
+
+    assert output_id
+    assert tasks.labels_for(conn, media) == []

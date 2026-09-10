@@ -169,6 +169,31 @@ def task_store(ctx: "RunnerContext") -> None:
     ctx.report(1.0)
 
 
+def task_apply(ctx: "RunnerContext") -> None:
+    """Do what the answer says, for the kinds that change something.
+
+    Five of the kinds answer a question and this is a no-op for them. For the
+    rest it is the step that used to be a person clicking: the mapping reaches
+    the speaker labels, the labels reach the recording, inside the job that
+    produced them.
+
+    A failure here fails the job, deliberately. The alternative - storing the
+    answer, swallowing the error and reporting success - recreates exactly the
+    state this stage exists to remove, except now it also lies about it.
+    """
+    plan: tasks.TaskPlan = ctx.state["plan"]
+    hook = plan.spec.apply
+    if hook is None:
+        ctx.report(1.0)
+        return
+
+    result: tasks.TaskResult = ctx.state["result"]
+    report = hook(ctx.conn, plan, result.payload, ctx.state["llm_output_id"])
+
+    jobs.emit(ctx.conn, ctx.job["id"], "llm-apply", task=plan.kind, **(report or {}))
+    ctx.report(1.0)
+
+
 # --- chat ---------------------------------------------------------------------------------
 
 
@@ -323,14 +348,21 @@ def probe_store(ctx: "RunnerContext") -> None:
 
 @dataclass(frozen=True)
 class Handler:
-    """The three stage functions for one kind of `llm` job."""
+    """The stage functions for one kind of `llm` job.
+
+    `apply` is optional and most kinds have none: a summary answers a question
+    and changes nothing. The kinds that DO change something - naming a speaker,
+    labelling a recording - used to leave their answer sitting in a row until
+    somebody pressed a button, and that state is what the fourth stage removes.
+    """
 
     prepare: Callable[["RunnerContext"], None]
     generate: Callable[["RunnerContext"], None]
     store: Callable[["RunnerContext"], None]
+    apply: Callable[["RunnerContext"], None] | None = None
 
 
-TASK_HANDLER = Handler(task_prepare, task_generate, task_store)
+TASK_HANDLER = Handler(task_prepare, task_generate, task_store, task_apply)
 CHAT_HANDLER = Handler(chat_prepare, chat_generate, chat_store)
 PROBE_HANDLER = Handler(probe_prepare, probe_generate, probe_store)
 
@@ -360,8 +392,19 @@ def store(ctx: "RunnerContext") -> None:
     handler_for(_kind(ctx)).store(ctx)
 
 
+def apply(ctx: "RunnerContext") -> None:
+    """A handler without an apply step reports done and changes nothing, so the
+    stage costs a job that has nothing to apply one function call."""
+    hook = handler_for(_kind(ctx)).apply
+    if hook is None:
+        ctx.report(1.0)
+        return
+    hook(ctx)
+
+
 STAGES: list[tuple[str, Callable]] = [
     ("prepare", prepare),
     ("generate", generate),
     ("store", store),
+    ("apply", apply),
 ]

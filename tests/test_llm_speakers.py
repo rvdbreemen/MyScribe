@@ -106,8 +106,11 @@ def test_a_speakers_answer_that_names_half_still_validates_and_prose_fails_with_
 
     tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
     stored = json.loads(rows(conn, media, "speakers")[0]["content"])
+    # Confidence defaults to 0 since TASK-024, not to the word "low": an answer
+    # that did not say how sure it was has not earned an automatic write, and a
+    # default that could clear the threshold is how a gate stops being one.
     assert stored["speakers"] == [
-        {"cluster": "SPEAKER_00", "name": "", "role": "", "confidence": "low", "evidence": "", "notes": ""}
+        {"cluster": "SPEAKER_00", "name": "", "role": "", "confidence": 0.0, "evidence": "", "notes": ""}
     ]
 
     with pytest.raises(base.BadResponse) as caught:
@@ -216,3 +219,186 @@ def test_a_resumed_cleanup_reuses_the_parts_it_already_paid_for(conn, monkeypatc
     parts = [r for r in rows(conn, media_id) if r["kind"].startswith("cleanup:chunk:")]
     assert len(calls) == len(parts) - before  # the first part was not asked again
     assert parts[0]["content"] == "part 1"
+
+
+# --- confidence as a number (TASK-024) ---------------------------------------------
+
+
+def test_a_numeric_confidence_survives_validation(conn):
+    payload = tasks.Speakers.model_validate_json(
+        json.dumps({"speakers": [{"cluster": "SPEAKER_00", "name": "Arthur", "confidence": 96}]})
+    )
+
+    assert payload.speakers[0].confidence == 96.0
+
+
+def test_the_old_word_scale_still_validates_but_lands_below_the_bar(conn):
+    """A model that answers 'high' where a number was asked for has not given
+    the evidence the threshold needs, so the word maps to just under it: the
+    guess is still shown and can still be accepted by hand, but nothing is
+    written unattended on the strength of a word.
+
+    Tolerated rather than refused because refusing would turn a model that
+    answered the older way into a failed job, and the answer is still useful.
+    """
+    payload = tasks.Speakers.model_validate_json(
+        json.dumps(
+            {
+                "speakers": [
+                    {"cluster": "SPEAKER_00", "name": "A", "confidence": "high"},
+                    {"cluster": "SPEAKER_01", "name": "B", "confidence": "medium"},
+                    {"cluster": "SPEAKER_02", "name": "C", "confidence": "low"},
+                ]
+            }
+        )
+    )
+
+    high, medium, low = [s.confidence for s in payload.speakers]
+    assert high < tasks.SPEAKER_CONFIDENCE_THRESHOLD
+    assert medium < high and low < medium
+
+
+def test_a_confidence_that_means_nothing_is_no_confidence_at_all(conn):
+    """Empty, absent or unparseable: zero, which is below every threshold.
+    Never a default that would let something through."""
+    payload = tasks.Speakers.model_validate_json(
+        json.dumps(
+            {
+                "speakers": [
+                    {"cluster": "SPEAKER_00", "name": "A"},
+                    {"cluster": "SPEAKER_01", "name": "B", "confidence": ""},
+                    {"cluster": "SPEAKER_02", "name": "C", "confidence": "very sure indeed"},
+                ]
+            }
+        )
+    )
+
+    assert [s.confidence for s in payload.speakers] == [0.0, 0.0, 0.0]
+
+
+def test_a_percentage_written_as_a_fraction_is_read_as_one(conn):
+    """0.96 and 96 mean the same thing to a person and this must not be the
+    difference between applying a name and not."""
+    payload = tasks.Speakers.model_validate_json(
+        json.dumps({"speakers": [{"cluster": "SPEAKER_00", "name": "A", "confidence": 0.96}]})
+    )
+
+    assert payload.speakers[0].confidence == 96.0
+
+
+def test_the_speakers_prompt_asks_for_a_number(conn):
+    body = tasks.render_prompt("speakers", transcript="x", source_label="y", prompt="", known_labels=[])
+
+    assert "0-100" in body or "0 to 100" in body
+
+
+# --- applying the mapping (TASK-024) -----------------------------------------------
+
+
+def _named(conn, run_id):
+    return {
+        row["cluster_label"]: (row["display_name"], row["source"], row["confidence"])
+        for row in conn.execute(
+            "SELECT cluster_label, display_name, source, confidence FROM speaker_label"
+            " WHERE run_id=?",
+            (run_id,),
+        )
+    }
+
+
+def _answer(*speakers) -> str:
+    return json.dumps({"speakers": list(speakers)})
+
+
+def _run_id(conn, media_id):
+    return conn.execute(
+        "SELECT id FROM run WHERE media_id=? AND is_current=1", (media_id,)
+    ).fetchone()["id"]
+
+
+def test_a_confident_name_is_written_by_the_job_itself(conn, media, monkeypatch):
+    """The whole point of TASK-024: no click. And the row says where the name
+    came from, so 'why does this say Arthur' is answerable from the row."""
+    provider, _ = fake_provider(
+        [_answer({"cluster": "SPEAKER_00", "name": "Arthur", "confidence": 96})]
+    )
+    register(monkeypatch, provider)
+
+    output_id = tasks.run_task(
+        conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1"
+    )
+
+    named = _named(conn, _run_id(conn, media))
+    assert named["SPEAKER_00"] == ("Arthur", "llm", 96.0)
+    row = conn.execute("SELECT llm_output_id FROM speaker_label").fetchone()
+    assert row["llm_output_id"] == output_id
+
+
+def test_a_name_at_or_below_the_threshold_is_not_written(conn, media, monkeypatch):
+    """90 is the bar and it is not inclusive-by-accident: a cluster that did
+    not clear it keeps its default and stays a suggestion."""
+    provider, _ = fake_provider(
+        [
+            _answer(
+                {"cluster": "SPEAKER_00", "name": "Maybe", "confidence": 90},
+                {"cluster": "SPEAKER_01", "name": "Unsure", "confidence": 89.9},
+                {"cluster": "SPEAKER_02", "name": "Sure", "confidence": 90.1},
+            )
+        ]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert set(_named(conn, _run_id(conn, media))) == {"SPEAKER_02"}
+
+
+def test_a_name_a_person_typed_is_never_overwritten(conn, media, monkeypatch):
+    """The rule that makes running this unattended safe at all."""
+    run_id = _run_id(conn, media)
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source)"
+            " VALUES (?, 'SPEAKER_00', 'Ford', 'human')",
+            (run_id,),
+        )
+        conn.commit()
+    provider, _ = fake_provider(
+        [_answer({"cluster": "SPEAKER_00", "name": "Arthur", "confidence": 99})]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, run_id)["SPEAKER_00"][:2] == ("Ford", "human")
+
+
+def test_a_cluster_with_only_a_role_is_left_alone(conn, media, monkeypatch):
+    """"Guest" is not a name. Writing it would replace "Speaker 2" with
+    something no more informative and harder to notice as a default."""
+    provider, _ = fake_provider(
+        [_answer({"cluster": "SPEAKER_00", "name": "", "role": "guest", "confidence": 99})]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, _run_id(conn, media)) == {}
+
+
+def test_running_it_again_updates_rather_than_duplicates(conn, media, monkeypatch):
+    """speaker_label is UNIQUE(run_id, cluster_label); a second confident pass
+    is a correction, not a second opinion to store beside the first."""
+    provider, _ = fake_provider(
+        [
+            _answer({"cluster": "SPEAKER_00", "name": "Arthur", "confidence": 95}),
+            _answer({"cluster": "SPEAKER_00", "name": "Zaphod", "confidence": 97}),
+        ]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-2")
+
+    named = _named(conn, _run_id(conn, media))
+    assert named == {"SPEAKER_00": ("Zaphod", "llm", 97.0)}

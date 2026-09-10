@@ -117,7 +117,63 @@ def run(ctx: "RunnerContext") -> None:
         xrt=measured,
         work_dir_removed=removed,
     )
+
+    speaker_job = queue_speaker_pass(ctx.conn, ctx.job["media_id"], run_id, speakers)
+    if speaker_job is not None:
+        jobs.emit(ctx.conn, ctx.job["id"], "speakers-queued", job_id_queued=speaker_job)
+
     ctx.report(1.0)
+
+
+def queue_speaker_pass(
+    conn: sqlite3.Connection, media_id: int, run_id: int, clusters: Sequence[str]
+) -> int | None:
+    """Ask who the speakers are, as soon as there are speakers to ask about.
+
+    TASK-024. Diarization produces clusters and stops; naming them used to be a
+    person opening the transcript and pressing a button, which is why 60 runs in
+    this library carried clusters and three carried names. This is what makes it
+    happen by itself, and it belongs here rather than in the diarize stage
+    because `attribute` runs in between: by finalize the words carry their
+    cluster, so the transcript the pass reads is the finished one.
+
+    Nothing is queued when there is nothing to ask - no diarization means no
+    clusters means no question.
+
+    A private recording is not sent to an external provider, and the pass is
+    simply not queued. That is the same rule a bulk action follows, for a
+    sharper reason: sending private words out is a decision a person takes
+    knowing which recording it is, and a pipeline step is the least conscious
+    act there is. On a local provider nothing leaves the machine and the pass
+    runs like any other.
+
+    Returns the job id, or None when it queued nothing.
+    """
+    if not clusters:
+        return None
+
+    # Imported here: these pull the provider registry in, and a stage that runs
+    # in every transcribe job should not pay for that at import time.
+    from scribe import llm
+    from scribe.llm import privacy
+    from scribe.stages import llm_stage
+
+    provider_name = llm.default_provider(conn)
+    if not llm.provider_class(provider_name).is_local and privacy.is_private(conn, media_id):
+        return None
+
+    return jobs.enqueue(
+        conn,
+        llm_stage.JOB_TYPE,
+        media_id=media_id,
+        params={
+            "media_id": media_id,
+            "kind": "speakers",
+            "provider": provider_name,
+            "model": llm.default_model(conn, provider_name),
+            "run_id": run_id,
+        },
+    )
 
 
 def _commit(
