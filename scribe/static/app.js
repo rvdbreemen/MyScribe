@@ -956,6 +956,47 @@
     } catch (err) { /* nothing to do: the position is a convenience */ }
   }
 
+  /*
+    The two readings of one recording (TASK-026): the transcript as it was
+    heard, and the cleaned version beside it. Switching is a local matter -
+    both are already on the page - so this is a class toggle and not a request,
+    and the transcript is one click away whichever is showing.
+
+    Delegated to document like everything else here, because the panel is
+    replaced wholesale by htmx (hx-swap="outerHTML") after a rename or a
+    reassignment, and a listener bound to the button would go with it.
+
+    Every check below is a property (hidden) or an attribute, never a
+    :checked or [hidden] selector: the Node harness the tests run in models
+    neither, and a stub that answers "no" to a question it did not understand
+    is how a broken script gets through.
+  */
+  function wireReadingSwitch() {
+    document.addEventListener('click', function (event) {
+      var button = event.target && event.target.closest
+        ? event.target.closest('[data-reading-toggle]')
+        : null;
+      if (!button) { return; }
+
+      var words = document.getElementById('transcript');
+      var clean = document.getElementById('clean-reading');
+      if (!words || !clean) { return; }
+
+      var showClean = clean.hidden;   /* hidden now means we are about to show it */
+      clean.hidden = !showClean;
+      words.hidden = showClean;
+      button.setAttribute('aria-pressed', showClean ? 'true' : 'false');
+      button.textContent = showClean ? 'Show the transcript' : 'Show the cleaned reading';
+
+      var says = document.querySelector('[data-reading-says]');
+      if (says) {
+        says.textContent = showClean
+          ? 'Showing the cleaned reading. The transcript is unchanged.'
+          : 'Showing the transcript as it was heard.';
+      }
+    });
+  }
+
   function wireTranscript() {
     var audio = document.getElementById('player');
     if (!audio) { return; }
@@ -1461,6 +1502,7 @@
     wireHtmxErrors();
     wireDialogs();
     wireTranscribeDialog();
+    wireReadingSwitch();
     wireExportDialog();
     wireJobLog();
     wireTranscript();

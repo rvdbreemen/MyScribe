@@ -262,19 +262,26 @@ def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
     """
     from scribe.web import ai_ui
     from scribe.web import transcribe_dialog  # human_size; imported late, like ai_ui
+    from scribe.llm import tasks  # clean_reading; late for the same reason
 
     media = dict(library._get_media(conn, media_id))
     run = current_run(conn, media_id)
     paragraphs: list[render.Paragraph] = []
     speakers: list[dict] = []
+    reading: dict | None = None
     if run is not None:
         speakers = run_speakers(conn, run["id"])
         labels = {s["cluster"]: s["label"] for s in speakers if s["label"] is not None}
         paragraphs = render.paragraphs(run_words(conn, run["id"]), labels)
+        # The cleaned reading, when one was published (TASK-026). Beside the
+        # words, never instead of them: the page offers both and says which it
+        # is showing, and the transcript is what it falls back to.
+        reading = tasks.clean_reading(conn, run["id"])
     return {
         "media": media,
         "run": run,
         "paragraphs": paragraphs,
+        "clean_reading": reading,
         "speakers": speakers,
         "colors": {s["cluster"]: s["color"] for s in speakers if s["color"]},
         "new_speaker": NEW_SPEAKER,

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 13:29'
-updated_date: '2026-09-10 16:04'
+updated_date: '2026-09-10 16:12'
 labels: []
 dependencies:
   - TASK-024
@@ -143,4 +143,12 @@ Schema v13 is clean_reading, keyed by run - one reading per run, because a clean
 apply_cleanup publishes or refuses, and refusing costs nothing because nothing was replaced - the payoff of the derived-reading choice Robert asked for. The refused answer is still stored: store_output runs before the gate on purpose, because 'refused for keeping 8% of the words' is only checkable while the refused thing survives.
 
 Still open: the one-click toggle in the transcript view.
+
+The toggle: 501 passed over test_llm_*, test_db, test_web_transcript, test_web_ai and test_stage_finalize; 131 in the two files that carry the switch, including a Node test that clicks twice and checks it goes back.
+
+Both readings are rendered into the page, so switching is a class toggle and not a request - the transcript is one click away whichever is showing, which is what Robert asked for. The words are the default and the cleaned block starts hidden: the derived reading is offered, never imposed. A line beside the button says which is on screen, because a reader who cannot tell has been handed an edit without being told, and the cleaned block repeats the two word counts so the shrink is visible without counting.
+
+The listener is delegated from document rather than bound to the button, because the panel is replaced wholesale by htmx after a rename or a reassignment and a bound listener would go with it. Every check is a property or an attribute, never a :checked or [hidden] selector, for the Node harness's sake.
+
+A recording whose cleaning the gate refused shows no switch at all - no button, no block, nothing to notice. That is the undo being genuinely free rather than merely cheap.
 <!-- SECTION:NOTES:END -->

@@ -1771,6 +1771,49 @@ DROPZONE_FIXTURE = r"""
 """
 
 
+READING_FIXTURE = r"""
+    /* The two readings as _transcript_panel.html renders them: the words
+       showing, the cleaned block hidden, and one button between them. */
+    const readingSwitch = body.append(el('div', { 'data-reading-switch': '' }));
+    const readingButton = readingSwitch.append(el('button', { type: 'button', 'data-reading-toggle': '' }));
+    readingButton.textContent = 'Show the cleaned reading';
+    const readingSays = readingSwitch.append(el('span', { 'data-reading-says': '' }));
+    readingSays.textContent = 'Showing the transcript as it was heard.';
+    const wordsBlock = body.append(el('div', { id: 'transcript', 'data-reading': 'words' }));
+    const cleanBlock = body.append(el('div', { id: 'clean-reading', 'data-reading': 'clean' }));
+    cleanBlock.hidden = true;
+"""
+
+
+@needs_node
+def test_one_click_shows_the_cleaned_reading_and_one_more_brings_the_words_back(tmp_path):
+    """Robert asked for one click each way. No request, no state: both
+    readings are on the page and this decides which is on screen."""
+    result = run_dom(
+        tmp_path,
+        READING_FIXTURE + r"""
+    load(APP);
+    fire(document, 'click', event({ target: readingButton }));
+    const shown = { words: wordsBlock.hidden, clean: cleanBlock.hidden,
+                    label: readingButton.textContent, says: readingSays.textContent,
+                    pressed: readingButton.getAttribute('aria-pressed') };
+    fire(document, 'click', event({ target: readingButton }));
+    const back = { words: wordsBlock.hidden, clean: cleanBlock.hidden,
+                   label: readingButton.textContent, pressed: readingButton.getAttribute('aria-pressed') };
+    done({ shown: shown, back: back });
+""",
+    )
+
+    assert result["shown"]["words"] is True and result["shown"]["clean"] is False
+    assert result["shown"]["label"] == "Show the transcript"
+    assert result["shown"]["pressed"] == "true"
+    assert "cleaned reading" in result["shown"]["says"]
+
+    assert result["back"]["words"] is False and result["back"]["clean"] is True
+    assert result["back"]["label"] == "Show the cleaned reading"
+    assert result["back"]["pressed"] == "false"
+
+
 @needs_node
 def test_a_dropped_file_still_reaches_the_file_input_and_leaves_the_link_field_alone(tmp_path):
     """The drop listener took the link path on top of the file path, so this

@@ -139,7 +139,25 @@
       <p class="word-offer" role="status">{{ word_flash }}</p>
       {% endif %}
 
-      <div id="transcript" class="transcript" data-run-id="{{ run.id }}" data-correct-url="/media/{{ media.id }}/words/">
+      {% if clean_reading %}
+      {# Two readings of one recording (TASK-026). The words are canonical
+         (ADR-003) and the cleaned text is derived, so this switches what is on
+         screen and changes nothing: no request, no state, and the transcript is
+         one click away at all times. The line says which reading is showing,
+         because a reader who cannot tell has been handed an edit without being
+         told. #}
+      <div class="reading-switch" data-reading-switch>
+        <button type="button" data-reading-toggle aria-pressed="false">Show the cleaned reading</button>
+        <span class="muted" data-reading-says>Showing the transcript as it was heard.</span>
+      </div>
+      <div id="clean-reading" class="transcript clean-reading" data-reading="clean" hidden>
+        <p class="hint">Cleaned for reading: {{ clean_reading.words_in }} words became
+          {{ clean_reading.words_out }}. The transcript above is unchanged.</p>
+        <pre class="clean-text">{{ clean_reading.text }}</pre>
+      </div>
+      {% endif %}
+
+      <div id="transcript" class="transcript" data-reading="words" data-run-id="{{ run.id }}" data-correct-url="/media/{{ media.id }}/words/">
         {% for p in paragraphs %}
         <section class="para"{% if p.speaker %} data-speaker="{{ p.speaker }}"{% endif %}>
           {% if p.speaker %}
