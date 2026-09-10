@@ -44,7 +44,7 @@ import json
 import sqlite3
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 
@@ -142,6 +142,15 @@ COMPRESSION_RATIO_THRESHOLD = 2.4
 # nominal second is what keeps a word from being split across two decodes.
 WINDOW_SECONDS = 600.0
 SEARCH_SECONDS = 5.0
+# How much of the next window each decode hears past its own cut; what it
+# says there is dropped (`collect_segments`' limit) and said again, properly,
+# by the next window. Without it every cut is, to Whisper, the end of the
+# file, and the end of a file is where Whisper hallucinates. Measured
+# 2026-09-10: 7 of 50 Hacker History episodes carried a run of ~100 identical
+# words ("um, um, um") in 0.3 s just before a multiple of 600 s, and decoding
+# those windows again gave end-of-window garbage every run, while the same
+# windows with 30 s appended came back clean. Capped at half a window.
+LOOKAHEAD_SECONDS = 30.0
 # A tail shorter than this rides along with the previous window: Whisper has
 # nothing to say about half a second, and the extra decode costs a model call.
 MIN_TAIL_SECONDS = 1.0
@@ -258,6 +267,9 @@ class Window:
 
     offset: float  # seconds from the start of the file
     samples: np.ndarray  # float32, mono, SAMPLE_RATE
+    # The start of the next window, heard but not kept (LOOKAHEAD_SECONDS).
+    # Empty for the last window: the real end of the file is where it ends.
+    lookahead: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
 
 
 def quietest_cut(samples: np.ndarray, sample_rate: int, *, search_seconds: float) -> int:
@@ -290,6 +302,7 @@ def iter_windows(
     window_seconds: float = WINDOW_SECONDS,
     search_seconds: float = SEARCH_SECONDS,
     min_tail_seconds: float = MIN_TAIL_SECONDS,
+    lookahead_seconds: float = LOOKAHEAD_SECONDS,
 ) -> Iterator[Window]:
     """Yield the prepared wav one window at a time, never holding the file.
 
@@ -299,6 +312,10 @@ def iter_windows(
     converted. Each window ends at `quietest_cut` of a nominal-length read,
     and the samples past the cut are carried into the next window, so the
     windows are contiguous and add up to the file exactly.
+
+    Every window but the last also carries `lookahead`: the first
+    `lookahead_seconds` of the next one (at most half a window), read ahead
+    into the carry, so the decoder hears speech go on past the cut.
     """
     with wave.open(str(wav), "rb") as source:
         if source.getsampwidth() != 2 or source.getnchannels() != 1:
@@ -309,6 +326,9 @@ def iter_windows(
         rate = source.getframerate()
         nominal = int(window_seconds * rate)
         min_tail = int(min_tail_seconds * rate)
+        # Half a window at most: a carry longer than that would make the next
+        # read smaller than the window it is meant to fill.
+        lookahead = int(min(lookahead_seconds, window_seconds / 2) * rate)
         total = source.getnframes()
         carry = np.empty(0, dtype=np.float32)
         consumed = 0  # frames read from the file
@@ -333,8 +353,15 @@ def iter_windows(
                 rest = np.frombuffer(source.readframes(total - consumed), dtype="<i2").astype(np.float32) / 32768.0
                 yield Window(offset_frames / rate, np.concatenate([buffer, rest]))
                 return
-            yield Window(offset_frames / rate, buffer[:cut])
             carry = buffer[cut:].copy()
+            short = lookahead - len(carry)
+            if short > 0 and consumed < total:
+                # Read the look-ahead now; it is the next window's start, so
+                # the next read is that much smaller and nothing is read twice.
+                ahead = np.frombuffer(source.readframes(short), dtype="<i2").astype(np.float32) / 32768.0
+                consumed += len(ahead)
+                carry = np.concatenate([carry, ahead])
+            yield Window(offset_frames / rate, buffer[:cut], carry[:lookahead])
             offset_frames += cut
 
 
@@ -357,8 +384,16 @@ def collect_segments(
     idx0: int = 0,
     word_idx0: int = 0,
     on_segment: Callable[[dict], None] | None = None,
+    limit: float | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Walk Whisper's segment generator, reporting where it has got to.
+
+    `limit`, in seconds of this window, is where the window's own audio ends
+    and its look-ahead begins (`LOOKAHEAD_SECONDS`). A word that starts there
+    or later is the next window's to say, so it is dropped; the segment it
+    ends is cut back to the words before it; and the first segment that starts
+    past the limit ends the walk without the generator being asked for more,
+    which is what keeps the look-ahead from costing a decode of its own.
 
     `on_segment`, when given, sees each segment row the moment it is built -
     the hook the live log's glimpse of the text hangs on. It is called after
@@ -397,13 +432,26 @@ def collect_segments(
 
     stop_if_cancelled()
     for segment in segments:
+        if limit is not None and float(segment.start) >= limit:
+            break
+        words = list(segment.words or ())
+        end = float(segment.end)
+        text = (segment.text or "").strip()
+        if limit is not None:
+            kept = [word for word in words if _midpoint(word) < limit]
+            if words and not kept:
+                break
+            if len(kept) < len(words):
+                words = kept
+                end = float(kept[-1].end)
+                text = "".join(word.word for word in kept).strip()
         idx = idx0 + len(segment_rows)
         segment_rows.append(
             {
                 "idx": idx,
                 "start": offset + float(segment.start),
-                "end": offset + float(segment.end),
-                "text": (segment.text or "").strip(),
+                "end": offset + end,
+                "text": text,
                 "avg_logprob": _as_float(segment.avg_logprob),
                 "no_speech_prob": _as_float(segment.no_speech_prob),
                 "compression_ratio": _as_float(segment.compression_ratio),
@@ -412,7 +460,7 @@ def collect_segments(
         )
         if on_segment is not None:
             on_segment(segment_rows[-1])
-        for word in segment.words or ():
+        for word in words:
             word_rows.append(
                 {
                     "idx": word_idx0 + len(word_rows),
@@ -425,13 +473,27 @@ def collect_segments(
             )
 
         if duration > 0:
-            fraction = min(1.0, (offset + float(segment.end)) / duration)
+            reached = end if limit is None else min(end, limit)
+            fraction = min(1.0, (offset + reached) / duration)
             highest = max(highest, fraction)
             on_progress(highest)
 
         stop_if_cancelled()
 
     return segment_rows, word_rows
+
+
+def _midpoint(word: Any) -> float:
+    """Where most of a word's sound is - which side of a cut it belongs to.
+
+    Not its start: a cut can run through a word (it falls at the quietest
+    100 ms, which is not always a pause), and then both windows hear part of
+    it. Measured on clip30 cut at 19.2 s: "we" ran 19.12-19.48, the window
+    before the cut kept it by its start, the window after heard the rest and
+    wrote it again - "we we". By its midpoint it is the second window's, which
+    heard most of it; "Revspace" (27.88-28.48, cut at 28.4) stays with the
+    first, which heard nearly all of it."""
+    return (float(word.start) + float(word.end)) / 2
 
 
 # --- the model ------------------------------------------------------------------
@@ -481,6 +543,7 @@ def transcribe_audio(
     compute_type: str | None = None,
     window_seconds: float = WINDOW_SECONDS,
     search_seconds: float = SEARCH_SECONDS,
+    lookahead_seconds: float = LOOKAHEAD_SECONDS,
     on_segment: Callable[[dict], None] | None = None,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Transcribe one prepared wav; returns (info, segments, words).
@@ -491,6 +554,10 @@ def transcribe_audio(
     with their times shifted by the window's offset and their indices
     continuing from the previous window's, so the result is indistinguishable
     from one decode of the whole file - except that it fits in memory.
+
+    Each decode hears its window plus the window's look-ahead, and keeps only
+    what was said before the cut (`collect_segments`' `limit`): a cut is not
+    the end of the recording, and must not sound like one to the decoder.
 
     Language is detected on the first window only and then held for the rest.
     Letting every window detect for itself would let a recording that switches
@@ -512,10 +579,19 @@ def transcribe_audio(
     stream = None
     try:
         for window in iter_windows(
-            wav, window_seconds=window_seconds, search_seconds=search_seconds
+            wav,
+            window_seconds=window_seconds,
+            search_seconds=search_seconds,
+            lookahead_seconds=lookahead_seconds,
         ):
+            heard = (
+                np.concatenate([window.samples, window.lookahead])
+                if len(window.lookahead)
+                else window.samples
+            )
+            limit = len(window.samples) / SAMPLE_RATE if len(window.lookahead) else None
             stream, raw = model.transcribe(
-                window.samples,
+                heard,
                 language=detected_language,
                 task=task,
                 # hotwords, not initial_prompt: re-injected into every decode
@@ -530,6 +606,8 @@ def transcribe_audio(
                 detected_language = raw.language
             if language_probability is None:
                 language_probability = _as_float(raw.language_probability)
+            # Speech Whisper was handed, look-ahead included: up to
+            # LOOKAHEAD_SECONDS per cut is counted in two windows.
             duration_after_vad += _as_float(getattr(raw, "duration_after_vad", None)) or 0.0
             new_segments, new_words = collect_segments(
                 stream,
@@ -540,6 +618,7 @@ def transcribe_audio(
                 idx0=len(segments),
                 word_idx0=len(words),
                 on_segment=on_segment,
+                limit=limit,
             )
             segments.extend(new_segments)
             words.extend(new_words)
