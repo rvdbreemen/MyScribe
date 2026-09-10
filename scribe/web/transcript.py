@@ -200,7 +200,8 @@ def run_speakers(conn: sqlite3.Connection, run_id: int) -> list[dict]:
             (run_id,),
         ).fetchall()
         labelled = conn.execute(
-            "SELECT cluster_label, display_name, color FROM speaker_label WHERE run_id=?",
+            "SELECT cluster_label, display_name, color, source, llm_output_id, confidence"
+            " FROM speaker_label WHERE run_id=?",
             (run_id,),
         ).fetchall()
     words = {row["speaker"]: int(row["n"]) for row in counted}
@@ -213,6 +214,14 @@ def run_speakers(conn: sqlite3.Connection, run_id: int) -> list[dict]:
             "name": render.speaker_display(names, cluster),
             "color": labels[cluster]["color"] if cluster in labels else None,
             "words": words.get(cluster, 0),
+            # Where the name came from (TASK-024). A name a person typed says
+            # so and carries nothing else; one an automatic pass wrote carries
+            # the analysis that chose it and the confidence it claimed, so
+            # "why does this say Jeff Man" is answerable from the panel rather
+            # than from the database.
+            "source": labels[cluster]["source"] if cluster in labels else None,
+            "analysis_id": labels[cluster]["llm_output_id"] if cluster in labels else None,
+            "confidence": labels[cluster]["confidence"] if cluster in labels else None,
         }
         for cluster in sorted(set(words) | set(labels), key=_label_key)
     ]
@@ -366,13 +375,28 @@ def _upsert_label(
     conn: sqlite3.Connection, run_id: int, cluster: str, name: str, color: str | None
 ) -> None:
     """One label row per (run, cluster): insert it, or update the name and -
-    when one was sent - the colour. Under the caller's lock, no commit."""
+    when one was sent - the colour. Under the caller's lock, no commit.
+
+    `source` is set to 'human' on both paths, and the update path is the one
+    that matters. Since v12 an automatic pass refuses to overwrite a row whose
+    source is 'human', and a rename that left the column alone would hand a
+    name a person had just typed back to the next pass to overwrite - the row
+    would still say 'llm' because that is who wrote it first. Whoever typed
+    last owns the name.
+
+    The analysis link is cleared for the same reason: `llm_output_id` answers
+    "which analysis chose this", and after a person types over it the honest
+    answer is nobody's analysis did.
+    """
     conn.execute(
-        "INSERT INTO speaker_label(run_id, cluster_label, display_name, color)"
-        " VALUES (?, ?, ?, ?)"
+        "INSERT INTO speaker_label(run_id, cluster_label, display_name, color, source)"
+        " VALUES (?, ?, ?, ?, 'human')"
         " ON CONFLICT(run_id, cluster_label) DO UPDATE SET"
         "   display_name = excluded.display_name,"
-        "   color = COALESCE(excluded.color, speaker_label.color)",
+        "   color = COALESCE(excluded.color, speaker_label.color),"
+        "   source = 'human',"
+        "   llm_output_id = NULL,"
+        "   confidence = NULL",
         (run_id, cluster, name, color),
     )
 

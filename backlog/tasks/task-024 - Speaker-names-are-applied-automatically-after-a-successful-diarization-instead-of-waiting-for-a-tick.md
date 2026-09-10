@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
-updated_date: '2026-09-10 15:11'
+updated_date: '2026-09-10 15:19'
 labels: []
 dependencies: []
 type: enhancement
@@ -96,4 +96,12 @@ finalize.queue_speaker_pass closes the chain. In finalize rather than diarize be
 Five of this project's tripwires fired across the four commits and every one was right to: the sample-answer guard, the canonical kind list, the prompt digest, and the three-stage assertions in test_llm_tasks and test_llm_chat.
 
 Incidental: scribe.web.ai_ui's default_provider/default_model moved to scribe.llm so a runner stage can ask the same question without importing the web layer; ai_ui re-exports them so there is still one spelling.
+
+Slices 6 and 7 green: 477 passed over test_llm_*, test_stage_finalize, test_web_transcript, test_web_ai and test_db.
+
+Inheritance keys on the CLUSTER SET, not on a transcript fingerprint. WHYcast compares text because its names live in a file beside the transcript; here they hang off cluster labels, so if diarization came back with a different set the old mapping is not stale, it is meaningless - copying it would put a real person's name on somebody else's voice. Same labels, inherit everything including who chose each name; anything else, inherit nothing and let the pass ask. A run whose clusters are all named already queues no pass at all, which is the saving the criterion was written for.
+
+A DEFECT FOUND WHILE WIRING THE READBACK, not by a test asking for it. transcript.py's _upsert_label wrote display_name and colour and left  alone. On the insert path that is harmless - the column defaults to 'human'. On the UPDATE path it was the whole rule failing quietly: rename a speaker the model had named and the row still said 'llm', because that is who wrote it first, so the next automatic pass was free to overwrite the name a person had just typed. Fixed to claim ownership on both paths and to clear llm_output_id and confidence, because 'which analysis chose this' has no honest answer once somebody has typed over it. Two tests pin it.
+
+Readback: run_speakers now carries source, analysis_id and confidence per cluster, so the panel can say where a name came from rather than the answer stopping at the table.
 <!-- SECTION:NOTES:END -->

@@ -118,11 +118,70 @@ def run(ctx: "RunnerContext") -> None:
         work_dir_removed=removed,
     )
 
+    inherit_speaker_names(ctx.conn, ctx.job["media_id"], run_id, speakers)
     speaker_job = queue_speaker_pass(ctx.conn, ctx.job["media_id"], run_id, speakers)
     if speaker_job is not None:
         jobs.emit(ctx.conn, ctx.job["id"], "speakers-queued", job_id_queued=speaker_job)
 
     ctx.report(1.0)
+
+
+def inherit_speaker_names(
+    conn: sqlite3.Connection, media_id: int, run_id: int, clusters: Sequence[str]
+) -> list[str]:
+    """Carry the previous run's speaker names onto this one, when they still fit.
+
+    Re-transcribing with a better model should not cost a reasoning call to
+    work out again names that were already right, and should certainly not throw
+    away one a person typed.
+
+    The condition is the cluster set, not the text. WHYcast compares a
+    transcript fingerprint because its names live in a file beside the
+    transcript; here they hang off cluster labels, and if diarization came back
+    with a different set the old mapping is not stale - it is meaningless.
+    Copying it then would put a real person's name on somebody else's voice,
+    which is worse than asking again. So: same labels, inherit; anything else,
+    inherit nothing and let the pass ask.
+
+    Returns the clusters that were named, so the caller can tell whether there
+    is still a question worth paying for.
+    """
+    if not clusters:
+        return []
+
+    with db.LOCK:
+        previous = conn.execute(
+            "SELECT id FROM run WHERE media_id=? AND id<>? ORDER BY id DESC LIMIT 1",
+            (media_id, run_id),
+        ).fetchone()
+        if previous is None:
+            return []
+        old = {
+            str(row["cluster_label"]): row
+            for row in conn.execute(
+                "SELECT cluster_label, display_name, source, llm_output_id, confidence"
+                " FROM speaker_label WHERE run_id=?",
+                (previous["id"],),
+            )
+        }
+        if not old or set(old) != set(clusters):
+            return []
+
+        for cluster, row in old.items():
+            conn.execute(
+                "INSERT OR IGNORE INTO speaker_label(run_id, cluster_label, display_name,"
+                " source, llm_output_id, confidence) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    cluster,
+                    row["display_name"],
+                    row["source"],
+                    row["llm_output_id"],
+                    row["confidence"],
+                ),
+            )
+        conn.commit()
+    return sorted(old)
 
 
 def queue_speaker_pass(
@@ -150,6 +209,18 @@ def queue_speaker_pass(
     Returns the job id, or None when it queued nothing.
     """
     if not clusters:
+        return None
+
+    with db.LOCK:
+        named = {
+            str(row["cluster_label"])
+            for row in conn.execute(
+                "SELECT cluster_label FROM speaker_label WHERE run_id=?", (run_id,)
+            )
+        }
+    if named >= set(clusters):
+        # Every cluster already has a name - inherited, or typed by somebody.
+        # There is no question left to pay a model to answer.
         return None
 
     # Imported here: these pull the provider registry in, and a stage that runs

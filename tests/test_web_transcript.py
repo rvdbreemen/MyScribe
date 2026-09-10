@@ -844,3 +844,79 @@ def test_the_panel_carries_the_inline_editor_template_and_the_correct_url(client
     body = client.get(f"/media/{media_id}").text
     assert "<template data-correct-template>" in body
     assert f'data-correct-url="/media/{media_id}/words/"' in body
+
+
+# --- who owns a name (TASK-024) ----------------------------------------------------
+
+
+def _label_row(conn, run_id, cluster):
+    return dict(
+        conn.execute(
+            "SELECT display_name, source, llm_output_id, confidence FROM speaker_label"
+            " WHERE run_id=? AND cluster_label=?",
+            (run_id, cluster),
+        ).fetchone()
+    )
+
+
+def test_renaming_a_speaker_the_model_named_takes_ownership_of_the_name(
+    client, conn, transcribed
+):
+    """The rule that makes an unattended pass safe is 'never over a human', and
+    that rule reads speaker_label.source. A rename that left the column alone
+    would hand the name a person just typed back to the next pass to overwrite,
+    because the row would still say 'llm' - whoever wrote it first.
+
+    The analysis link goes with it: 'which analysis chose this' has no honest
+    answer once somebody has typed over it.
+    """
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    with db.LOCK:
+        conn.execute(
+            "UPDATE speaker_label SET source='llm', confidence=97.0 WHERE run_id=?"
+            " AND cluster_label='SPEAKER_00'",
+            (run_id,),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO speaker_label(run_id, cluster_label, display_name,"
+            " source, confidence) VALUES (?, 'SPEAKER_00', 'Arthur', 'llm', 97.0)",
+            (run_id,),
+        )
+        conn.commit()
+
+    assert _rename(client, media_id, "SPEAKER_00", display_name="Ford").status_code == 200
+
+    row = _label_row(conn, run_id, "SPEAKER_00")
+    assert row["display_name"] == "Ford"
+    assert row["source"] == "human"
+    assert row["llm_output_id"] is None and row["confidence"] is None
+
+
+def test_a_name_typed_from_scratch_belongs_to_the_person_who_typed_it(
+    client, conn, transcribed
+):
+    media_id, run_id = transcribed["media"], transcribed["run"]
+
+    _rename(client, media_id, "SPEAKER_00", display_name="Ford")
+
+    assert _label_row(conn, run_id, "SPEAKER_00")["source"] == "human"
+
+
+def test_the_panel_can_say_where_a_speakers_name_came_from(client, conn, transcribed):
+    """Accountability has to reach the page, not stop at the table."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source, confidence)"
+            " VALUES (?, 'SPEAKER_00', 'Arthur', 'llm', 96.5)"
+            " ON CONFLICT(run_id, cluster_label) DO UPDATE SET"
+            "   display_name='Arthur', source='llm', confidence=96.5",
+            (run_id,),
+        )
+        conn.commit()
+
+    speakers = transcript.run_speakers(conn, run_id)
+    arthur = next(s for s in speakers if s["cluster"] == "SPEAKER_00")
+
+    assert arthur["source"] == "llm"
+    assert arthur["confidence"] == 96.5

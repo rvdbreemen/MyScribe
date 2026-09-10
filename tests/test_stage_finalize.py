@@ -98,3 +98,100 @@ def test_the_pass_names_the_run_it_was_asked_about(conn, recording):
     finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00"])
 
     assert _queued(conn)[0]["run_id"] == run_id
+
+
+# --- inheriting names across a re-transcription ------------------------------------
+
+
+def _name(conn, run_id, cluster, display, source="llm", confidence=95.0):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source, confidence)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (run_id, cluster, display, source, confidence),
+        )
+        conn.commit()
+
+
+def _labels(conn, run_id):
+    return {
+        row["cluster_label"]: (row["display_name"], row["source"])
+        for row in conn.execute(
+            "SELECT cluster_label, display_name, source FROM speaker_label WHERE run_id=?",
+            (run_id,),
+        )
+    }
+
+
+def test_a_re_transcription_inherits_the_names_the_previous_run_earned(conn):
+    """Re-transcribing with a better model should not pay a reasoning model to
+    rediscover names that were already right - and should certainly not throw
+    away a name a person typed."""
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id)
+    _name(conn, old_run, "SPEAKER_00", "Arthur", source="llm")
+    _name(conn, old_run, "SPEAKER_01", "Ford", source="human")
+    new_run = seed_run(conn, media_id)
+    _set_provider(conn, "ollama")
+
+    finalize.inherit_speaker_names(conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"])
+
+    assert _labels(conn, new_run) == {
+        "SPEAKER_00": ("Arthur", "llm"),
+        "SPEAKER_01": ("Ford", "human"),
+    }
+
+
+def test_different_clusters_inherit_nothing(conn):
+    """The names hang off cluster labels. If diarization came back with a
+    different set, the old mapping is not stale - it is meaningless, and
+    copying it would put a real person's name on somebody else's voice."""
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id)
+    _name(conn, old_run, "SPEAKER_00", "Arthur")
+    _name(conn, old_run, "SPEAKER_01", "Ford")
+    new_run = seed_run(conn, media_id)
+
+    finalize.inherit_speaker_names(
+        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
+    )
+
+    assert _labels(conn, new_run) == {}
+
+
+def test_a_fully_inherited_run_does_not_pay_for_the_pass_again(conn):
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id)
+    _name(conn, old_run, "SPEAKER_00", "Arthur")
+    new_run = seed_run(conn, media_id)
+    _set_provider(conn, "ollama")
+
+    finalize.inherit_speaker_names(conn, media_id, new_run, ["SPEAKER_00"])
+    job_id = finalize.queue_speaker_pass(conn, media_id, new_run, ["SPEAKER_00"])
+
+    assert job_id is None
+    assert _queued(conn) == []
+
+
+def test_a_partly_named_run_still_asks_about_the_rest(conn):
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id)
+    _name(conn, old_run, "SPEAKER_00", "Arthur")
+    new_run = seed_run(conn, media_id)
+    _set_provider(conn, "ollama")
+
+    finalize.inherit_speaker_names(conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"])
+    job_id = finalize.queue_speaker_pass(conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"])
+
+    assert job_id is not None
+
+
+def test_the_first_run_of_a_recording_inherits_nothing_and_asks(conn):
+    media_id = seed_media(conn, title="Guide")
+    run_id = seed_run(conn, media_id)
+    _set_provider(conn, "ollama")
+
+    finalize.inherit_speaker_names(conn, media_id, run_id, ["SPEAKER_00"])
+
+    assert _labels(conn, run_id) == {}
+    assert finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00"]) is not None
