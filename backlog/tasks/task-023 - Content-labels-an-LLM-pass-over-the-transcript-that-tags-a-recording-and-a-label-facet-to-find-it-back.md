@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:40'
-updated_date: '2026-09-10 14:39'
+updated_date: '2026-09-10 14:44'
 labels: []
 dependencies: []
 type: feature
@@ -89,4 +89,12 @@ Hand editing: POST /media/{id}/labels and /labels/remove. Two rules written into
 The backfill is a bulk action rather than a script: tick rows, choose Label, one llm job each - visible on the jobs board, cancellable, and paid for one at a time instead of in a sweep nobody can stop. Two guards. A recording with no transcript is skipped, because the pass reads words and a job that can only fail is not worth a row. And the privacy pin is checked for the WHOLE selection before anything is queued: queueing forty jobs and letting three fail on a refusal would spend real money to reach an error the check can see first. On a local provider a private recording is fine, and a test pins that too.
 
 Honest note on method: the four bulk-action tests were written after the implementation, not before, so they are not red-first evidence the way the rest of this task is. Everything else here was written red first, and two rounds of facet tests had to be strengthened after review because they passed on a page that ignored the filter entirely.
+
+CORRECTED BY ROBERT 2026-09-10, and his rule is better than the one I wrote. A private recording is never offered to an external service IN BULK; sending one out is always a conscious human decision. So in a bulk action it is an automatic skip, not a refusal of the batch.
+
+I had built a 403 that refused the whole selection. The failure mode of that design is subtle: refusing only teaches the habit of adjusting the selection until the button works, and a bulk button must never be the thing that puts private words on somebody else's server. Skipping removes the possibility instead of guarding it. On a local provider nothing leaves the machine, so private recordings are queued like the rest, and a test pins that.
+
+Silence was the other way to get it wrong, so the skip is reported: the route sets HX-Trigger scribe-notice, and app.js gained a body listener that flashes it in a neutral tone - a skip that was asked for is not a failure. Tests cover the skip, the notice naming the count and the provider, and the absence of a notice when nothing was skipped.
+
+tests/test_web_library.py 77 passed. The Node harness still passes (test_web_url_dialog + test_web_recorder, 108) - worth checking, because the new listener binds to document.body at load time.
 <!-- SECTION:NOTES:END -->

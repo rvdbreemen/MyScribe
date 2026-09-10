@@ -853,14 +853,19 @@ async def bulk(request: Request) -> Response:
     elif action == "restore":
         _set_trashed(conn, ids, False)
     elif action == "label":
-        _enqueue_labels(conn, ids)
+        notice = _enqueue_labels(conn, ids)
+        if notice:
+            response = _after_change(request, conn)
+            # htmx fires this on the body from the header; app.js flashes it.
+            response.headers["HX-Trigger"] = json.dumps({"scribe-notice": notice})
+            return response
     else:
         for media_id in ids:
             jobs.enqueue(conn, TRANSCRIBE_JOB_TYPE, media_id=media_id, params=_last_params(conn, media_id))
     return _after_change(request, conn)
 
 
-def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> None:
+def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> str:
     """One `labels` pass per selected recording.
 
     This is how a library that predates the labels pass catches up: tick the
@@ -871,28 +876,32 @@ def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> None:
     Imported here rather than at the top: `ai_ui` builds on this module, so a
     top-level import would be a cycle. `exports_ui` is reached the same way.
 
-    A recording with no transcript is skipped rather than queued: the pass
-    reads words, and a job that can only fail is not worth a row on the board.
-    The privacy pin is enforced *before* anything is queued, for the whole
-    selection at once - queueing forty jobs and letting three of them fail on a
-    refusal would spend real money to arrive at an error the check could see
-    first.
+    A private recording is never sent to an external service *in bulk*. Sending
+    one out is a decision a person takes for that recording, on its own page,
+    knowing which recording it is - so a bulk action skips it rather than
+    refusing the batch. Refusing would only teach the habit of adjusting the
+    selection until the button works, and a bulk button must never be the thing
+    that puts private words on somebody else's server. On a local provider
+    nothing leaves the machine and there is nothing to protect them from, so
+    they are queued like the rest.
+
+    A recording with no transcript is skipped too, for a duller reason: the
+    pass reads words, and a job that can only fail is not worth a row on the
+    board.
+
+    Returns what it skipped and why, because a silent skip is the other way to
+    get this wrong - a person who ticked forty rows should not have to count
+    the jobs to discover that three of them are not coming.
     """
     from scribe.web import ai_ui
 
     provider_name = ai_ui.default_provider(conn)
     model = ai_ui.default_model(conn, provider_name)
+    external = not llm.provider_class(provider_name).is_local
 
-    private = [media_id for media_id in ids if privacy.is_private(conn, media_id)]
-    if private and not llm.provider_class(provider_name).is_local:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"{len(private)} of the {len(ids)} chosen recordings are pinned private, and "
-                f"{provider_name} is not a local provider. Choose a local provider in Settings, "
-                "or leave the private recordings out of the selection."
-            ),
-        )
+    private: list[int] = []
+    if external:
+        private = [media_id for media_id in ids if privacy.is_private(conn, media_id)]
 
     with db.LOCK:
         has_words = {
@@ -903,8 +912,13 @@ def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> None:
                 ids,
             )
         }
+    skipped_private = set(private)
+    no_transcript: list[int] = []
     for media_id in ids:
+        if media_id in skipped_private:
+            continue
         if media_id not in has_words:
+            no_transcript.append(media_id)
             continue
         jobs.enqueue(
             conn,
@@ -912,6 +926,21 @@ def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> None:
             media_id,
             {"media_id": media_id, "kind": "labels", "provider": provider_name, "model": model},
         )
+
+    notes: list[str] = []
+    if private:
+        notes.append(
+            f"{len(private)} private "
+            f"{'recording was' if len(private) == 1 else 'recordings were'} skipped: "
+            f"{provider_name} is not local, and sending a private recording out is a decision "
+            "to take one at a time, on its own page."
+        )
+    if no_transcript:
+        notes.append(
+            f"{len(no_transcript)} without a transcript "
+            f"{'was' if len(no_transcript) == 1 else 'were'} skipped."
+        )
+    return " ".join(notes)
 
 
 def _parse_ids(values: list) -> list[int]:

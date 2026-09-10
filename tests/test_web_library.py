@@ -1169,12 +1169,16 @@ def test_bulk_label_skips_a_recording_with_no_transcript(client, conn, library):
     assert [p["media_id"] for p in _llm_jobs(conn)] == [library["alpha"]]
 
 
-def test_bulk_label_refuses_the_whole_batch_when_a_private_one_would_go_to_the_cloud(
+def test_a_private_recording_is_skipped_by_a_bulk_pass_to_an_external_model(
     client, conn, library
 ):
-    """Fail closed, and fail early: queueing forty jobs and letting three fail
-    on the privacy pin would spend real money to reach an error the check can
-    see first."""
+    """A private recording is never offered to an external service in bulk.
+    Sending one out is a decision taken for that recording, on its own page.
+
+    Skipped rather than refused, deliberately: a refusal only teaches the habit
+    of adjusting the selection until the button works, and a bulk button must
+    never be the thing that puts private words on somebody else's server. The
+    rest of the batch still runs."""
     seed_run(conn, library["alpha"])
     seed_run(conn, library["gamma"])
     _set_provider(conn, "openai")
@@ -1188,9 +1192,42 @@ def test_bulk_label_refuses_the_whole_batch_when_a_private_one_would_go_to_the_c
         headers=HX,
     )
 
-    assert resp.status_code == 403
-    assert "pinned private" in resp.text
-    assert _llm_jobs(conn) == []
+    assert resp.status_code == 200
+    assert [p["media_id"] for p in _llm_jobs(conn)] == [library["alpha"]]
+
+
+def test_the_skipped_private_recordings_are_reported_rather_than_dropped_quietly(
+    client, conn, library
+):
+    """A person who ticked forty rows should not have to count the jobs to
+    discover that three are not coming."""
+    seed_run(conn, library["alpha"])
+    seed_run(conn, library["gamma"])
+    _set_provider(conn, "openai")
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (library["gamma"],))
+        conn.commit()
+
+    resp = client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["gamma"]]},
+        headers=HX,
+    )
+
+    notice = json.loads(resp.headers["HX-Trigger"])["scribe-notice"]
+    assert "1 private recording was skipped" in notice
+    assert "openai" in notice
+
+
+def test_nothing_is_reported_when_nothing_was_skipped(client, conn, library):
+    seed_run(conn, library["alpha"])
+    _set_provider(conn, "ollama")
+
+    resp = client.post(
+        "/media/bulk", data={"action": "label", "ids": [library["alpha"]]}, headers=HX
+    )
+
+    assert "HX-Trigger" not in resp.headers
 
 
 def test_bulk_label_of_a_private_recording_is_fine_on_a_local_provider(client, conn, library):

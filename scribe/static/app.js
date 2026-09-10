@@ -25,6 +25,18 @@
     box.textContent = text;
   }
 
+  /*
+    A notice the server sends with the page it just rendered, as an
+    `HX-Trigger` header htmx turns into this event. For the things that are
+    neither an error nor part of the markup: "three private recordings were
+    skipped" belongs on screen, and the table that came back has nowhere to say
+    it. Neutral tone - a skip that was asked for is not a failure.
+  */
+  document.body.addEventListener('scribe-notice', function (event) {
+    var text = event && event.detail;
+    if (typeof text === 'string' && text) { flash(text, ''); }
+  });
+
   function parseJson(text) {
     if (typeof text !== 'string' || !text) { return null; }
     try { return JSON.parse(text); } catch (err) { return null; }
