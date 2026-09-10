@@ -176,9 +176,16 @@ def doctor_context(
     flash: str | None = None,
 ) -> dict:
     """What _doctor_panel.html renders from. ``cpu_checks`` are run here
-    unless the caller already has them."""
+    unless the caller already has them.
+
+    `WEB_SAFE_CHECKS` rather than every CPU check (TASK-022): the accelerator
+    check imports torch to find out whether there is a card, and this runs in
+    the web process, where ADR-001 says a model runtime may never be. What the
+    machine would transcribe on is shown from the last doctor run instead -
+    that job runs in a runner child, where importing torch is the point.
+    """
     return {
-        "cpu_checks": doctor.checks(include_gpu=False) if cpu_checks is None else cpu_checks,
+        "cpu_checks": doctor.web_checks() if cpu_checks is None else cpu_checks,
         "gpu_last": doctor.last_run(conn),
         "gpu_job": pending_doctor_job(conn),
         "flash": flash,

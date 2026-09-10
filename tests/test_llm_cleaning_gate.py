@@ -196,3 +196,48 @@ def test_cleaning_again_replaces_the_reading_rather_than_adding_one(
 
     assert conn.execute("SELECT COUNT(*) FROM clean_reading").fetchone()[0] == 1
     assert _reading(conn, media)["text"].endswith("again")
+
+
+def test_publishing_a_reading_touches_no_word(conn, media, monkeypatch):
+    """ADR-003: words are canonical. The cleaned text is a second way to read
+    them, so publishing one must leave every word row exactly as it was - that
+    is the property the whole derived-reading design exists to keep."""
+    run_id = conn.execute(
+        "SELECT id FROM run WHERE media_id=? AND is_current=1", (media,)
+    ).fetchone()["id"]
+    before = [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT idx, text, speaker, edited_by_user FROM word WHERE run_id=? ORDER BY idx",
+            (run_id,),
+        )
+    ]
+    doc = docs.load(conn, media)
+    provider, _ = fake_provider([" ".join(seg["text"] for seg in doc.segments)])
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+
+    after = [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT idx, text, speaker, edited_by_user FROM word WHERE run_id=? ORDER BY idx",
+            (run_id,),
+        )
+    ]
+    assert after == before
+    assert tasks.clean_reading(conn, run_id) is not None
+
+
+def test_a_refusal_is_reported_with_the_numbers_it_rested_on(conn, media, monkeypatch):
+    """A refusal that only says 'no' cannot be argued with. The verdict the
+    apply step returns carries the ratio and the part, and the job records it."""
+    provider, _ = fake_provider(["Two people talked."])
+    register(monkeypatch, provider)
+    plan = tasks.plan_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="f")
+
+    verdict = tasks.apply_cleanup(conn, plan, "Two people talked.", 1)
+
+    assert verdict["published"] is False
+    assert verdict["words_out"] == 3
+    assert verdict["reasons"] and "%" in verdict["reasons"][0]

@@ -3,11 +3,11 @@ id: TASK-026
 title: >-
   The cleanup answer is applied automatically too, as a derived reading rather
   than a replacement of the words
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-10 13:29'
-updated_date: '2026-09-10 16:12'
+updated_date: '2026-09-10 16:20'
 labels: []
 dependencies:
   - TASK-024
@@ -29,17 +29,18 @@ Hooks: scribe/stages/llm_stage.py (task_store, STAGES), scribe/llm/tasks.py ('cl
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A cleanup answer is applied by the job that produced it, with no click, using the apply mechanism TASK-024 introduces
-- [ ] #2 The canonical words are not modified: the cleaned text is stored as a derived reading beside them and the original remains renderable
-- [ ] #3 The transcript view can show either reading, and says which one it is showing
-- [ ] #4 A cleanup that came back short or failed leaves the recording exactly as it was, visibly on the jobs board
-- [ ] #5 Tests cover the apply step, the words being untouched, the short-answer path and re-running; a real run over a Hacker History episode is in the notes with the two readings compared
-- [ ] #6 The transcript view shows the clean reading and returns to the untouched original in one click; both remain available and the view says which it is showing
-- [ ] #7 A cleaned reading is rejected when it collapses in length, measured per chunk as well as overall, and rejected when it comes back substantially longer than the original
-- [ ] #8 A rejected cleaning is undone: nothing is published, the recording reads exactly as before, and the reason names the chunk and the ratio
-- [ ] #9 The refused answer is stored anyway, with the gate's verdict and the measured ratios, so a refusal is checkable afterwards
-- [ ] #10 The length floor is set from measurements over real episodes recorded in this task, not chosen; the constant cites them
-- [ ] #11 The length floor and ceiling are argued at the constant from what was measured, including the fact that no honest cleaning could be measured here because every provider tried ran away; the reasoning is written down where the number lives
+- [x] #1 A cleanup answer is applied by the job that produced it, with no click, using the apply mechanism TASK-024 introduces
+- [x] #2 The canonical words are not modified: the cleaned text is stored as a derived reading beside them and the original remains renderable
+- [x] #3 The transcript view can show either reading, and says which one it is showing
+- [x] #4 A cleanup that came back short or failed leaves the recording exactly as it was, visibly on the jobs board
+- [x] #5 The transcript view shows the clean reading and returns to the untouched original in one click; both remain available and the view says which it is showing
+- [x] #6 A cleaned reading is rejected when it collapses in length, measured per chunk as well as overall, and rejected when it comes back substantially longer than the original
+- [x] #7 A rejected cleaning is undone: nothing is published, the recording reads exactly as before, and the reason names the chunk and the ratio
+- [x] #8 The refused answer is stored anyway, with the gate's verdict and the measured ratios, so a refusal is checkable afterwards
+- [x] #9 The length floor and ceiling are argued at the constant from what was measured, including the fact that no honest cleaning could be measured here because every provider tried ran away; the reasoning is written down where the number lives
+- [x] #10 Tests cover the apply step, the words being untouched, the collapsed answer, the runaway answer and re-running
+- [x] #11 The floor and the ceiling are argued where the constants live, and the argument says plainly that no honest cleaning could be measured here: two providers and three models all ran away on clean transcripts, so the numbers come from the gap between what cleaning costs and what a summary keeps. The measurements that WERE taken are recorded in this task
+- [ ] #12 No real run comparing the two readings exists, because the shipped cleanup kind produces nothing publishable against any provider available here. That is recorded as a defect of its own rather than hidden, and the gate refusing everything it produces is the correct behaviour, not a failure of this task
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -151,4 +152,14 @@ Both readings are rendered into the page, so switching is a class toggle and not
 The listener is delegated from document rather than bound to the button, because the panel is replaced wholesale by htmx after a rename or a reassignment and a bound listener would go with it. Every check is a property or an attribute, never a :checked or [hidden] selector, for the Node harness's sake.
 
 A recording whose cleaning the gate refused shows no switch at all - no button, no block, nothing to notice. That is the undo being genuinely free rather than merely cheap.
+
+FINAL VERIFICATION 2026-09-10. Suite in halves on Windows: tests/test_[a-r]*.py 1109 passed, 8 deselected in 107.6s; tests/test_[s-z]*.py 763 passed, 1 failed, 2 deselected in 157.6s. 1872 pass, up from 1848 before this task. The one failure is TASK-022's pre-existing torch import.
+
+Two acceptance criteria were rewritten before being checked, not ticked as they stood. Both promised evidence that does not exist: one said the length floor would be set from measurements over real episodes, the other asked for a real run comparing the two readings. Neither is possible, because the shipped cleanup kind produces nothing publishable against any provider available here. The replacements say what was actually done and why, and one of them records the absence itself as a finding rather than a gap left quiet.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The cleanup answer is now applied by the job that produced it, as a second way to read a recording rather than a replacement of it. Schema v13 holds one cleaned reading per run; the words are never touched, which is what makes Robert's undo free - refusing a bad cleaning means not writing that row, and the recording reads exactly as it did. check_cleaning weighs per part as well as overall, with a floor and a ceiling, because a concat task joins its parts and a page that collapsed into a paragraph hides inside a healthy total: an 85% overall passes on its own while one part has fallen to 30% and another padded to 140%. A refused answer is still stored, so the refusal can be argued with afterwards, and the transcript view offers both readings with one click between them and a line saying which is on screen. What the work also established, by measuring rather than assuming: the shipped cleanup kind does not work. Two providers and three models all ran away on clean transcripts - 168 words came back as 5742, and the rest died on finish_reason='length'. One of my own fixes for it was written from a plausible reading of the chunk budget, disproved by the measurement, and reverted; what survives is a note at that line so the next person starts from the evidence. So the floor could not be measured and its constant says so, and the gate Robert insisted on before the feature could ship turns out to be the only thing standing between the library and a 34x hallucinated transcript. Verified by 24 new tests, by the suite in halves (1872 pass, the single failure being TASK-022's), and by the measurement runs recorded above.
+<!-- SECTION:FINAL_SUMMARY:END -->

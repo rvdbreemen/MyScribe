@@ -3,10 +3,11 @@ id: TASK-022
 title: >-
   The settings page imports torch into the web process (ADR-001):
   test_the_web_process_never_imports_a_model_runtime fails on main
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-08 18:49'
-updated_date: '2026-09-10 15:40'
+updated_date: '2026-09-10 16:25'
 labels: []
 dependencies: []
 ordinal: 63000
@@ -43,4 +44,12 @@ The settings page renders a doctor context, so opening /settings imports torch i
 The shape of the fix follows from ADR-001 rather than from the symptom: the runner measures, the web process reports. The accel line the settings page shows should come from a value the doctor JOB wrote (it already runs in a runner child, where importing torch is the whole point), not from asking the question live in the request. Making describe() lazy or guarded would leave the web process one call away from the same violation; moving the measurement to where a model may live removes the possibility.
 
 Not started: this is TASK-022's own work and it is queued behind the feature tasks.
+
+FIXED 2026-09-10. The web process no longer imports torch, and the CLI did not lose anything.
+
+The fix names the real constraint instead of borrowing one that means something else. check_accelerators was in CPU_CHECKS, and the settings page ran the CPU checks in the request - so opening /settings imported torch into the one process ADR-001 says must never hold a model runtime. The obvious move was to shift the check into GPU_CHECKS, but include_gpu means 'do not load a model', and 'python -m scribe.doctor --no-gpu' should still say what the machine would transcribe on: importing torch in the CLI costs a second and breaks nothing. Overloading that flag would have traded one right answer for another.
+
+So WEB_SAFE_CHECKS is its own tuple - the CPU checks minus the accelerator one - and doctor.web_checks() is the function the settings page calls. A function rather than a comprehension at the call site because there was a test seam there: the fake_checks fixture patches doctor.checks, and a comprehension in settings.py bypassed it. Removing a seam to fix a bug is a poor trade; the test told me so immediately, which is what a seam is for.
+
+Evidence. tests/test_web_settings.py 35 passed, including test_the_web_process_never_imports_a_model_runtime, which has failed on this branch and on main since commit 4ed080f. tests/test_doctor*.py + test_web_settings.py together: 48 passed. And the CLI, run for real: 'python -m scribe.doctor --no-gpu' still prints '[OK  ] accel       transcription on cuda, diarization on cuda'.
 <!-- SECTION:NOTES:END -->
