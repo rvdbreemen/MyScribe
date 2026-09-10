@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-10 20:50'
+updated_date: '2026-09-10 22:25'
 labels:
   - llm
   - bug
@@ -30,3 +31,9 @@ The cleanup kind fails with 'no message content (finish_reason=length)' on real 
 - [ ] #2 Cleanup of media 1 and media 12 through run_task succeeds against openrouter/auto and the local Ollama default, each run's served model, reasoning tokens and ratio reported
 - [ ] #3 A model that ignores a reasoning hint still cannot exhaust a chunk's cap on reasoning alone (headroom measured, not assumed)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-11: the same failure hit the speakers kind in the startup sweep - job 154 (media 28) 'openrouter answered with no message content (finish_reason=length)' at max_output_tokens 8000, 1 of the first 14 sweep jobs. So the decision covers speakers too, not only cleanup.
+<!-- SECTION:NOTES:END -->
