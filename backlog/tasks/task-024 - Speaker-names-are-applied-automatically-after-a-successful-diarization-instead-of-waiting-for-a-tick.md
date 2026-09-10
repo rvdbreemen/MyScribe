@@ -7,6 +7,7 @@ status: To Do
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
+updated_date: '2026-09-10 13:28'
 labels: []
 dependencies: []
 type: enhancement
@@ -22,11 +23,39 @@ TASK-014 shipped the 'speakers' LLM kind: it reads a diarized transcript, maps S
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A successful diarization enqueues the 'speakers' analysis by itself, with no click, and a run without diarization enqueues nothing
-- [ ] #2 On a successful analysis the names are written to speaker_label without waiting for a tick; a cluster the model could not place keeps its default 'Speaker N'
-- [ ] #3 A name a person typed is never overwritten by a later automatic run: speaker_label records who chose the name
-- [ ] #4 A re-transcription of the same media inherits the previous run's names when the transcript has not meaningfully changed, and re-analyses when it has
-- [ ] #5 A failed or malformed analysis leaves the recording with its default speaker names and is visible on the jobs board, never silent
-- [ ] #6 The existing tick-to-apply form from TASK-014 still works as the correction path
-- [ ] #7 The privacy pin still holds: a private recording reaches no cloud provider
-- [ ] #8 Tests cover the automatic enqueue, the do-not-overwrite-a-human rule, the inheritance across runs and the failure path; a real run over a Hacker History episode is in the notes, with the names it produced
+- [ ] #2 A name a person typed is never overwritten by a later automatic run: speaker_label records who chose the name
+- [ ] #3 A re-transcription of the same media inherits the previous run's names when the transcript has not meaningfully changed, and re-analyses when it has
+- [ ] #4 A failed or malformed analysis leaves the recording with its default speaker names and is visible on the jobs board, never silent
+- [ ] #5 The existing tick-to-apply form from TASK-014 still works as the correction path
+- [ ] #6 The privacy pin still holds: a private recording reaches no cloud provider
+- [ ] #7 Tests cover the automatic enqueue, the do-not-overwrite-a-human rule, the inheritance across runs and the failure path; a real run over a Hacker History episode is in the notes, with the names it produced
+- [ ] #8 The 'speakers' analysis reports a numeric confidence per cluster, not the word high/medium/low, because a percentage threshold cannot be read off a three-word scale
+- [ ] #9 A name is applied automatically only above SPEAKER_CONFIDENCE_THRESHOLD (90); at or below it the cluster keeps its default 'Speaker N' and the suggestion stays available to accept by hand
+- [ ] #10 Every automatically applied name records which analysis decided it: speaker_label carries the llm_output row and the confidence, so 'why does this say Jeff Man' is answerable from the row
+- [ ] #11 The analysis is readable back from the transcript view for any run that has one, including its evidence quotes and timestamps, and remains readable after the names are applied
+- [ ] #12 A re-run stores a new llm_output row and never overwrites the previous one, so the record of what an earlier model decided survives
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+CLARIFIED BY ROBERT 2026-09-10, and it changes the shape of the task.
+
+Wanted: after register -> transcribe -> diarize, speaker identification ALWAYS runs, and names are applied automatically when confidence on a speaker is above 90%. Not a manual step when it can be automatic. And the analysis must be readable back and stored as an artifact, so accountability is always possible.
+
+Three consequences worth writing down before anyone implements this.
+
+1. THE SCALE DOES NOT FIT THE THRESHOLD. The shipped 'speakers' kind returns confidence as a word - SpeakerGuess.confidence is 'high | medium | low' (scribe/llm/tasks.py, prompts/speakers.md). A 90% gate cannot be read off that, so the schema and the prompt have to ask for a number. Keep the evidence quote and its [m:ss]: it is what makes the decision checkable.
+
+2. A NUMBER FROM A MODEL IS NOT A CALIBRATED PROBABILITY. An LLM answering '95' is not right 95 times in a hundred; it is answering a question about its own certainty, which nothing trained it to answer well. The threshold is therefore a policy dial, not a measurement, and its real safety net is that every applied name stays traceable to the quote it rests on. That is why requirement 3 matters more than requirement 2.
+
+3. THE ARTIFACT STORE ALREADY EXISTS; THE LINK BACK DOES NOT. llm_output already holds content, provider, model, prompt_version, run_id, both token counts and created_at, and tasks.py's rule is one key and never an overwrite - so a re-run adds a row and the earlier decision survives. Three speakers analyses are already stored. What is missing is provenance on the other end: speaker_label is (run_id, cluster_label, display_name, color), so an automatically applied name cannot say which analysis decided it or with what confidence. 'Why does this say Jeff Man' has to be answerable from the row, which means speaker_label needs the llm_output id and the confidence alongside the source column already planned.
+
+THE MISSING LINK, named by Robert 2026-09-10 as 'the coordinator'. Verified: no component of that name exists here - the word appears in this repo only as ADR-002's 'SQLite is the only coordination'. What he is pointing at is real all the same, and it is one gap rather than two.
+
+scribe/stages/llm_stage.py task_store() is the last stage of an llm job. It calls tasks.store_output(), puts the id in ctx.state, emits a job event, reports 1.0 - and ends. NOTHING applies an answer. That is true of 'speakers' (the mapping never reaches speaker_label) and equally of 'cleanup' (the rewritten text never reaches anything). Applying is, in both cases, a POST a person clicks.
+
+So the mechanism this task needs is not speakers-specific: a kind should be able to declare an apply step that the runner performs after the answer is stored, inside the same job, with the same failure reporting. Build it once here, and TASK-026 uses it for cleanup.
+
+Ordering that follows from it: register -> transcribe -> diarize -> (speakers analysis + apply) is one chain, and the apply belongs in the llm job that produced the answer rather than in a fourth job, because a stored answer nobody applied is exactly the state this is meant to end.
+<!-- SECTION:NOTES:END -->

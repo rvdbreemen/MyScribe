@@ -49,7 +49,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from fastapi import APIRouter, Form, HTTPException, Request
 from starlette.responses import FileResponse, RedirectResponse, Response
 
-from scribe import db, glossary, jobs, options, paths
+from scribe import db, glossary, jobs, llm, options, paths
+from scribe.llm import privacy
+from scribe.stages import llm_stage
 from scribe.stages import transcribe
 from scribe.media import proxy_path_for
 from scribe.web import render
@@ -72,7 +74,7 @@ DEFAULT_SORT = "created_at"
 # What a bulk form may ask for, and the job a re-transcribe enqueues. The
 # export action is `scribe.web.exports_ui`'s: the same route, so the row
 # checkboxes and the ids they post serve every action.
-BULK_ACTIONS = ("move", "trash", "restore", "retranscribe", "export")
+BULK_ACTIONS = ("move", "trash", "restore", "retranscribe", "export", "label")
 TRANSCRIBE_JOB_TYPE = "transcribe"
 
 # The most hits a search page shows. bm25 orders them, so the best come first.
@@ -640,6 +642,59 @@ def move_media(
     return _after_change(request, conn)
 
 
+@router.post("/media/{media_id}/labels", include_in_schema=False)
+def add_label(media_id: int, request: Request, name: Annotated[str, Form()] = "") -> Response:
+    """Put a label on a recording, by hand.
+
+    Not subject to `tasks.MAX_NEW_LABELS`. That ceiling exists because an
+    automatic pass cannot be asked whether it is sure, and a model inventing a
+    label per recording turns the vocabulary into a word cloud. A person typing
+    a label has already decided; rationing that would be the app second-
+    guessing its user.
+
+    The label is matched case-insensitively against the vocabulary before it is
+    created, so typing "Hacking" where "hacking" exists joins that word rather
+    than forking it - the same rule `apply_labels` follows, for the same reason.
+    """
+    conn = request.app.state.conn
+    _get_media(conn, media_id)
+    clean = _clean_name(name, "label")
+    now = time.time()
+    with db.LOCK:
+        conn.execute(
+            "INSERT OR IGNORE INTO label(name, created_at) VALUES (?, ?)", (clean, now)
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO media_label(media_id, label_id, source, created_at)"
+            " SELECT ?, id, 'human', ? FROM label WHERE name = ? COLLATE NOCASE",
+            (media_id, now, clean),
+        )
+        conn.commit()
+    return _after_change(request, conn)
+
+
+@router.post("/media/{media_id}/labels/remove", include_in_schema=False)
+def remove_label(media_id: int, request: Request, name: Annotated[str, Form()] = "") -> Response:
+    """Take a label off a recording.
+
+    The link goes; the word stays. Another recording may still carry it, and a
+    label briefly used by nothing is not wrong - `label_counts` simply stops
+    offering it. Removing something that was not there is not an error: the
+    page ends in the state that was asked for either way.
+    """
+    conn = request.app.state.conn
+    _get_media(conn, media_id)
+    clean = _clean_name(name, "label")
+    with db.LOCK:
+        conn.execute(
+            "DELETE FROM media_label WHERE media_id = ? AND label_id ="
+            " (SELECT id FROM label WHERE name = ? COLLATE NOCASE)",
+            (media_id, clean),
+        )
+        conn.commit()
+    return _after_change(request, conn)
+
+
 @router.get("/media/{media_id}/status", include_in_schema=False)
 def media_status(media_id: int, request: Request) -> Response:
     """One row's status cell, for the cell to fetch itself with.
@@ -797,10 +852,66 @@ async def bulk(request: Request) -> Response:
         _set_trashed(conn, ids, True)
     elif action == "restore":
         _set_trashed(conn, ids, False)
+    elif action == "label":
+        _enqueue_labels(conn, ids)
     else:
         for media_id in ids:
             jobs.enqueue(conn, TRANSCRIBE_JOB_TYPE, media_id=media_id, params=_last_params(conn, media_id))
     return _after_change(request, conn)
+
+
+def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> None:
+    """One `labels` pass per selected recording.
+
+    This is how a library that predates the labels pass catches up: tick the
+    rows, choose the action, and each becomes a job like any other - visible on
+    the jobs board, cancellable, and paid for one at a time rather than in a
+    sweep nobody can stop.
+
+    Imported here rather than at the top: `ai_ui` builds on this module, so a
+    top-level import would be a cycle. `exports_ui` is reached the same way.
+
+    A recording with no transcript is skipped rather than queued: the pass
+    reads words, and a job that can only fail is not worth a row on the board.
+    The privacy pin is enforced *before* anything is queued, for the whole
+    selection at once - queueing forty jobs and letting three of them fail on a
+    refusal would spend real money to arrive at an error the check could see
+    first.
+    """
+    from scribe.web import ai_ui
+
+    provider_name = ai_ui.default_provider(conn)
+    model = ai_ui.default_model(conn, provider_name)
+
+    private = [media_id for media_id in ids if privacy.is_private(conn, media_id)]
+    if private and not llm.provider_class(provider_name).is_local:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{len(private)} of the {len(ids)} chosen recordings are pinned private, and "
+                f"{provider_name} is not a local provider. Choose a local provider in Settings, "
+                "or leave the private recordings out of the selection."
+            ),
+        )
+
+    with db.LOCK:
+        has_words = {
+            int(row["media_id"])
+            for row in conn.execute(
+                "SELECT DISTINCT r.media_id AS media_id FROM run r"
+                f" WHERE r.is_current = 1 AND r.media_id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+        }
+    for media_id in ids:
+        if media_id not in has_words:
+            continue
+        jobs.enqueue(
+            conn,
+            llm_stage.JOB_TYPE,
+            media_id,
+            {"media_id": media_id, "kind": "labels", "provider": provider_name, "model": model},
+        )
 
 
 def _parse_ids(values: list) -> list[int]:

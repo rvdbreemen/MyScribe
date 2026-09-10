@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:40'
-updated_date: '2026-09-10 10:54'
+updated_date: '2026-09-10 14:39'
 labels: []
 dependencies: []
 type: feature
@@ -81,4 +81,12 @@ Three of the facet tests were written weak first and caught in review: they asse
 Evidence: tests/test_web_library.py 63 passed (12 new). Broad run over tests/test_web_*.py + test_llm_*.py + test_db.py: 827 passed, 1 failed - test_web_settings.py::test_the_web_process_never_imports_a_model_runtime, the pre-existing TASK-022 failure that reproduces on main.
 
 Still open on this task: adding and removing a label by hand (AC5) and the backfill over the recordings already in the library.
+
+Slices 5 and 6 green: 210 passed over test_web_library, test_web_ai, test_llm_labels and test_db (71 in the library file alone).
+
+Hand editing: POST /media/{id}/labels and /labels/remove. Two rules written into the code rather than left implicit. A person is NOT rationed by MAX_NEW_LABELS - that ceiling exists because an automatic pass cannot be asked whether it is sure, and rationing a typed label would be the app second-guessing its user. And removing a label drops the link but keeps the word, because another recording may carry it and label_counts simply stops offering an unused one.
+
+The backfill is a bulk action rather than a script: tick rows, choose Label, one llm job each - visible on the jobs board, cancellable, and paid for one at a time instead of in a sweep nobody can stop. Two guards. A recording with no transcript is skipped, because the pass reads words and a job that can only fail is not worth a row. And the privacy pin is checked for the WHOLE selection before anything is queued: queueing forty jobs and letting three fail on a refusal would spend real money to reach an error the check can see first. On a local provider a private recording is fine, and a test pins that too.
+
+Honest note on method: the four bulk-action tests were written after the implementation, not before, so they are not red-first evidence the way the rest of this task is. Everything else here was written red first, and two rounds of facet tests had to be strengthened after review because they passed on a page that ignored the filter entirely.
 <!-- SECTION:NOTES:END -->
