@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-10 20:13'
+updated_date: '2026-09-10 23:23'
 labels:
   - dependencies
   - security
@@ -28,3 +29,9 @@ GHSA-rrmf-rvhw-rf47 (torch.jit.script memory corruption, low, local attack only)
 - [ ] #2 The chosen set passes the doctor, a real transcribe+diarize run, and the -m gpu tests on real hardware
 - [ ] #3 Dependabot alerts 3 and 7 (GHSA-rrmf-rvhw-rf47) close
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+What the cu126 route costs, checked 2026-09-11 against PyTorch v2.10.0's own build scripts (.ci/manywheel/build_cuda.sh; .ci/pytorch/windows/cuda126.bat and cuda128.bat) and the installed wheel's torch.cuda.get_arch_list(). cu126 builds carry sm_50/60(/61 on Windows)/70/75/80/86/90 kernels and only compute_90 PTX beyond that - no sm_100 or sm_120, so no native Blackwell (RTX 50-series) kernels. cu128 (what ADR-006 pins) carries 70/75/80/86/90/100/120 and drops Maxwell/Pascal. This machine (RTX 3080, sm_86) is in both lists, so here the move would change nothing measurable; the trade-off is for other machines: cu126 buys Maxwell/Pascal and loses Blackwell. Whether compute_90 PTX JIT-compiles usably on Blackwell was not tested - there is no Blackwell card here. This is the fact a successor to ADR-006 would have to weigh; the decision is a human's.
+<!-- SECTION:NOTES:END -->
