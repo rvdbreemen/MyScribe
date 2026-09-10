@@ -12,7 +12,7 @@ import pytest
 
 from scribe import db
 from scribe.stages import finalize
-from tests.seed import seed_media, seed_run
+from tests.seed import default_words, seed_media, seed_run
 from tests.test_llm_tasks import conn  # noqa: F401  (fixture)
 
 
@@ -142,10 +142,10 @@ def test_a_re_transcription_inherits_the_names_the_previous_run_earned(conn):
     }
 
 
-def test_different_clusters_inherit_nothing(conn):
-    """The names hang off cluster labels. If diarization came back with a
-    different set, the old mapping is not stale - it is meaningless, and
-    copying it would put a real person's name on somebody else's voice."""
+def test_a_cluster_the_old_run_did_not_have_does_not_cost_the_others_their_names(conn):
+    """Diarization found a third voice this time. The two it found before are
+    still under their labels, word for word, so their names still fit; the
+    new one is the pass's question."""
     media_id = seed_media(conn, title="Guide")
     old_run = seed_run(conn, media_id)
     _name(conn, old_run, "SPEAKER_00", "Arthur")
@@ -156,7 +156,108 @@ def test_different_clusters_inherit_nothing(conn):
         conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
     )
 
+    assert _labels(conn, new_run) == {
+        "SPEAKER_00": ("Arthur", "llm"),
+        "SPEAKER_01": ("Ford", "llm"),
+    }
+
+
+def _three_voices():
+    """The default transcript with its last ten words given to a third voice."""
+    words = default_words()
+    for word in words[30:]:
+        word["speaker"] = "SPEAKER_02"
+    return words
+
+
+def test_a_partly_named_run_keeps_the_names_it_had(conn):
+    """The pass names the clusters it is sure of and leaves the rest - media 3
+    has Danny and Nancy and an unnamed third. Measured 2026-09-11: 12 of the
+    53 named recordings are like that, and a re-transcription dropped every
+    name on them because the named labels were not the whole set."""
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id, words=_three_voices())
+    _name(conn, old_run, "SPEAKER_00", "Danny")
+    _name(conn, old_run, "SPEAKER_02", "Nancy", source="human")
+    new_run = seed_run(conn, media_id, words=_three_voices())
+    _set_provider(conn, "ollama")
+    clusters = ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
+
+    named = finalize.inherit_speaker_names(conn, media_id, new_run, clusters)
+
+    assert named == ["SPEAKER_00", "SPEAKER_02"]
+    assert _labels(conn, new_run) == {
+        "SPEAKER_00": ("Danny", "llm"),
+        "SPEAKER_02": ("Nancy", "human"),
+    }
+    assert finalize.queue_speaker_pass(conn, media_id, new_run, clusters) is not None
+
+
+def test_a_label_that_swallowed_another_voice_loses_its_name(conn):
+    """Two old clusters merged into one new one. Every word Ford had is still
+    under SPEAKER_01, but so are Zaphod's now: the label kept its voice and
+    took somebody else's, and it is not Ford's any more."""
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id, words=_three_voices())
+    _name(conn, old_run, "SPEAKER_00", "Arthur")
+    _name(conn, old_run, "SPEAKER_01", "Ford")
+    _name(conn, old_run, "SPEAKER_02", "Zaphod")
+    new_run = seed_run(conn, media_id)  # words 20-39 all SPEAKER_01
+
+    named = finalize.inherit_speaker_names(
+        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"]
+    )
+
+    assert named == ["SPEAKER_00"]
+    assert _labels(conn, new_run) == {"SPEAKER_00": ("Arthur", "llm")}
+
+
+def _swapped_voices():
+    """The default transcript with the two cluster labels traded: the same
+    set of labels, each now on the other person's words."""
+    swap = {"SPEAKER_00": "SPEAKER_01", "SPEAKER_01": "SPEAKER_00"}
+    return [{**word, "speaker": swap[word["speaker"]]} for word in default_words()]
+
+
+def test_the_same_labels_on_other_voices_inherit_nothing(conn):
+    """A label set that matches is not the same speakers. Diarization numbers
+    its clusters, and a new pipeline or model can number them differently: then
+    SPEAKER_00 is the other voice, and copying its name puts a person's name -
+    maybe one a person typed - on somebody else's words."""
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id)
+    _name(conn, old_run, "SPEAKER_00", "Arthur")
+    _name(conn, old_run, "SPEAKER_01", "Ford", source="human")
+    new_run = seed_run(conn, media_id, words=_swapped_voices())
+
+    named = finalize.inherit_speaker_names(
+        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"]
+    )
+
+    assert named == []
     assert _labels(conn, new_run) == {}
+
+
+def test_only_the_label_whose_voice_moved_loses_its_name(conn):
+    """Three speakers, two of them traded: the one that stayed keeps its
+    name, the two that moved get asked about again."""
+    words = _three_voices()
+    swap = {"SPEAKER_00": "SPEAKER_01", "SPEAKER_01": "SPEAKER_00", "SPEAKER_02": "SPEAKER_02"}
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id, words=words)
+    _name(conn, old_run, "SPEAKER_00", "Arthur")
+    _name(conn, old_run, "SPEAKER_01", "Ford")
+    _name(conn, old_run, "SPEAKER_02", "Zaphod", source="human")
+    new_run = seed_run(
+        conn, media_id, words=[{**w, "speaker": swap[w["speaker"]]} for w in words]
+    )
+
+    named = finalize.inherit_speaker_names(
+        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
+    )
+
+    assert named == ["SPEAKER_02"]
+    assert _labels(conn, new_run) == {"SPEAKER_02": ("Zaphod", "human")}
 
 
 def test_a_fully_inherited_run_does_not_pay_for_the_pass_again(conn):

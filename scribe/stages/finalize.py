@@ -34,6 +34,7 @@ outcome is recorded in the stage's event instead of raised.
 
 from __future__ import annotations
 
+import bisect
 import sqlite3
 import time
 from typing import TYPE_CHECKING, Sequence
@@ -197,13 +198,31 @@ def inherit_speaker_names(
     work out again names that were already right, and should certainly not throw
     away one a person typed.
 
-    The condition is the cluster set, not the text. WHYcast compares a
-    transcript fingerprint because its names live in a file beside the
-    transcript; here they hang off cluster labels, and if diarization came back
-    with a different set the old mapping is not stale - it is meaningless.
-    Copying it then would put a real person's name on somebody else's voice,
-    which is worse than asking again. So: same labels, inherit; anything else,
-    inherit nothing and let the pass ask.
+    The condition is the voice behind each label, not the text. WHYcast
+    compares a transcript fingerprint because its names live in a file beside
+    the transcript; here they hang off cluster labels, and a label is only a
+    number diarization handed out. Copying a name onto a label that is now
+    somebody else's voice would put a real person's name on the wrong words,
+    which is worse than asking again.
+
+    So a name carries over when its label covers the same words in both runs,
+    judged per label (`_voices_kept`): most of the old run's words under it
+    are under it again, and most of the new run's words under it were under
+    it before. The first catches a renumbering - the set is still
+    {SPEAKER_00, SPEAKER_01} but each is now the other voice. The second
+    catches a merge - two old clusters became one new one, which kept all of
+    one name's words and is still not that person.
+
+    Until 2026-09-11 the condition was "the named labels are exactly the new
+    cluster set". That let a renumbering through, and it dropped every name
+    on a run where the pass had named some clusters and not others: 12 of the
+    53 named recordings then, among them media 3's Danny and Nancy. Measured
+    the same day, 11 re-transcribed recordings, 26 labels: the lowest share
+    was 98.9 % (media 46), so on the pipeline as it stands the voice check
+    refuses nothing; it is there for the day a pipeline change renumbers them.
+
+    Labels this run no longer has, and labels whose voice moved, get nothing,
+    and the pass asks about them - it never overwrites a name a person typed.
 
     Returns the clusters that were named, so the caller can tell whether there
     is still a question worth paying for.
@@ -226,7 +245,13 @@ def inherit_speaker_names(
                 (previous["id"],),
             )
         }
-        if not old or set(old) != set(clusters):
+        kept = _voices_kept(conn, previous["id"], run_id)
+        old = {
+            cluster: row
+            for cluster, row in old.items()
+            if cluster in clusters and kept.get(cluster, 0.0) >= VOICE_KEPT
+        }
+        if not old:
             return []
 
         for cluster, row in old.items():
@@ -244,6 +269,73 @@ def inherit_speaker_names(
             )
         conn.commit()
     return sorted(old)
+
+
+# A name is inherited only if its label covers the same words in both runs to
+# at least this share, both ways (`_voices_kept`). Measured labels that did not
+# move scored 0.989-1.000; two traded labels score near 0. The margin is for
+# re-transcription moving word boundaries, not for doubt about which regime a
+# label is in.
+VOICE_KEPT = 0.8
+
+# How far apart two runs' words may be and still count as the same moment.
+# Beyond it the new run heard nothing there, and the word is not evidence
+# either way.
+_SAME_MOMENT_SECONDS = 1.0
+
+
+def _voices_kept(conn: sqlite3.Connection, old_run: int, new_run: int) -> dict[str, float]:
+    """Per label, how much of it is the same voice in both runs.
+
+    The smaller of two shares. Of the old run's words under the label, how
+    many the new run puts under it too - that catches a label that moved to
+    another voice. And of the new run's words under it, how many the old run
+    had there - that catches a label that swallowed somebody else's: two old
+    clusters merged into one new one keep all of one name's words and still
+    are not that person. A label missing from either run is absent, which
+    `inherit_speaker_names` reads as 0. Caller holds `db.LOCK`.
+    """
+    old = _labelled_words(conn, old_run)
+    new = _labelled_words(conn, new_run)
+    there = _same_label_share(old, new)
+    back = _same_label_share(new, old)
+    return {label: min(share, back[label]) for label, share in there.items() if label in back}
+
+
+def _labelled_words(conn: sqlite3.Connection, run_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT start, end, speaker FROM word WHERE run_id=? AND speaker IS NOT NULL"
+        " ORDER BY start",
+        (run_id,),
+    ).fetchall()
+
+
+def _same_label_share(words: list[sqlite3.Row], other: list[sqlite3.Row]) -> dict[str, float]:
+    """Per label in `words`, the share whose nearest word in `other` has it too.
+
+    Nearest to the word's midpoint; a word with nothing in `other` within
+    `_SAME_MOMENT_SECONDS` is left out - the other run heard nothing there,
+    which says nothing about who spoke.
+    """
+    if not other:
+        return {}
+    starts = [float(word["start"]) for word in other]
+
+    def gap(word: sqlite3.Row, mid: float) -> float:
+        return max(float(word["start"]) - mid, mid - float(word["end"]), 0.0)
+
+    same: dict[str, int] = {}
+    seen: dict[str, int] = {}
+    for word in words:
+        mid = (float(word["start"]) + float(word["end"])) / 2
+        i = bisect.bisect_right(starts, mid)
+        near = min((other[j] for j in (i - 1, i) if 0 <= j < len(other)), key=lambda w: gap(w, mid))
+        if gap(near, mid) > _SAME_MOMENT_SECONDS:
+            continue
+        label = str(word["speaker"])
+        seen[label] = seen.get(label, 0) + 1
+        same[label] = same.get(label, 0) + (str(near["speaker"]) == label)
+    return {label: same[label] / seen[label] for label in seen}
 
 
 def queue_speaker_pass(
