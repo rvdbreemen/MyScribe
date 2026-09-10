@@ -38,7 +38,7 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Sequence
 
-from scribe import db, jobs, paths
+from scribe import applog, db, jobs, paths
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
     from scribe.runner import RunnerContext
@@ -124,6 +124,68 @@ def run(ctx: "RunnerContext") -> None:
         jobs.emit(ctx.conn, ctx.job["id"], "speakers-queued", job_id_queued=speaker_job)
 
     ctx.report(1.0)
+
+
+def sweep_speaker_passes(conn: sqlite3.Connection) -> list[int]:
+    """Ask who the speakers are for recordings that were never asked.
+
+    TASK-024 queues the pass as a recording finishes, which leaves everything
+    transcribed before that feature existed sitting with "Speaker 1" for ever.
+    Measured on this library 2026-09-10: sixty runs carried diarized clusters
+    and three carried names.
+
+    Four conditions, and each rules out a way this could be wrong.
+
+    * **Clusters exist.** No diarization means nothing to identify; there is no
+      question to pay for.
+    * **It never ran.** One stored `speakers` answer for this recording is
+      enough - even a refused or unhelpful one. Asking again is a decision, not
+      a default, and this sweep runs at every start.
+    * **Nothing is already queued.** Otherwise every restart before the queue
+      drains adds another copy of the same question.
+    * **Not private.** A recording pinned private is never sent to an external
+      service by something a person did not ask for, and a startup sweep is the
+      least deliberate act there is. `queue_speaker_pass` refuses it again on
+      the provider check; this simply does not offer it.
+
+    No ceiling on how many it queues, unlike a feed poll: "never asked before"
+    bounds itself. It is a one-off catching-up, and the second run finds
+    nothing.
+    """
+    with db.LOCK:
+        rows = conn.execute(
+            """
+            SELECT m.id AS media_id, r.id AS run_id
+              FROM media m
+              JOIN run r ON r.media_id = m.id AND r.is_current = 1
+             WHERE m.trashed_at IS NULL
+               AND m.private = 0
+               AND EXISTS (SELECT 1 FROM word w
+                            WHERE w.run_id = r.id AND w.speaker IS NOT NULL)
+               AND NOT EXISTS (SELECT 1 FROM llm_output o
+                                WHERE o.media_id = m.id AND o.kind = 'speakers')
+               AND NOT EXISTS (SELECT 1 FROM job j
+                                WHERE j.media_id = m.id AND j.type = 'llm'
+                                  AND j.status IN ('queued', 'running'))
+             ORDER BY m.id
+            """
+        ).fetchall()
+
+    queued: list[int] = []
+    for row in rows:
+        clusters = [
+            str(word["speaker"])
+            for word in conn.execute(
+                "SELECT DISTINCT speaker FROM word WHERE run_id=? AND speaker IS NOT NULL",
+                (row["run_id"],),
+            )
+        ]
+        job_id = queue_speaker_pass(conn, int(row["media_id"]), int(row["run_id"]), clusters)
+        if job_id is not None:
+            queued.append(job_id)
+    if queued:
+        applog.log("speakers.sweep", recordings=len(queued), first=queued[0], last=queued[-1])
+    return queued
 
 
 def inherit_speaker_names(

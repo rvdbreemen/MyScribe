@@ -195,3 +195,110 @@ def test_the_first_run_of_a_recording_inherits_nothing_and_asks(conn):
 
     assert _labels(conn, run_id) == {}
     assert finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00"]) is not None
+
+
+# --- catching up recordings that were never asked (TASK-024, Robert 2026-09-10) ----
+
+
+def _diarized(conn, title="Guide", *, private=False, clusters=("SPEAKER_00", "SPEAKER_01")):
+    """A recording with a current run whose words carry cluster labels."""
+    media_id = seed_media(conn, title=title)
+    run_id = seed_run(conn, media_id)
+    with db.LOCK:
+        for i, cluster in enumerate(clusters):
+            conn.execute(
+                "UPDATE word SET speaker=? WHERE run_id=? AND idx=?", (cluster, run_id, i)
+            )
+        if private:
+            conn.execute("UPDATE media SET private=1 WHERE id=?", (media_id,))
+        conn.commit()
+    return media_id, run_id
+
+
+def _analysed(conn, media_id):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+            " content, created_at) VALUES (?, 'speakers', 'p', 'm', '1', '{}', 0.0)",
+            (media_id,),
+        )
+        conn.commit()
+
+
+def test_the_sweep_asks_about_a_recording_that_was_never_asked(conn):
+    """Sixty runs in this library carried clusters and three carried names,
+    because the pass only existed for recordings finished after it did."""
+    media_id, _ = _diarized(conn)
+    _set_provider(conn, "ollama")
+
+    queued = finalize.sweep_speaker_passes(conn)
+
+    assert len(queued) == 1
+    assert _queued(conn)[0]["media_id"] == media_id
+
+
+def test_the_sweep_leaves_a_recording_that_was_already_asked(conn):
+    """One stored answer is enough, even a refused one. Asking again is a
+    decision, and this runs at every start."""
+    media_id, _ = _diarized(conn)
+    _analysed(conn, media_id)
+    _set_provider(conn, "ollama")
+
+    assert finalize.sweep_speaker_passes(conn) == []
+
+
+def test_the_sweep_never_offers_a_private_recording_to_an_external_provider(conn):
+    """A startup sweep is the least deliberate act there is."""
+    _diarized(conn, private=True)
+    _set_provider(conn, "openai")
+
+    assert finalize.sweep_speaker_passes(conn) == []
+    assert _queued(conn) == []
+
+
+def test_a_private_recording_is_skipped_even_on_a_local_provider(conn):
+    """Robert's instruction is unconditional: only recordings that are NOT
+    private. A local provider would be harmless - nothing leaves the machine -
+    but "harmless" is a judgement about privacy that belongs to the person who
+    pinned the recording, not to a sweep that runs while nobody is watching.
+
+    The consequence is real and worth knowing: a private recording is never
+    named automatically, on any provider. The transcript page's own Suggest
+    names button still works, because that is somebody deciding."""
+    _diarized(conn, private=True)
+    _set_provider(conn, "ollama")
+
+    assert finalize.sweep_speaker_passes(conn) == []
+
+
+def test_a_recording_with_no_diarization_has_nothing_to_ask_about(conn):
+    media_id = seed_media(conn, title="Mono")
+    run_id = seed_run(conn, media_id)
+    with db.LOCK:
+        # seed_run's words carry cluster labels; a recording transcribed with
+        # diarization off has none, and that is the case under test.
+        conn.execute("UPDATE word SET speaker=NULL WHERE run_id=?", (run_id,))
+        conn.commit()
+    _set_provider(conn, "ollama")
+
+    assert finalize.sweep_speaker_passes(conn) == []
+
+
+def test_a_second_sweep_finds_nothing_because_the_first_left_a_job(conn):
+    """Otherwise every restart before the queue drains adds another copy of
+    the same question."""
+    _diarized(conn)
+    _set_provider(conn, "ollama")
+    first = finalize.sweep_speaker_passes(conn)
+
+    assert first and finalize.sweep_speaker_passes(conn) == []
+
+
+def test_a_trashed_recording_is_left_alone(conn):
+    media_id, _ = _diarized(conn)
+    with db.LOCK:
+        conn.execute("UPDATE media SET trashed_at=1.0 WHERE id=?", (media_id,))
+        conn.commit()
+    _set_provider(conn, "ollama")
+
+    assert finalize.sweep_speaker_passes(conn) == []

@@ -37,9 +37,9 @@ from starlette.concurrency import run_in_threadpool
 
 import scribe
 from scribe import applog, db, fsbrowse, guard, jobs, media, paths, supervisor, web
-from scribe.ingest import recording, watching
+from scribe.ingest import feeds, recording, watching
 from scribe.options import OPTION_FIELDS, parse_options
-from scribe.stages import transcribe
+from scribe.stages import finalize, transcribe
 
 # The form field carrying the upload, and the job type ingest queues.
 _UPLOAD_FIELD = "file"
@@ -216,6 +216,11 @@ def create_app(
         supervisor.reconcile(conn)
         supervisor.sweep_stderr()
         recording.sweep(conn)
+        # And one question about what this app could not do yet when those
+        # recordings were made: which of them still say "Speaker 1" because
+        # the identification pass did not exist. It queues a job each and
+        # finds nothing the second time (TASK-024).
+        finalize.sweep_speaker_passes(conn)
         app.state.conn = conn
         sup: supervisor.Supervisor | None = None
         if start_supervisor:
@@ -227,9 +232,20 @@ def create_app(
             watcher = watching.Watcher(db_path or paths.DB_PATH)
             watcher.start()
         app.state.watcher = watcher
+        # The feeds, on a thread of their own for the reason ADR-008 gives:
+        # the supervisor's tick is claim-a-job and nothing else, and a slow
+        # feed there would stall the queue. It follows the watcher's switch
+        # because both are "the app looks for work by itself".
+        feed_watcher: feeds.FeedWatcher | None = None
+        if start_watcher:
+            feed_watcher = feeds.FeedWatcher(db_path or paths.DB_PATH)
+            feed_watcher.start()
+        app.state.feed_watcher = feed_watcher
         try:
             yield
         finally:
+            if feed_watcher is not None:
+                feed_watcher.stop()
             if watcher is not None:
                 watcher.stop()
             if sup is not None:

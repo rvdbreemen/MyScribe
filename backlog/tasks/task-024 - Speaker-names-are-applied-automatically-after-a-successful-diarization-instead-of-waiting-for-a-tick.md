@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
-updated_date: '2026-09-10 15:42'
+updated_date: '2026-09-10 16:40'
 labels: []
 dependencies: []
 type: enhancement
@@ -124,6 +124,14 @@ Also confirmed on real data: apply wrote source='llm', the confidence and the ll
 FINAL VERIFICATION 2026-09-10. Suite in halves on Windows: tests/test_[a-r]*.py 1090 passed, 8 deselected in 139.4s; tests/test_[s-z]*.py 758 passed, 1 failed, 2 deselected in 198.4s. 1848 pass, up from 1816 before this task. The one failure is TASK-022's pre-existing torch import, which reproduces on main.
 
 One acceptance criterion was rewritten before being checked, for the same reason two were on TASK-023: #3 promised inheritance 'when the transcript has not meaningfully changed', which is WHYcast's fingerprint rule, and what was built keys on the cluster set instead. That is a deliberate difference - these names hang off cluster labels, so a different set does not make the old mapping stale, it makes it meaningless, and copying it would put a real person's name on somebody else's voice. Ticking the original would have recorded a claim about a mechanism that is not there.
+
+REOPENED BRIEFLY 2026-09-10 for a follow-on Robert asked for after the task closed: when the speaker pass never ran for a recording, run it automatically - but only if it never ran before for that file, and only if the file is not private.
+
+finalize.sweep_speaker_passes() does it at startup, beside supervisor.reconcile and recording.sweep, which is where this app already asks 'what did a previous life leave behind'. Four conditions, each ruling out a way it could be wrong: clusters exist (no diarization means no question), no speakers answer is stored for that recording (one is enough, even a refused one - asking again is a decision), nothing is already queued for it (otherwise every restart before the queue drains adds another copy), and the recording is not private.
+
+No ceiling, unlike a feed poll. 'Never asked before' bounds itself: it is a one-off catching-up and the second run finds nothing.
+
+ONE PLACE I FOLLOWED THE INSTRUCTION OVER MY OWN EARLIER RULE, and it is worth knowing. Robert's wording is unconditional - only recordings that are NOT private. The rule established earlier for bulk actions had an exception: on a LOCAL provider nothing leaves the machine, so a private recording was fine there. I wrote a test asserting that exception, it failed against the literal instruction, and I changed the test rather than the code. The consequence: a private recording is never named automatically, on any provider, and the transcript page's own button remains the way to do it - which is a person deciding. Say the word if the local exception is wanted here too; it is one clause.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

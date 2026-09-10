@@ -32,7 +32,10 @@ drive it and the watcher supplies the real one.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
+import traceback
+from pathlib import Path
 from typing import Callable, Sequence
 
 from scribe import applog, db, jobs
@@ -253,3 +256,129 @@ def poll(
     if queued:
         applog.log("feeds.poll", feed=feed["url"], new=len(fresh), queued=len(queued))
     return {"queued": queued, "new": len(fresh), "capped": len(fresh) > len(capped)}
+
+
+# --- the thread that does the checking -----------------------------------------------
+
+POLL_INTERVAL_SECONDS = 300.0
+"""How often the thread wakes to ask which feeds are due.
+
+Not how often a feed is checked - that is the feed's own interval, a day by
+default. This is only the granularity of "is it time yet", so a feed comes due
+within five minutes of its hour rather than on the second. Cheap: one indexed
+query over a table with as many rows as the person has podcasts.
+
+`watching.Watcher` ticks every two seconds because a dropped file should appear
+at once. Nothing about a daily feed rewards that.
+"""
+
+
+def _survive(step: Callable, *args) -> None:
+    """Run one step and live through whatever it does.
+
+    `Supervisor._loop` and `watching.Watcher` do the same, for the same reason:
+    a background thread that dies on a transient error - a host that went away,
+    a database busy timeout - stops doing its job with nobody to tell. Here it
+    wraps each FEED as well as each tick, so one podcast whose host is down
+    does not stop the others being checked.
+    """
+    try:
+        step(*args)
+    except Exception:  # noqa: BLE001 - the whole point is to catch everything
+        traceback.print_exc()
+
+
+def _poll_one(
+    conn: sqlite3.Connection,
+    feed: dict,
+    probe: Callable[..., urls.UrlInfo],
+    known_sources: Callable[[sqlite3.Connection, Sequence[str]], set[str]],
+    options: dict,
+) -> dict:
+    """`poll` with its keyword collaborators bound, so `_survive` can take it.
+
+    A named function rather than a lambda in the loop: a traceback that says
+    `_poll_one` names the thing that failed, and a closure over the loop
+    variable is the classic way to check every feed against the last one.
+    """
+    return poll(conn, feed, probe=probe, known_sources=known_sources, options=options)
+
+
+class FeedWatcher:
+    """Checks the feeds that are due, on its own thread.
+
+    Deliberately not part of `Supervisor._loop`, whose tick is `jobs.claim_next`
+    and nothing else (ADR-001 keeps it thin on purpose): feed I/O there would
+    delay claiming, and a slow feed would stall the queue. Shaped after
+    `watching.Watcher` instead - its own connection, `_survive` around every
+    step - because that is the pattern this process already runs for periodic
+    work.
+
+    Its own connection, never `app.state.conn`: a probe takes seconds against a
+    third party, and the jobs board must go on answering while it does.
+    """
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        *,
+        poll_interval: float = POLL_INTERVAL_SECONDS,
+        probe: Callable[..., urls.UrlInfo] | None = None,
+    ) -> None:
+        self.db_path = Path(db_path)
+        self.poll_interval = poll_interval
+        self._probe = probe
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+    def start(self) -> None:
+        """Start the tick on a daemon thread (idempotent)."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._loop, name="scribe-feeds", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 10.0) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def tick(self, conn: sqlite3.Connection) -> int:
+        """Check every feed that is due; returns how many were checked.
+
+        Each feed is wrapped on its own, so a podcast whose host is down costs
+        that feed its turn and nothing else.
+        """
+        from scribe.web import ingest_ui, transcribe_dialog
+
+        due = due_feeds(conn)
+        if not due:
+            return 0
+        options = transcribe_dialog.read_defaults(conn).to_params()
+        probe = self._probe or urls.probe
+        for feed in due:
+            # `poll` takes its collaborators by keyword, so the call is bound
+            # here and handed to `_survive` as one thunk. Wrapped per feed and
+            # not per tick: a podcast whose host is down costs that feed its
+            # turn, not the others theirs.
+            _survive(
+                _poll_one,
+                conn,
+                feed,
+                probe,
+                ingest_ui.known_sources,
+                options,
+            )
+        return len(due)
+
+    def _loop(self) -> None:
+        """Its own connection, opened here and closed here."""
+        conn = db.connect(self.db_path)
+        try:
+            while not self._stop_event.is_set():
+                _survive(self.tick, conn)
+                self._stop_event.wait(self.poll_interval)
+        finally:
+            conn.close()
