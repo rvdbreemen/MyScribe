@@ -89,6 +89,10 @@ directory before CTranslate2 loads.
   `SCRIBE_DATA_DIR` elsewhere to move it.
 - `python -m scribe --port 4299 --no-supervisor --no-browser` runs a second
   instance for poking at without disturbing the one you use.
+- `scripts/start.ps1` and `scripts/start.sh` start the app with the venv's
+  python, refuse a second instance on a port that already answers, and take
+  `--detached` (`-Detached`) for a run that outlives the terminal - which is
+  what a long transcribe queue wants.
 
 ## Check that it works
 
