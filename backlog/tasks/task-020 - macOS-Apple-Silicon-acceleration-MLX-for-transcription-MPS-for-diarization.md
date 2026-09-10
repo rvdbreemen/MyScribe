@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-06 22:36'
-updated_date: '2026-09-06 22:45'
+updated_date: '2026-09-10 17:03'
 labels: []
 dependencies: []
 ordinal: 61000
@@ -37,6 +37,24 @@ Robert asked (2026-09-07) for an efficient macOS path, to be run on Jim's MacBoo
 
 <!-- SECTION:NOTES:BEGIN -->
 Built and tested blind (no Mac here). Windows: test_stage_transcribe_mlx 10, transcribe+doctor 87 passed. Linux (WSL): mlx+transcribe+diarize+doctor 156 passed; doctor shows 'accel transcription on cuda, diarization on cuda'. Open: AC 6, the run on Jim's MacBook. Instructions for that run are in the task's final comment.
+
+CHECKED 2026-09-10, because this branch touched the code AC4 covers.
+
+TASK-022 moved check_accelerators out of the checks the WEB process runs (it imports torch, which ADR-001 forbids there) into a WEB_SAFE_CHECKS split, reached through doctor.web_checks(). accel.describe() and check_accelerators themselves were not changed, and the CLI still runs the full CPU set - so the doctor's accel line is intact. Verified here: 'python -m scribe.doctor --no-gpu' prints '[OK  ] accel       transcription on cuda, diarization on cuda', and tests/test_stage_transcribe_mlx.py + tests/test_doctor.py pass 23. AC1-AC5 still hold after a day of changes.
+
+ONE THING THE ACCEPTANCE RUN SHOULD NOW SAY. The comment's instructions clone the repo's default branch, which is right for this task - the mlx/mps work is on main (82f3033) and main is the simpler thing to measure. But feat/feed-episode-import is 27 commits ahead of main today, and one of them changes where the accel check runs. So the evidence pasted here should name the revision it came from ('git rev-parse --short HEAD' beside the doctor output). Without that, a doctor line from main and one from the branch are two different code paths wearing the same words.
+
+AC6 IS NOT DOABLE FROM HERE, and this is a statement about the criterion rather than about effort. It asks for doctor output and a transcribed file with timings from a real Apple Silicon machine. There is no Mac on this machine and no way to produce that evidence; the README says as much about the whole macOS path, and calls the first doctor run on one the acceptance test. Checking it would record a measurement nobody took.
+
+The task therefore stays In Progress deliberately. That is the honest terminal state for work whose only open criterion is a measurement on hardware that is not here - not Done, and not a checked box resting on an argument.
+
+scripts/mac-acceptance.sh added 2026-09-10: AC6's run as one command instead of a paragraph in a comment.
+
+It prints the revision and branch it ran against (a doctor line from main and one from a feature branch can be two code paths wearing the same words), says plainly when it is not on macOS, reads accel.transcription_backend() and diarization_device() before the doctor so a wrong answer is visible without reading the doctor's prose, runs the doctor with the model load, and - given an audio file - ingests it and queues a diarized transcribe job, naming the jobs page whose events go into this task.
+
+It installs nothing and changes no setting. A missing venv or a red doctor line stops it with the install steps rather than a guess, because that line IS the bug report.
+
+Exercised here on Windows: bash -n clean, and the run correctly reported 'this is not macOS, so the numbers below are not the acceptance' and stopped at the missing Unix venv. Its happy path is untested for the same reason AC6 is open - there is no Mac here.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
