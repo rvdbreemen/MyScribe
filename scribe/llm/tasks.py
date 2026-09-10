@@ -382,6 +382,21 @@ TASKS: dict[str, TaskSpec] = {
             "the quote and its time"
         ),
         with_speakers=True,
+        # Measured against openrouter/auto on 2026-09-10, over five Hacker
+        # History episodes: the answer itself is tiny - two or three names with
+        # a quote each - but the thinking in front of it is not, and it varies
+        # by more than a factor of ten depending on which model auto picks.
+        # 347 completion tokens on one episode, 3779 on another with the same
+        # two clusters, and two outright failures at the 4000 default:
+        # "openrouter answered with no message content (finish_reason=
+        # 'length')". A three-cluster episode was one of them.
+        #
+        # Twice the default, for the reason DEFAULT_MAX_OUTPUT_TOKENS gives:
+        # this is a cap, not a spend. A cloud provider bills what was
+        # generated, so carrying room for a model that thinks costs a model
+        # that does not exactly nothing - while the failure it prevents costs
+        # the whole call and leaves the speakers unnamed.
+        max_output_tokens=8000,
     ),
     "labels": TaskSpec(
         kind="labels",

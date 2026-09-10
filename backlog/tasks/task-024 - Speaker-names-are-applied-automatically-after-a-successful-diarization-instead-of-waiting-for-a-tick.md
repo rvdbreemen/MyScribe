@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-10 04:41'
-updated_date: '2026-09-10 15:19'
+updated_date: '2026-09-10 15:32'
 labels: []
 dependencies: []
 type: enhancement
@@ -104,4 +104,20 @@ Inheritance keys on the CLUSTER SET, not on a transcript fingerprint. WHYcast co
 A DEFECT FOUND WHILE WIRING THE READBACK, not by a test asking for it. transcript.py's _upsert_label wrote display_name and colour and left  alone. On the insert path that is harmless - the column defaults to 'human'. On the UPDATE path it was the whole rule failing quietly: rename a speaker the model had named and the row still said 'llm', because that is who wrote it first, so the next automatic pass was free to overwrite the name a person had just typed. Fixed to claim ownership on both paths and to clear llm_output_id and confidence, because 'which analysis chose this' has no honest answer once somebody has typed over it. Two tests pin it.
 
 Readback: run_speakers now carries source, analysis_id and confidence per cluster, so the panel can say where a name came from rather than the answer stopping at the table.
+
+REAL RUN 2026-09-10 against openrouter/auto, five Hacker History episodes. This is the run that answers the question the unit tests cannot: does a model's self-reported confidence discriminate, or does it say 99 for everything?
+
+Eleven guesses over five episodes. Ten cleared 90 and were applied; one was held.
+
+  media 10 Michael Lenz     100.0 Josh Bressers (host)   100.0 Michael Lenz (guest)
+  media 11 Jeff Man          99.0 Josh Bressers           97.0 Jeff Man
+  media 12 Bill Bernard      99.0 Josh Bressers           99.0 Bill Bernard
+  media 13 Rebecca Jones     80.0 Josh Bressers HELD      98.0 Josh Bressers   97.0 Rebecca Jones
+  media 14 Pyr0             100.0 Luke McCormie          100.0 Josh Bressers
+
+MEDIA 13 IS THE EVIDENCE THAT MATTERS. Diarization split one voice across SPEAKER_00 and SPEAKER_01 and the model recognised both as the host - but rated the weaker one 80 and the stronger 98. The threshold held the weak one back and let the strong one through. The gate does work on real data; it is not a rubber stamp. Every applied name also carried the quote it rested on ('My name is Josh Bressers, your guide through this tale of hacker history.' at [0:07]).
+
+A DEFECT THE RUN FOUND, fixed and re-verified. Two of the five episodes failed outright: 'openrouter answered with no message content (finish_reason=length)'. The speakers kind used DEFAULT_MAX_OUTPUT_TOKENS (4000) and the answer is tiny - two or three names - but the THINKING in front of it varies by more than a factor of ten depending on which model auto picks: 347 completion tokens on media 12, 3779 on media 10 with the same two clusters. Media 10 was a near miss at 3779/4000; media 13 (three clusters) and media 14 hit the wall. Raised to 8000 with the measurement cited at the constant, and both previously failing episodes then succeeded at 3849 and 3391 completion tokens. It is a cap, not a spend - a cloud provider bills what was generated - so the room costs a terse model nothing while the failure it prevents costs the whole call.
+
+Also confirmed on real data: apply wrote source='llm', the confidence and the llm_output_id on every row, so each name points back at the analysis that chose it.
 <!-- SECTION:NOTES:END -->
