@@ -285,10 +285,14 @@ def queue_position(conn: sqlite3.Connection, job_id: int) -> int | None:
         ).fetchone()
         if row is None or row["status"] != "queued":
             return None
+        # Named, not ?1/?2: Python 3.12.0-3.12.3 (Ubuntu 24.04's python3)
+        # warns that numbered placeholders bound from a tuple will break in
+        # 3.14. They do not - later 3.12s and 3.14 take them - but a dict is
+        # quiet everywhere.
         ahead = conn.execute(
             "SELECT COUNT(*) FROM job WHERE status='queued'"
-            " AND (priority > ?1 OR (priority = ?1 AND id < ?2))",
-            (row["priority"], job_id),
+            " AND (priority > :priority OR (priority = :priority AND id < :id))",
+            {"priority": row["priority"], "id": job_id},
         ).fetchone()[0]
     return ahead + 1
 
