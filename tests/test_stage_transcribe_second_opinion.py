@@ -223,6 +223,176 @@ def test_a_hallucinated_tail_both_opinions_hear_nothing_in_is_removed():
     assert records[0]["outcome"] == "replaced" and records[0]["after"] == ""
 
 
+def word(start, end, text, probability=0.9):
+    return {"start": start, "end": end, "text": f" {text}", "probability": probability}
+
+
+def test_an_opinion_that_says_again_what_follows_the_stretch_is_not_written_twice():
+    """Media 34 run 99 (TASK-035), 780 s earlier: a loop of "ah" between
+    "Yeah." and "And that was quite impressive." Both opinions heard "And that"
+    there - the "And that" that follows, with "that" stretched over the loop's
+    silence to where the stored one ends - and the splice wrote it twice. The
+    stored words either side are untouched; the opinion's copy is the one
+    that goes, and the record says so."""
+    segments, words = transcript(
+        (10.0, 19.0, spoken(10.0, "you could see task switching."), 1.5),
+        (20.20, 20.58, [word(20.20, 20.58, "Yeah.")], 1.5),
+        (20.58, 22.60, squeezed(20.58, "ah " * 23) + [word(20.81, 22.60, "ah.")], 1.5),
+        (22.66, 24.66, [word(22.66, 23.10, "And"), word(23.10, 23.36, "that"), word(23.36, 23.60, "was"),
+                        word(23.60, 24.22, "quite"), word(24.22, 24.66, "impressive.")], 1.5),
+    )
+
+    def decode(audio, offset, limit):
+        heard = [word(20.20, 20.58, "Yeah."), word(20.54, 21.12, "And"), word(21.12, 23.36, "that"),
+                 word(23.36, 23.60, "was")]
+        kept = [w for w in heard if (w["start"] + w["end"]) / 2 - offset < limit]
+        rows = [seg(0, 20.20, 20.58, kept[:1]), seg(1, 20.54, kept[-1]["end"], kept[1:])]
+        for i, w in enumerate(kept):
+            w["idx"] = i
+        return rows, kept
+
+    segments, words, (record,) = second_opinion.review(
+        segments, words, read_clip=lambda start, end: np.zeros(1, dtype=np.float32), decode=decode,
+        duration=100.0, threshold=THRESHOLD, cancelled=lambda: None,
+    )
+
+    assert text(words) == "you could see task switching. Yeah. And that was quite impressive."
+    (kept_and,) = [w for w in words if w["text"] == " And"]
+    assert kept_and["start"] == 22.66  # the stored copy
+    assert record["outcome"] == "replaced"
+    assert (record["after"], record["echo"]) == ("", "And that")
+    assert [s["idx"] for s in segments] == list(range(len(segments)))
+    for s in segments:
+        own = [w for w in words if w["segment_idx"] == s["idx"]]
+        assert own and "".join(w["text"] for w in own).strip() == s["text"]
+
+
+def test_an_opinion_that_opens_with_the_stored_word_before_it_drops_its_own_copy():
+    """The mirror of media 34 at the stretch's start: the opinion's first word
+    is the stored last word before it said again, its start stretched back
+    over it. The stored word stays; the opinion's copy goes."""
+    segments, words = transcript(
+        (10.0, 12.4, spoken(10.0, "we met at the") + [word(11.8, 12.4, "Revspace")], 1.5),
+        (12.6, 14.6, squeezed(12.6, "uh " * 23) + [word(12.83, 14.6, "uh.")], 1.5),
+        (14.7, 16.0, [word(14.7, 15.0, "in"), word(15.0, 15.5, "Leiden")], 1.5),
+    )
+
+    def decode(audio, offset, limit):
+        heard = [word(12.2, 13.0, "Revspace"), word(13.1, 13.5, "that"), word(13.5, 13.9, "evening")]
+        kept = [w for w in heard if (w["start"] + w["end"]) / 2 - offset < limit]
+        for i, w in enumerate(kept):
+            w["idx"] = i
+        return [seg(0, 12.2, kept[-1]["end"], kept)], kept
+
+    segments, words, (record,) = second_opinion.review(
+        segments, words, read_clip=lambda start, end: np.zeros(1, dtype=np.float32), decode=decode,
+        duration=100.0, threshold=THRESHOLD, cancelled=lambda: None,
+    )
+
+    assert text(words) == "we met at the Revspace that evening in Leiden"
+    (revspace,) = [w for w in words if w["text"] == " Revspace"]
+    assert revspace["start"] == 11.8  # the stored copy
+    assert (record["after"], record["echo"]) == ("that evening", "Revspace")
+    _holds_together(segments, words)
+    # The opinion's segment that lost its first word starts at its new first word.
+    (opened,) = [s for s in segments if s["text"] == "that evening"]
+    assert opened["start"] == 13.1
+
+
+def _holds_together(segments, words):
+    """What _persist and FTS expect: indices 0..n, and each segment's text the
+    join of the words that point at it."""
+    assert [s["idx"] for s in segments] == list(range(len(segments)))
+    assert [w["idx"] for w in words] == list(range(len(words)))
+    for s in segments:
+        own = [w for w in words if w["segment_idx"] == s["idx"]]
+        assert own and "".join(w["text"] for w in own).strip() == s["text"], s
+
+
+def _answering(*opinions):
+    """A decode that answers the first two calls with opinions[0], the next two
+    with opinions[1] - one stretch each, both leads - cut to the clip's limit."""
+    calls = []
+
+    def decode(audio, offset, limit):
+        calls.append(offset)
+        heard = opinions[(len(calls) - 1) // 2]
+        kept = [dict(w) for w in heard if (w["start"] + w["end"]) / 2 - offset < limit]
+        for i, w in enumerate(kept):
+            w["idx"] = i
+        return ([seg(0, kept[0]["start"], kept[-1]["end"], kept)] if kept else []), kept
+
+    return decode
+
+
+def test_the_word_between_two_stretches_side_by_side_is_kept():
+    """Two looping segments next to each other are two stretches, worked last
+    first. The later one's opinion opens with "Revspace", which the earlier
+    stretch ends on - but that stored word is replaced next, so it is no
+    neighbour to keep instead, and the earlier opinion put its own "Revspace"
+    past its stretch. Found in review 2026-09-11: dropping the later copy as
+    an echo left the word in neither."""
+    segments, words = transcript(
+        (0.0, 9.0, spoken(0.0, "hello there my friend"), 1.5),
+        (10.0, 12.9, squeezed(10.0, "ah " * 6) + spoken(10.5, "we met at the") + [word(12.2, 12.9, "Revspace")], 1.5),
+        (13.1, 17.0, [word(13.1, 13.5, "that"), word(13.5, 13.9, "evening")] + squeezed(15.5, "uh " * 6)
+         + [word(16.0, 16.4, "in"), word(16.4, 17.0, "Leiden")], 1.5),
+        (18.0, 22.0, spoken(18.0, "and it was great"), 1.5),
+    )
+    later = [word(12.6, 13.5, "Revspace"), word(13.5, 13.8, "that"), word(13.8, 14.2, "evening"),
+             word(16.0, 16.4, "in"), word(16.4, 17.0, "Leiden")]
+    earlier = [word(10.5, 10.8, "we"), word(10.9, 11.2, "met"), word(11.3, 11.6, "at"), word(11.7, 12.0, "the"),
+               word(12.6, 13.9, "Revspace"), word(13.9, 14.2, "that")]
+
+    segments, words, records = second_opinion.review(
+        segments, words, read_clip=lambda start, end: np.zeros(1, dtype=np.float32),
+        decode=_answering(later, earlier), duration=100.0, threshold=THRESHOLD, cancelled=lambda: None,
+    )
+
+    assert [r["outcome"] for r in records] == ["replaced", "replaced"]
+    assert text(words) == "hello there my friend we met at the Revspace that evening in Leiden and it was great"
+    _holds_together(segments, words)
+
+
+def test_two_opinions_keep_their_segments_apart():
+    """Each opinion numbers its segments from 0, and two opinions in one run
+    must not share a segment key, or renumbering points one opinion's words at
+    the other's segments. Found in review 2026-09-11: the key was the list
+    length plus the stretch's position, and a later opinion that grew the list
+    made two stretches' keys equal."""
+    segments, words = transcript(
+        (0.0, 10.0, [word(1.0, 2.0, "one"), word(3.0, 4.0, "two")], 1.5),
+        (10.0, 20.0, squeezed(11.0, "so " * 6) + [word(15.0, 16.0, "alphaOLD")], 1.5),
+        (20.0, 30.0, [word(21.0, 22.0, "three"), word(23.0, 24.0, "four")], 1.5),
+        (30.0, 40.0, squeezed(31.0, "so " * 6) + [word(35.0, 36.0, "gammaOLD")], 1.5),
+        (40.0, 50.0, [word(41.0, 42.0, "five"), word(43.0, 44.0, "six")], 1.5),
+    )
+
+    def opinion(*parts):
+        segs, ws = [], []
+        for k, heard in enumerate(parts):
+            segs.append(seg(k, heard[0]["start"], heard[-1]["end"], heard))
+            ws.extend(heard)
+        for i, w in enumerate(ws):
+            w["idx"] = i
+        return segs, ws
+
+    def decode(audio, offset, limit):
+        if offset < 20:  # the first stretch: two segments where one stood
+            return opinion([word(3.0, 4.0, "two")], [word(12.0, 13.0, "alpha")], [word(15.0, 16.0, "beta")])
+        return opinion([word(23.0, 24.0, "four")], [word(31.0, 32.0, "gamma")], [word(33.0, 34.0, "delta")],
+                       [word(35.0, 36.0, "epsilon")])
+
+    segments, words, _records = second_opinion.review(
+        segments, words, read_clip=lambda start, end: np.zeros(1, dtype=np.float32), decode=decode,
+        duration=50.0, threshold=THRESHOLD, cancelled=lambda: None,
+    )
+
+    assert [s["text"] for s in segments] == [
+        "one two", "alpha", "beta", "three four", "gamma", "delta", "epsilon", "five six"]
+    _holds_together(segments, words)
+
+
 # --- when they do not ---------------------------------------------------------------
 
 

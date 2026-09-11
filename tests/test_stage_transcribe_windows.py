@@ -314,6 +314,170 @@ def test_windowed_transcription_matches_a_single_window_on_the_real_clip():
     assert any(w["start"] > 10.0 for w in windowed)
 
 
+# --- a word both sides of a cut wrote (TASK-035) ------------------------------------
+#
+# Found in the library on 2026-09-11 at 18 cuts - 16 in the 43 runs
+# re-transcribed with the look-ahead, 2 in runs 70-71: window k keeps a word
+# it heard in its look-ahead by its midpoint, and window k+1, starting at the
+# cut, says it again. Media 17: "opportunities when when they are presented",
+# when 595.82-596.72 and again 596.30-596.74. One decode never writes two
+# words that overlap in time.
+
+
+def _run_windows(monkeypatch, tmp_path, answer):
+    """transcribe_audio over the dipped 25 s file - three windows, two cuts.
+    `answer(cuts)` gives each window's segments, each a list of (start, end,
+    word) in file time; the model hands them back relative to the window, as
+    faster-whisper does. Returns (segments, words)."""
+    wav = _dipped_25s(tmp_path)
+    shape = dict(window_seconds=10.0, search_seconds=2.0, lookahead_seconds=3.0)
+    windows = list(transcribe.iter_windows(wav, **shape))
+    per_window = answer([w.offset for w in windows[1:]])
+    calls: list[int] = []
+
+    class Info:
+        language, language_probability, duration, duration_after_vad = "en", 0.9, 25.0, 25.0
+
+    class Model:
+        def transcribe(self, audio, **options):
+            calls.append(len(audio))
+            at = windows[len(calls) - 1].offset
+            return iter([
+                Seg(ws[0][0] - at, ws[-1][1] - at, "".join(w for _s, _e, w in ws),
+                    [Word(s - at, e - at, w) for s, e, w in ws])
+                for ws in per_window[len(calls) - 1]
+            ]), Info()
+
+    monkeypatch.setattr(transcribe, "load_model", lambda name, **kw: (Model(), "cpu", "int8"))
+    _info, segments, words = transcribe.transcribe_audio(wav, language="en", on_progress=lambda p: None, **shape)
+    assert len(calls) == len(windows)  # no second opinion was asked for
+    return segments, words
+
+
+def _seam_run(monkeypatch, tmp_path, left, right):
+    """Window 0 answering `left` and window 1 `right`, times relative to the
+    first cut; window 2 says " fine". Returns (segments, words, the first cut)."""
+    cuts = []
+
+    def answer(at):
+        cuts.extend(at)
+        shift = lambda segments: [[(s + at[0], e + at[0], w) for s, e, w in ws] for ws in segments]
+        return [shift(left), shift(right), [[(at[1] + 0.2, at[1] + 0.6, " fine")]]]
+
+    segments, words = _run_windows(monkeypatch, tmp_path, answer)
+    return segments, words, cuts[0]
+
+
+def _said(words):
+    return [w["text"].strip() for w in words]
+
+
+def _invariants(segments, words):
+    assert [s["idx"] for s in segments] == list(range(len(segments)))
+    assert [w["idx"] for w in words] == list(range(len(words)))
+    for s in segments:
+        own = [w for w in words if w["segment_idx"] == s["idx"]]
+        assert own and "".join(w["text"] for w in own).strip() == s["text"]
+    assert all(a["end"] <= b["start"] + 1e-9 for a, b in zip(words, words[1:])), "two words overlap in time"
+
+
+def test_a_word_the_next_window_says_again_is_written_once(monkeypatch, tmp_path):
+    left = [[(-2.0, -1.8, " for"), (-1.8, -1.6, " those"), (-1.6, -0.48, " opportunities"),
+             (-0.48, 0.42, " when"), (0.44, 0.56, " they")]]
+    right = [[(0.0, 0.44, " when"), (0.44, 0.56, " they"), (0.56, 0.66, " are"), (0.66, 0.98, " presented")]]
+
+    segments, words, cut = _seam_run(monkeypatch, tmp_path, left, right)
+
+    assert _said(words) == ["for", "those", "opportunities", "when", "they", "are", "presented", "fine"]
+    # The copy kept is the next window's: both end together (596.72 and
+    # 596.74 in media 17), and the left one's start is the pause before it.
+    (when,) = [w for w in words if w["text"] == " when"]
+    assert when["start"] == pytest.approx(cut)
+    # The segment that lost the word ends where its last word now ends.
+    assert (segments[0]["text"], segments[0]["end"]) == ("for those opportunities", pytest.approx(cut - 0.48))
+    _invariants(segments, words)
+
+
+def test_two_words_the_next_window_says_again_are_written_once(monkeypatch, tmp_path):
+    left = [[(-2.0, -1.4, " impressive"), (-0.9, -0.5, " and"), (-0.5, 0.3, " that")]]
+    right = [[(0.0, 0.2, " and"), (0.2, 0.3, " that"), (0.3, 0.5, " was")]]
+
+    segments, words, _cut = _seam_run(monkeypatch, tmp_path, left, right)
+
+    assert _said(words) == ["impressive", "and", "that", "was", "fine"]
+    _invariants(segments, words)
+
+
+def test_a_segment_that_was_only_the_echo_goes_with_it(monkeypatch, tmp_path):
+    left = [[(-2.0, -1.8, " for"), (-1.8, -0.9, " those")], [(-0.48, 0.42, " when")]]
+    right = [[(0.0, 0.44, " when"), (0.44, 0.56, " they")]]
+
+    segments, words, _cut = _seam_run(monkeypatch, tmp_path, left, right)
+
+    assert [s["text"] for s in segments] == ["for those", "when they", "fine"]
+    _invariants(segments, words)
+
+
+def test_a_straddling_word_the_next_window_does_not_repeat_is_kept(monkeypatch, tmp_path):
+    """The Revspace case (_midpoint): the left window heard nearly all of it
+    and the right one starts on the next word - nothing was written twice."""
+    left = [[(-1.2, -0.52, " at"), (-0.52, 0.08, " Revspace")]]
+    right = [[(0.1, 0.3, " and"), (0.3, 0.6, " then")]]
+
+    _segments, words, _cut = _seam_run(monkeypatch, tmp_path, left, right)
+
+    assert _said(words) == ["at", "Revspace", "and", "then", "fine"]
+
+
+def test_a_word_said_twice_either_side_of_a_cut_is_kept_twice(monkeypatch, tmp_path):
+    """"no, no" with a pause between: the two copies do not overlap in time,
+    so they are two words, not one word written twice."""
+    left = [[(-1.2, -0.9, " no,"), (-0.6, -0.3, " no,")]]
+    right = [[(0.1, 0.4, " no"), (0.5, 0.8, " wait")]]
+
+    _segments, words, _cut = _seam_run(monkeypatch, tmp_path, left, right)
+
+    assert _said(words) == ["no,", "no,", "no", "wait", "fine"]
+
+
+def test_an_echo_at_every_cut_is_written_once(monkeypatch, tmp_path):
+    """Media 52 has three. Dropping one moves every word after it, so the
+    cuts are worked from the last back."""
+    def answer(cuts):
+        c1, c2 = cuts
+        return [
+            [[(c1 - 1.0, c1 - 0.6, " knew"), (c1 - 0.5, c1 + 0.3, " why")]],
+            [[(c1, c1 + 0.3, " Why"), (c1 + 0.3, c1 + 0.6, " wouldn't"), (c2 - 0.4, c2 + 0.3, " you")]],
+            [[(c2, c2 + 0.3, " you"), (c2 + 0.3, c2 + 0.6, " know,")]],
+        ]
+
+    segments, words = _run_windows(monkeypatch, tmp_path, answer)
+
+    assert _said(words) == ["knew", "Why", "wouldn't", "you", "know,"]
+    _invariants(segments, words)
+
+
+def test_an_echo_is_looked_for_only_in_the_window_before_the_cut(monkeypatch, tmp_path):
+    """Window 1 holds one word, stretched past cut 2 in the echo shape, and
+    window 2 says "yeah yeah right". Only window 1's copy can be an echo:
+    window 0's "yeah", a cut earlier, was heard by no other decode. Found in
+    review: a two-word match reached back across cut 1 and took it."""
+    def answer(cuts):
+        c1, c2 = cuts
+        return [
+            [[(c1 - 1.5, c1 - 1.2, " yeah")]],
+            [[(c2 - 1.0, c2 + 0.8, " yeah")]],
+            [[(c2, c2 + 0.3, " yeah"), (c2 + 0.35, c2 + 0.8, " yeah"), (c2 + 0.9, c2 + 1.2, " right")]],
+        ]
+
+    _segments, words = _run_windows(monkeypatch, tmp_path, answer)
+
+    assert _said(words) == ["yeah", "yeah", "yeah", "right"]
+    # The first is window 0's own, seconds before cut 2; the next two are window 2's.
+    assert words[1]["start"] - words[0]["end"] > 5
+    assert words[1]["end"] <= words[2]["start"]
+
+
 def test_the_first_window_pins_the_language_for_the_rest(monkeypatch, tmp_path):
     """Auto-detect runs once. A file that flips language mid-way would
     otherwise be transcribed as two languages, one per window."""

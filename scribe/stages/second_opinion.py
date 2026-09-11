@@ -26,9 +26,10 @@ repeats are left alone: "blah, blah, blah" came back as "blah, blah" and
 
 The stored stretch is replaced only when both opinions are clean there, and
 then the whole of every segment it touches is replaced, so a segment's text
-stays the join of its words. Every flag and what became of it is returned as
-a record for the run's params: a transcript changed after its first decode
-says so, and says what it said before.
+stays the join of its words; an opinion's edge word that the stored words
+beside the stretch say again is dropped (`seams`, TASK-035). Every flag and
+what became of it is returned as a record for the run's params: a transcript
+changed after its first decode says so, and says what it said before.
 
 Pure functions around two callables the stage hands in - one reads a clip of
 the prepared wav, one decodes it into rows - so none of this needs a model to
@@ -43,6 +44,8 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 import numpy as np
+
+from scribe.stages import seams
 
 # A loop is this many back-to-back repeats of a 1-3 word phrase, or more.
 MIN_REPEATS = 5
@@ -219,15 +222,19 @@ def review(
 
     groups = _group_by_segments(segments, flags)
     records: list[dict] = []
-    for (i, j), group in reversed(groups):
+    for g in range(len(groups) - 1, -1, -1):
+        (i, j), group = groups[g]
         cancelled()
+        # The stored words before this stretch are final only from where the
+        # stretch before it ends: that one is worked next and may replace them.
+        floor = _stored_span(segments, words, *groups[g - 1][0])[1] if g else 0
         segments, words, record = _second_opinion(
-            segments, words, i, j, group,
+            segments, words, i, j, group, floor=floor, tag=g,
             read_clip=read_clip, decode=decode, duration=duration, threshold=threshold,
         )
         records.append(record)
     records.reverse()
-    _renumber(segments, words)
+    seams.renumber(segments, words)
     return segments, words, records
 
 
@@ -247,16 +254,26 @@ def _group_by_segments(segments: Sequence[dict], flags: Sequence[Flag]) -> list[
     return groups
 
 
-def _second_opinion(segments, words, i, j, flags, *, read_clip, decode, duration, threshold):
-    """One stretch: decode it twice, and replace segments [i, j) if both agree."""
-    # The stored words of those segments: contiguous, because words are
-    # appended segment by segment in time order.
+def _stored_span(segments: Sequence[dict], words: Sequence[dict], i: int, j: int) -> tuple[int, int]:
+    """The positions [a, b) of the words of segments [i, j): contiguous, because
+    words are appended segment by segment in time order. Empty at where the
+    first segment starts when those segments hold no words."""
     keys = {segments[k]["idx"] for k in range(i, j)}
     span = [k for k, w in enumerate(words) if w.get("segment_idx") in keys]
     if span:
-        a, b = span[0], span[-1] + 1
-    else:
-        a = b = next((k for k, w in enumerate(words) if w["start"] >= segments[i]["start"]), len(words))
+        return span[0], span[-1] + 1
+    a = next((k for k, w in enumerate(words) if w["start"] >= segments[i]["start"]), len(words))
+    return a, a
+
+
+def _second_opinion(segments, words, i, j, flags, *, floor, tag, read_clip, decode, duration, threshold):
+    """One stretch: decode it twice, and replace segments [i, j) if both agree.
+
+    `floor` is where the stored words that will stay begin (the end of the
+    stretch before this one, still to be worked); `tag` keys this opinion's
+    segments apart from every other opinion's until they are renumbered.
+    """
+    a, b = _stored_span(segments, words, i, j)
 
     # Bounded at the middle of the pause either side, so a word at the edge
     # lands on the same side in the stored run and in the opinion.
@@ -291,7 +308,22 @@ def _second_opinion(segments, words, i, j, flags, *, read_clip, decode, duration
         opinions.append(rows)
 
     best = max(opinions, key=lambda rows: _sureness(rows, r0, r1))
-    new_segments, new_words = _cut_to(best, r0, r1, tag=len(segments) + i)
+    new_segments, new_words = _cut_to(best, r0, r1, tag=tag)
+    # The clip ran past the stretch both ways, so the opinion can open with the
+    # stored word before it, or end with the ones after it, said again - media
+    # 34's "And that And that" (TASK-035). The stored words stay as they were;
+    # the opinion's copy goes. Only words that will stay count as stored: the
+    # ones after the stretch are final already, the ones before it from `floor`.
+    head = seams.echo(words[max(floor, a - seams.ECHO_WORDS):a], new_words)
+    tail = seams.echo(new_words[head:], words[b:b + seams.ECHO_WORDS])
+    echoed = new_words[:head] + new_words[len(new_words) - tail:]
+    if tail:
+        new_segments, new_words = seams.remove_words(
+            new_segments, new_words, range(len(new_words) - tail, len(new_words)))
+    if head:
+        new_segments, new_words = seams.remove_words(new_segments, new_words, range(head))
+    if echoed:
+        record["echo"] = "".join(w["text"] for w in echoed).strip()
     record["after"] = "".join(w["text"] for w in new_words).strip()[:RECORD_CHARS]
     record["outcome"] = "replaced"
     return (
@@ -306,8 +338,9 @@ def _cut_to(rows: Rows, r0: float, r1: float, *, tag: int) -> Rows:
 
     A segment cut by the bounds keeps the words inside and says only those,
     the way collect_segments treats a segment the look-ahead cuts. Segment
-    keys are tagged tuples until _renumber, so they cannot collide with the
-    stored ones.
+    keys are (tag, idx) tuples until seams.renumber, the tag being the
+    stretch's own number, so they collide neither with the stored keys nor
+    with another opinion's - each opinion numbers its segments from 0.
     """
     segments, words = rows
     kept_words = _within(words, r0, r1)
@@ -331,15 +364,3 @@ def _cut_to(rows: Rows, r0: float, r1: float, *, tag: int) -> Rows:
         })
         out_words.extend({**w, "segment_idx": key} for w in own)
     return out_segments, out_words
-
-
-def _renumber(segments: list[dict], words: list[dict]) -> None:
-    """Indices 0..n in list order, and each word pointing at its segment's new index."""
-    new_index = {}
-    for k, s in enumerate(segments):
-        new_index[s["idx"]] = k
-        s["idx"] = k
-    for k, w in enumerate(words):
-        w["idx"] = k
-        if w.get("segment_idx") in new_index:
-            w["segment_idx"] = new_index[w["segment_idx"]]

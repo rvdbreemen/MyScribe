@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 import numpy as np
 
 from scribe import accel, cuda_setup, db, glossary, jobs
-from scribe.stages import mlx_backend, second_opinion
+from scribe.stages import mlx_backend, seams, second_opinion
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
     from scribe.runner import RunnerContext
@@ -502,8 +502,40 @@ def _midpoint(word: Any) -> float:
     before the cut kept it by its start, the window after heard the rest and
     wrote it again - "we we". By its midpoint it is the second window's, which
     heard most of it; "Revspace" (27.88-28.48, cut at 28.4) stays with the
-    first, which heard nearly all of it."""
+    first, which heard nearly all of it. A word whose start is stretched back
+    past the cut can still be kept here and said again after it; that is
+    `_drop_echoes`' to catch."""
     return (float(word.start) + float(word.end)) / 2
+
+
+def _drop_echoes(segments: list[dict], words: list[dict], cuts: list[int]) -> tuple[list[dict], list[dict]]:
+    """Each word written by both windows at a cut, written once (TASK-035).
+
+    `cuts` are the positions in `words` where each window after the first
+    begins. The midpoint rule is not the whole story once a window hears past
+    its cut: the window before can keep a word by its midpoint, and the window
+    after, starting at the cut, says it again - media 17's "opportunities when
+    when they are presented". `seams.echo` finds that: the same words, the
+    left copy running into the right.
+
+    The left copy goes. Measured over the 18 such words in the library on
+    2026-09-11: both copies end within 0.02 s of each other, and the left one
+    lasts 0.50-2.04 s ("like," in media 22) where the right one lasts
+    0.16-0.56 s - the left copy's start is stretched back over what came
+    before it. The left copy is looked for only in the window just before the
+    cut: a word from further back was heard by no other decode. Worked from
+    the last cut back, so the positions of the ones still to do do not move.
+    """
+    dropped = False
+    for k in range(len(cuts) - 1, -1, -1):
+        at, floor = cuts[k], cuts[k - 1] if k else 0
+        n = seams.echo(words[max(floor, at - seams.ECHO_WORDS):at], words[at:at + seams.ECHO_WORDS])
+        if n:
+            segments, words = seams.remove_words(segments, words, range(at - n, at))
+            dropped = True
+    if dropped:
+        seams.renumber(segments, words)
+    return segments, words
 
 
 # --- the model ------------------------------------------------------------------
@@ -604,6 +636,7 @@ def transcribe_audio(
     language_probability: float | None = None
     duration_after_vad = 0.0
     stream = None
+    cuts: list[int] = []  # where each window after the first begins in `words`
     try:
         for window in iter_windows(
             wav,
@@ -638,6 +671,8 @@ def transcribe_audio(
                 on_segment=on_segment,
                 limit=limit,
             )
+            if window.offset > 0:
+                cuts.append(len(words))
             segments.extend(new_segments)
             words.extend(new_words)
             # Each window's generator is closed as soon as it is drained; the
@@ -645,6 +680,8 @@ def transcribe_audio(
             if hasattr(stream, "close"):
                 stream.close()
             stream = None
+
+        segments, words = _drop_echoes(segments, words, cuts)
 
         # The stretches where the decode failed by its own measure get a second
         # opinion while the model is still loaded (TASK-032).
