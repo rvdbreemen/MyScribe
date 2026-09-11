@@ -64,6 +64,12 @@ depend on a router (ADR-001 keeps the traffic one-way)."""
 # copy them through untouched.
 OPTIONS_KEY = "options"
 
+ENTRY_TITLE_KEY = "entry_title"
+"""What a fanned-out entry is called, carried from the playlist to its own job:
+a podcast feed knows "Ep 179 - The Courthouse - Revisited" while the episode's
+enclosure, fetched on its own, is only a bare ``default.mp3`` (`urls.
+episode_names`). It names the job on the board, the file and the recording."""
+
 MAX_FAN_OUT = 500
 """The most entries one link may become jobs for, inclusive.
 
@@ -142,6 +148,7 @@ def fetch(ctx: "RunnerContext") -> None:
         paths.job_work_dir(ctx.job["id"]),
         on_progress=ctx.report,
         cookies_file=cookies_file,
+        title=str(ctx.params.get(ENTRY_TITLE_KEY) or "").strip() or None,
     )
 
 
@@ -196,7 +203,12 @@ def _fan_out(ctx: "RunnerContext", playlist: urls.UrlInfo) -> None:
         jobs.enqueue(
             ctx.conn,
             JOB_TYPE,
-            params={**ctx.params, "url": entry["url"], "from_playlist": True},
+            params={
+                **ctx.params,
+                "url": entry["url"],
+                "from_playlist": True,
+                ENTRY_TITLE_KEY: entry.get("name") or entry.get("title") or "",
+            },
         )
         for entry in playlist.entries
     ]

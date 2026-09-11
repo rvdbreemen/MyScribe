@@ -23,7 +23,7 @@ and `uv.lock` do - but it does two things about it: `is_stale` says when the ins
 copy is old enough to be the likely culprit, and a failure whose message
 smells like a broken extractor says so in words, with the installed version
 and the command that fixes it. That sentence is the difference between "this
-app is broken" and "run one pip command".
+app is broken" and "run one command".
 
 Windows note, and it is not a small one: `--cookies-from-browser` cannot read
 Chrome or Edge cookies since App-Bound Encryption (Chrome 127+). Firefox still
@@ -38,7 +38,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -178,8 +178,10 @@ class UrlInfo:
     """What `probe` learned without downloading anything.
 
     `entries` is empty for a single video and holds one ``{id, title, duration,
-    url}`` per item for a playlist - flat, because a playlist is expanded into
-    one job per entry and each of those probes its own URL properly.
+    url, name, ...}`` per item for a playlist - flat, because a playlist is
+    expanded into one job per entry and each of those probes its own URL
+    properly. ``name`` is what the entry's job and file are called: the title,
+    or for a podcast feed `episode_names`' number-and-title.
     """
 
     kind: Literal["single", "playlist"]
@@ -403,6 +405,14 @@ def probe(url: str, *, cookies_file: str | None = None, ydl=None) -> UrlInfo:
     info = _extract(ydl, url, download=False)
 
     entries = _entries(info)
+    # A podcast feed is what yt-dlp's Generic extractor reads an RSS document
+    # as; YouTube's playlists come from its own extractors and keep their titles.
+    if entries and info.get("extractor_key") == "Generic":
+        names = episode_names(entries)
+    else:
+        names = [entry["title"] for entry in entries]
+    for entry, name in zip(entries, names):
+        entry["name"] = name
     return UrlInfo(
         kind="playlist" if entries else "single",
         title=str(info.get("title") or ""),
@@ -421,8 +431,13 @@ def download(
     on_progress: Callable[[float], None] | None = None,
     cookies_file: str | None = None,
     ydl=None,
+    title: str | None = None,
 ) -> DownloadedMedia:
     """Fetch the audio of one video into ``dest_dir``; returns where it landed.
+
+    ``title``, when given, names the file and the recording instead of what
+    yt-dlp says: a feed episode's enclosure is often a bare ``default.mp3``
+    that yt-dlp can only call by its filename, while the feed knew its name.
 
     Progress is yt-dlp's own byte counts mapped onto 0..1, and it never goes
     backwards - a fragment that restarts would otherwise walk the bar back.
@@ -447,7 +462,8 @@ def download(
         ydl.add_progress_hook(_progress_hook(on_progress))
 
     info = _extract(ydl, url, download=True)
-    path = _rename_to_title(_locate(dest, info), str(info.get("title") or ""))
+    name = title or str(info.get("title") or "")
+    path = _rename_to_title(_locate(dest, info), name)
 
     if on_progress is not None:
         # Unconditionally, the way `prepare.to_wav` closes: the file is here,
@@ -456,7 +472,7 @@ def download(
 
     return DownloadedMedia(
         path=path,
-        title=str(info.get("title") or path.stem),
+        title=name or path.stem,
         duration=_as_float(info.get("duration")),
         uploader=_uploader(info),
         info=info,
@@ -587,9 +603,57 @@ def _entries(info: dict) -> list[dict]:
                 "title": str(entry.get("title") or ""),
                 "duration": _as_float(entry.get("duration")),
                 "url": str(url),
+                # A podcast feed's itunes fields, as yt-dlp's RSS reader maps
+                # them; None for anything that is not a feed.
+                "episode": str(entry.get("episode") or ""),
+                "episode_number": _as_int(entry.get("episode_number")),
+                "season_number": _as_int(entry.get("season_number")),
+                "timestamp": _as_float(entry.get("timestamp")),
             }
         )
     return entries
+
+
+# "179: ", "#7 ", "Ep. 12 - ", "Episode 12 | " at the front of a title that
+# already says its number; group 1 is the number it says.
+_LEADING_NUMBER = re.compile(
+    r"^\s*(?:#|ep\.?|episode)?\s*(\d+)\s*(?:[:.|\-–—]\s*|\s+)", re.IGNORECASE
+)
+
+
+def episode_names(entries: list[dict]) -> list[str]:
+    """What each feed episode is called: its number and title from the feed.
+
+    ``Ep 179 - The Courthouse - Revisited`` when the feed numbers its episodes
+    (itunes:episode), using the feed's itunes:title when it has one and never
+    saying the number twice; numbers padded to the widest in the feed so the
+    files sort; the season only when the feed has more than one. An episode
+    without a number gets its release date instead (``2026-09-11 - Title``):
+    feeds are often a window onto a longer show, so a position in the list is
+    not an episode number and is never used as one.
+    """
+    numbers = [e["episode_number"] for e in entries if e.get("episode_number") is not None]
+    width = len(str(max(numbers))) if numbers else 0
+    seasons = {e["season_number"] for e in entries if e.get("season_number") is not None}
+
+    names = []
+    for entry in entries:
+        title = entry.get("episode") or entry.get("title") or ""
+        number = entry.get("episode_number")
+        if number is not None:
+            leading = _LEADING_NUMBER.match(title)
+            if leading and int(leading.group(1)) == number:
+                title = title[leading.end():]
+            prefix = f"Ep {number:0{width}d}"
+            if len(seasons) > 1 and entry.get("season_number") is not None:
+                prefix = f"S{entry['season_number']} {prefix}"
+            names.append(f"{prefix} - {title}".rstrip(" -"))
+        elif entry.get("timestamp") is not None:
+            day = datetime.fromtimestamp(entry["timestamp"], tz=timezone.utc).date()
+            names.append(f"{day.isoformat()} - {title}".rstrip(" -"))
+        else:
+            names.append(title)
+    return names
 
 
 def _uploader(info: dict) -> str:
@@ -678,5 +742,12 @@ def _rename_to_title(path: Path, title: str) -> Path:
 def _as_float(value: Any) -> float | None:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None

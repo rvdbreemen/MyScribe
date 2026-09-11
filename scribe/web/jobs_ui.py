@@ -48,7 +48,7 @@ from starlette.responses import Response, StreamingResponse
 
 from scribe import db, jobs, runner
 from scribe.render import format_ts
-from scribe.stages import transcribe
+from scribe.stages import transcribe, url_stage
 from scribe.web import library, render
 
 router = APIRouter()
@@ -167,7 +167,8 @@ def job_view(conn: sqlite3.Connection, row: dict, now: float) -> dict:
     transcribing = row["type"] == TRANSCRIBE_JOB_TYPE
     view = {
         **row,
-        "title": row.get("media_title") or f"{row['type']} job",
+        # A queued feed episode has no media row yet; its playlist named it.
+        "title": row.get("media_title") or params.get(url_stage.ENTRY_TITLE_KEY) or f"{row['type']} job",
         "params": params,
         "summary": params_summary(params) if transcribing else "",
         "steps": stepper_steps(row["status"], row["stage"], stage_names_for(row["type"])),
