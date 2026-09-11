@@ -636,6 +636,8 @@
       "symbols": [
         "ChatRequest.reasoning_off",
         "ChatResponse.hint_sent",
+        "check_cleaning",
+        "cleaned_parts",
         "CONCAT_CHUNK_TOKENS",
         "Provider.reasoning_off_body",
         "reasoning_record",
@@ -648,8 +650,10 @@
           "A 400 while the hint is on the wire is retried once without it, unless it is a temperature refusal or a context-length refusal; the decision reads what was sent, never the vendor's wording.",
           "ChatResponse.hintsent records what the answering call carried: None not asked, True sent, False refused and dropped. Unreported counts are None, never 0.",
           "Every llmoutput row a call produces records hintsent, reasoningtokens, reasoningchars, upstream, hintignored and capnotenforced in paramsjson, judged against the cap that call was asked with.",
-          "A concat kind's answer that ended 'length' is refused before it is stored, whether it is one call or one of many.",
-          "A stored part is reused only when its segmentids are the chunk's."
+          "A concat kind's answer that ended 'length' is refused before it is stored, whether it is one call or one of many, and the refusal names what the row would have held: finishreason, completion and reasoning tokens, reasoning characters, up...",
+          "A stored part is reused only when its segmentids are the chunk's.",
+          "The cleaning gate judges the parts the final row names (chunkoutputids), in that order - never the newest row per chunk index.",
+          "A cleaning whose every part came back as it went in, whitespace aside, is stored but not published."
         ],
         "must_not": [
           "Branch on the provider's name in a caller to decide the hint.",
@@ -666,7 +670,9 @@
           "tests/testllmollama.py::testthehintisthinkfalseanditsabsencesendsnothink.",
           "tests/testllmtasks.py::testthehintfollowsthekind, ::testeveryrowrecordswhatwassentandwhatreasoningcost.",
           "tests/testllmtaskproviders.py::testcleanupreacheseachrealproviderwithitsownnoreasoningfield.",
-          "tests/testllmspeakers.py::testaonecallcleanupcutoffatthecapisrefusedandnothingisstored, ::testastoredpartcutonotherboundariesisaskedagain, ::testacleanupchunkiscuttotheconcatlimitnottheanswercap."
+          "tests/testllmspeakers.py::testaonecallcleanupcutoffatthecapisrefusedandnothingisstored, ::testacutoffpartnameswhatitspentandwhetherthehintwent, ::testastoredpartcutonotherboundariesisaskedagain, ::testacleanupchunkiscuttotheconcatlimitno...",
+          "tests/testllmcleaninggate.py::testarerunpublishesitsownpartsnotanothermodelsnewerones, ::testacleaningthatcamebackasitwentinisrefused, ::testacleaningwithsomepartsunchangedisstillpublished, ::testapartwithitspunctuationfixedisachange, ::...",
+          "tests/testllmheadroomscript.py::testtheheadroomscriptplansthechunksizeitisgiven (step 0 measures the chunk size it is asked for), ::testthepincheckreadsnoverdictfromablockedoruncountedanswer, ::testacallthatgotnoanswerprintswhatwasaskedn..."
         ]
       },
       "scope": {

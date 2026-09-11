@@ -12,6 +12,7 @@ so the privacy pin and the registry stay in the path.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 
@@ -292,6 +293,46 @@ def test_a_part_cut_off_at_the_cap_is_refused_and_the_parts_before_it_are_kept(
     assert "length" in str(caught.value)
     assert len(calls) == 2, "the first cut-off part ends the run"
     assert [r["kind"] for r in rows(conn, media_id)] == ["cleanup:chunk:0"]
+
+
+@pytest.mark.parametrize(
+    "spent, expected",
+    [
+        # Measured 2026-09-11 in the live check of TASK-029: openai/gpt-5-mini
+        # through OpenRouter spent 5,632 of 6,000 tokens reasoning, upstream
+        # Azure, after the hint was refused - and the board named only the cap
+        # and finish_reason='length'.
+        (
+            dict(completion_tokens=6000, reasoning_tokens=5632, upstream="Azure", hint_sent=False),
+            ["completion_tokens=6000", "reasoning_tokens=5632", "upstream='Azure'",
+             "reasoning hint refused and dropped"],
+        ),
+        # Ollama's shape, numbers constructed: thinking characters are the only
+        # reasoning measure it gives, and its hint is never dropped.
+        (
+            dict(completion_tokens=6000, reasoning_chars=21000, hint_sent=True),
+            ["completion_tokens=6000", "reasoning_chars=21000", "reasoning hint sent"],
+        ),
+    ],
+    ids=["gpt-5-mini-azure", "ollama-shaped"],
+)
+def test_a_cut_off_part_names_what_it_spent_and_whether_the_hint_went(
+    conn, media, monkeypatch, spent, expected
+):
+    """A refused part writes no row, so the error is the only record the jobs
+    board keeps of the call: it has to carry what the row would have - the
+    spend, the upstream and the hint - or the reason it ran out is lost."""
+    cut_off = dataclasses.replace(truncated("[0:00] SPEAKER_00: Don't panic, the towel"), **spent)
+    provider, _ = fake_provider([cut_off])
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+
+    message = str(caught.value)
+    assert "finish_reason='length'" in message
+    missing = [words for words in expected if words not in message]
+    assert missing == [], message
 
 
 def test_a_stored_part_cut_on_other_boundaries_is_asked_again(conn, monkeypatch):

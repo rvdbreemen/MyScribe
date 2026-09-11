@@ -18,8 +18,11 @@ What it does, in order:
    `media.private` is asserted 0 before any call leaves this machine, and
    `plan_task` asserts the privacy pin again.
 2. **The chunks the app would send.** `plan_task(kind="cleanup",
-   budget_tokens=--chunk-tokens)`. Media 12 at 3,000 plans 7 chunks of
-   1,722-2,993 estimated tokens (read-only, 2026-09-11; the design's
+   budget_tokens=--chunk-tokens)`, with `tasks.CONCAT_CHUNK_TOKENS` set to
+   --chunk-tokens for that one call: the constant is what this measures, and
+   `plan_task` would otherwise clamp every chunk to it. The answer cap still
+   clamps, and the plan line says so when it does. Media 12 at 3,000 plans 7
+   chunks of 1,722-2,993 estimated tokens (read-only, 2026-09-11; the design's
    "2,953-2,993" is the six head chunks - the tail is the short one). Each
    chunk's `ChatRequest` is built as `tasks._ask` builds a cleanup part, with
    the hint only when --hint says so, and goes through the real
@@ -33,8 +36,18 @@ What it does, in order:
 4. **Which upstreams hold the cap.** For each provider name OpenRouter lists
    for the model (`/models/{slug}/endpoints`), one call pinned to it
    (`provider.order=[name]`, `allow_fallbacks=false`) at `max_tokens=64` on a
-   prompt that needs about 600 tokens: the upstream enforces the cap iff it
-   answers with at most 64 completion tokens. Per name, not per endpoint:
+   prompt that needs about 600 tokens. More than 64 completion tokens means
+   the upstream does not enforce the cap; 1-64 reads as enforced. Only an
+   answer that stops at the cap ('length') really shows it - one that ended
+   'stop' early on its own would read as enforced too, a gap this check
+   leaves. An answer that ended 'error' or counted 0 completion tokens is
+   'unknown': it was blocked or not counted, and says nothing about the cap.
+   That rule came from step 0 (2026-09-11): pinned to Google, this prompt
+   came back in a manual probe with finish 'error', native RECITATION, and
+   usage all zero, and the script's own pin calls to Google, reporting 0
+   completion tokens, had printed enforced=True in both gemini runs.
+   ADR-010 (Chunks) has what Google's enforcement rests on instead. Per name,
+   not per endpoint:
    luna listed 7 endpoints under 3 names on 2026-09-11, and a chunk answer
    names only the provider - so a name's endpoints (its tags, printed) share
    one verdict, which is an approximation this output says out loud. Azure's
@@ -54,8 +67,11 @@ What it does, in order:
 
 What it prints per call: model, upstream, the wire sequence (`400 -> 200`),
 finish, completion and reasoning tokens (or 'unknown'), cap - completion, the
-reserve, and `usage.cost`; then a summary per (model, upstream) and the total
-cost of every recorded call.
+reserve, the hint and `usage.cost`; then a summary per (model, upstream) and
+the total cost of every recorded call. The hint says what was asked and,
+after the colon, what the answering call carried: `not-asked`, `asked:sent`,
+`asked:dropped` (refused with a 400 and dropped) or `asked:no-answer` when
+nothing came back to carry it - never a state read off a failed request.
 """
 
 from __future__ import annotations
@@ -92,7 +108,13 @@ PIN_PROMPT = (
     "Write the list only, nothing before or after it."
 )
 """About 600 tokens of answer: far past PIN_CAP, so an upstream that does not
-enforce max_tokens shows it in one cheap call."""
+enforce max_tokens shows it in one cheap call.
+
+Not on every upstream. Google blocked it as recitation on 2026-09-11 (finish
+'error', usage all zero), so there the check says 'unknown', no chunk served
+by Google is counted, and a gemini run ends NOT MEASURED. It is unchanged
+because a replacement would need a paid live call to show that it gets past
+that filter and still asks for far more than PIN_CAP."""
 
 
 # --- every wire call, kept ------------------------------------------------------------
@@ -168,6 +190,10 @@ def recording_factory(recorder: RecordingTransport):
 # --- reading a recorded answer ---------------------------------------------------------
 
 
+HINT_KEYS = tuple(openai_like.OpenRouterProvider.reasoning_off_body["extra_body"])
+"""The top-level body keys OpenRouter's hint puts on the wire (`reasoning`)."""
+
+
 @dataclass
 class Call:
     label: str
@@ -180,22 +206,36 @@ class Call:
     content: bool
     cost: float | None
     estimate: int | None = None
+    hint_asked: bool | None = None
+    """Whether the first request carried the hint: what was asked. None when no
+    request body was recorded."""
+    answered: bool = False
+    """Whether `complete()` returned an answer; only then is `hint_sent` known."""
     hint_sent: bool | None = None
+    """`ChatResponse.hint_sent` of the answer - None not asked, True sent, False
+    refused and dropped - and meaningless while `answered` is False."""
     error: str | None = None
     extra: dict = field(default_factory=dict)
 
 
 def read_call(label: str, wire: list[Wire], *, estimate: int | None = None) -> Call:
     """What the last exchange of one logical call says, and the statuses of
-    all of them (a dropped hint is `400 -> 200`)."""
+    all of them (a dropped hint is `400 -> 200`).
+
+    The hint as asked comes from the first request. What the answer carried
+    is not read off the wire: a call that got no answer - OpenRouter's 200
+    error envelope, a timeout - has no answering call to have carried
+    anything, and its last request says only what was tried. `main` fills
+    `answered` and `hint_sent` from the provider's answer when there is one.
+    """
     statuses = [w.status for w in wire]
     last = next((w for w in reversed(wire) if isinstance(w.response, dict)), None)
     payload = last.response if last is not None else {}
     choices = payload.get("choices") or [{}]
     usage = payload.get("usage") or {}
     details = usage.get("completion_tokens_details") or {}
-    body = last.request if last is not None and isinstance(last.request, dict) else {}
-    return Call(
+    first = next((w.request for w in wire if isinstance(w.request, dict)), None)
+    call = Call(
         label=label,
         model=payload.get("model"),
         upstream=payload.get("provider"),
@@ -206,9 +246,25 @@ def read_call(label: str, wire: list[Wire], *, estimate: int | None = None) -> C
         content=bool(((choices[0] or {}).get("message") or {}).get("content")),
         cost=usage.get("cost"),
         estimate=estimate,
-        hint_sent=("reasoning" in body) if body else None,
+        hint_asked=any(key in first for key in HINT_KEYS) if first is not None else None,
         error=next((w.error for w in reversed(wire) if w.error), None),
     )
+    native = (choices[0] or {}).get("native_finish_reason")
+    if native:
+        call.extra["native_finish"] = native
+    return call
+
+
+def hint_state(call: Call) -> str:
+    """The hint as printed: what was asked, then - after the colon, and only
+    when an answer came back - what the answering call carried."""
+    if call.hint_asked is None:
+        return "unknown"
+    if not call.hint_asked:
+        return "not-asked"
+    if not call.answered:
+        return "asked:no-answer"
+    return {True: "asked:sent", False: "asked:dropped"}.get(call.hint_sent, "asked:unknown")
 
 
 # --- the cap: which upstreams hold it ------------------------------------------------------
@@ -226,7 +282,9 @@ def endpoints(client: httpx2.Client, key: str, slug: str) -> list[dict]:
 
 def enforcement_check(sdk: Any, recorder: RecordingTransport, slug: str, upstream: str) -> Call:
     """One call pinned to `upstream` at max_tokens=64. `extra['enforced']` is
-    True, False, or None when the call cannot say."""
+    True, False, or None when the call cannot say - which includes an answer
+    that ended 'error' or counted 0 completion tokens (module docstring,
+    item 4)."""
     before = len(recorder.calls)
     why = None
     try:
@@ -240,6 +298,7 @@ def enforcement_check(sdk: Any, recorder: RecordingTransport, slug: str, upstrea
     except openai.OpenAIError as exc:
         why = f"{type(exc).__name__}: {str(exc)[:160]}"
     call = read_call(f"pin {slug} @ {upstream}", recorder.calls[before:])
+    native = call.extra.get("native_finish")
     if why is not None:
         call.extra["enforced"], call.extra["why"] = None, why
     elif (call.upstream or "").casefold() != upstream.casefold():
@@ -247,9 +306,23 @@ def enforcement_check(sdk: Any, recorder: RecordingTransport, slug: str, upstrea
         call.extra["why"] = f"routed to {call.upstream!r}, not the {upstream!r} it was pinned to"
     elif call.completion is None:
         call.extra["enforced"], call.extra["why"] = None, "no usage came back"
+    elif call.finish == "error":
+        call.extra["enforced"] = None
+        call.extra["why"] = (
+            f"finish 'error'{f' ({native})' if native else ''} with {call.completion} completion"
+            " tokens: the answer was blocked or broken, which says nothing about the cap"
+        )
+    elif call.completion == 0:
+        call.extra["enforced"] = None
+        call.extra["why"] = (
+            f"0 completion tokens counted (finish {call.finish!r}): nothing was counted,"
+            " which says nothing about the cap"
+        )
     else:
         call.extra["enforced"] = call.completion <= PIN_CAP
-        call.extra["why"] = f"{call.completion} completion tokens at max_tokens={PIN_CAP}"
+        call.extra["why"] = (
+            f"{call.completion} completion tokens at max_tokens={PIN_CAP}, finish {call.finish!r}"
+        )
     return call
 
 
@@ -270,7 +343,7 @@ def print_call(call: Call, cap: int) -> None:
         f"wire={wire} finish={call.finish} completion={num(call.completion)} "
         f"reasoning={num(call.reasoning)} cap-completion={num(headroom)} "
         f"reserve={num(reserve)} content={'yes' if call.content else 'NO'} "
-        f"hint_sent={call.hint_sent} cost={cost}"
+        f"hint={hint_state(call)} cost={cost}"
         + (f" error={call.error}" if call.error else "")
     )
 
@@ -424,16 +497,29 @@ def main(argv: list[str] | None = None) -> int:
     assert media is not None, f"no media {args.media}"
     assert int(media["private"]) == 0, f"media {args.media} is private: it never goes to a cloud provider"
 
-    plan = tasks.plan_task(
-        conn, media_id=args.media, kind="cleanup", provider_name="openrouter",
-        model=args.model, budget_tokens=args.chunk_tokens,
-    )
+    # plan_task clamps a cleanup chunk to tasks.CONCAT_CHUNK_TOKENS - the very
+    # constant this script measures - so --chunk-tokens alone could never plan
+    # above 3,000 (the review of 3c679fd caught "--chunk-tokens 6000" planning
+    # 2,993-token chunks). plan_task reads the constant at call time, so it is
+    # set for this one call and put back: the plan is the app's own, at the
+    # asked limit, and a caller importing main() keeps the shipped value.
+    shipped = tasks.CONCAT_CHUNK_TOKENS
+    tasks.CONCAT_CHUNK_TOKENS = args.chunk_tokens
+    try:
+        plan = tasks.plan_task(
+            conn, media_id=args.media, kind="cleanup", provider_name="openrouter",
+            model=args.model, budget_tokens=args.chunk_tokens,
+        )
+    finally:
+        tasks.CONCAT_CHUNK_TOKENS = shipped
     chunks = list(plan.chunks[: args.first] if args.first else plan.chunks)
     cap = plan.max_output_tokens
+    limit = plan.budget_tokens  # what the chunker was given: the cap can still clamp it
     sizes = [c.tokens for c in plan.chunks]
     print(f"media    : {args.media} {media['title']!r}, private=0")
-    print(f"plan     : {len(sizes)} chunks at --chunk-tokens {args.chunk_tokens}: "
-          f"{min(sizes):,}-{max(sizes):,} estimated tokens, cap {cap:,}; sending {len(chunks)}")
+    print(f"plan     : {len(sizes)} chunks, limit {limit:,}"
+          + (f" (asked {args.chunk_tokens:,}; the {cap:,} cap clamps it)" if limit != args.chunk_tokens else "")
+          + f": {min(sizes):,}-{max(sizes):,} estimated tokens, cap {cap:,}; sending {len(chunks)}")
 
     recorder = RecordingTransport(fake_openrouter() if args.fake else httpx2.HTTPTransport())
     if args.fake:
@@ -497,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
             call = read_call(f"chunk {chunk.index + 1}/{len(plan.chunks)} rep {repeat}",
                              recorder.calls[before:], estimate=chunk.tokens)
             if answer is not None:
-                call.hint_sent = answer.hint_sent
+                call.answered, call.hint_sent = True, answer.hint_sent
             call.error = call.error or error
             calls.append(call)
             print_call(call, cap)
@@ -514,8 +600,8 @@ def main(argv: list[str] | None = None) -> int:
     known = [c for c in costs if isinstance(c, (int, float))]
     print(f"\ncost     : ${sum(known):.5f} over {len(known)} of {len(recorder.calls)} recorded calls"
           f" that reported one")
-    print(f"verdict  : {verdict} for {args.model} at {args.chunk_tokens:,}-token chunks"
-          f" ({'hinted' if args.hint else 'no hint'})")
+    print(f"verdict  : {verdict} for {args.model} at {limit:,}-token chunks"
+          f" (the biggest {max(sizes):,}; {'hinted' if args.hint else 'no hint'})")
     return 0 if verdict != "FAIL" else 1
 
 

@@ -18,6 +18,7 @@ from tests.test_llm_tasks import (  # noqa: F401  (fixtures)
     conn,
     fake_provider,
     register,
+    seed_long_run,
 )
 
 
@@ -82,6 +83,7 @@ def test_the_verdict_carries_the_numbers_a_refusal_has_to_quote():
         "words_in": 200,
         "words_out": 20,
         "ratio": pytest.approx(0.1),
+        "unchanged": False,
     }
 
 
@@ -92,6 +94,78 @@ def test_an_empty_transcript_is_not_a_pass():
 
     assert verdict["overall"] == 0.0
     assert not verdict["ok"]
+
+
+COPIED_PART = (
+    "[0:00] SPEAKER_00: uh so the towel is um the most important item\n"
+    "[0:05] SPEAKER_01: you know the answer is forty-two"
+)
+"""A part as the model is sent it: a stamp and a label in front of each line."""
+
+
+def test_a_cleaning_that_came_back_as_it_went_in_is_refused():
+    """The copy this rule refuses: every part came back as it went in. The
+    ratio gate counts words, so a copy sits in the middle of its band and
+    only this rule sees it. A blank line between the lines is the only change
+    here, and whitespace is not cleaning - nor is it the regrouping
+    `cleanup.md` asks for, which drops the stamps and labels inside a stretch.
+
+    Not the copy that was measured. On 2026-09-11 qwen3.5:4b answered media
+    12's part 0 with its input's counts, twice (963 of 963 words, 45 of 45
+    stamps; the text was not kept), but changed words in the other ten parts
+    - and that reading still publishes (the next test)."""
+    regrouped = COPIED_PART.replace("\n", "\n\n")
+
+    verdict = tasks.check_cleaning([COPIED_PART, w(100)], [regrouped, w(100)])
+
+    assert [part["unchanged"] for part in verdict["chunks"]] == [True, True]
+    assert verdict["overall"] == pytest.approx(1.0), "the ratio alone cannot see it"
+    assert not verdict["ok"]
+    assert any("nothing was cleaned" in reason for reason in verdict["reasons"]), verdict["reasons"]
+
+
+RUN_ON_PART = (
+    "[0:00] SPEAKER_00: so the towel is the most important item\n"
+    "[0:04] SPEAKER_00: a hitchhiker can have\n"
+    "[0:08] SPEAKER_00: you always know where it is"
+)
+"""One speaker over three lines: `cleanup.md` keeps only the stamp that starts
+a stretch, so a cleaning of this has two stamps to drop."""
+
+
+def test_a_cleaning_with_some_parts_unchanged_is_still_published():
+    """The shape measured on 2026-09-11, and a gap the copy rule leaves open.
+
+    qwen3.5:4b's reading of media 12 had 11 parts. Part 0 came back with its
+    input's counts - 963 words in and out, 45 of 45 stamps; a copy by every
+    count kept, though the text itself was not - and the other ten
+    changed words (ratios 0.79-0.999), so not every part was a copy and the
+    reading published, at 0.894 and 0.902. That part had work to do: 43 of
+    its 45 lines continue the speaker before them, as every line after the
+    first does here. The rule refuses only a reading that is a copy
+    throughout; refusing one copied part is ADR-010's open question, for
+    Robert. Pinned, so that closing the gap has to move this test."""
+    cleaned = "[0:00] SPEAKER_00: So the towel is the most important item."
+    run_on_as_paragraphs = RUN_ON_PART.replace("\n", "\n\n")
+
+    verdict = tasks.check_cleaning(
+        [RUN_ON_PART, COPIED_PART],
+        [run_on_as_paragraphs, cleaned + " The answer is forty-two."],
+    )
+
+    assert [part["unchanged"] for part in verdict["chunks"]] == [True, False]
+    assert verdict["ok"], verdict["reasons"]
+
+
+def test_a_part_with_its_punctuation_fixed_is_a_change():
+    """Fixing punctuation is part of the job (`cleanup.md`), so only
+    whitespace is ignored when deciding whether a part came back unchanged."""
+    verdict = tasks.check_cleaning(
+        ["[0:00] SPEAKER_00: dont panic its fine"], ["[0:00] SPEAKER_00: Don't panic, it's fine."]
+    )
+
+    assert verdict["chunks"][0]["unchanged"] is False
+    assert verdict["ok"], verdict["reasons"]
 
 
 def test_the_bounds_leave_room_on_both_sides_of_honest_work():
@@ -128,7 +202,9 @@ def test_a_cleaning_that_passes_the_gate_is_published(conn, media, monkeypatch):
     """The words are untouched either way; this is the second reading."""
     doc = docs.load(conn, media)
     source = " ".join(seg["text"] for seg in doc.segments)
-    provider, _ = fake_provider([source])  # unchanged text: ratio 1.0
+    # The segments' own words with the stamps and labels dropped: 40 of the 48
+    # words sent (ratio 0.83), so a change - a copy is refused (see above).
+    provider, _ = fake_provider([source])
     register(monkeypatch, provider)
 
     output_id = tasks.run_task(
@@ -227,6 +303,82 @@ def test_publishing_a_reading_touches_no_word(conn, media, monkeypatch):
     ]
     assert after == before
     assert tasks.clean_reading(conn, run_id) is not None
+
+
+def test_a_verbatim_copy_is_stored_but_not_published(conn, media, monkeypatch):
+    """The end-to-end half of the copy rule: the model echoes exactly what it
+    was sent, the answer is stored like any refused one, and no reading is
+    published - the recording reads as it did, which is all a copy offers."""
+
+    def echo(req):
+        return "\n".join(line for line in req.user.splitlines() if line.startswith("[0:"))
+
+    provider, calls = fake_provider(echo)
+    register(monkeypatch, provider)
+    plan = tasks.plan_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+
+    output_id = tasks.run_task(
+        conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1"
+    )
+
+    stored = conn.execute("SELECT content FROM llm_output WHERE id=?", (output_id,)).fetchone()
+    assert stored["content"].split() == plan.chunks[0].text.split(), "the fake must echo its input"
+    assert _reading(conn, media) is None
+    verdict = tasks.apply_cleanup(conn, plan, stored["content"], output_id)
+    assert verdict["published"] is False
+    assert any("nothing was cleaned" in reason for reason in verdict["reasons"]), verdict["reasons"]
+
+
+def naming(name: str):
+    """A cleaner that makes a real change at ratio 1.0 - the cluster label
+    becomes `name` - so a reading shows whose parts it was built from."""
+
+    def clean(req):
+        return "\n".join(
+            line.replace("SPEAKER_00:", f"{name}:")
+            for line in req.user.splitlines()
+            if line.startswith("[0:")
+        )
+
+    return clean
+
+
+def test_a_rerun_publishes_its_own_parts_not_another_models_newer_ones(conn, monkeypatch):
+    """Measured 2026-09-11 on a copy of the library: media 12 cleaned on the
+    cloud (7 parts), then locally (11 parts), then on the cloud again. The
+    last run reused its own 7 parts - `stored_chunk` keys a part by provider,
+    model and segments - but the gate read the newest part per index across
+    the whole run, which were the local ones, judged them against the cloud
+    chunks and refused a good cleaning ('part 1 kept 48%'). In this fixture
+    the old read does worse: the local parts pass the gate, so it publishes
+    them under the cloud row's id - another model's cleaning under this
+    row's name, which the text assertion catches (the id assertion passes).
+    A reading is built from the parts its own row names."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    cloud, _ = fake_provider(naming("Cloud"), name="cloud")
+    local, _ = fake_provider(naming("Local"), name="local")
+    register(monkeypatch, cloud)
+    register(monkeypatch, local)
+    wide = dict(media_id=media_id, kind="cleanup", provider_name="cloud", model="cloud-1",
+                budget_tokens=100)
+    narrow = dict(media_id=media_id, kind="cleanup", provider_name="local", model="local-1",
+                  budget_tokens=60)
+    assert (
+        len(tasks.plan_task(conn, **narrow).chunks) > len(tasks.plan_task(conn, **wide).chunks) > 1
+    ), "the test needs one run cut two ways, the second into more parts"
+
+    tasks.run_task(conn, **wide)
+    tasks.run_task(conn, **narrow)
+    again = tasks.run_task(conn, **wide)
+
+    final = conn.execute("SELECT content FROM llm_output WHERE id=?", (again,)).fetchone()
+    reading = _reading(conn, media_id)
+    assert reading is not None and reading["llm_output_id"] == again, (
+        f"the rerun's reading was not published; the reading is {reading}"
+    )
+    assert reading["text"] == final["content"]
+    assert "Local:" not in reading["text"]
 
 
 def test_a_refusal_is_reported_with_the_numbers_it_rested_on(conn, media, monkeypatch):

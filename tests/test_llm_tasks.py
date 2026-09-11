@@ -852,6 +852,35 @@ def test_a_note_cut_off_mid_sentence_is_not_stored_and_not_reused(conn, monkeypa
     assert len(rows(conn, media_id, "summary")) == 1
 
 
+def test_a_cut_off_note_names_what_it_spent_and_whether_the_hint_went(conn, monkeypatch):
+    """A refused note writes no row either, so, like a refused cleanup part,
+    its error is the jobs board's only record of the call and has to carry
+    the spend, the upstream and the hint - or a reasoner that ran out of room
+    reads the same as a runaway."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    spent = dict(completion_tokens=400, reasoning_tokens=388, upstream="Azure", hint_sent=None)
+    cut_off, _ = fake_provider(
+        map_reduce_script(
+            ANSWERS["summary"],
+            note=lambda i: replace(truncated(f"notes {i} which stop mid-"), **spent),
+        )
+    )
+    register(monkeypatch, cut_off)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(
+            conn, media_id=media_id, kind="summary", provider_name="fake", model="fake-1",
+            budget_tokens=100,
+        )
+
+    message = str(caught.value)
+    assert "finish_reason='length'" in message
+    missing = [words for words in ("completion_tokens=400", "reasoning_tokens=388", "upstream='Azure'")
+               if words not in message]
+    assert missing == [], message
+
+
 def test_a_one_call_custom_answer_cut_off_at_the_cap_is_still_stored(conn, media, monkeypatch):
     """The refusal of a cut-off one-call answer belongs to the concat kinds,
     whose answer is a stretch of the transcript. `custom` keeps today's rule:

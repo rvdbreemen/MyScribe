@@ -95,6 +95,18 @@ class ChatResponse:
     upstream: str | None = None
 
 
+def hint_words(hint_sent: bool | None) -> str:
+    """`ChatResponse.hint_sent` in words, for an error message.
+
+    Here rather than in a provider because two kinds of caller need it: a
+    provider whose call came back with nothing, and `tasks` refusing a part
+    cut off at its cap. Neither writes a row, so the message is the receipt.
+    """
+    if hint_sent is None:
+        return "no reasoning hint asked"
+    return "reasoning hint sent" if hint_sent else "reasoning hint refused and dropped"
+
+
 def retarget(req: ChatRequest, provider: "Provider | type[Provider]") -> ChatRequest:
     """The same request aimed at another provider, with the model *replaced*.
 

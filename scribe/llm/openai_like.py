@@ -77,8 +77,25 @@ from scribe.llm import base
 from scribe.llm.base import ChatRequest, ChatResponse
 
 DEFAULT_TIMEOUT = 60.0
-"""Seconds for one completion. Long transcripts are chunked (Task 3), so a
-single call that takes longer than this is a stuck call, not a big one."""
+"""Seconds any one network operation of a completion may wait - the connect,
+each write, each read of the response - and not a limit on the call as a
+whole.
+
+The SDK passes a float to httpx2, which makes it `Timeout(60.0)`: one value
+for all four phases (`openai/_base_client.py`, `_build_request`). httpcore2
+then gives the read timeout to every socket read separately
+(`httpcore2/_sync/http11.py`, `_receive_event`). So 60 s catches a
+connection that goes silent for a minute - `APITimeoutError`, an
+`APIConnectionError`, which `_map` reports as `Unreachable` - but not a slow
+answer whose bytes keep arriving. Measured 2026-09-11: a gpt-5-mini
+completion took 126.3 s on a client built with timeout=60, and answered. Why
+its reads kept succeeding is inferred, not measured: something must have
+arrived within every 60 s, and what the server sent in the meantime was not
+recorded.
+
+This used to say a call longer than 60 s was stuck, not big. That was wrong
+twice: the number does not limit the call, and a reasoning call can honestly
+take longer (deepseek took 63-84 s on media 1, module docstring)."""
 
 ATTRIBUTION_REFERER = "http://127.0.0.1:4242"
 """OpenRouter shows a referer and a title on its activity page. This app's own
@@ -260,8 +277,16 @@ class OpenAILikeProvider(base.Provider):
         * `"hint"` - any other 400 while the reasoning hint is on the wire,
           except one saying the prompt does not fit. Structural on purpose: the
           three measured refusals share no wording (module docstring), and a
-          false positive costs one free 400 where a missed refusal costs the
-          call. On OpenRouter the hint is all of `extra_body`, which carries
+          missed refusal costs the call. A false positive - a 400 about
+          something else - is not free. When the call without the hint fails
+          too, it costs one more unbilled 400. When it succeeds, the answer
+          was bought at the model's default reasoning effort, the spend the
+          hint exists to avoid (22,515 and 21,512 reasoning tokens on media
+          1, module docstring). Under
+          `openrouter/auto`, which routes each request afresh, the answer may
+          even come from another model than the one that refused. The row says
+          so (`hint_sent` False); that is the price of not reading wording.
+          On OpenRouter the hint is all of `extra_body`, which carries
           nothing else today; a test pins that
           (`test_the_hint_mapping_is_copied_into_the_body_never_shared`).
         * None - a real refusal, mapped like any other.
@@ -338,7 +363,7 @@ class OpenAILikeProvider(base.Provider):
             raise base.BadResponse(
                 f"{self.name} answered with no message content (finish_reason={finish!r}, "
                 f"completion_tokens={completion_tokens}, reasoning_tokens={reasoning_tokens}, "
-                f"upstream={upstream!r}, {_hint_words(hint_sent)})"
+                f"upstream={upstream!r}, {base.hint_words(hint_sent)})"
             )
 
         return ChatResponse(
@@ -394,8 +419,11 @@ def _refuses_temperature(exc: openai.OpenAIError) -> bool:
 
     `param` decides when the endpoint names one: a refusal that names
     `reasoning_effort` and happens to mention temperature is not about
-    temperature. The wording is read only when no param came back, which is
-    how the 2026-09-06 gpt-5.6 refusal arrived.
+    temperature. Read by its wording, that refusal would cost the app's
+    temperature and a third request, which
+    `test_a_hint_refusal_that_mentions_temperature_drops_only_the_hint` pins.
+    The wording is read only when no param came back, which is how the
+    2026-09-06 gpt-5.6 refusal arrived.
     """
     if not isinstance(exc, openai.BadRequestError):
         return False
@@ -418,13 +446,6 @@ def _refuses_context(exc: openai.OpenAIError) -> bool:
         or "context length" in lowered
         or "too long" in lowered
     )
-
-
-def _hint_words(hint_sent: bool | None) -> str:
-    """`ChatResponse.hint_sent` in words, for an error message."""
-    if hint_sent is None:
-        return "no reasoning hint asked"
-    return "reasoning hint sent" if hint_sent else "reasoning hint refused and dropped"
 
 
 class OpenAIProvider(OpenAILikeProvider):

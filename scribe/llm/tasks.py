@@ -542,13 +542,37 @@ Local runs are unchanged: the 8,192 window binds first, at 1,798-1,799.
 Its own constant rather than a share of the cap, so a later cap change buys
 reasoning room instead of bigger chunks.
 
-PENDING the step-0 measurement (`scripts/task029_headroom.py`, media 12 at
-3,000, gpt-5.6-luna and gemini-3.5-flash-lite, no hint): every counted chunk
-must end 'stop' with content and spend at most about 1,395 reasoning tokens.
-That has not been run - it spends money and waits for Robert's go-ahead. If
-luna fails it, TASK-029's stop rule removes this constant and its `min()` in
-`plan_task`, sizing goes back to `min(budget, cap)`, and the decision records
-that chunk size buys no headroom."""
+Step 0 kept it. The rule it had to pass: every counted chunk ends 'stop' with
+content and spends at most half its reserve (about 1,395 tokens) reasoning;
+had luna failed, this constant and its `min()` in `plan_task` would have gone.
+Measured 2026-09-11 with `scripts/task029_headroom.py` on media 12, $0.36 in
+all. At 3,000 (7 chunks): gpt-5.6-luna on Azure without the hint ended 'stop'
+with content on 18 of 18 answered calls - 134-597 reasoning tokens on the six
+full chunks, 504-1,301 on the 1,722-token tail, at least 3,010 tokens left
+under the cap; with the hint, 19 of 19 and 0 reasoning. 5 of luna's 42 calls
+at 3,000 got OpenRouter's rate-limit envelope (HTTP 200, no usage), not a cap
+failure.
+gemini-3.5-flash-lite on Google refused the hint every time (the drop worked
+on all 21 calls here, and on the 4 at 6,000) and reported 0 reasoning: 21 of
+21 'stop', at least 2,895 left, the
+largest part 3,105 tokens for a 2,974-token chunk (1.04x, inside the band
+above). That Google holds the cap comes from a manual probe (60 completion
+tokens at max_tokens 64, 'length'), not from the script's pin check, which
+read Google's blocked answer as enforced (ADR-010, Chunks).
+
+The deciding reason is margin, not a luna failure. At 6,000 (4 chunks,
+1,605-5,999) luna finished every chunk too, hinted and not, but left only
+997-1,801 tokens on the full chunks, about a third of the room at 3,000. The
+2026-09-10 'length' on luna's later chunks did not reproduce. gemini's second
+6,000 chunk did end 'length', at 5,996 of 6,000 with 0 reasoning tokens
+reported - so, as far as its usage shows, the answer alone overran the cap:
+the case this constant exists for, seen once.
+
+What it does not show: one recording, one upstream per model (the account's
+routing filtered the others out), so nothing about an endpoint that ignores
+the cap (TASK-029's case 3). And the script's per-chunk rule cannot judge
+6,000: its reserve there, 6,000 - 1.07 x 5,999, is negative and fails at any
+reasoning, so finish and tokens left were read instead."""
 
 TRUNCATED_FINISH = "length"
 """How both provider families say "I stopped because I ran out of room".
@@ -1590,7 +1614,7 @@ def _collect_notes(
             raise base.BadResponse(
                 f"the model ran out of room writing its notes for chunk {chunk.index} of the "
                 f"{plan.kind!r} task {where}: it stopped at the {note_budget}-token cap "
-                f"(finish_reason={response.raw_finish_reason!r}) rather than finishing, so the "
+                f"({_spent(response)}) rather than finishing, so the "
                 "notes are cut off mid-sentence and have not been stored. What it managed: "
                 + clip(text)
             )
@@ -1710,6 +1734,13 @@ def _refuse_a_cut_off_part(plan: TaskPlan, chunk: Chunk, response: ChatResponse)
     reused by every later run. One helper for both places a part is asked for -
     each chunk in `_collect_parts`, and `generate`'s single call when the
     recording is one chunk - so the two cannot drift into different rules.
+
+    The message carries what the row would have (`reasoning_record`'s
+    numbers, and the hint in words), because a refused part writes no row and
+    this error is then the jobs board's only record of the call. Measured
+    2026-09-11: openai/gpt-5-mini spent 5,632 of its 6,000 tokens reasoning,
+    upstream Azure, after the hint was refused - and the board said only the
+    cap and 'length', which cannot tell a reasoner from a runaway.
     """
     if response.raw_finish_reason != TRUNCATED_FINISH:
         return
@@ -1717,8 +1748,24 @@ def _refuse_a_cut_off_part(plan: TaskPlan, chunk: Chunk, response: ChatResponse)
     raise base.BadResponse(
         f"the model ran out of room on chunk {chunk.index} of the {plan.kind!r} task "
         f"{where}: it stopped at the {plan.max_output_tokens}-token cap "
-        f"(finish_reason={response.raw_finish_reason!r}) rather than finishing, so the part "
+        f"({_spent(response)}) rather than finishing, so the part "
         "is cut off and has not been stored. What it managed: " + clip(response.text or "")
+    )
+
+
+def _spent(response: ChatResponse) -> str:
+    """What a call spent, in the words a refusal quotes.
+
+    The fields `reasoning_record` would have written to the row, because the
+    two refusals that use this - a cut-off part and a cut-off note - write no
+    row, and their error is then the jobs board's only record of the call.
+    """
+    return (
+        f"finish_reason={response.raw_finish_reason!r}, "
+        f"completion_tokens={response.completion_tokens}, "
+        f"reasoning_tokens={response.reasoning_tokens}, "
+        f"reasoning_chars={response.reasoning_chars}, upstream={response.upstream!r}, "
+        f"{base.hint_words(response.hint_sent)}"
     )
 
 
@@ -2064,6 +2111,48 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
 
     Returns a verdict with its numbers, so a refusal can say which chunk and by
     how much rather than only that it happened.
+
+    **And whether anything was cleaned at all.** Each part records
+    `unchanged`: it came back as it went in, whitespace aside. A word count
+    cannot tell a copy from a cleaning, because a copy sits in the middle of
+    the band. A reading in which every part came back unchanged is refused:
+    nothing was cleaned, and it would publish the transcript under the name
+    of its cleaning.
+
+    What the comparison sees. Whitespace is the only difference ignored, so a
+    copy that only re-spaced its lines - a blank line between them - is still
+    a copy. The `[m:ss]` stamps and `SPEAKER_xx:` labels count as words, and
+    `cleanup.md` does not ask for whitespace: its paragraphs keep only the
+    stamp and label that start each stretch, so a regrouped answer drops the
+    ones inside it. The rule therefore catches a copy that kept every line's
+    stamp and label, and no other: a copy regrouped the way the prompt asks,
+    its words untouched, passes - a known gap. Punctuation is not ignored:
+    fixing it is the job, so a comparison blind to it would call honest work
+    a copy.
+
+    It can refuse an honest answer, in one narrow case: every line starts its
+    own stretch (a one-segment recording, or speakers alternating line by
+    line) and the text needs no fixing, so what `cleanup.md` asks for is the
+    input with blank lines added. That reading is stored and not published,
+    and the recording reads as it did before - its transcript, or an earlier
+    cleaning of the same run, since `apply_cleanup` writes `clean_reading`
+    only on a pass and a refusal leaves the older row in place.
+
+    That guards a total copy, and the live check of TASK-029 produced none;
+    the copy it did produce still publishes. Measured 2026-09-11 on a copy of
+    the library: qwen3.5:4b with think:false answered media 12's part 0 with
+    its input's counts, twice - 963 words in and out, 45 of 45 stamps, and
+    5,486 characters against the chunk's 5,442, one more for each of its 44
+    line breaks. The answers were not kept, so "a copy with blank lines
+    added" is inferred from those counts, not compared. The other ten parts
+    changed words (ratios 0.79-0.999), so not every part was a copy and the
+    reading passed, at 0.894 and 0.902, as it did before this rule. That part
+    had work to do: 43 of its 45 lines continue the speaker before them, and
+    `cleanup.md` keeps only the stamp that starts each stretch. Refusing one
+    copied part is ADR-010's open question, for Robert: it would refuse this
+    reading, and a rerun on the same provider, model and prompt version
+    reuses the stored parts, copy included (`stored_chunk` does not ask
+    whether a reading was published), so it would be refused again.
     """
     per_chunk = [
         {
@@ -2071,6 +2160,7 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
             "words_in": len(a.split()),
             "words_out": len(b.split()),
             "ratio": len(b.split()) / len(a.split()) if a.split() else 0.0,
+            "unchanged": a.split() == b.split(),
         }
         for i, (a, b) in enumerate(zip(source, cleaned))
     ]
@@ -2088,6 +2178,12 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
         reasons.append(f"the whole reading kept {overall:.0%} of the words, under {CLEAN_MIN_RATIO:.0%}")
     if overall > CLEAN_MAX_RATIO:
         reasons.append(f"the whole reading is {overall:.0%} of the words, over {CLEAN_MAX_RATIO:.0%}")
+    # `per_chunk and`: all() of nothing is True, and no parts is not a copy.
+    if per_chunk and all(part["unchanged"] for part in per_chunk):
+        reasons.append(
+            f"every part came back as it went in ({len(per_chunk)} of {len(per_chunk)}, "
+            "whitespace aside): nothing was cleaned"
+        )
     for part in per_chunk:
         if part["ratio"] < CLEAN_MIN_RATIO:
             reasons.append(
@@ -2110,7 +2206,9 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
     }
 
 
-def cleaned_parts(conn: sqlite3.Connection, plan: "TaskPlan", payload: Any) -> list[str]:
+def cleaned_parts(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> list[str]:
     """The cleaning, in the same pieces the transcript was cut into.
 
     A one-call cleaning is one part and it is the answer itself. A chunked one
@@ -2118,21 +2216,39 @@ def cleaned_parts(conn: sqlite3.Connection, plan: "TaskPlan", payload: Any) -> l
     resumable - so the pieces are read back rather than recovered by splitting
     the joined text, which would come apart on any part that contains a blank
     line.
+
+    **Which pieces: the ones the final row names** (`chunk_output_ids`, in
+    chunk order), never the newest row per index. One run can hold parts from
+    several providers, models and prompt versions, and `stored_chunk` reuses a
+    part only under its own provider, model and segments - so the newest part
+    at an index can belong to somebody else. Measured 2026-09-11 on a copy of
+    the library: media 12 cleaned on the cloud (7 parts), then locally (11),
+    then on the cloud again; the last run reused its own 7 parts, the gate
+    read the newer local ones and refused a good cleaning ('part 1 kept 48%').
+    Where the other model's parts pass the gate, that read publishes them
+    under this row's id instead: the rerun test in
+    `tests/test_llm_cleaning_gate.py` is red against it.
+    Read by position in the list, not by row id: a resumed run can name an
+    old part after a new one. A missing or unreadable list yields no parts,
+    and the gate refuses the count - the safe direction.
     """
     if len(plan.chunks) <= 1:
         return [str(payload)]
     with db.LOCK:
+        final = conn.execute(
+            "SELECT params_json FROM llm_output WHERE id=?", (output_id,)
+        ).fetchone()
+        try:
+            ids = json.loads(final["params_json"] or "{}").get("chunk_output_ids") or []
+        except (TypeError, ValueError, AttributeError):
+            ids = []
         rows = conn.execute(
-            "SELECT kind, content FROM llm_output WHERE media_id=? AND run_id=?"
-            " AND kind LIKE ? ORDER BY id",
-            (plan.media_id, plan.run_id, f"{plan.kind}{CHUNK_KIND_SEPARATOR}%"),
-        ).fetchall()
-    by_kind = {str(row["kind"]): str(row["content"]) for row in rows}
-    return [
-        by_kind[key]
-        for i in range(len(plan.chunks))
-        if (key := chunk_kind(plan.kind, i, plan.note_question)) in by_kind
-    ]
+            f"SELECT id, content FROM llm_output WHERE media_id=? AND run_id=?"
+            f" AND id IN ({','.join('?' * len(ids))})",
+            (plan.media_id, plan.run_id, *ids),
+        ).fetchall() if ids else []
+    by_id = {int(row["id"]): str(row["content"]) for row in rows}
+    return [by_id[i] for i in ids if i in by_id]
 
 
 def apply_cleanup(
@@ -2153,7 +2269,7 @@ def apply_cleanup(
     that is deliberate - "this cleaning was refused for shrinking part three to
     22 percent" is only checkable while the thing that was refused survives.
     """
-    parts = cleaned_parts(conn, plan, payload)
+    parts = cleaned_parts(conn, plan, payload, output_id)
     verdict = check_cleaning([chunk.text for chunk in plan.chunks], parts)
 
     if not verdict["ok"]:

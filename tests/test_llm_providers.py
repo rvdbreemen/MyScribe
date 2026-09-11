@@ -11,6 +11,7 @@ not asserted here.
 
 from __future__ import annotations
 
+import copy
 import json
 
 import httpx2
@@ -420,6 +421,38 @@ def test_a_temperature_refusal_with_the_hint_on_drops_only_temperature():
     assert answer.hint_sent is True
 
 
+def test_a_hint_refusal_that_mentions_temperature_drops_only_the_hint():
+    """`exc.param` decides when the endpoint names a knob. A refusal naming
+    `reasoning_effort` whose message happens to contain "temperature" and
+    "unsupported" is about the hint. Read by its wording - the predicate before
+    TASK-029 - it would drop the app's temperature, keep the refused hint, be
+    refused again and drop the hint on a third request: an answer at the
+    model's default temperature, for a refusal that never mentioned it. The
+    wording is constructed; no endpoint has been seen sending it. It is the
+    case the `param` rule exists for."""
+
+    def endpoint(request):
+        if "reasoning_effort" in json.loads(request.content):
+            return error(
+                400,
+                "Unsupported value: 'reasoning_effort' does not support 'none' with this "
+                "model; on reasoning models it takes the place of temperature.",
+                code="unsupported_value",
+                param="reasoning_effort",
+            )
+        return completion("Paris")
+
+    rec = Recorder(endpoint)
+
+    answer = provider(openai_like.OpenAIProvider, rec).complete(hinted())
+
+    assert rec.calls == 2, [sorted(rec.body(i)) for i in range(rec.calls)]
+    assert "reasoning_effort" in rec.body(0)
+    assert "reasoning_effort" not in rec.body(1), "the refused hint was sent again"
+    assert rec.body(1)["temperature"] == hinted().temperature, "temperature was dropped"
+    assert answer.hint_sent is False
+
+
 def test_a_temperature_refusal_then_a_hint_refusal_is_three_calls():
     """Each knob is dropped at most once, so the worst case is three calls and
     every extra one follows a 400."""
@@ -435,23 +468,48 @@ def test_a_temperature_refusal_then_a_hint_refusal_is_three_calls():
     assert answer.hint_sent is False
 
 
-def test_the_hint_mapping_is_copied_into_the_body_never_shared():
+def test_the_hint_mapping_is_copied_into_the_body_never_shared(monkeypatch):
     """`reasoning_off_body` is a class attribute every instance shares, and
-    dropping the hint pops from the body. Merged by reference, the first drop
-    would empty the class's own mapping and every later hint would be sent as
-    nothing. Also pins that OpenRouter's `extra_body` carries the hint and
-    nothing else, since dropping the hint drops the whole key."""
+    OpenRouter's is nested: `{"extra_body": {"reasoning": {...}}}`. Merged by
+    reference - or copied one level, which `dict(...)` does - the `extra_body`
+    handed to the SDK *is* the class's own dict, and whatever writes into it
+    rewrites the hint for every later call in the process. So this checks the
+    object that was sent, not only the JSON: a fresh dict at both levels.
+
+    Popping the hint from the body never touched the class mapping, which is
+    why an earlier version of this test, asserting only that the mapping still
+    compared equal, passed against a by-reference merge. Also pins that
+    `extra_body` carries the hint and nothing else, since dropping the hint
+    drops the whole key."""
     assert openai_like.OpenRouterProvider.reasoning_off_body == {
         "extra_body": {"reasoning": {"enabled": False}}
     }
     assert openai_like.OpenAIProvider.reasoning_off_body == {"reasoning_effort": "none"}
+    # A fresh mapping under monkeypatch: if the copy is ever lost, whatever the
+    # failing run did to it is undone at teardown instead of leaking onward.
+    shared = copy.deepcopy(openai_like.OpenRouterProvider.reasoning_off_body)
+    monkeypatch.setattr(openai_like.OpenRouterProvider, "reasoning_off_body", shared)
     refusal = error(400, "Reasoning is mandatory for this endpoint and cannot be disabled.")
+    prov = provider(openai_like.OpenRouterProvider, Recorder(refusal, completion()))
+    handed: list = []
+    real_create = prov._create
 
-    provider(openai_like.OpenRouterProvider, Recorder(refusal, completion())).complete(hinted())
+    def spy(key, body, req):
+        # Taken at the call, before `complete` pops the hint for the retry.
+        handed.append(body.get("extra_body"))
+        return real_create(key, body, req)
 
-    assert openai_like.OpenRouterProvider.reasoning_off_body == {
-        "extra_body": {"reasoning": {"enabled": False}}
-    }
+    monkeypatch.setattr(prov, "_create", spy)
+
+    prov.complete(hinted())
+
+    sent = handed[0]
+    assert sent == {"reasoning": {"enabled": False}}
+    assert sent is not shared["extra_body"], "the body holds the class's own extra_body"
+    assert sent["reasoning"] is not shared["extra_body"]["reasoning"], "copied one level only"
+    assert handed[1] is None, "the retry without the hint sends no extra_body at all"
+    sent["reasoning"]["enabled"] = True  # anything downstream writing into what it was handed
+    assert shared == {"extra_body": {"reasoning": {"enabled": False}}}
     later = Recorder(completion())
     provider(openai_like.OpenRouterProvider, later).complete(hinted())
     assert later.body()["reasoning"] == {"enabled": False}
