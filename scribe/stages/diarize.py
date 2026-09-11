@@ -348,7 +348,9 @@ def load_pipeline_with_source(
     default second, and the assembled 3.1 fallback last - so a token without
     gated-repo access still diarizes, and the run says with what. An explicit
     source is tried alone: someone who names a pipeline wants that pipeline,
-    not a silent fallback to a different one.
+    not a silent fallback to a different one. That someone is Python code - a
+    test, a script - and never a job: the stage passes no source (TASK-034),
+    because a pipeline source is code pyannote will run.
 
     Raises :class:`WeightsUnavailable` listing every place that was tried and
     what it said, because the failures look identical from the outside and
@@ -602,6 +604,16 @@ def run(ctx: "RunnerContext") -> None:
         ctx.report(1.0)
         return
 
+    # No `model_dir_or_id`, and never one from the job (TASK-034). This read
+    # `params["diarization_model"]` until 2026-09-11, and a job's params came
+    # off `POST /api/media` unread: pyannote's `from_pretrained` builds the
+    # class a pipeline config names and loads its checkpoints with
+    # `weights_only=False`, so any local client chose code this child ran.
+    # Nothing in the app ever wrote the key. Choosing a pipeline is done by
+    # putting it at MODELS_DIR/pyannote, which takes write access to the data
+    # directory - the same trust as editing this file. The door now refuses
+    # the key too, but a job queued before the upgrade is never re-validated;
+    # not reading it here is what covers that one.
     loaded: dict = {}
     turns, embeddings = diarize(
         wav,
@@ -610,7 +622,6 @@ def run(ctx: "RunnerContext") -> None:
         max_speakers=ctx.params.get("max_speakers"),
         on_progress=ctx.report,
         device=ctx.params.get("device"),
-        model_dir_or_id=ctx.params.get("diarization_model"),
         token=hf_token(ctx.conn),
         source_out=loaded,
     )

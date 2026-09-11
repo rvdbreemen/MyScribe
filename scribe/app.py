@@ -25,6 +25,16 @@ dialog uses (`language`, `tier`, `diarize`, ...), validated by
 mean the same thing by them, or a raw `params` object for a caller who knows
 the stage keys. Not both: two answers to one question would need a precedence
 rule, and a 400 is clearer than one.
+
+The raw object is held to `options.PARAM_KEYS`, and a key outside it is a 400
+that names it (TASK-034). It used to go onto the job unread, and the diarize
+stage used to hand `params["diarization_model"]` to its pipeline loader, which
+builds whatever class that pipeline's config names - so any process on this
+machine, another Windows account included, could choose code the runner
+executed. `scribe.guard` stops a browser; it cannot stop a local client, and
+this is the only route that reads a client's params object at all. A retry is
+the same door a second time, so it replays a transcribe job's params through
+the same sieve: a job stored before the fix is never re-validated otherwise.
 """
 
 import json
@@ -38,7 +48,7 @@ from starlette.concurrency import run_in_threadpool
 import scribe
 from scribe import applog, db, fsbrowse, guard, jobs, media, paths, supervisor, web
 from scribe.ingest import feeds, recording, watching
-from scribe.options import OPTION_FIELDS, parse_options
+from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options
 from scribe.stages import finalize, transcribe
 
 # The form field carrying the upload, and the job type ingest queues.
@@ -93,6 +103,19 @@ def _ingest_options(source: dict) -> tuple[str | None, int | None, dict]:
             raise HTTPException(status_code=400, detail=f"params is not valid JSON: {exc}")
     if not isinstance(params, dict):
         raise HTTPException(status_code=400, detail="params must be a JSON object")
+    # Refused rather than dropped: a caller who sent a key meant something by
+    # it, and a job that silently ignores it is a worse answer than a 400 that
+    # says which one. Checked before anything is filed, so a refusal leaves no
+    # media row behind.
+    foreign = sorted(key for key in params if key not in PARAM_KEYS)
+    if foreign:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"params carries {', '.join(map(repr, foreign))}, which a transcribe "
+                f"job does not take; it takes {', '.join(sorted(PARAM_KEYS))}"
+            ),
+        )
 
     given = {key: source[key] for key in OPTION_FIELDS if key in source}
     if given:
@@ -324,11 +347,19 @@ def create_app(
                     f"{'/'.join(jobs.RETRYABLE_STATUSES)} jobs can be retried"
                 ),
             )
+        params = json.loads(row["params_json"] or "{}")
+        # A transcribe job stored before TASK-034 may carry a key the door now
+        # refuses; replaying it verbatim would be the old door with extra
+        # steps. Only that type is sieved (`_INGEST_JOB_TYPE` is "transcribe",
+        # the job this app's ingest queues): an ingest_url job's `feed_id` and
+        # a language-model job's `prompt` are their own vocabularies, not strays.
+        if row["type"] == _INGEST_JOB_TYPE:
+            params = {key: value for key, value in params.items() if key in PARAM_KEYS}
         new_id = jobs.enqueue(
             conn,
             row["type"],
             media_id=row["media_id"],
-            params=json.loads(row["params_json"] or "{}"),
+            params=params,
             priority=row["priority"],
             retry_of=job_id,
         )

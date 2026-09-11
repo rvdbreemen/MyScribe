@@ -891,10 +891,11 @@ def test_the_whole_pipeline_on_the_gpu_with_the_default_model(client, monkeypatc
 
     conn = db.connect(paths.DB_PATH)
     try:
-        # No model, no device: the defaults are what this test is about.
-        outcome = _run_one(
-            client, conn, params={"diarization_model": "substituted-public-components"}
-        )
+        # No model, no device: the defaults are what this test is about. No
+        # pipeline either: since TASK-034 a job cannot name one and the door
+        # refuses the key. `build` above ignores the source it is handed, so
+        # the stage's default source is built from the public components.
+        outcome = _run_one(client, conn, params={})
 
         assert outcome.exit_code == 0, outcome.job["error_detail"]
         assert outcome.job["status"] == "done"

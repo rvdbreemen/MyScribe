@@ -105,6 +105,7 @@ OPTION_FIELDS: tuple[str, ...] = tuple(TranscribeOptions.model_fields)
 PARAM_KEYS: frozenset[str] = frozenset(
     {"model", "task", "language", "diarize", "num_speakers", "min_speakers", "max_speakers"}
     | {transcribe.EXTRA_HOTWORDS_KEY}
+    | {"device", "compute_type"}
 )
 """Every key a transcribe job may carry, whoever produced it.
 
@@ -120,6 +121,23 @@ video's own proper nouns in `extra_hotwords` (`url_stage.transcribe_params`)
 and the transcribe stage reads them (`transcribe._extra_hotwords`). Left out,
 re-transcribing an imported video silently dropped the names the ingest door
 already knew. Any new key a transcribe job may carry belongs here too.
+
+Since TASK-034 it is also the door: `POST /api/media` refuses a params object
+carrying anything else, and a retry replays only these. That door used to take
+any key, and the diarize stage read one of them - `diarization_model` - into
+pyannote's `Pipeline.from_pretrained`, which resolves the class a pipeline
+config names and loads its checkpoints with `weights_only=False`. Whoever could
+post to loopback chose code the runner ran. The stage no longer reads that key
+and it is deliberately absent here.
+
+`device` and `compute_type` were the drift the paragraph above warns about,
+found the same day: both stages read `device` (`transcribe.run`,
+`diarize.run`) and the transcribe stage reads `compute_type`, and the
+end-to-end suite posts them to `/api/media` to run `tiny` on the CPU of a
+machine with a card. Neither reaches a class-name resolver or an unpickler -
+CTranslate2 and torch refuse a device string they do not know - so admitting
+them reopens nothing. The price: a re-transcribe now repeats a request's
+device, where `_last_params` used to drop it.
 """
 
 
