@@ -13,6 +13,7 @@ so the privacy pin and the registry stay in the path.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -27,6 +28,7 @@ from tests.test_llm_tasks import (
     register,
     rows,
     seed_long_run,
+    truncated,
 )
 
 SPEAKERS_ANSWER = json.dumps(
@@ -219,6 +221,169 @@ def test_a_resumed_cleanup_reuses_the_parts_it_already_paid_for(conn, monkeypatc
     parts = [r for r in rows(conn, media_id) if r["kind"].startswith("cleanup:chunk:")]
     assert len(calls) == len(parts) - before  # the first part was not asked again
     assert parts[0]["content"] == "part 1"
+
+
+STAMP = re.compile(r"^\[(\d+:\d{2})\] ", re.MULTILINE)
+"""The `[m:ss] ` a transcript line starts with. seed_long_run starts a segment
+every five seconds, so in these tests a stamp names exactly one segment."""
+
+
+def echo_the_lines(req: base.ChatRequest) -> str:
+    """A cleaning that is exactly the transcript lines it was given, so the
+    joined answer shows which segments each part covered."""
+    return "\n".join(line for line in req.user.splitlines() if STAMP.match(line))
+
+
+def test_a_one_call_cleanup_cut_off_at_the_cap_is_refused_and_nothing_is_stored(
+    conn, media, monkeypatch
+):
+    """Row 15 (2026-09-11): media 7's cleanup, gpt-5.6-luna, 12,000 of 12,000
+    tokens, finish 'length' - stored, and offered to the gate as a cleaning.
+
+    `_collect_parts` has refused a part cut off at the cap since TASK-026, but
+    a recording short enough for one call never reaches it: `generate`'s
+    single-call branch stored whatever came back. For a concat kind the answer
+    *is* the transcript, so a cut-off one has lost its tail without a word -
+    and this one keeps 65% of the words, which the 0.55 gate lets through.
+    """
+    assert [kind for kind, spec in tasks.TASKS.items() if spec.combine == "concat"] == [
+        "cleanup"
+    ], "the refusal is scoped to concat kinds; cleanup is the only one today"
+    cut_off = (
+        "[0:00] SPEAKER_00: Don't panic, the towel is still the most important item. "
+        "The answer to life, the universe and everything is forty-two.\n\n"
+        "[0:10] SPEAKER_01: Marvin says the improbability drive makes him"
+    )
+    provider, calls = fake_provider([truncated(cut_off)])
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+
+    assert len(calls) == 1
+    assert "length" in str(caught.value)
+    assert rows(conn, media) == [], "a cleaning the model never finished was stored anyway"
+    assert tasks.clean_reading(conn, _run_id(conn, media)) is None
+
+
+def test_a_part_cut_off_at_the_cap_is_refused_and_the_parts_before_it_are_kept(
+    conn, monkeypatch
+):
+    """The chunked half of the same rule (TASK-026), which now shares its
+    helper with the one-call half: the cut-off part is not stored, the parts
+    already paid for are, and no joined reading is written."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    seen = {"n": 0}
+
+    def second_is_cut_off(req):
+        seen["n"] += 1
+        return truncated("[0:15] SPEAKER_00: word00 word01") if seen["n"] == 2 else echo_the_lines(req)
+
+    provider, calls = fake_provider(second_is_cut_off)
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(
+            conn, media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1",
+            budget_tokens=100,
+        )
+
+    assert "length" in str(caught.value)
+    assert len(calls) == 2, "the first cut-off part ends the run"
+    assert [r["kind"] for r in rows(conn, media_id)] == ["cleanup:chunk:0"]
+
+
+def test_a_stored_part_cut_on_other_boundaries_is_asked_again(conn, monkeypatch):
+    """A part is reused only for the segments it was made from.
+
+    The live receipt is row 14: media 12's cleanup part 0, made on 6,000-token
+    chunks, carries 184 segment ids. Under 3,000-token chunks part 0 covers
+    fewer segments; reused by its index it would stand in for them, the next
+    part would repeat the stretch in between, and the gate would refuse media
+    12 on every run - the wrong words, paid for once and served forever.
+    """
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    kwargs = dict(media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1")
+
+    first, first_calls = fake_provider(echo_the_lines)
+    register(monkeypatch, first)
+    tasks.run_task(conn, budget_tokens=100, **kwargs)
+
+    again, again_calls = fake_provider(echo_the_lines)
+    register(monkeypatch, again)
+    tasks.run_task(conn, budget_tokens=60, **kwargs)
+
+    wide = tasks.plan_task(conn, budget_tokens=100, **kwargs).chunks
+    narrow = tasks.plan_task(conn, budget_tokens=60, **kwargs).chunks
+    assert wide[0].segment_ids != narrow[0].segment_ids, "the test needs boundaries that moved"
+    # Every part of the narrow plan differs from the wide part stored under its
+    # index (or has none), so every one of them is asked.
+    assert len(again_calls) == len(narrow), "a part cut on other boundaries was reused"
+
+    final = rows(conn, media_id, "cleanup")[-1]["content"]
+    stamps = STAMP.findall(final)
+    assert len(stamps) == 12 and len(set(stamps)) == 12, (
+        f"each segment belongs in the reading once, got {stamps}"
+    )
+
+
+def test_a_cleanup_chunk_is_cut_to_the_concat_limit_not_the_answer_cap(conn, monkeypatch):
+    """A part at the gate's ceiling is about 1.07 x its chunk, so a 5,999-token
+    chunk needs about 6,420 tokens of answer from a 6,000-token cap: no room
+    even with no reasoning at all. At 3,000 it needs about 3,210 and leaves
+    about 2,790 for reasoning.
+
+    The limit is its own number rather than a share of the cap, so a bigger
+    cap buys reasoning room instead of bigger chunks - which is what planning
+    the same recording at 12,000 shows. Planning only: nothing is sent."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=300)
+    provider, calls = fake_provider(echo_the_lines)  # a cloud provider: a 128k window
+    register(monkeypatch, provider)
+    kwargs = dict(media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1")
+
+    at_the_cap = max(chunk.tokens for chunk in tasks.plan_task(conn, **kwargs).chunks)
+    assert at_the_cap <= 3000, f"a chunk as big as the answer cap: {at_the_cap} tokens"
+
+    bigger_cap = tasks.plan_task(conn, max_output_tokens=12_000, **kwargs)
+    assert bigger_cap.max_output_tokens == 12_000
+    assert max(chunk.tokens for chunk in bigger_cap.chunks) <= 3000, "the chunks grew with the cap"
+
+    assert tasks.CONCAT_CHUNK_TOKENS == 3000
+    assert calls == []
+
+
+def test_a_stored_part_that_does_not_name_its_segments_is_asked_again(conn, monkeypatch):
+    """The safe direction for a row that cannot be judged: a part with no
+    `segment_ids` cannot prove it covers these segments, so it is asked again
+    rather than trusted."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    kwargs = dict(
+        media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1", budget_tokens=100
+    )
+    first, _ = fake_provider(echo_the_lines)
+    register(monkeypatch, first)
+    tasks.run_task(conn, **kwargs)
+
+    with db.LOCK:
+        for row in conn.execute(
+            "SELECT id, params_json FROM llm_output WHERE kind LIKE 'cleanup:chunk:%'"
+        ).fetchall():
+            params = json.loads(row["params_json"])
+            params.pop("segment_ids")
+            conn.execute(
+                "UPDATE llm_output SET params_json=? WHERE id=?", (json.dumps(params), row["id"])
+            )
+        conn.commit()
+
+    again, again_calls = fake_provider(echo_the_lines)
+    register(monkeypatch, again)
+    tasks.run_task(conn, **kwargs)
+
+    assert len(again_calls) == len(tasks.plan_task(conn, **kwargs).chunks)
 
 
 # --- confidence as a number (TASK-024) ---------------------------------------------

@@ -73,30 +73,48 @@ def fake_factory(handler):
     return factory
 
 
-def completion(text="hello", *, prompt=11, completion_tokens=2, finish="stop"):
-    return httpx2.Response(
-        200,
-        json={
-            "id": "cmpl-1",
-            "object": "chat.completion",
-            "created": 1,
-            "model": "m",
-            "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": finish}
-            ],
-            "usage": {
-                "prompt_tokens": prompt,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt + completion_tokens,
-            },
-        },
-    )
+def completion(
+    text="hello",
+    *,
+    prompt=11,
+    completion_tokens=2,
+    finish="stop",
+    details=None,
+    upstream=None,
+    reasoning_trace="absent",
+):
+    """A chat completion. `details` is `usage.completion_tokens_details`,
+    `upstream` OpenRouter's top-level `provider`, and `reasoning_trace` the
+    `message.reasoning` field ("absent" leaves the key out)."""
+    message: dict = {"role": "assistant", "content": text}
+    if reasoning_trace != "absent":
+        message["reasoning"] = reasoning_trace
+    usage: dict = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt + completion_tokens,
+    }
+    if details is not None:
+        usage["completion_tokens_details"] = details
+    payload: dict = {
+        "id": "cmpl-1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "m",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        "usage": usage,
+    }
+    if upstream is not None:
+        payload["provider"] = upstream
+    return httpx2.Response(200, json=payload)
 
 
-def error(status: int, message: str, code=None):
+def error(status: int, message: str, code=None, param=None):
     body = {"error": {"message": message}}
     if code is not None:
         body["error"]["code"] = code
+    if param is not None:
+        body["error"]["param"] = param
     return httpx2.Response(status, json=body)
 
 
@@ -255,6 +273,263 @@ def test_a_second_400_after_dropping_temperature_is_a_bad_response():
     with pytest.raises(base.BadResponse):
         provider(openai_like.OpenAIProvider, rec).complete(REQUEST)
     assert rec.calls == 2
+
+
+# --- the reasoning hint (TASK-029) ---------------------------------------------------
+
+
+def hinted() -> base.ChatRequest:
+    """A request carrying the hint. Built per test rather than at import, so a
+    seam without the field fails each test that needs it and not the module."""
+    return base.ChatRequest(system="s", user="u", model="m", reasoning_off=True)
+
+
+REASONING_KEYS = ("reasoning", "reasoning_effort")
+
+
+@pytest.mark.parametrize(
+    "cls, key, value",
+    [
+        (openai_like.OpenRouterProvider, "reasoning", {"enabled": False}),
+        (openai_like.OpenAIProvider, "reasoning_effort", "none"),
+    ],
+    ids=["openrouter", "openai"],
+)
+def test_each_cloud_provider_says_no_reasoning_its_own_way(cls, key, value):
+    """One hint on the seam, one wire field per provider, and no caller that
+    knows which. Measured 2026-09-11: OpenRouter's `reasoning: {enabled:
+    false}` took deepseek-v4-flash and gpt-5.6-luna to 0 reasoning tokens;
+    api.openai.com's `reasoning_effort: "none"` did the same for gpt-5.6.
+
+    Asserted on the JSON that left, not on the kwargs: OpenRouter's field goes
+    through the SDK's `extra_body`, and a body with `extra_body` in it would be
+    the SDK not doing its job."""
+    with_hint = Recorder(completion())
+    provider(cls, with_hint).complete(hinted())
+
+    sent = with_hint.body()
+    assert sent[key] == value
+    assert [k for k in REASONING_KEYS if k != key and k in sent] == []
+    assert "extra_body" not in sent
+
+    plain = Recorder(completion())
+    provider(cls, plain).complete(REQUEST)
+    assert [k for k in REASONING_KEYS if k in plain.body()] == []
+
+
+@pytest.mark.parametrize(
+    "cls, refusal",
+    [
+        # google/gemini-3.5-flash-lite through OpenRouter, 2026-09-11: its
+        # reasoning is mandatory (default effort minimal).
+        (
+            openai_like.OpenRouterProvider,
+            error(400, "Reasoning is mandatory for this endpoint and cannot be disabled."),
+        ),
+        # gpt-4o-mini, OpenAIProvider.default_model, 2026-09-11.
+        (
+            openai_like.OpenAIProvider,
+            error(400, "Unrecognized request argument supplied: reasoning_effort"),
+        ),
+        # gpt-5 and gpt-6-astra answered code unsupported_value. The wording
+        # here is reconstructed from that code, and nothing reads it.
+        (
+            openai_like.OpenAIProvider,
+            error(
+                400,
+                "Unsupported value: 'reasoning_effort' does not support 'none' with this model.",
+                code="unsupported_value",
+                param="reasoning_effort",
+            ),
+        ),
+        # Worded like no refusal measured, and with no param: the rule is
+        # structural, so a vendor rephrasing tomorrow changes nothing.
+        (openai_like.OpenRouterProvider, error(400, "thinking cannot be turned off")),
+    ],
+    ids=["openrouter-mandatory", "gpt-4o-mini-unrecognized", "gpt-5-unsupported-value", "reworded"],
+)
+def test_a_refused_hint_is_retried_once_without_it(cls, refusal):
+    """A 400 while the hint is on the wire gets exactly one more try without
+    it. The model then reasons at its own default, and the answer says the
+    hint did not go (`hint_sent` False) so the row can tell a dropped hint
+    from an ignored one."""
+    rec = Recorder(refusal, completion("Paris"))
+
+    answer = provider(cls, rec).complete(hinted())
+
+    assert answer.text == "Paris"
+    assert rec.calls == 2
+    assert [k for k in REASONING_KEYS if k in rec.body(0)] != []
+    assert [k for k in REASONING_KEYS if k in rec.body(1)] == []
+    assert rec.body(1)["temperature"] == hinted().temperature, "only the hint was dropped"
+    assert answer.hint_sent is False
+
+
+def test_a_second_400_after_dropping_the_hint_is_a_bad_response():
+    refusal = error(400, "Reasoning is mandatory for this endpoint and cannot be disabled.")
+    other = error(400, "Unsupported parameter: 'max_tokens' is not supported with this model.")
+    rec = Recorder(refusal, other)
+
+    with pytest.raises(base.BadResponse):
+        provider(openai_like.OpenRouterProvider, rec).complete(hinted())
+
+    assert rec.calls == 2
+
+
+def test_a_context_length_400_with_the_hint_on_is_context_too_long_after_one_call():
+    """The one refusal the hint retry must not swallow: the prompt does not
+    fit, and a second call without the hint would not fit either."""
+    rec = Recorder(error(400, "maximum context length is 128000 tokens", code="context_length_exceeded"))
+
+    with pytest.raises(base.ContextTooLong):
+        provider(openai_like.OpenRouterProvider, rec).complete(hinted())
+
+    assert rec.calls == 1
+
+
+@pytest.mark.parametrize(
+    "cls", [openai_like.OpenRouterProvider, openai_like.OpenAIProvider], ids=["openrouter", "openai"]
+)
+def test_a_400_with_no_hint_on_the_wire_is_not_retried(cls):
+    rec = Recorder(error(400, "Reasoning is mandatory for this endpoint and cannot be disabled."))
+
+    with pytest.raises(base.BadResponse):
+        provider(cls, rec).complete(REQUEST)
+
+    assert rec.calls == 1
+
+
+def test_a_temperature_refusal_with_the_hint_on_drops_only_temperature():
+    """gpt-5.6 on api.openai.com refuses temperature 0.2 (2026-09-06) and
+    honours reasoning_effort 'none' (2026-09-11). `param` names the knob, so
+    the hint stays on the second call."""
+    refusal = error(
+        400,
+        "Unsupported value: 'temperature' does not support 0.2 with this model. "
+        "Only the default (1) value is supported.",
+        code="unsupported_value",
+        param="temperature",
+    )
+    rec = Recorder(refusal, completion("Paris"))
+
+    answer = provider(openai_like.OpenAIProvider, rec).complete(hinted())
+
+    assert rec.calls == 2
+    assert "temperature" not in rec.body(1)
+    assert rec.body(1)["reasoning_effort"] == "none"
+    assert answer.hint_sent is True
+
+
+def test_a_temperature_refusal_then_a_hint_refusal_is_three_calls():
+    """Each knob is dropped at most once, so the worst case is three calls and
+    every extra one follows a 400."""
+    temperature = error(400, "Unsupported value: 'temperature'", param="temperature")
+    hint = error(400, "Unrecognized request argument supplied: reasoning_effort")
+    rec = Recorder(temperature, hint, completion("Paris"))
+
+    answer = provider(openai_like.OpenAIProvider, rec).complete(hinted())
+
+    assert rec.calls == 3
+    assert "temperature" not in rec.body(2)
+    assert "reasoning_effort" not in rec.body(2)
+    assert answer.hint_sent is False
+
+
+def test_the_hint_mapping_is_copied_into_the_body_never_shared():
+    """`reasoning_off_body` is a class attribute every instance shares, and
+    dropping the hint pops from the body. Merged by reference, the first drop
+    would empty the class's own mapping and every later hint would be sent as
+    nothing. Also pins that OpenRouter's `extra_body` carries the hint and
+    nothing else, since dropping the hint drops the whole key."""
+    assert openai_like.OpenRouterProvider.reasoning_off_body == {
+        "extra_body": {"reasoning": {"enabled": False}}
+    }
+    assert openai_like.OpenAIProvider.reasoning_off_body == {"reasoning_effort": "none"}
+    refusal = error(400, "Reasoning is mandatory for this endpoint and cannot be disabled.")
+
+    provider(openai_like.OpenRouterProvider, Recorder(refusal, completion())).complete(hinted())
+
+    assert openai_like.OpenRouterProvider.reasoning_off_body == {
+        "extra_body": {"reasoning": {"enabled": False}}
+    }
+    later = Recorder(completion())
+    provider(openai_like.OpenRouterProvider, later).complete(hinted())
+    assert later.body()["reasoning"] == {"enabled": False}
+
+
+def test_the_answer_carries_reasoning_tokens_and_upstream():
+    """Media 1, 2026-09-10: 22,515 of 23,918 completion tokens were reasoning,
+    served by deepseek-v4-flash through the upstream OpenRouter calls Wafer.
+    Both numbers reach the answer, through the real SDK on a fake socket - the
+    top-level `provider` is not a field the SDK declares, and this is what
+    proves it survives as an attribute."""
+    rec = Recorder(
+        completion(
+            "cleaned",
+            completion_tokens=23918,
+            details={"reasoning_tokens": 22515},
+            upstream="Wafer",
+            reasoning_trace=None,
+        )
+    )
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(hinted())
+
+    assert answer.reasoning_tokens == 22515
+    assert answer.upstream == "Wafer"
+    assert answer.completion_tokens == 23918
+    assert answer.hint_sent is True
+    assert answer.reasoning_chars is None, "a cloud trace is not counted: luna spends without one"
+
+
+def test_unreported_reasoning_is_none_never_zero():
+    """None means nobody said; 0 would read as "it did not reason", which is
+    the claim `hint_ignored` is built on."""
+    for details in (None, {"reasoning_tokens": None}):
+        rec = Recorder(completion("hi", details=details))
+        answer = provider(openai_like.OpenAIProvider, rec).complete(REQUEST)
+        assert answer.reasoning_tokens is None
+        assert answer.upstream is None, "api.openai.com names no upstream"
+        assert answer.hint_sent is None, "no hint was asked for"
+
+
+def test_a_contentless_length_answer_says_what_it_spent():
+    """What job 154 left on the board was "no message content
+    (finish_reason='length')" - and nothing about where 8,000 tokens went. A
+    failed call writes no row, so the error is the only receipt."""
+    rec = Recorder(
+        httpx2.Response(
+            200,
+            json={
+                "id": "1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "deepseek/deepseek-v4-flash-0731",
+                "provider": "Wafer",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": None, "reasoning": None},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1900,
+                    "completion_tokens": 8000,
+                    "total_tokens": 9900,
+                    "completion_tokens_details": {"reasoning_tokens": 7990},
+                },
+            },
+        )
+    )
+
+    with pytest.raises(base.BadResponse) as caught:
+        provider(openai_like.OpenRouterProvider, rec).complete(REQUEST)
+
+    message = str(caught.value)
+    assert "length" in message
+    assert "8000" in message and "7990" in message, message
+    assert "Wafer" in message, message
 
 
 def test_a_refused_connection_is_unreachable_naming_the_endpoint_and_is_retried():

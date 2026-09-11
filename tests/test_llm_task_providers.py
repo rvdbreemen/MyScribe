@@ -178,3 +178,46 @@ def test_each_real_provider_carries_the_transcript_to_the_model(conn, media, pro
     prompt = json.dumps(sent.chat_body())
     assert "forty-two" in prompt
     assert "Vogon poetry" in prompt
+
+
+NO_REASONING = {
+    "openai": ("reasoning_effort", "none"),
+    "openrouter": ("reasoning", {"enabled": False}),
+    "ollama": ("think", False),
+}
+"""What each real provider puts on the wire for TASK-029's hint."""
+
+
+@pytest.mark.parametrize("provider_name", sorted(WIRING))
+def test_cleanup_reaches_each_real_provider_with_its_own_no_reasoning_field(
+    conn, media, provider_name
+):
+    """The join for the hint: `TaskSpec.reasoning_off` through `_ask`,
+    `llm.chat` and the real provider class, onto the body that leaves. A kind
+    without the hint sends none of the three fields."""
+    sent = Sent()
+    tasks.run_task(
+        conn,
+        media_id=media,
+        kind="cleanup",
+        provider_name=provider_name,
+        model="m",
+        **WIRING[provider_name](sent),
+    )
+
+    body = sent.chat_body()
+    key, value = NO_REASONING[provider_name]
+    assert body[key] == value
+    others = [k for k, _ in NO_REASONING.values() if k != key]
+    assert [k for k in others if k in body] == []
+
+    plain = Sent()
+    tasks.run_task(
+        conn,
+        media_id=media,
+        kind="summary",
+        provider_name=provider_name,
+        model="m",
+        **WIRING[provider_name](plain),
+    )
+    assert [k for k, _ in NO_REASONING.values() if k in plain.chat_body()] == []

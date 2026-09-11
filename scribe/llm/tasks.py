@@ -313,6 +313,16 @@ class TaskSpec:
     kind's own prompt over each chunk and the answers joined in order - for a
     task whose answer *is* the transcript, rewritten, where notes would lose
     the words."""
+    reasoning_off: bool = False
+    """Ask the model not to reason first (`ChatRequest.reasoning_off`), on
+    every call the kind makes. TASK-029's decision: on for `cleanup`, a
+    mechanical rewrite for which deepseek-v4-flash spent 22,515 reasoning
+    tokens on 837 words where 1,171 tokens without reasoning gave the same
+    cleaning. Off - the provider's default - for the rest: `speakers` and
+    `labels` wait for an A/B of their own, because they are queued without a
+    person and `speakers` writes names; the others have no recorded length
+    failure. `effort: low` is used nowhere: on media 1 it dropped the [m:ss]
+    stamps and the speaker labels."""
     apply: Callable[[sqlite3.Connection, "TaskPlan", Any, int], dict] | None = None
     """What to do with the answer once it is stored, for the kinds that change
     something rather than only report.
@@ -423,6 +433,7 @@ TASKS: dict[str, TaskSpec] = {
         max_output_tokens=6000,
         with_speakers=True,
         combine="concat",
+        reasoning_off=True,
     ),
     "custom": TaskSpec(
         kind="custom",
@@ -512,6 +523,32 @@ no new calls. Unrecoverable, by the mechanism meant to make retries cheap.
 `combine_capacity` is that same arithmetic done in `plan_task`, where nothing
 has been spent yet. Ollama's guard stays as the backstop it should always have
 been: this one knows the plan, that one knows the wire."""
+
+CONCAT_CHUNK_TOKENS = 3000
+"""The most transcript one part of a concat kind (cleanup) is cut to, in
+estimated tokens - so that a model reasoning inside the answer cap has room.
+
+The arithmetic, derived rather than measured (two samples, scaled to the gate):
+deepseek cleaned media 1 in 1,403 tokens for a 1,557-token chunk (0.90) and
+luna media 12's first part in about 4,722 for 5,968 (0.79). Scaled to
+`CLEAN_MAX_RATIO` (1.15) a part is at most 1.04-1.07 x its chunk. A 5,999-token
+chunk - what `min(budget, cap)` planned for media 12 - then needs about 6,420
+tokens from a 6,000 cap: no room even without reasoning. A 3,000 chunk needs
+about 3,210 and leaves about 2,790 (46%) for reasoning and hidden tokens.
+Planned read-only on 2026-09-11: media 12 goes from 4 chunks (1,605-5,999) to
+7 (1,722-2,993; the tail is the short one); media 1 stays one chunk of 1,557.
+Local runs are unchanged: the 8,192 window binds first, at 1,798-1,799.
+
+Its own constant rather than a share of the cap, so a later cap change buys
+reasoning room instead of bigger chunks.
+
+PENDING the step-0 measurement (`scripts/task029_headroom.py`, media 12 at
+3,000, gpt-5.6-luna and gemini-3.5-flash-lite, no hint): every counted chunk
+must end 'stop' with content and spend at most about 1,395 reasoning tokens.
+That has not been run - it spends money and waits for Robert's go-ahead. If
+luna fails it, TASK-029's stop rule removes this constant and its `min()` in
+`plan_task`, sizing goes back to `min(budget, cap)`, and the decision records
+that chunk size buys no headroom."""
 
 TRUNCATED_FINISH = "length"
 """How both provider families say "I stopped because I ran out of room".
@@ -949,21 +986,24 @@ def plan_task(
         )
 
     if spec.combine == "concat":
-        # Each chunk comes back about as long as it went in, so a chunk may
-        # not be bigger than the answer cap; and a seam repeated in two
-        # answers would be a sentence said twice, so no overlap.
+        # Each chunk comes back about as long as it went in, so a chunk is cut
+        # to at most CONCAT_CHUNK_TOKENS - never more than the answer cap -
+        # which leaves a model that reasons inside the cap room to do it; and a
+        # seam repeated in two answers would be a sentence said twice, so no
+        # overlap.
         #
-        # Measured 2026-09-10, and corrected the same day: cleanup failing
-        # with finish_reason='length' against openrouter/auto is reasoning, not
-        # runaway. The same 837-word request that "hit the cap" came back from
-        # deepseek-v4-flash as a good cleaning (97% of the words) after 22,515
-        # reasoning tokens, and in 1,171 tokens with reasoning turned off. A
-        # model that counts reasoning against this cap has little left once
-        # the chunk is as big as the cap: media 12's first chunk used 4,946 of
-        # 6,000. The one true runaway (168 words in, 5,742 out) was a
-        # transcript that is itself a 112-word "La, la" loop. TASK-029 decides
-        # how reasoning is limited; TASK-026's length gate catches the rest.
-        budget_tokens = min(budget_tokens, output_tokens)
+        # Measured 2026-09-10: cleanup failing with finish_reason='length'
+        # against openrouter/auto is reasoning, not runaway - 22,515 reasoning
+        # tokens for a cleaning deepseek-v4-flash also gave in 1,171 with
+        # reasoning off. TASK-029's rule: the kind asks for no reasoning
+        # (`TaskSpec.reasoning_off`); a model that ignores that either finishes
+        # each chunk inside its cap, or ends 'length' and is refused before
+        # anything is stored (`_refuse_a_cut_off_part`); and on an endpoint that
+        # does not enforce the cap only the hint bounds it, which each row
+        # records (`reasoning_record`). The one true runaway (168 words in,
+        # 5,742 out) was a transcript that is itself a 112-word "La, la" loop;
+        # the cleaning gate refuses that kind.
+        budget_tokens = min(budget_tokens, output_tokens, CONCAT_CHUNK_TOKENS)
         overlap_segments = 0
     chunks = chunking.plan(
         doc,
@@ -1184,8 +1224,8 @@ def _insert_output(
         return int(cur.lastrowid)
 
 
-def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, index: int) -> dict | None:
-    """The stored answer for chunk `index` of this exact task, if there is one.
+def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, chunk: Chunk) -> dict | None:
+    """The stored answer for `chunk` of this exact task, if there is one.
 
     The whole key matters. The run is in it because the chunk boundaries are a
     property of the segments, so an answer about chunk 3 of a previous
@@ -1194,6 +1234,18 @@ def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, index: int) -> dict |
     another; and for `custom` the question is in it (inside the kind, via
     `chunk_kind`) because notes taken for one question are not notes about a
     different one.
+
+    **And the segments.** Within one run the boundaries still move when the
+    chunk budget does, so the newest row under the key is reused only when its
+    `segment_ids` are this chunk's; otherwise the chunk is asked again. A row
+    that does not name its segments cannot prove it covers these, and is asked
+    again too. The receipt is row 14: media 12's cleanup part 0, made on
+    6,000-token chunks, covers 184 segments. Reused by its index under
+    3,000-token chunks it would stand in for a shorter stretch, the next part
+    would repeat what lies between, and the gate would refuse media 12 on every
+    run. Only the newest row is looked at. An older row with the same segments
+    would be a correct reuse too; not looking for it costs one call after the
+    budget has moved twice, and keeps this one query.
 
     **The job id is deliberately not in it, and that has a consequence worth
     stating**: resuming an interrupted task and deliberately re-running a
@@ -1208,19 +1260,64 @@ def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, index: int) -> dict |
     """
     with db.LOCK:
         row = conn.execute(
-            "SELECT id, content FROM llm_output"
+            "SELECT id, content, params_json FROM llm_output"
             " WHERE media_id=? AND run_id IS ? AND kind=? AND provider=? AND model=?"
             "   AND prompt_version=? ORDER BY id DESC LIMIT 1",
             (
                 plan.media_id,
                 plan.run_id,
-                chunk_kind(plan.kind, index, plan.note_question),
+                chunk_kind(plan.kind, chunk.index, plan.note_question),
                 plan.provider_name,
                 plan.model,
                 PROMPT_VERSION,
             ),
         ).fetchone()
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    try:
+        params = json.loads(row["params_json"] or "{}")
+    except ValueError:
+        return None
+    if not isinstance(params, dict) or params.get("segment_ids") != list(chunk.segment_ids):
+        return None
+    return {"id": row["id"], "content": row["content"]}
+
+
+def reasoning_record(response: ChatResponse, cap: int) -> dict[str, Any]:
+    """What one call's reasoning cost, and what can honestly be said about it.
+
+    Rows 6, 17 and 19 spent 5,651, 12,767 and 21,401 tokens against caps of
+    4,000 and 8,000 and came back 'stop', and nothing on them said the cap had
+    not held or that reasoning was why. So every row now carries the four
+    reported numbers - `hint_sent`, `reasoning_tokens`, `reasoning_chars`,
+    `upstream`, each None when unreported - and two flags derived from them:
+
+    * `hint_ignored` - the hint went on the wire (`hint_sent` True) and the
+      model reasoned anyway. Judged only when a count came back: reasoning
+      tokens from a cloud provider, thinking characters from Ollama. A dropped
+      hint (`hint_sent` False) is not an ignored one, and stays None.
+    * `cap_not_enforced` - more completion tokens came back than `cap` allowed,
+      so the endpoint did not hold the line, and only the hint bounded the
+      spend. None when no count came back.
+
+    `cap` is the cap *this call* was asked with: the note budget for a note,
+    the kind's answer cap for everything else. No schema change: `params_json`
+    is only ever read by key.
+    """
+    spent = (
+        response.reasoning_tokens
+        if response.reasoning_tokens is not None
+        else response.reasoning_chars
+    )
+    completion = response.completion_tokens
+    return {
+        "hint_sent": response.hint_sent,
+        "reasoning_tokens": response.reasoning_tokens,
+        "reasoning_chars": response.reasoning_chars,
+        "upstream": response.upstream,
+        "hint_ignored": spent > 0 if response.hint_sent is True and spent is not None else None,
+        "cap_not_enforced": completion > cap if completion is not None else None,
+    }
 
 
 def store_output(conn: sqlite3.Connection, plan: TaskPlan, result: TaskResult) -> int:
@@ -1230,7 +1327,9 @@ def store_output(conn: sqlite3.Connection, plan: TaskPlan, result: TaskResult) -
     is a key: the resume above reads it, and a provider answering with a dated
     snapshot id (`gpt-4o-mini-2024-07-18`) would otherwise split one key into
     one per snapshot. What actually served the request is provenance and goes
-    into `params_json` next to it.
+    into `params_json` next to it - and so does what its reasoning cost
+    (`reasoning_record`). A joined concat row carries None there: it was no
+    single call, and its parts' rows hold the numbers.
     """
     params: dict[str, Any] = {
         "chunks": len(plan.chunks),
@@ -1239,6 +1338,7 @@ def store_output(conn: sqlite3.Connection, plan: TaskPlan, result: TaskResult) -
         "served_model": result.response.model,
         "finish_reason": result.response.raw_finish_reason,
         "calls": result.calls,
+        **reasoning_record(result.response, plan.max_output_tokens),
     }
     if result.chunk_output_ids:
         params["chunk_output_ids"] = list(result.chunk_output_ids)
@@ -1290,6 +1390,9 @@ def _ask(
     `llm.chat` and not a provider directly: the pin, the registry and the retry
     policy all live behind it, and a caller that goes around it goes around all
     three.
+
+    The kind's reasoning hint rides on every call made here - a note, a part,
+    a single answer, a combine - so no call of a hinted kind goes out without it.
     """
     request = ChatRequest(
         system=system,
@@ -1297,6 +1400,7 @@ def _ask(
         model=plan.model,
         max_output_tokens=max_output_tokens,
         json_schema=json_schema,
+        reasoning_off=plan.spec.reasoning_off,
     )
     return llm.chat(
         conn,
@@ -1353,6 +1457,14 @@ def generate(
             **provider_kwargs,
         )
         step()
+        if plan.spec.combine == "concat":
+            # The same refusal `_collect_parts` makes, for the recording short
+            # enough to be one part. Row 15 (2026-09-11) is why: media 7's
+            # cleanup came back at 12,000 of 12,000 tokens, finish 'length',
+            # and was stored as the cleaning. `custom` is left as it was - its
+            # row is stored and the panel says it was cut off - and a schema
+            # kind's cut-off object already fails `repair_json`.
+            _refuse_a_cut_off_part(plan, plan.chunks[0], response)
         payload = parse_answer(plan.spec, response.text)
         return TaskResult(
             content=content_for(plan.spec, payload),
@@ -1436,7 +1548,7 @@ def _collect_notes(
     calls = 0
 
     for chunk in plan.chunks:
-        existing = stored_chunk(conn, plan, chunk.index)
+        existing = stored_chunk(conn, plan, chunk)
         if existing is not None:
             notes.append(existing["content"])
             chunk_ids.append(existing["id"])
@@ -1505,6 +1617,8 @@ def _collect_notes(
                     # one nobody looks at again, which is exactly why it needs
                     # to say how the model stopped.
                     "finish_reason": response.raw_finish_reason,
+                    # Judged against the note budget this call was asked with.
+                    **reasoning_record(response, note_budget),
                 },
             )
         )
@@ -1530,7 +1644,7 @@ def _collect_parts(
     chunk_ids: list[int] = []
     calls = 0
     for chunk in plan.chunks:
-        existing = stored_chunk(conn, plan, chunk.index)
+        existing = stored_chunk(conn, plan, chunk)
         if existing is not None:
             parts.append(existing["content"])
             chunk_ids.append(existing["id"])
@@ -1558,13 +1672,7 @@ def _collect_parts(
             raise base.BadResponse(
                 f"the model returned nothing for chunk {chunk.index} of the {plan.kind!r} task {where}"
             )
-        if response.raw_finish_reason == TRUNCATED_FINISH:
-            raise base.BadResponse(
-                f"the model ran out of room on chunk {chunk.index} of the {plan.kind!r} task "
-                f"{where}: it stopped at the {plan.max_output_tokens}-token cap rather than "
-                "finishing, so the part is cut off and has not been stored. What it managed: "
-                + clip(text)
-            )
+        _refuse_a_cut_off_part(plan, chunk, response)
         chunk_ids.append(
             _insert_output(
                 conn,
@@ -1585,12 +1693,33 @@ def _collect_parts(
                     "oversized": chunk.oversized,
                     "served_model": response.model,
                     "finish_reason": response.raw_finish_reason,
+                    **reasoning_record(response, plan.max_output_tokens),
                 },
             )
         )
         parts.append(text)
         step()
     return parts, chunk_ids, calls
+
+
+def _refuse_a_cut_off_part(plan: TaskPlan, chunk: Chunk, response: ChatResponse) -> None:
+    """Refuse, before it is stored, a concat answer that stopped at its cap.
+
+    A concat kind's answer is a stretch of the transcript rewritten, so one
+    that ran out of room has lost its tail without a word, and a stored part is
+    reused by every later run. One helper for both places a part is asked for -
+    each chunk in `_collect_parts`, and `generate`'s single call when the
+    recording is one chunk - so the two cannot drift into different rules.
+    """
+    if response.raw_finish_reason != TRUNCATED_FINISH:
+        return
+    where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
+    raise base.BadResponse(
+        f"the model ran out of room on chunk {chunk.index} of the {plan.kind!r} task "
+        f"{where}: it stopped at the {plan.max_output_tokens}-token cap "
+        f"(finish_reason={response.raw_finish_reason!r}) rather than finishing, so the part "
+        "is cut off and has not been stored. What it managed: " + clip(response.text or "")
+    )
 
 
 def run_task(

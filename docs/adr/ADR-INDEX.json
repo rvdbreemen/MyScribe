@@ -603,6 +603,85 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-010",
+      "title": "Reasoning is a per-kind hint; an ignored hint is bounded only where the endpoint enforces the cap",
+      "path": "ADR-010-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-11",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "llm",
+        "output-budget",
+        "provenance",
+        "reasoning-models"
+      ],
+      "aliases": [
+        "cap not enforced",
+        "cleanup chunk size",
+        "finish_reason length",
+        "reasoning effort none",
+        "reasoning hint",
+        "reasoning_off",
+        "think false"
+      ],
+      "components": [
+        "scribe.llm.base",
+        "scribe.llm.ollama",
+        "scribe.llm.openai_like",
+        "scribe.llm.tasks"
+      ],
+      "symbols": [
+        "ChatRequest.reasoning_off",
+        "ChatResponse.hint_sent",
+        "CONCAT_CHUNK_TOKENS",
+        "Provider.reasoning_off_body",
+        "reasoning_record",
+        "TaskSpec.reasoning_off"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Each provider class declares the hint's wire form in reasoningoffbody; a request without the hint carries none of reasoning, reasoningeffort or think.",
+          "A 400 while the hint is on the wire is retried once without it, unless it is a temperature refusal or a context-length refusal; the decision reads what was sent, never the vendor's wording.",
+          "ChatResponse.hintsent records what the answering call carried: None not asked, True sent, False refused and dropped. Unreported counts are None, never 0.",
+          "Every llmoutput row a call produces records hintsent, reasoningtokens, reasoningchars, upstream, hintignored and capnotenforced in paramsjson, judged against the cap that call was asked with.",
+          "A concat kind's answer that ended 'length' is refused before it is stored, whether it is one call or one of many.",
+          "A stored part is reused only when its segmentids are the chunk's."
+        ],
+        "must_not": [
+          "Branch on the provider's name in a caller to decide the hint.",
+          "Use effort: low or minimal for a kind that must keep [m:ss] stamps and speaker labels.",
+          "Count OpenRouter's message.reasoning trace as reasoning spent: luna spent 107 reasoning tokens with no trace.",
+          "Merge a provider's reasoningoffbody into a body by reference."
+        ],
+        "exceptions": [
+          "speakers and labels stay at the provider default until their own A/B.",
+          "Ollama's hint is never dropped: its daemon refuses only a truthy think."
+        ],
+        "verification": [
+          "tests/testllmproviders.py::testeachcloudprovidersaysnoreasoningitsownway, ::testarefusedhintisretriedoncewithoutit, ::testacontextlength400withthehintoniscontexttoolongafteronecall, ::testatemperaturerefusalthenahintrefusalisthreecalls,...",
+          "tests/testllmollama.py::testthehintisthinkfalseanditsabsencesendsnothink.",
+          "tests/testllmtasks.py::testthehintfollowsthekind, ::testeveryrowrecordswhatwassentandwhatreasoningcost.",
+          "tests/testllmtaskproviders.py::testcleanupreacheseachrealproviderwithitsownnoreasoningfield.",
+          "tests/testllmspeakers.py::testaonecallcleanupcutoffatthecapisrefusedandnothingisstored, ::testastoredpartcutonotherboundariesisaskedagain, ::testacleanupchunkiscuttotheconcatlimitnottheanswercap."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -705,6 +784,24 @@
     {
       "source": "ADR-009",
       "target": "ADR-008",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-010",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-010",
+      "target": "ADR-007",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-010",
+      "target": "ADR-009",
       "type": "related",
       "resolved": true
     }

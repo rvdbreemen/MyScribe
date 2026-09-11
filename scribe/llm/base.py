@@ -31,7 +31,7 @@ import sqlite3
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from scribe import db
 
@@ -54,6 +54,15 @@ class ChatRequest:
     temperature: float = 0.2
     max_output_tokens: int = 4000
     json_schema: dict | None = None
+    reasoning_off: bool = False
+    """Ask the model not to reason before it answers (TASK-029). A hint, not a
+    guarantee: each provider sends it as its own wire field
+    (`Provider.reasoning_off_body`); an endpoint that refuses it with a 400 gets
+    one more call without it; and a model that ignores it is recorded on the
+    answer (`ChatResponse.hint_sent`, `reasoning_tokens`) and bounded only
+    where the endpoint enforces `max_output_tokens`. False sends nothing, so a
+    request without the hint is byte-for-byte the request this app always
+    sent."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +73,14 @@ class ChatResponse:
     a better model later is a new row, and the row has to be able to say what
     made it. Token counts are `None` when the API did not report them - not 0,
     which would read as "this call was free".
+
+    The four reasoning fields follow the same rule: `None` is "not reported",
+    never 0. `hint_sent` is None when no hint was asked for, True when the call
+    that answered carried it, and False when it was asked for, refused with a
+    400 and dropped - so a dropped hint and an ignored one look different on
+    the row. `reasoning_tokens` is the cloud count; `reasoning_chars` is the
+    length of Ollama's `thinking`, the only measure it gives; `upstream` is
+    who OpenRouter forwarded the call to.
     """
 
     text: str
@@ -72,6 +89,10 @@ class ChatResponse:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     raw_finish_reason: str | None = None
+    hint_sent: bool | None = None
+    reasoning_tokens: int | None = None
+    reasoning_chars: int | None = None
+    upstream: str | None = None
 
 
 def retarget(req: ChatRequest, provider: "Provider | type[Provider]") -> ChatRequest:
@@ -84,6 +105,9 @@ def retarget(req: ChatRequest, provider: "Provider | type[Provider]") -> ChatReq
     provider's own default and says so. Measured on 2026-09-02: all 423 ids
     OpenRouter offers this account are namespaced, and none of api.openai.com's
     128 are.
+
+    Everything else carries over, `reasoning_off` included: the hint is a
+    property of the question, and the new provider spells it its own way.
     """
     return replace(req, model=provider.default_model)
 
@@ -274,6 +298,13 @@ class Provider(ABC):
 
     default_model: str = ""
     key_env_vars: tuple[str, ...] = ()
+
+    reasoning_off_body: Mapping[str, Any] = {}
+    """What `ChatRequest.reasoning_off` adds to this provider's request body:
+    the hint's wire form, one per provider class, so no caller branches on the
+    provider (TASK-029). Empty means the provider has no way to say it, and the
+    hint is not sent. Shared by every instance, so a provider merges a copy and
+    never this mapping itself."""
 
     @abstractmethod
     def available(self) -> tuple[bool, str]:
