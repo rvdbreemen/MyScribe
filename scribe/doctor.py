@@ -370,7 +370,11 @@ def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None) -> Chec
 
 def check_accelerators() -> Check:
     """What each stage will run on, as `scribe.accel` decides it. Always OK:
-    this is information, and the gpu-runtime check is the one that judges."""
+    this is information, and the gpu-runtime check is the one that judges.
+
+    In GPU_CHECKS, not CPU_CHECKS: asking whether there is a CUDA card means
+    importing torch, and the settings page runs the CPU checks in the web
+    process (ADR-001). Found on the first Mac run, 2026-09-11."""
     return Check(name="accel", ok=True, detail=accel.describe())
 
 
@@ -387,10 +391,10 @@ CPU_CHECKS = (
     check_data_dir_writable,
     check_disk_space,
     check_database,
-    check_accelerators,
 )
 
 GPU_CHECKS = (
+    check_accelerators,
     check_gpu_runtime,
     check_gpu_smoke,
 )

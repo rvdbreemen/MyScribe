@@ -78,7 +78,7 @@ def test_database_check_migrates_to_current_schema_version(tmp_path, monkeypatch
 
 def test_gpu_checks_are_registered_and_required():
     names = [fn.__name__ for fn in doctor.GPU_CHECKS]
-    assert names == ["check_gpu_runtime", "check_gpu_smoke"]
+    assert names == ["check_accelerators", "check_gpu_runtime", "check_gpu_smoke"]
     assert all(not c.optional for c in (doctor.check_gpu_runtime(),))
 
 
