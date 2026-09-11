@@ -56,3 +56,7 @@ backlog/.locks/
 
 # Stray saved-webpage artifact some tool drops in the repo root
 r1.json
+
+# adr-kit machine-local settings (judge host client, signer): per machine by
+# design (adr-kit ADR-025); the tracked half is docs/adr/.adr-kit.json.
+docs/adr/.adr-kit.local.json
