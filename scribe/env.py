@@ -24,6 +24,10 @@ from pathlib import Path
 REPO_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = REPO_DIR / ".env"
 
+# Names the file instead. An installed copy runs from a read-only source tree,
+# so its launcher keeps `.env` in the user's MyScribe folder (ADR-008).
+PATH_VARIABLE = "SCRIBE_ENV_FILE"
+
 
 def parse(text: str) -> dict[str, str]:
     """`KEY=VALUE` lines to a mapping; comments, blanks and non-pairs skipped."""
@@ -42,12 +46,15 @@ def parse(text: str) -> dict[str, str]:
 
 
 def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
-    """Read ``path`` (default: the repository's `.env`) into ``os.environ``.
+    """Read ``path`` (default: `SCRIBE_ENV_FILE`, else the repository's `.env`)
+    into ``os.environ``.
 
     Returns everything the file defines, applied or not, so a caller can say
     what it found. Keys the environment already has are not touched.
     """
-    path = DEFAULT_PATH if path is None else Path(path)
+    if path is None:
+        path = os.environ.get(PATH_VARIABLE) or DEFAULT_PATH
+    path = Path(path)
     try:
         # utf-8-sig: Notepad likes to leave a BOM, and a BOM in front of the
         # first key would turn `HF_TOKEN` into `﻿HF_TOKEN`.

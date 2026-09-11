@@ -215,6 +215,20 @@ def test_load_dotenv_defaults_to_the_repository_env_file():
     assert (env.DEFAULT_PATH.parent / "scribe" / "app.py").exists()
 
 
+def test_load_dotenv_reads_the_file_scribe_env_file_names(tmp_path, environ):
+    """An installed copy runs from a read-only source tree, so its launcher
+    keeps `.env` in the user's MyScribe folder and names it here (ADR-008)."""
+    dotenv = tmp_path / "home" / ".env"
+    dotenv.parent.mkdir()
+    dotenv.write_text("SCRIBE_T2_FROM_HOME=yes\n", encoding="utf-8")
+    environ["SCRIBE_ENV_FILE"] = str(dotenv)
+
+    values = env.load_dotenv()
+
+    assert values == {"SCRIBE_T2_FROM_HOME": "yes"}
+    assert environ["SCRIBE_T2_FROM_HOME"] == "yes"
+
+
 def test_create_app_does_not_read_the_repository_env_file(db_path, monkeypatch):
     """`.env` is `python -m scribe`'s to load, before scribe.paths reads the
     environment. An app built anywhere else - every test in this suite -
