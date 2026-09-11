@@ -3,10 +3,10 @@ id: TASK-034
 title: >-
   A params object at the ingest door is not sieved, so a local client can make
   pyannote open any pipeline
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-11 06:03'
-updated_date: '2026-09-11 07:54'
+updated_date: '2026-09-11 08:17'
 labels:
   - security
   - bug
@@ -22,10 +22,10 @@ Found 2026-09-11 by the TASK-028 reachability workflow. POST /api/media takes tr
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A params object carrying a key outside options.PARAM_KEYS is refused with a 400 that names the key, at every door that accepts one (POST /api/media upload, local path and URL forms)
-- [ ] #2 diarization_model cannot be set through any HTTP door, and the diarize stage still opens its default pipeline
-- [ ] #3 Retry of a transcribe job carries only PARAM_KEYS forward, so a job stored before the fix cannot be replayed with a foreign key
-- [ ] #4 Every legitimate producer (dialog fields, URL import with extra_hotwords, feeds, bulk retranscribe, retry) still works: tests show it
+- [x] #1 A params object carrying a key outside options.PARAM_KEYS is refused with a 400 that names the key, at every door that accepts one (POST /api/media upload, local path and URL forms)
+- [x] #2 diarization_model cannot be set through any HTTP door, and the diarize stage still opens its default pipeline
+- [x] #3 Retry of a transcribe job carries only PARAM_KEYS forward, so a job stored before the fix cannot be replayed with a foreign key
+- [x] #4 Every legitimate producer (dialog fields, URL import with extra_hotwords, feeds, bulk retranscribe, retry) still works: tests show it
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -42,4 +42,12 @@ Doors (every route that takes client-supplied job params, found by the implement
 Decisions: the diarize stage no longer reads diarization_model (nothing in scribe/ wrote it; only a GPU test did; a job stored before the fix is never re-validated, so only the stage change covers it; choosing a pipeline stays possible by placing it at MODELS_DIR/pyannote, which needs write access to the data dir). PARAM_KEYS gains device and compute_type, which the stages read and the CPU e2e test posts; torch.device and CTranslate2 reject an unknown device before opening anything. Consequence: bulk retranscribe now carries device/compute_type forward (own test). Retry sieves type transcribe, and an ingest_url job's nested options; llm and other jobs replay verbatim.
 Red on the unfixed code: 11 failed (diarization_model/feed_id/prompt accepted with 201 at both /api/media forms; retry carried diarization_model and feed_id; the stage opened attacker/pipeline; the stage-reads guard). Follow-ups red: 4 failed (retry kept openai/gpt-5.6-luna for transcribe and ingest_url options; ingest_url options kept diarization_model and feed_id; the guard scan could not see extra_hotwords - a mutation removing it from PARAM_KEYS passed the old guard and fails the new one).
 Green: tests/test_params_door.py 26 passed; worktree halves 1162 + 811; after cherry-pick on the feature branch test_params_door + test_app + test_web_transcribe_dialog 96 passed. Real runs (python -m scribe --port 4299, scratch SCRIBE_DATA_DIR, curl as the local client): diarization_model in params -> 400 naming the key and the admitted keys, JSON and multipart; clean params -> 201; retry of poisoned transcribe/ingest_url rows -> sieved; a clean retry byte-identical. Reviews: no bypass found; three minor findings fixed (040ad9e/a28295f). Not yet run: the gpu-marked end-to-end test, edited to post params={}.
+
+GPU tests on the feature branch after the cherry-pick, including the end-to-end test that now posts params={} instead of diarization_model: -m gpu 10 passed (266.8 s). Suite halves with TASK-029 on the branch: 1200 + 811 passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A params object at POST /api/media is sieved to options.PARAM_KEYS (a 400 names the foreign key); retry sieves a transcribe job and an ingest_url job's nested options and drops a model that is not a speech model; the diarize stage no longer reads diarization_model, so no stored job can choose a pipeline either. Verified red/green (11 then 4 failing tests), an adversarial review (no bypass; three minor findings fixed), suite halves on the worktree and the branch, the GPU tests, and real curl runs against a scratch instance.
+<!-- SECTION:FINAL_SUMMARY:END -->
