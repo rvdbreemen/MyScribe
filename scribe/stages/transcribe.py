@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 import numpy as np
 
 from scribe import accel, cuda_setup, db, glossary, jobs
-from scribe.stages import mlx_backend
+from scribe.stages import mlx_backend, second_opinion
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
     from scribe.runner import RunnerContext
@@ -374,6 +374,16 @@ def read_wav(wav: str | Path) -> "np.ndarray":
     return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
 
 
+def read_clip(wav: str | Path, start: float, end: float) -> "np.ndarray":
+    """Seconds [start, end) of the prepared wav as float32 samples, and only
+    those - a second opinion's clip, read without touching the rest."""
+    with wave.open(str(wav), "rb") as source:
+        rate = source.getframerate()
+        source.setpos(min(max(0, int(start * rate)), source.getnframes()))
+        frames = source.readframes(max(0, int((end - start) * rate)))
+    return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+
+
 def collect_segments(
     segments: Iterable[Any],
     duration: float,
@@ -530,6 +540,23 @@ def load_model(
     return WhisperModel(model_name, device=device, compute_type=compute_type), device, compute_type
 
 
+def _decode_options(language: str | None, task: str, hotwords: str | None) -> dict:
+    """What every decode in this stage is asked with - the windows and the
+    second opinions alike, so an opinion differs from the first decode only in
+    where its clip starts."""
+    return {
+        "language": language,
+        "task": task,
+        # hotwords, not initial_prompt: re-injected into every decode window
+        # instead of only the first (spec section 3).
+        "hotwords": hotwords or None,
+        "word_timestamps": True,
+        "vad_filter": True,
+        "condition_on_previous_text": True,
+        "compression_ratio_threshold": COMPRESSION_RATIO_THRESHOLD,
+    }
+
+
 def transcribe_audio(
     wav: str | Path,
     *,
@@ -591,16 +618,7 @@ def transcribe_audio(
             )
             limit = len(window.samples) / SAMPLE_RATE if len(window.lookahead) else None
             stream, raw = model.transcribe(
-                heard,
-                language=detected_language,
-                task=task,
-                # hotwords, not initial_prompt: re-injected into every decode
-                # window instead of only the first (spec section 3).
-                hotwords=hotwords or None,
-                word_timestamps=True,
-                vad_filter=True,
-                condition_on_previous_text=True,
-                compression_ratio_threshold=COMPRESSION_RATIO_THRESHOLD,
+                heard, **_decode_options(detected_language, task, hotwords)
             )
             if detected_language is None:
                 detected_language = raw.language
@@ -627,6 +645,27 @@ def transcribe_audio(
             if hasattr(stream, "close"):
                 stream.close()
             stream = None
+
+        # The stretches where the decode failed by its own measure get a second
+        # opinion while the model is still loaded (TASK-032).
+        def decode(audio: np.ndarray, offset: float, until: float) -> tuple[list[dict], list[dict]]:
+            opinion, _raw = model.transcribe(audio, **_decode_options(detected_language, task, hotwords))
+            try:
+                return collect_segments(opinion, 0.0, on_progress=lambda _p: None, offset=offset, limit=until)
+            finally:
+                if hasattr(opinion, "close"):
+                    opinion.close()
+
+        def stop_if_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise Cancelled("cancel requested during a second opinion")
+
+        segments, words, reviewed = second_opinion.review(
+            segments, words,
+            read_clip=lambda start, end: read_clip(wav, start, end),
+            decode=decode, duration=duration, threshold=COMPRESSION_RATIO_THRESHOLD,
+            cancelled=stop_if_cancelled,
+        )
         info = {
             "model": model_name,
             "device": device,
@@ -636,6 +675,7 @@ def transcribe_audio(
             "language_probability": language_probability,
             "duration": duration,
             "duration_after_vad": duration_after_vad,
+            "second_opinions": reviewed,
         }
     finally:
         # Closing comes first and is not optional. An abandoned generator keeps
@@ -713,6 +753,14 @@ def run(ctx: "RunnerContext") -> None:
         n_segments=len(segments),
         n_words=len(words),
     )
+    if info.get("second_opinions"):
+        jobs.emit(
+            ctx.conn,
+            ctx.job["id"],
+            "second-opinion",
+            replaced=sum(r["outcome"] == "replaced" for r in info["second_opinions"]),
+            records=info["second_opinions"],
+        )
     ctx.report(1.0)
 
 
@@ -801,6 +849,10 @@ def _persist(
         "duration": info["duration"],
         "duration_after_vad": info["duration_after_vad"],
         "language_probability": info["language_probability"],
+        # Every stretch the first decode failed by its own measure, and what
+        # the second opinion made of it: a transcript changed after its first
+        # decode says so, and says what it said before (TASK-032).
+        "second_opinions": info.get("second_opinions") or [],
     }
 
     with db.LOCK:

@@ -868,6 +868,32 @@ def test_a_cancelled_stage_writes_no_half_run(conn, data_dir, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 0
 
 
+def test_a_second_opinion_is_on_the_record_of_the_run(conn, data_dir, monkeypatch):
+    """TASK-032. Whatever a second opinion decided about a stretch - here the
+    fake says the same loop every time it is asked, so the stored text stays -
+    the run's params say which stretch was looked at, why, and what became of
+    it, and the job's events say so while it runs."""
+    _, job_id = a_job_with_media(conn)
+    loop = [fake_word(10.0 + i * 0.01, 10.01 + i * 0.01, " we") for i in range(8)]
+    model = FakeWhisper([
+        fake_segment(0.0, 5.0, text=" hello there."),
+        fake_segment(9.0, 20.0, text=" we we we we we we we we", words=loop),
+        fake_segment(22.0, 28.0, text=" goodbye."),
+    ])
+    install(monkeypatch, model)
+
+    transcribe.run(make_ctx(conn, job_id, state={"wav": CLIP}))
+
+    params = json.loads(conn.execute("SELECT params_json FROM run").fetchone()["params_json"])
+    (record,) = params["second_opinions"]
+    assert (record["flag"], record["phrase"], record["repeats"]) == ("loop", "we", 8)
+    assert record["outcome"].startswith("kept")
+    assert record["before"] == "we we we we we we we we"
+    assert len(model.calls) == 2  # the window, and one opinion that heard the loop too
+    (event,) = [e for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "second-opinion"]
+    assert event["payload"]["records"] == params["second_opinions"]
+
+
 # --- runner wiring ------------------------------------------------------------
 
 

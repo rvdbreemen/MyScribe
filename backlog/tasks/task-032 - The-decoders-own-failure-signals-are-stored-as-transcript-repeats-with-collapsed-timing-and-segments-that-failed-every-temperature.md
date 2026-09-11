@@ -3,9 +3,10 @@ id: TASK-032
 title: >-
   The decoder's own failure signals are stored as transcript: repeats with
   collapsed timing, and segments that failed every temperature
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-10 23:18'
+updated_date: '2026-09-11 00:07'
 labels:
   - bug
   - transcribe
@@ -21,7 +22,33 @@ Diagnosed 2026-09-11 (items "La x112 in media 7" and "mid-window repeats like I 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A decision is recorded on whether to repair (e.g. a second-opinion re-decode of a flagged span with fresh context) or only flag these spans, with the trade-off against deleting words that were really said
-- [ ] #2 Whatever is chosen, media 7, 14, 17 and 19 are re-checked against the six-decode evidence above
-- [ ] #3 Any detector is measured on the whole library for false positives before it changes a transcript
+- [x] #1 A decision is recorded on whether to repair (e.g. a second-opinion re-decode of a flagged span with fresh context) or only flag these spans, with the trade-off against deleting words that were really said
+- [x] #2 Whatever is chosen, media 7, 14, 17 and 19 are re-checked against the six-decode evidence above
+- [x] #3 Any detector is measured on the whole library for false positives before it changes a transcript
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Measure first (done 2026-09-11, second_opinion_sweep.py): every flag in the library re-decoded twice from clips starting 20 s and 7 s before it. 31 spans / 21 media. Big loops (>=5 repeats, collapsed timing) and failed-every-temperature segments collapse or clear in both opinions; real repetitions hold (media 20 "no" x5 -> 4,4; media 18 "that worked" -> 3,3). 3x repeats are a coin flip ("blah, blah, blah" -> 2x, "um um um" -> gone), so they are out of scope.
+2. Rule: flag (A) a 1-3 word phrase repeated back to back >= 5 times whose words take < 0.05 s median, or (B) a segment whose compression ratio stayed over 2.4. Re-decode the flagged stretch from two clips (60 s, starting 20 s and 7 s before it) with the stage parameters. Replace the stored segments over that stretch only when BOTH opinions are clean there (no flag of their own; for (A) the phrase at most twice), taking the opinion with the higher mean word probability. Otherwise keep what was stored.
+3. Replace whole stored segments (segment text stays the join of its words; idx renumbered), skip a stretch that does not sit well inside both clips (a clip end is an end of file to Whisper).
+4. Record every flag and outcome in the run params (before/after text) and as a job event - the audit trail.
+5. Red/green unit tests with a fake model; real run on a copy of the library (media 19: "I do" x6, "uh" x6 in a run made by the current code); suite halves Windows + Linux; adr-judge.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented 2026-09-11: scribe/stages/second_opinion.py, called from transcribe_audio after the windows while the model is loaded. Rule: flag a 1-3 word phrase repeated back to back >= 5 times with median word duration < 0.05 s, or a segment whose compression ratio stayed > 2.4; re-decode the touched segments (bounded at the middle of the pauses either side) from clips starting 20 s and 7 s before, running 15 s past; replace only when both opinions are clean (phrase at most twice, no loop or failed segment of their own), with the surer one (mean word probability); a first opinion that hears the loop too saves the second decode. Every flag and outcome (before/after text) goes into run.params_json["second_opinions"] and a "second-opinion" job event.
+Evidence. Sweep (read-only, 31 flags / 21 media, second_opinion_sweep.py): with this rule the stage would change 11 non-cut stretches (14 x3, 17, 19 x2, 24, and failed tail segments in 4, 30, 32) and leave media 20 "no" x5 (both opinions 4x) and media 18 alone; 3x repeats are not flagged. Not verified by listening: the sign-offs "Bye. Bye." (4) and "Bye-bye. Bye-bye." (30), which both opinions hear nothing in.
+Red: tests/test_stage_transcribe_second_opinion.py::test_transcribe_audio_gives_a_loop_a_second_opinion_and_says_so ("we were we were" still in the output) and test_stage_transcribe.py::test_a_second_opinion_is_on_the_record_of_the_run (KeyError second_opinions) before wiring. Mutations on a copy (mutate_second_opinion.py): each of five rule changes is caught by the tests about that rule.
+Green: 92 transcribe tests; Windows 1136 + 811; Linux 1126 + 794; -m gpu 10 passed; adr-judge 0 violations.
+Real run on a library copy, media 19 (3567 s), against run 74 (same transcribe.py without the second opinion): 2 flags, both replaced - "I do. I do. I do. I do. I do. I do." -> "I do identity work. Nice." and "Uh, uh, uh, uh, uh, uh" -> "Oh", "HR" recovered. Word diff 9852 -> 9835 words, ratio 0.9986, all 7 changed stretches inside the two flagged ones; 0 flags left; xRT 10.0; names inherited. Side effect of replacing whole segments: fillers in those segments go too ("I'm, I'm" -> "I'm", one "uh" -> "he"). Media 14 and 17 were re-checked by the sweep only (their current runs predate the look-ahead fix, so a real run would mix both changes); media 7 is in the trash.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The transcribe stage now gives a second opinion to the stretches where Whisper failed by its own measure (a >= 5-fold loop squeezed into no time, or a segment that failed every temperature): two re-decodes from different starting points, and the stored segments are replaced only when both are clean. Decided on a whole-library sweep (31 flags), verified with red/green and mutation tests, both platforms, the GPU tests, and a real run of media 19 where the two loops became "I do identity work. Nice." and "Oh ... HR" and nothing else in 9852 words moved. Each decision is recorded in the run params.
+<!-- SECTION:FINAL_SUMMARY:END -->
