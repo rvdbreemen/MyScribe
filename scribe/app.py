@@ -33,8 +33,11 @@ builds whatever class that pipeline's config names - so any process on this
 machine, another Windows account included, could choose code the runner
 executed. `scribe.guard` stops a browser; it cannot stop a local client, and
 this is the only route that reads a client's params object at all. A retry is
-the same door a second time, so it replays a transcribe job's params through
-the same sieve: a job stored before the fix is never re-validated otherwise.
+the same door a second time, so it replays a stored transcribe request - a
+transcribe job's params, or the options an ingest_url job will hand the
+transcribe job it queues - through the same sieve, and drops a model that is
+not a speech model: a job stored before the fix is never re-validated
+otherwise.
 """
 
 import json
@@ -48,8 +51,8 @@ from starlette.concurrency import run_in_threadpool
 import scribe
 from scribe import applog, db, fsbrowse, guard, jobs, media, paths, supervisor, web
 from scribe.ingest import feeds, recording, watching
-from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options
-from scribe.stages import finalize, transcribe
+from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options, replayable
+from scribe.stages import finalize, transcribe, url_stage
 
 # The form field carrying the upload, and the job type ingest queues.
 _UPLOAD_FIELD = "file"
@@ -348,13 +351,24 @@ def create_app(
                 ),
             )
         params = json.loads(row["params_json"] or "{}")
-        # A transcribe job stored before TASK-034 may carry a key the door now
-        # refuses; replaying it verbatim would be the old door with extra
-        # steps. Only that type is sieved (`_INGEST_JOB_TYPE` is "transcribe",
-        # the job this app's ingest queues): an ingest_url job's `feed_id` and
-        # a language-model job's `prompt` are their own vocabularies, not strays.
+        # A job stored before TASK-034 may carry a key the door now refuses;
+        # replaying it verbatim would be the old door with extra steps. So a
+        # transcribe request is replayed through `options.replayable` - the
+        # door's keys, and a model only if it is a speech model - in both
+        # places one is stored: a transcribe job's params (`_INGEST_JOB_TYPE`
+        # is "transcribe", the job this app's ingest queues), and an
+        # ingest_url job's nested options, which `url_stage.transcribe_params`
+        # copies unread into the transcribe job its download queues. The rest
+        # of an ingest_url job (`feed_id`, `entry`, ...) and a language-model
+        # job's `prompt` are their own vocabularies, not strays. Options that
+        # are not a dict are left alone: every producer writes `to_params()`,
+        # and the stage no longer reads the key that made this matter.
         if row["type"] == _INGEST_JOB_TYPE:
-            params = {key: value for key, value in params.items() if key in PARAM_KEYS}
+            params = replayable(params)
+        elif row["type"] == url_stage.JOB_TYPE and isinstance(
+            params.get(url_stage.OPTIONS_KEY), dict
+        ):
+            params[url_stage.OPTIONS_KEY] = replayable(params[url_stage.OPTIONS_KEY])
         new_id = jobs.enqueue(
             conn,
             row["type"],

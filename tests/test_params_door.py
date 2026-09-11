@@ -18,8 +18,10 @@ Three layers, and each test below names the one it holds:
   other door builds its params from validated fields, and the tests here show
   a `diarization_model` field posted to each of them reaching no job.
 * **Retry replays only what a transcribe job takes.** A job stored before the
-  fix is never re-validated, so the retry route sieves a transcribe job's
-  params and leaves every other type's alone.
+  fix is never re-validated, so the retry route sieves a transcribe request
+  wherever one is stored - a transcribe job's params, an ingest_url job's
+  nested options - to the door's keys and a speech model, and leaves every
+  other key of every other type alone.
 * **The stage stops listening.** The diarize stage no longer reads the key at
   all, which is the only thing that covers a job queued before the upgrade
   and never retried.
@@ -311,6 +313,40 @@ def test_retry_of_a_clean_transcribe_job_is_byte_for_byte_the_same_request(clien
     assert _row(conn, new)["params_json"] == _row(conn, old)["params_json"]
 
 
+# The chat model that reached the transcribe stage on 2026-09-03.
+CHAT_MODEL = "openai/gpt-5.6-luna"
+
+
+@pytest.mark.parametrize(
+    ("type_", "stored", "replayed"),
+    [
+        ("transcribe", {"model": CHAT_MODEL, "language": "nl"}, {"language": "nl"}),
+        (
+            url_stage.JOB_TYPE,
+            {"url": EPISODE_URL, url_stage.OPTIONS_KEY: {"model": CHAT_MODEL, "language": "nl"}},
+            {"url": EPISODE_URL, url_stage.OPTIONS_KEY: {"language": "nl"}},
+        ),
+    ],
+    ids=["transcribe", "ingest_url-options"],
+)
+def test_retry_does_not_repeat_a_model_that_is_not_a_speech_model(
+    client, conn, type_, stored, replayed
+):
+    """The 2026-09-03 row, retried instead of re-transcribed: a transcribe
+    request carrying a chat model's name. `model` is a key a transcribe job
+    takes, so the key sieve keeps it - the value is what is wrong - and the
+    stage refuses it (`transcribe.ensure_speech_model`), so a retry that
+    replays it fails the same way every time. Dropped, the job takes the
+    default tier: what `library._last_params` already does for a re-transcribe
+    of the same row. An ingest_url job's options are that request one hop
+    early, so they get the same answer."""
+    old = _stored_job(conn, type_, stored)
+
+    new = _retry(client, old)
+
+    assert _params(_row(conn, new)) == replayed
+
+
 def test_retry_of_an_ingest_url_job_keeps_every_key_of_its_own(client, conn):
     """The sieve is for transcribe jobs. An ingest_url job's params are a
     different vocabulary - a feed poll's `feed_id` is what stops a known
@@ -329,6 +365,35 @@ def test_retry_of_an_ingest_url_job_keeps_every_key_of_its_own(client, conn):
     new = _retry(client, old)
 
     assert _row(conn, new)["params_json"] == _row(conn, old)["params_json"]
+
+
+def test_retry_of_an_ingest_url_job_sieves_the_options_its_transcribe_job_is_built_from(
+    client, conn
+):
+    """One key of an ingest_url job is not its own vocabulary: the nested
+    `options`, which `url_stage.transcribe_params` copies into the transcribe
+    job the download queues. A row stored before TASK-034 is never
+    re-validated, so a foreign key there would ride the retry into that
+    transcribe job one hop later. The retry holds the options to PARAM_KEYS,
+    and every key of the ingest_url job itself stays as stored."""
+    clean = TranscribeOptions(language="en").to_params()
+    stored = {
+        "url": EPISODE_URL,
+        "folder_id": None,
+        url_stage.OPTIONS_KEY: {**clean, "diarization_model": FOREIGN, url_stage.FEED_KEY: 7},
+        "from_playlist": True,
+        url_stage.ENTRY_KEY: {"title": "Lecture 1", "source_id": "Generic:g1"},
+        url_stage.SOURCE_KEY: {"url": FEED_URL, "title": "Lectures"},
+        url_stage.FEED_KEY: 7,
+    }
+    old = _stored_job(conn, url_stage.JOB_TYPE, stored)
+
+    new = _params(_row(conn, _retry(client, old)))
+
+    assert new == {**stored, url_stage.OPTIONS_KEY: clean}
+    # And at the consequence: the params the transcribe job will be built from.
+    built = url_stage.transcribe_params(new, ["Zaphod"])
+    assert set(built) <= options.PARAM_KEYS, sorted(set(built) - options.PARAM_KEYS)
 
 
 # --- the stage: diarize opens its own pipeline, whatever the job says ---------------
@@ -392,25 +457,52 @@ def test_the_diarize_stage_opens_its_default_pipeline_whatever_the_params_say(
 
 
 def _job_param_reads(module) -> set[str]:
-    """The literal keys a module reads off `ctx.params` - `.get("k")` or `["k"]`."""
+    """The keys a module reads off a job's params - `.get(k)` or `[k]`.
+
+    The owner is `ctx.params`, or a bare `params`: a stage hands the dict to a
+    helper under that name (`transcribe._extra_hotwords`, `perf_model_for`).
+    The key is a literal, or a name the module resolves to a string - a module
+    constant (`EXTRA_HOTWORDS_KEY`) or one reached through an imported module
+    (`transcribe.EXTRA_HOTWORDS_KEY`). A literal-only scan of `ctx.params`
+    missed `extra_hotwords` on both counts. A key computed at run time - a
+    loop variable, a parameter - is still invisible; no stage reads one so.
+
+    A subscript counts only when it loads. Once a bare `params` counts,
+    `diarize._note_run` writing `params["diarization_pipeline"]` and
+    `params["diarization_note"]` - the run's params_json, not the job's -
+    would otherwise read as two job keys the door refuses.
+    """
     found: set[str] = set()
     for node in ast.walk(ast.parse(inspect.getsource(module))):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
             owner, key = node.func.value, (node.args[0] if node.args else None)
-        elif isinstance(node, ast.Subscript):
+        elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
             owner, key = node.value, node.slice
         else:
             continue
-        if (
+        is_job_params = (isinstance(owner, ast.Name) and owner.id == "params") or (
             isinstance(owner, ast.Attribute)
             and owner.attr == "params"
             and isinstance(owner.value, ast.Name)
             and owner.value.id == "ctx"
-            and isinstance(key, ast.Constant)
-            and isinstance(key.value, str)
-        ):
-            found.add(key.value)
+        )
+        value = _key_value(module, key)
+        if is_job_params and isinstance(value, str):
+            found.add(value)
     return found
+
+
+def _key_value(module, node):
+    """What a key expression stands for: a literal's value, or what a name or a
+    dotted name resolves to in the module's globals; None for anything else."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return getattr(module, node.id, None)
+    if isinstance(node, ast.Attribute):
+        owner = _key_value(module, node.value)
+        return None if owner is None else getattr(owner, node.attr, None)
+    return None
 
 
 def test_every_key_the_transcribe_stages_read_is_one_the_door_admits():
@@ -418,11 +510,17 @@ def test_every_key_the_transcribe_stages_read_is_one_the_door_admits():
     read `device` and `compute_type` (the CPU end-to-end run depends on it)
     and the sieve did not admit them, while the one key the sieve most needed
     to stop was read by a stage. Asked of the registry, so a stage added to
-    the transcribe pipeline is asked too."""
+    the transcribe pipeline is asked too.
+
+    `extra_hotwords` is in the must-find set because it is the key that fell
+    out of the sieve once already (see PARAM_KEYS' docstring), and because it
+    is read the way a literal-only scan cannot see: through a module constant
+    (`transcribe.EXTRA_HOTWORDS_KEY`) off a bare `params` (`_extra_hotwords`)."""
     modules = {sys.modules[fn.__module__] for _name, fn in runner.STAGES["transcribe"]}
     read = set().union(*(_job_param_reads(module) for module in modules))
 
-    assert {"model", "language", "diarize"} <= read, "the scan is not finding the reads"
+    must_find = {"model", "language", "diarize", transcribe.EXTRA_HOTWORDS_KEY}
+    assert must_find <= read, f"the scan is not finding the reads: {sorted(must_find - read)}"
     assert "diarization_model" not in read
     assert read <= options.PARAM_KEYS, f"read but refused at the door: {sorted(read - options.PARAM_KEYS)}"
 

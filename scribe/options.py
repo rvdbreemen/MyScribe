@@ -141,6 +141,27 @@ device, where `_last_params` used to drop it.
 """
 
 
+def replayable(params: dict) -> dict:
+    """The part of a stored transcribe request that may be asked for again.
+
+    Two sieves, the two `library._last_params` applies to a re-transcribe:
+    only the keys a transcribe job takes (PARAM_KEYS), and `model` only when it
+    names a speech model. The second exists because `model` is a key a chat job
+    has too: on 2026-09-03 a transcribe job carried `openai/gpt-5.6-luna` and
+    failed on a HuggingFace 404, and the stage now refuses such a name up front
+    (`transcribe.ensure_speech_model`) - so replaying it verbatim fails the
+    same way every time. Dropped, the job falls back to the default tier and
+    the row heals.
+
+    A copy with the kept keys in their stored order, so a clean request comes
+    back byte for byte the same once `jobs.enqueue` has json-encoded it.
+    """
+    kept = {key: value for key, value in params.items() if key in PARAM_KEYS}
+    if "model" in kept and not transcribe.is_speech_model(str(kept["model"])):
+        kept.pop("model")
+    return kept
+
+
 def parse_options(source: Mapping[str, Any]) -> TranscribeOptions:
     """Validated options out of a form or a JSON object; a 400 names the field.
 
