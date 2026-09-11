@@ -266,9 +266,10 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "797bc9b36e5d58cbf3fb881a5524eee3b582b8c81a4be8b292cb2372ab8c416f"
-"""sha256 over the prompt templates, for PROMPT_VERSION "1". Line endings are
-normalised first, because git rewrites them on checkout here.
+PROMPTS_DIGEST = "c707d10a72676e6efdbfaa7423fcad91ec0c0d48bd2f7b89af13886a6f9c10a4"
+"""sha256 over the prompt templates, for PROMPT_VERSION "3" (TASK-039: the
+speakers prompt asks for the full name). Line endings are normalised first,
+because git rewrites them on checkout here.
 
 Moved once without a bump, on 2026-09-06, when `speakers.md` and `cleanup.md`
 were *added*: the six templates that existed were byte-identical before and

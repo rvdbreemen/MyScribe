@@ -499,6 +499,22 @@ def test_the_speakers_prompt_asks_for_a_number(conn):
     assert "0-100" in body or "0 to 100" in body
 
 
+def test_the_speakers_prompt_asks_for_the_full_name_the_transcript_gives(conn):
+    """TASK-039: the prompt asked for "the actual first name", and whether a
+    model answered "Josh" or "Josh Bressers" was a coin flip per call - the
+    same host got both across one podcast's episodes, and gpt-5.6-luna wrote
+    "Josh" while quoting "My name is Josh Bressers" as its evidence. A full
+    name with a tussenvoegsel ("Robert van den Breemen") is four words, so a
+    two-word cap would cut it all the same."""
+    body = tasks.render_prompt("speakers", transcript="x", source_label="y", prompt="", known_labels=[])
+    rule = body.split("- `name`:")[1].split("- `confidence`:")[0]
+
+    assert "full name" in rule and "the actual first name" not in rule
+    assert "never a guess" in rule
+    assert "tussenvoegsel" in rule and "One or two words" not in rule
+    assert '"name": "Sarah Chen"' in body
+
+
 # --- applying the mapping (TASK-024) -----------------------------------------------
 
 

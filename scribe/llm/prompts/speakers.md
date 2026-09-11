@@ -27,7 +27,7 @@ Answer with one JSON object of exactly this shape:
   "speakers": [
     {
       "cluster": "SPEAKER_00",
-      "name": "Sarah",
+      "name": "Sarah Chen",
       "role": "host | co-host | guest | expert | other",
       "confidence": 96,
       "evidence": "[1:23] \"I'm Sarah, and with me today is…\"",
@@ -37,9 +37,13 @@ Answer with one JSON object of exactly this shape:
 }
 
 - `cluster`: the label exactly as it appears in the transcript.
-- `name`: the actual first name (or title and surname) when the transcript
-  supports it; otherwise a short role word - `Host`, `Co-host`, `Guest`,
-  `Expert` - and never a guess at a name. One or two words. No brackets.
+- `name`: the person's full name as the transcript gives it - first name and
+  surname ("Sarah Chen"), or title and surname ("Dr. Chen") - even when they
+  are mostly called by their first name; a tussenvoegsel is part of the
+  surname ("Robert van den Breemen"). Only the first name when that is all the
+  transcript ever says. Otherwise a short role word - `Host`, `Co-host`,
+  `Guest`, `Expert` - and never a guess at a name or a surname. At most four
+  words. No brackets.
 - `confidence`: a number from 0 to 100, not a word. Above 90 means the name is
   said in the transcript and the label it belongs to is unambiguous - a name
   above 90 will be written to the recording without anyone checking it first,

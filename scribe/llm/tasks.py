@@ -67,7 +67,7 @@ from scribe.llm import base, chunking, ollama, openai_like, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 """Bumped whenever a template in `prompts/` changes, because it is part of the
 stored key: answers to an edited question are not answers to the old one, and a
 panel showing both without saying so would be comparing two different things."""
