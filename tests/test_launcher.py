@@ -72,7 +72,8 @@ def test_relative_roots_become_absolute(tmp_path, monkeypatch):
     layout = launcher.Layout(Path("home"), Path("build/payload"))
 
     assert layout.home == tmp_path / "home"
-    assert Path(launcher.sync_command(layout)[0]) == tmp_path / "build" / "payload" / "bin" / Path(layout.uv).name
+    assert layout.payload == tmp_path / "build" / "payload"
+    assert Path(launcher.sync_command(layout)[0]) == tmp_path / "home" / "bin" / Path(layout.uv).name
 
 
 def test_the_version_is_read_from_the_shipped_source(layout):
@@ -164,7 +165,7 @@ def test_the_app_gets_its_home_the_bundled_tools_and_a_writable_pycache(layout):
 
     assert env["SCRIBE_DATA_DIR"] == str(layout.data_dir)
     assert env["SCRIBE_ENV_FILE"] == str(layout.env_file)
-    assert env["PATH"].split(os.pathsep)[0] == str(layout.bin_dir)
+    assert env["PATH"].split(os.pathsep)[0] == str(layout.tools_dir)
     assert env["PYTHONPYCACHEPREFIX"] == str(layout.pycache_dir)
     assert env["PYTHONPATH"] == str(layout.app_dir)
     assert "PYTHONHOME" not in env
@@ -313,3 +314,55 @@ def test_quit_stops_the_server_and_the_runner_it_started(layout, monkeypatch):
         time.sleep(0.1)
     assert not _pid_alive(child)
     assert launcher.running_instance(port) is False
+
+
+# --- the bundled tools run from the home ------------------------------------------
+
+
+def _tool(layout, name: str, body: bytes) -> None:
+    (layout.bin_dir / name).write_bytes(body)
+
+
+def test_the_tools_are_installed_into_the_home_and_the_app_uses_them(layout):
+    _tool(layout, "ffmpeg", b"ffmpeg v1")
+    launcher.prepare_home(layout)
+
+    launcher.install_tools(layout)
+
+    assert (layout.tools_dir / "ffmpeg").read_bytes() == b"ffmpeg v1"
+    assert os.access(layout.tools_dir / "ffmpeg", os.X_OK)
+    assert launcher.app_environment(layout, {"PATH": "/usr/bin"})["PATH"].split(os.pathsep)[0] == str(layout.tools_dir)
+    assert Path(launcher.sync_command(layout)[0]).parent == layout.tools_dir
+
+
+def test_an_update_replaces_the_tools_and_an_unchanged_payload_leaves_them(layout):
+    _tool(layout, "ffmpeg", b"ffmpeg v1")
+    launcher.prepare_home(layout)
+    launcher.install_tools(layout)
+    installed = layout.tools_dir / "ffmpeg"
+    os.utime(installed, (1, 1))
+
+    launcher.install_tools(layout)
+    assert installed.stat().st_mtime == 1  # same payload: not rewritten
+
+    _tool(layout, "ffmpeg", b"ffmpeg v2")
+    launcher.install_tools(layout)
+    assert installed.read_bytes() == b"ffmpeg v2"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the quarantine attribute is macOS's")
+def test_an_installed_tool_does_not_inherit_the_download_s_quarantine(layout):
+    """A copy keeps com.apple.quarantine on macOS (measured: shutil.copyfile
+    and copy2 both carry it), and Gatekeeper refuses an ad-hoc-signed
+    quarantined ffmpeg; the launcher writes fresh files instead."""
+    import subprocess
+
+    _tool(layout, "ffmpeg", b"#!/bin/sh\necho ok\n")
+    subprocess.run(["xattr", "-w", "com.apple.quarantine", "0081;66e1c000;Safari;",
+                    str(layout.bin_dir / "ffmpeg")], check=True)
+    launcher.prepare_home(layout)
+
+    launcher.install_tools(layout)
+
+    attrs = subprocess.run(["xattr", str(layout.tools_dir / "ffmpeg")], capture_output=True, text=True).stdout
+    assert "com.apple.quarantine" not in attrs

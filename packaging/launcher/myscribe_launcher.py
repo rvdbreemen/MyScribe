@@ -102,11 +102,12 @@ class Layout:
     env_file = property(lambda self: self.home / ".env")
     logs_dir = property(lambda self: self.home / "logs")
     pycache_dir = property(lambda self: self.home / "pycache")
+    tools_dir = property(lambda self: self.home / "bin")
     stamp_file = property(lambda self: self.env_dir / STAMP_NAME)
 
     @property
     def uv(self) -> Path:
-        return self.bin_dir / ("uv.exe" if self.windows else "uv")
+        return self.tools_dir / ("uv.exe" if self.windows else "uv")
 
     @property
     def env_python(self) -> Path:
@@ -208,8 +209,50 @@ def app_environment(layout: Layout, base: dict | None = None) -> dict:
     )
     # The bundled ffmpeg and ffprobe first. A Mac app started from Finder gets
     # a PATH without Homebrew, so without this there would be no ffmpeg at all.
-    env["PATH"] = os.pathsep.join(p for p in (str(layout.bin_dir), env.get("PATH", "")) if p)
+    env["PATH"] = os.pathsep.join(p for p in (str(layout.tools_dir), env.get("PATH", "")) if p)
     return env
+
+
+def _payload_tool_hashes(layout: Layout) -> dict[str, str]:
+    """``{name: sha256}`` of the shipped ``bin/``, from the build's manifest."""
+    try:
+        files = json.loads((layout.payload / "MANIFEST.json").read_text(encoding="utf-8"))["files"]
+        found = {name[len("bin/"):]: digest for name, digest in files.items() if name.startswith("bin/")}
+        if found:
+            return found
+    except (OSError, ValueError, KeyError):
+        pass
+    return {
+        tool.name: hashlib.sha256(tool.read_bytes()).hexdigest()
+        for tool in sorted(layout.bin_dir.iterdir()) if tool.is_file()
+    }
+
+
+def install_tools(layout: Layout) -> None:
+    """Put uv, ffmpeg and ffprobe in the home and run them from there.
+
+    Written as fresh files rather than copied: on macOS a copy keeps the
+    download's com.apple.quarantine attribute (shutil.copyfile and copy2
+    both carry it), and Gatekeeper refuses to run a quarantined binary that
+    is only ad-hoc signed, as the self-built ffmpeg is. Skipped while the
+    stamp matches the shipped hashes, so an update replaces them once.
+    """
+    wanted = _payload_tool_hashes(layout)
+    stamp = layout.tools_dir / ".tools.json"
+    try:
+        current = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current = None
+    if current == wanted and all((layout.tools_dir / name).exists() for name in wanted):
+        return
+    layout.tools_dir.mkdir(parents=True, exist_ok=True)
+    for name in wanted:
+        target = layout.tools_dir / name
+        fresh = target.with_name(name + ".new")
+        fresh.write_bytes((layout.bin_dir / name).read_bytes())
+        fresh.chmod(0o755)
+        os.replace(fresh, target)
+    stamp.write_text(json.dumps(wanted), encoding="utf-8")
 
 
 def prepare_home(layout: Layout) -> None:
@@ -385,6 +428,7 @@ class Launch:
             self.report("error", f"Port {self.port} is used by another program; MyScribe cannot start.")
             return False
         prepare_home(self.layout)
+        install_tools(self.layout)
         _release_frozen_dll_directory()
         if needs_sync(self.layout):
             self.report("status", "Installing the speech engine. The first start downloads about "
@@ -523,6 +567,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     if args.sync_only or args.doctor is not None or args.smoke:
         prepare_home(layout)
+        install_tools(layout)
         _release_frozen_dll_directory()
         if needs_sync(layout) and not sync(layout, lambda line: print(line, flush=True)):
             return 1

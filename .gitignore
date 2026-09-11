@@ -60,3 +60,6 @@ r1.json
 # adr-kit machine-local settings (judge host client, signer): per machine by
 # design (adr-kit ADR-025); the tracked half is docs/adr/.adr-kit.json.
 docs/adr/.adr-kit.local.json
+
+# Packaging: downloaded tools, verified by sha256 (build/ and dist/ are above).
+packaging/.cache/
