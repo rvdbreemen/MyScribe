@@ -577,6 +577,35 @@ def test_a_re_transcription_asks_who_is_speaking_again(conn, data_dir):
     assert [e["kind"] for e in jobs.events_after(conn, job_b, 0)].count("speakers-queued") == 1
 
 
+def test_names_come_from_the_run_that_was_current_not_from_a_failed_one(conn, data_dir):
+    """A re-transcription that failed after its transcribe stage leaves a run
+    that never became current and has no names. Found in review 2026-09-11:
+    the next re-transcription inherited from that run - the newest - and the
+    name a person typed was gone from the transcript they opened."""
+    voices = [{"idx": i, "speaker": "SPEAKER_00" if i < 3 else "SPEAKER_01"} for i in range(6)]
+    job_a, run_a, media_id = a_finished_run(conn, words=6)
+    finalize.run(finalize_ctx(conn, job_a, run_a, words=voices))
+    with db.LOCK:
+        conn.executemany(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source) VALUES (?, ?, ?, ?)",
+            [(run_a, "SPEAKER_00", "Arthur", "llm"), (run_a, "SPEAKER_01", "Ford", "human")],
+        )
+        conn.execute(  # the failed attempt: a run row, never current, no names
+            "INSERT INTO run(media_id, model, compute_type, created_at) VALUES (?, 'tiny', 'int8', 0)",
+            (media_id,),
+        )
+        conn.commit()
+
+    job_c, run_c, _ = a_finished_run(conn, media_id=media_id, words=6)
+    finalize.run(finalize_ctx(conn, job_c, run_c, words=voices))
+
+    labels = {
+        row["cluster_label"]: (row["display_name"], row["source"])
+        for row in conn.execute("SELECT * FROM speaker_label WHERE run_id=?", (run_c,))
+    }
+    assert labels == {"SPEAKER_00": ("Arthur", "llm"), "SPEAKER_01": ("Ford", "human")}
+
+
 def test_finalize_only_clears_the_current_run_of_this_media(conn, data_dir):
     """Two files, each with a current run; finishing one must not blank the other."""
     job_a, run_a, media_a = a_finished_run(conn)

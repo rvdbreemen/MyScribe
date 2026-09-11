@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -590,6 +591,86 @@ def test_a_cluster_with_only_a_role_is_left_alone(conn, media, monkeypatch):
     tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
 
     assert _named(conn, _run_id(conn, media)) == {}
+
+
+def test_a_role_in_the_name_field_is_not_a_name(conn, media, monkeypatch):
+    """The prompt asks for a role word - Host, Co-host, Guest, Expert - in
+    `name` when no name is known, and a model can be sure of a role. Found in
+    review 2026-09-11: "Host" at 95 was written over an inherited "Arthur",
+    which every re-transcription now puts in front of the pass (TASK-037)."""
+    run_id = _run_id(conn, media)
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source, confidence)"
+            " VALUES (?, 'SPEAKER_00', 'Arthur', 'llm', 95.0)",
+            (run_id,),
+        )
+        conn.commit()
+    provider, _ = fake_provider([_answer(
+        {"cluster": "SPEAKER_00", "name": "Host", "role": "host", "confidence": 95},
+        {"cluster": "SPEAKER_01", "name": "Guest 2", "role": "guest", "confidence": 97},
+    )])
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, run_id) == {"SPEAKER_00": ("Arthur", "llm", 95.0)}
+
+
+@pytest.mark.parametrize("name", ["Host", "co-host", "The host", "Guest 2", "Expert", "Speaker 1", "Unknown"])
+def test_role_words_are_recognised_whatever_their_case_or_number(name):
+    assert tasks.is_role_word(name)
+
+
+@pytest.mark.parametrize("name", ["Sarah", "Josh Bressers", "Dr. Smith", "Ad", "Guestrin"])
+def test_a_name_is_not_a_role_word(name):
+    assert not tasks.is_role_word(name)
+
+
+class _RenamedMidway:
+    """A connection on which a person renames SPEAKER_00 in the web process
+    between apply_speakers reading the human rows and writing its own."""
+
+    def __init__(self, conn, run_id):
+        self._conn, self._run_id = conn, run_id
+
+    def execute(self, sql, *args):
+        cursor = self._conn.execute(sql, *args)
+        if sql.lstrip().upper().startswith("SELECT") and "source='human'" in sql:
+            rows = cursor.fetchall()
+            self._conn.execute(
+                "INSERT INTO speaker_label(run_id, cluster_label, display_name, source)"
+                " VALUES (?, 'SPEAKER_00', 'Trillian', 'human')",
+                (self._run_id,),
+            )
+            self._conn.commit()
+            return iter(rows)
+        return cursor
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_a_rename_that_lands_while_the_pass_writes_is_kept(conn, media):
+    """The human rows are read, then the names are written; the web process can
+    commit a rename in between. Found in review 2026-09-11. The write itself
+    refuses a human row, so the rename stands and the cluster is reported as
+    left, not named."""
+    run_id = _run_id(conn, media)
+    with db.LOCK:
+        output_id = conn.execute(
+            "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version, content, created_at)"
+            " VALUES (?, 'speakers', 'p', 'm', '1', '{}', 0.0) RETURNING id",
+            (media,),
+        ).fetchone()["id"]
+        conn.commit()
+    plan = SimpleNamespace(run_id=run_id)  # apply_speakers reads nothing else of it
+    payload = tasks.Speakers(speakers=[tasks.SpeakerGuess(cluster="SPEAKER_00", name="Arthur", confidence=99)])
+
+    result = tasks.apply_speakers(_RenamedMidway(conn, run_id), plan, payload, output_id)
+
+    assert _named(conn, run_id)["SPEAKER_00"][:2] == ("Trillian", "human")
+    assert (result["named"], result["left"]) == ([], ["SPEAKER_00"])
 
 
 def test_running_it_again_updates_rather_than_duplicates(conn, media, monkeypatch):

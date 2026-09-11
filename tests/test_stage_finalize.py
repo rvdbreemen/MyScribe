@@ -124,9 +124,9 @@ def _labels(conn, run_id):
 
 
 def test_a_re_transcription_inherits_the_names_the_previous_run_earned(conn):
-    """Re-transcribing with a better model should not pay a reasoning model to
-    rediscover names that were already right - and should certainly not throw
-    away a name a person typed."""
+    """Re-transcribing should not throw away names that were already right -
+    certainly not one a person typed. They stand on the new run while the pass
+    finalize queues anyway (TASK-037) works out its answer."""
     media_id = seed_media(conn, title="Guide")
     old_run = seed_run(conn, media_id)
     _name(conn, old_run, "SPEAKER_00", "Arthur", source="llm")
@@ -134,7 +134,7 @@ def test_a_re_transcription_inherits_the_names_the_previous_run_earned(conn):
     new_run = seed_run(conn, media_id)
     _set_provider(conn, "ollama")
 
-    finalize.inherit_speaker_names(conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"])
+    finalize.inherit_speaker_names(conn, new_run, previous=old_run, clusters=["SPEAKER_00", "SPEAKER_01"])
 
     assert _labels(conn, new_run) == {
         "SPEAKER_00": ("Arthur", "llm"),
@@ -153,7 +153,7 @@ def test_a_cluster_the_old_run_did_not_have_does_not_cost_the_others_their_names
     new_run = seed_run(conn, media_id)
 
     finalize.inherit_speaker_names(
-        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
+        conn, new_run, previous=old_run, clusters=["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
     )
 
     assert _labels(conn, new_run) == {
@@ -183,7 +183,7 @@ def test_a_partly_named_run_keeps_the_names_it_had(conn):
     _set_provider(conn, "ollama")
     clusters = ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
 
-    named = finalize.inherit_speaker_names(conn, media_id, new_run, clusters)
+    named = finalize.inherit_speaker_names(conn, new_run, previous=old_run, clusters=clusters)
 
     assert named == ["SPEAKER_00", "SPEAKER_02"]
     assert _labels(conn, new_run) == {
@@ -205,7 +205,7 @@ def test_a_label_that_swallowed_another_voice_loses_its_name(conn):
     new_run = seed_run(conn, media_id)  # words 20-39 all SPEAKER_01
 
     named = finalize.inherit_speaker_names(
-        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"]
+        conn, new_run, previous=old_run, clusters=["SPEAKER_00", "SPEAKER_01"]
     )
 
     assert named == ["SPEAKER_00"]
@@ -231,7 +231,7 @@ def test_the_same_labels_on_other_voices_inherit_nothing(conn):
     new_run = seed_run(conn, media_id, words=_swapped_voices())
 
     named = finalize.inherit_speaker_names(
-        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"]
+        conn, new_run, previous=old_run, clusters=["SPEAKER_00", "SPEAKER_01"]
     )
 
     assert named == []
@@ -253,7 +253,7 @@ def test_only_the_label_whose_voice_moved_loses_its_name(conn):
     )
 
     named = finalize.inherit_speaker_names(
-        conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
+        conn, new_run, previous=old_run, clusters=["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"]
     )
 
     assert named == ["SPEAKER_02"]
@@ -270,7 +270,7 @@ def test_a_run_every_name_is_on_is_asked_about_only_when_asked_to(conn):
     new_run = seed_run(conn, media_id)
     _set_provider(conn, "ollama")
 
-    finalize.inherit_speaker_names(conn, media_id, new_run, ["SPEAKER_00"])
+    finalize.inherit_speaker_names(conn, new_run, previous=old_run, clusters=["SPEAKER_00"])
 
     assert finalize.queue_speaker_pass(conn, media_id, new_run, ["SPEAKER_00"]) is None
     assert _queued(conn) == []
@@ -299,7 +299,7 @@ def test_a_partly_named_run_still_asks_about_the_rest(conn):
     new_run = seed_run(conn, media_id)
     _set_provider(conn, "ollama")
 
-    finalize.inherit_speaker_names(conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"])
+    finalize.inherit_speaker_names(conn, new_run, previous=old_run, clusters=["SPEAKER_00", "SPEAKER_01"])
     job_id = finalize.queue_speaker_pass(conn, media_id, new_run, ["SPEAKER_00", "SPEAKER_01"])
 
     assert job_id is not None
@@ -310,7 +310,7 @@ def test_the_first_run_of_a_recording_inherits_nothing_and_asks(conn):
     run_id = seed_run(conn, media_id)
     _set_provider(conn, "ollama")
 
-    finalize.inherit_speaker_names(conn, media_id, run_id, ["SPEAKER_00"])
+    finalize.inherit_speaker_names(conn, run_id, previous=None, clusters=["SPEAKER_00"])
 
     assert _labels(conn, run_id) == {}
     assert finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00"]) is not None
@@ -373,6 +373,25 @@ def test_the_sweep_leaves_a_recording_a_person_named_whole(conn):
     media_id, run_id = _diarized(conn)
     _name(conn, run_id, "SPEAKER_00", "Arthur", source="human")
     _name(conn, run_id, "SPEAKER_01", "Ford", source="human")
+    _set_provider(conn, "ollama")
+
+    assert finalize.sweep_speaker_passes(conn) == []
+    assert _queued(conn) == []
+
+
+def test_the_sweep_never_asks_about_a_recording_in_a_private_folder(conn):
+    """Private is the recording or any folder above it (llm.privacy). Found in
+    review 2026-09-11: the sweep read only the recording's own pin, so on a
+    local provider a recording in a pinned folder was named automatically."""
+    with db.LOCK:
+        folder = conn.execute(
+            "INSERT INTO folder(name, private) VALUES ('Diary', 1) RETURNING id"
+        ).fetchone()["id"]
+        conn.commit()
+    media_id, _ = _diarized(conn)
+    with db.LOCK:
+        conn.execute("UPDATE media SET folder_id=? WHERE id=?", (folder, media_id))
+        conn.commit()
     _set_provider(conn, "ollama")
 
     assert finalize.sweep_speaker_passes(conn) == []

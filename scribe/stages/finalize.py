@@ -100,6 +100,10 @@ def run(ctx: "RunnerContext") -> None:
     duration = _media_duration(ctx)
     measured = xrt(duration, _wall_seconds(ctx))
 
+    # Read before _commit moves the flag: the names worth carrying over are the
+    # ones on the transcript people had open, not on the newest run - which can
+    # be a failed attempt that never became current.
+    previous = _current_run(ctx.conn, ctx.job["media_id"], run_id)
     n_segments = _commit(ctx, run_id, words, measured)
 
     removed = _remove_work_dir(ctx.job["id"])
@@ -119,7 +123,7 @@ def run(ctx: "RunnerContext") -> None:
         work_dir_removed=removed,
     )
 
-    inherit_speaker_names(ctx.conn, ctx.job["media_id"], run_id, speakers)
+    inherit_speaker_names(ctx.conn, run_id, speakers, previous=previous)
     # Asked even when every name carried over: a new transcript gets a new
     # speaker analysis (Robert, 2026-09-11). The inherited names stand until
     # it answers, and it never writes over one a person typed.
@@ -177,8 +181,14 @@ def sweep_speaker_passes(conn: sqlite3.Connection) -> list[int]:
             """
         ).fetchall()
 
+    # `m.private = 0` above only reads the recording's own pin; a folder above
+    # it pinned private makes it private too (found in review 2026-09-11).
+    from scribe.llm import privacy
+
     queued: list[int] = []
     for row in rows:
+        if privacy.is_private(conn, int(row["media_id"])):
+            continue
         clusters = [
             str(word["speaker"])
             for word in conn.execute(
@@ -194,10 +204,24 @@ def sweep_speaker_passes(conn: sqlite3.Connection) -> list[int]:
     return queued
 
 
+def _current_run(conn: sqlite3.Connection, media_id: int, run_id: int) -> int | None:
+    """The run this one is about to replace as the current one, if any."""
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT id FROM run WHERE media_id=? AND is_current=1 AND id<>?", (media_id, run_id)
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def inherit_speaker_names(
-    conn: sqlite3.Connection, media_id: int, run_id: int, clusters: Sequence[str]
+    conn: sqlite3.Connection, run_id: int, clusters: Sequence[str], *, previous: int | None
 ) -> list[str]:
     """Carry the previous run's speaker names onto this one, when they still fit.
+
+    `previous` is the run that was current until this one - named by the
+    caller, because by the time the names are carried the flag has moved, and
+    the newest other run can be a failed attempt with none (found in review
+    2026-09-11: a person's name was lost that way). None for a first run.
 
     A re-transcription should not throw away names that were already right,
     and certainly not one a person typed. It does not save the speaker pass -
@@ -229,30 +253,23 @@ def inherit_speaker_names(
     refuses nothing; it is there for the day a pipeline change renumbers them.
 
     Labels this run no longer has, and labels whose voice moved, get nothing,
-    and the pass asks about them - it never overwrites a name a person typed.
+    and the pass names them - it never overwrites a name a person typed.
 
-    Returns the clusters that were named, so the caller can tell whether there
-    is still a question worth paying for.
+    Returns the clusters that were named.
     """
-    if not clusters:
+    if not clusters or previous is None:
         return []
 
     with db.LOCK:
-        previous = conn.execute(
-            "SELECT id FROM run WHERE media_id=? AND id<>? ORDER BY id DESC LIMIT 1",
-            (media_id, run_id),
-        ).fetchone()
-        if previous is None:
-            return []
         old = {
             str(row["cluster_label"]): row
             for row in conn.execute(
                 "SELECT cluster_label, display_name, source, llm_output_id, confidence"
                 " FROM speaker_label WHERE run_id=?",
-                (previous["id"],),
+                (previous,),
             )
         }
-        kept = _voices_kept(conn, previous["id"], run_id)
+        kept = _voices_kept(conn, previous, run_id)
         old = {
             cluster: row
             for cluster, row in old.items()

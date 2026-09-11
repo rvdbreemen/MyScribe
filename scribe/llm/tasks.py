@@ -1982,6 +1982,23 @@ TASKS["labels"] = replace(TASKS["labels"], apply=_apply_labels)
 # --- naming the speakers ------------------------------------------------------------------
 
 
+# The role words prompts/speakers.md offers for `name` when the transcript
+# gives no name, and the placeholders a model reaches for instead; with an
+# article or a number they are still a role ("The host", "Guest 2").
+ROLE_WORDS = frozenset({
+    "host", "cohost", "guest", "expert", "other", "speaker", "unknown",
+    "interviewer", "interviewee", "moderator", "presenter", "narrator",
+    "the", "a", "an",
+})
+
+
+def is_role_word(name: str) -> bool:
+    """True when `name` says what somebody is, not who: every word of it, case,
+    hyphens and numbers aside, is in ROLE_WORDS."""
+    words = re.sub(r"[^a-z\s]", "", name.casefold().replace("-", "")).split()
+    return bool(words) and all(word in ROLE_WORDS for word in words)
+
+
 def apply_speakers(
     conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
 ) -> dict:
@@ -1997,11 +2014,15 @@ def apply_speakers(
     **Never over a person.** A row whose source is 'human' is left exactly as
     it is, however sure the model claims to be. This is the rule that makes
     running the pass unattended safe: the worst it can do to a name somebody
-    typed is nothing.
+    typed is nothing. The write itself says so too, so a rename the web
+    process commits after the human rows were read still stands.
 
     **A role is not a name.** "Guest" replaces "Speaker 2" with something no
     more informative and harder to spot as a default, so a guess with no actual
-    name is skipped whatever its confidence.
+    name is skipped whatever its confidence - an empty name, or a role word in
+    the name field, which is where the prompt asks for one (`is_role_word`).
+    Since a re-transcription asks again (TASK-037), this is also what keeps
+    "Host" off a cluster that inherited "Arthur".
 
     Every row written records `llm_output_id` and the confidence, so a name can
     be traced back to the analysis that chose it and the quote that analysis
@@ -2031,18 +2052,19 @@ def apply_speakers(
             if cluster in human:
                 left.append(cluster)
                 continue
-            if not name or confidence <= SPEAKER_CONFIDENCE_THRESHOLD:
+            if not name or is_role_word(name) or confidence <= SPEAKER_CONFIDENCE_THRESHOLD:
                 left.append(cluster)
                 continue
-            conn.execute(
+            written = conn.execute(
                 "INSERT INTO speaker_label(run_id, cluster_label, display_name, source,"
                 " llm_output_id, confidence) VALUES (?, ?, ?, 'llm', ?, ?)"
                 " ON CONFLICT(run_id, cluster_label) DO UPDATE SET"
                 " display_name=excluded.display_name, source='llm',"
-                " llm_output_id=excluded.llm_output_id, confidence=excluded.confidence",
+                " llm_output_id=excluded.llm_output_id, confidence=excluded.confidence"
+                " WHERE speaker_label.source <> 'human'",
                 (run_id, cluster, name[:library_max_name()], output_id, confidence),
-            )
-            named.append(cluster)
+            ).rowcount
+            (named if written else left).append(cluster)
         conn.commit()
 
     return {"named": named, "left": left, "threshold": SPEAKER_CONFIDENCE_THRESHOLD}
