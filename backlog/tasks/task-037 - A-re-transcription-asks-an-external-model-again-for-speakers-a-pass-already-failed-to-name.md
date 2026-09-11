@@ -3,11 +3,11 @@ id: TASK-037
 title: >-
   A re-transcription asks an external model again for speakers a pass already
   failed to name
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 17:33'
-updated_date: '2026-09-11 20:18'
+updated_date: '2026-09-11 20:50'
 labels:
   - speakers
   - llm
@@ -29,8 +29,8 @@ Whether the finalize path should follow the catch-up rule is Robert's decision; 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Robert's decision is recorded: does a re-transcription of a recording with a stored speakers answer ask again by itself?
-- [ ] #2 If not: the finalize path skips the pass when a speakers answer is stored for the recording (any run), a person can still ask from the transcript, and a red/green test holds both
-- [ ] #3 A recording whose pass never ran still gets one after its transcription, and a private recording never gets an external one (TASK-024 and the catch-up unchanged for those cases)
+- [x] #2 A recording whose pass never ran still gets one after its transcription, and a private recording never gets an external one (TASK-024 and the catch-up unchanged for those cases)
+- [x] #3 Since Robert chose to ask again: a re-transcription queues a pass even when every name carried over. Names are inherited from the run that was current, a name a person typed and a role word are never written over it, and a red/green test holds each
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -43,4 +43,14 @@ Robert, 2026-09-11 ~21:00: "Bij opnieuw transcriberen moet [er] opnieuw sprekera
 Robert chose 'Altijd opnieuw' (2026-09-11 ~21:05): a re-transcription asks again even when every name carried over. Built on branch task037-ask-again (worktree, so the running batch's runner children kept importing 2cde07b): 6c1eb83 finalize queues the pass with even_if_named=True; the catch-up keeps asking only where speakers were never assigned (test: a recording a person named whole is left alone). Red: two runs through finalize, both names inherited, queued [('speakers', 1)] only; green 102 passed; mutation 4/4. Adversarial review (2 lenses, each finding verified): 5 confirmed, 5 refuted. Fixed in df0775c, each red first (16 failed -> 118 passed, mutation 7/7): a role word in the name field ('Host' at 95) was written over an inherited name; names were inherited from the newest other run instead of the run that was current (a failed attempt in between lost a person's name); the sweep read only media.private and missed a private folder on a local provider; a rename landing between apply_speakers' read and write was overwritten. Refuted: redundant pass on a superseded run, library badge showing the pass, the e2e fixture claiming the LLM job, two stale docstrings (rewritten anyway). Not yet landed on feat/feed-episode-import: after the batch (jobs 259-283) finishes, then suites, then the 21 re-transcribed on 2026-09-11 get their pass through the transcript's own endpoint.
 
 Landed 2026-09-11 ~22:15 on feat/feed-episode-import as 373f219 + 63a3c91 (cherry-picks of 6c1eb83 + df0775c) while job 280 was mid-run, so the passes queued after the batch (284+) run with the guarded apply_speakers; job 280's own finalize still ran 2cde07b's (it queued pass 284 because media 13 has an unnamed cluster). Worktree suite before landing: a-r 1234 passed; s-z stalled twice under the running GPU batch (the known Windows socketpair stall: CPU frozen at 119 s, killed) - full suites to be run on the branch after the batch. Retro passes for the 21 re-transcribed on 2026-09-11 (jobs 259-279) queued through the transcript's endpoint, POST /media/{id}/ai/speakers: jobs 285-305, openrouter, 0 private.
+
+AC #2 ("If not: the finalize path skips the pass...") was removed on 2026-09-11 because Robert took the other branch ("Altijd opnieuw"). It is replaced by the AC for the branch he chose, so nothing is checked that was not built.
+
+Live outcome, 2026-09-11 22:41. All 25 passes are done, 0 failed: job 284 from finalize, 285-305 through the transcript endpoint for the 21, and 306-308 from the finalize of 20, 36 and 39. openrouter/auto; 404,494 prompt + 19,534 completion tokens; 0 private recordings. Name effect on the 25 (old current run vs new): 39 named clusters unchanged, 12 full names shortened to a first name on 6 recordings, 2 lengthened (media 29), 1 newly named (media 20), 0 gone, 0 role words. The shortening follows the prompt itself (speakers.md asks for the first name) and is filed as TASK-039 for Robert. None of the 25 runs held a name a person typed, so the human guard was held by tests, not by this batch. Suites on 372f681: Windows 1234 + 838 passed; Linux 1224 + 821 passed (10 + 17 skipped, same as before). Targeted: 119 passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Robert decided that a re-transcription always asks who is speaking again. finalize now queues the speakers pass with even_if_named=True (373f219); the catch-up sweep keeps asking only recordings that were never asked, and never private ones. The review fixes landed in 63a3c91. Names are inherited from the run that was current, not from a failed attempt. A role word never overwrites a name. A name a person typed survives a rename race. The sweep reads privacy through the folder chain. Evidence: red then green (16 failed -> 118 passed), mutation 7 of 7, suites green on Windows and Linux. Live: 25 passes, 0 failed, 404k + 19.5k tokens, 0 private. Side effect: 12 full names became first names, filed as TASK-039.
+<!-- SECTION:FINAL_SUMMARY:END -->
