@@ -3,7 +3,9 @@
 #
 # INSTALL WITH THE CUDA INDEX, or pip will silently install a CPU-only torch:
 #
-#   pip install -r requirements-gpu.txt #     --index-url https://download.pytorch.org/whl/cu128 #     --extra-index-url https://pypi.org/simple
+#   pip install -r requirements-gpu.txt
+#       --index-url https://download.pytorch.org/whl/cu128
+#       --extra-index-url https://pypi.org/simple
 #
 # Then verify with: python -m scribe.doctor
 #
@@ -11,6 +13,13 @@
 #   torch 2.8.0+cu128 / torchaudio 2.8.0+cu128 / ctranslate2 4.8.2 /
 #   faster-whisper 1.2.1 / pyannote.audio 4.0.7
 # The older cu118 fallback (WHYcast's recipe) was not needed.
+#
+# 2026-09-10: torch and torchaudio 2.8.0 -> 2.10.0 (TASK-027), for
+# GHSA-vgrw-7cvw-pwgx (fixed in 2.9.1) and GHSA-qfhq-4f3w-5fph (2.10.0).
+# 2.10 is the ceiling for now, not an oversight: CTranslate2 4.8.2 imports
+# cublas64_12.dll, the cu128 index ends at 2.11, and PyPI's Linux torch moves
+# to CUDA 13 at 2.11. GHSA-rrmf-rvhw-rf47 (fixed in 2.13) waits on that -
+# TASK-028. torchaudio 2.10.0 is also the last release that pins torch exactly.
 #
 # Measured here on 2026-09-02:
 #   large-v3-turbo, 5 min of Dutch speech, word timestamps + VAD: 14.5x realtime
@@ -65,7 +74,7 @@ Jinja2==3.1.6
 joblib==1.6.0
 julius==0.2.8
 kiwisolver==1.5.1
-lightning==2.6.5
+lightning==2.6.6
 lightning-utilities==0.15.3
 Mako==1.4.1
 markdown-it-py==4.2.0
@@ -107,7 +116,7 @@ pyparsing==3.3.2
 pytest==9.1.1
 python-dateutil==2.9.0.post0
 python-multipart==0.0.32
-pytorch-lightning==2.6.5
+pytorch-lightning==2.6.6
 pytorch-metric-learning==2.9.0
 PyYAML==6.0.3
 requests==2.34.2
@@ -123,10 +132,10 @@ starlette==1.6.0
 sympy==1.14.0
 threadpoolctl==3.6.0
 tokenizers==0.23.1
-torch==2.8.0+cu128
+torch==2.10.0+cu128
 torch-audiomentations==0.12.0
 torch_pitch_shift==1.2.5
-torchaudio==2.8.0+cu128
+torchaudio==2.10.0+cu128
 torchcodec==0.16.0
 torchmetrics==1.9.0
 tqdm==4.70.0
