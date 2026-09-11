@@ -1,0 +1,75 @@
+[project]
+name = "myscribe"
+version = "0.1.0"
+description = "Local transcription with speakers, corrections, exports and an AI panel."
+requires-python = "==3.12.*"
+# The direct dependencies, each pinned; uv.lock pins everything they pull in,
+# per platform, with hashes (ADR-009). Change a pin here, then `uv lock`.
+dependencies = [
+    # Web app
+    "anyio==4.14.2",
+    "fastapi==0.141.1",
+    "httpx2==2.12.0",
+    "jinja2==3.1.6",
+    "markupsafe==3.0.3",
+    "pydantic==2.13.5",
+    "python-multipart==0.0.32",
+    "starlette==1.6.0",
+    "uvicorn==0.52.4",
+    # Exports, AI panel, glossary, ingest
+    "huggingface-hub==1.29.0",
+    "jellyfish==1.2.1",
+    "numpy==2.5.2",
+    "openai==3.7.0",
+    "python-docx==1.2.0",
+    "rapidfuzz==3.14.6",
+    "watchdog==6.0.0",
+    # Expected to go stale: yt-dlp keeps up with sites that change their
+    # players without notice. The doctor reports its release date.
+    "yt-dlp==2026.8.19",
+    # Speech and speakers. torch 2.10 is the ceiling while CTranslate2 4.8.2
+    # needs CUDA 12 (TASK-028); on Windows torch and torchaudio come from the
+    # cu128 index (see [tool.uv.sources]). The engine is pinned alongside the
+    # dormant wrapper (ADR-009).
+    "ctranslate2==4.8.2",
+    "faster-whisper==1.2.1",
+    "pyannote-audio==4.0.7",
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
+    # 2.6.6 carries the checkpoint `_instantiator` allowlist (GHSA-qqmf-gpg7-g8gw).
+    "lightning==2.6.6",
+    "pytorch-lightning==2.6.6",
+    # Apple Silicon: Whisper on the GPU through Metal (scribe.accel).
+    "mlx==0.32.2; sys_platform == 'darwin'",
+    "mlx-whisper==0.4.3; sys_platform == 'darwin'",
+]
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "pytest==9.1.1",
+]
+
+[tool.uv]
+# The app runs from its source tree (`python -m scribe`); there is nothing to
+# build or install as a package.
+package = false
+# The three platforms the app is built and verified for. Anything else is
+# refused at lock time instead of resolving to an untested set.
+environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+# Windows gets the CUDA 12.8 builds; without this pip and uv both install a
+# CPU-only torch there and say nothing (ADR-006, ADR-009). Linux's PyPI torch
+# already carries CUDA 12 through the nvidia-* wheels; macOS's is CPU + MPS.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+torchaudio = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

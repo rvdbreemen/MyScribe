@@ -18,8 +18,8 @@ title still goes on the media row, where it is text and not a path.
 
 **yt-dlp ages by design.** Sites change their players and their APIs, and an
 extractor pinned three months ago stops working with no warning and no
-version bump on our side. This module pins nothing itself - `requirements.txt`
-does - but it does two things about it: `is_stale` says when the installed
+version bump on our side. This module pins nothing itself - `pyproject.toml`
+and `uv.lock` do - but it does two things about it: `is_stale` says when the installed
 copy is old enough to be the likely culprit, and a failure whose message
 smells like a broken extractor says so in words, with the installed version
 and the command that fixes it. That sentence is the difference between "this
@@ -70,6 +70,10 @@ _NOT_THE_MEDIA = (INFO_JSON_SUFFIX, ".part", ".ytdl", ".temp")
 # is roughly the interval over which a big site has changed something that
 # mattered; it is a heuristic in a hint, not a gate on anything.
 STALE_DAYS = 90
+
+# What to run about an old yt-dlp. The environment is uv's, which has no pip in
+# it (ADR-009); an installed copy gets a newer yt-dlp with the next release.
+UPDATE_COMMAND = "uv lock --upgrade-package yt-dlp && uv sync"
 
 # Seconds to wait on a socket. Long enough for a slow server, short enough that
 # a hung connection does not become a job that never ends.
@@ -282,7 +286,7 @@ def stale_note() -> str:
     old = f", released {age} days ago" if age is not None else ""
     return (
         f"This usually means yt-dlp's extractor for this site is out of date "
-        f"(yt-dlp {version} installed{old}); update it with: pip install -U yt-dlp"
+        f"(yt-dlp {version} installed{old}); update it with: {UPDATE_COMMAND}"
     )
 
 

@@ -443,7 +443,7 @@ def test_a_stale_extractor_says_so_instead_of_showing_a_stack_trace():
     message = str(exc.value)
     assert "Unable to extract nsig function" in message  # the reason, not the boilerplate
     assert "out of date" in message
-    assert "pip install -U yt-dlp" in message
+    assert urls.UPDATE_COMMAND in message
     assert urls.installed_version() in message
     assert "Traceback" not in message
 
@@ -878,7 +878,7 @@ def test_the_doctor_calls_an_old_yt_dlp_old_without_failing_the_gate(monkeypatch
 
     assert check.ok is True  # URL import still works; it just may not, per site
     assert "out of date" in check.detail
-    assert "pip install -U yt-dlp" in check.detail
+    assert urls.UPDATE_COMMAND in check.detail
 
 
 def test_the_doctor_says_so_when_yt_dlp_is_not_installed(monkeypatch):
@@ -888,7 +888,7 @@ def test_the_doctor_says_so_when_yt_dlp_is_not_installed(monkeypatch):
 
     assert check.ok is False
     assert check.optional is True  # nothing else in the app needs it
-    assert "pip install" in check.fix_hint
+    assert "uv sync" in check.fix_hint
 
 
 def test_reading_the_version_does_not_import_yt_dlp(monkeypatch):

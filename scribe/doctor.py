@@ -180,7 +180,7 @@ def check_ytdlp() -> Check:
             ok=False,
             optional=True,
             detail="not installed; importing media from a URL will not work",
-            fix_hint="pip install -r requirements.txt (yt-dlp is pinned there).",
+            fix_hint="uv sync (yt-dlp is pinned in pyproject.toml).",
         )
 
     age = urls.age_days()
@@ -192,7 +192,7 @@ def check_ytdlp() -> Check:
         # the sentence that has to be seen.
         detail += (
             " - out of date, which is the usual reason a download starts failing;"
-            " update it with: pip install -U yt-dlp"
+            f" update it with: {urls.UPDATE_COMMAND}"
         )
     return Check(name="yt-dlp", ok=True, detail=detail)
 
@@ -232,7 +232,7 @@ from scribe.stages.diarize import local_weights_dir  # noqa: E402
 
 SMOKE_CLIP = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "clip30.wav"
 
-_PIN_HINT = "Install the GPU stack: pip install -r requirements-gpu.txt"
+_PIN_HINT = "Install the locked stack: uv sync (on Windows it takes torch from the cu128 index)"
 
 
 def check_gpu_runtime() -> Check:
@@ -262,7 +262,7 @@ def check_gpu_runtime() -> Check:
                     f"MLX {'available' if mlx else 'missing'} for transcription, "
                     f"MPS {'available' if mps else 'missing'} for diarization"
                 ),
-                fix_hint=None if (mlx and mps) else "pip install -r requirements-macos.txt",
+                fix_hint=None if (mlx and mps) else "uv sync (the mlx packages are locked for macOS)",
             )
         return Check(
             name="gpu-runtime",

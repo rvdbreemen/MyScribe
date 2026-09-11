@@ -3,10 +3,11 @@ id: TASK-029
 title: >-
   Release automation: per-OS installers for Windows, macOS and Linux built by CI
   on every release
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
+updated_date: '2026-09-11 21:18'
 labels:
   - packaging
   - release
