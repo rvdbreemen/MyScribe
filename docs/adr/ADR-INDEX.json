@@ -442,6 +442,136 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-008",
+      "title": "Ship each platform as a small launcher that installs the locked environment with uv on first run",
+      "path": "ADR-008-ship-each-platform-as-a-small-launcher-that-installs-the-locked-environment-with-uv-on-first-run.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-11",
+      "decision_summary": "Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps...",
+      "topics": [
+        "ci",
+        "installer",
+        "packaging",
+        "release"
+      ],
+      "aliases": [
+        "AppImage",
+        "dmg",
+        "Inno Setup",
+        "launcher",
+        "release workflow",
+        "uv sync"
+      ],
+      "components": [
+        ".github/workflows/release.yml",
+        "packaging.launcher"
+      ],
+      "symbols": [],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Build every release artifact in CI from a v tag; no hand-built artifact is published.",
+          "Install the environment from the committed uv.lock with uv sync --frozen, using a uv binary whose version is pinned and whose checksum is verified in the build.",
+          "Keep each release asset under 2 GiB.",
+          "Smoke-test each artifact on its own OS before publishing it.",
+          "Keep the launcher stdlib-only: it must work before the environment exists."
+        ],
+        "must_not": [
+          "Bundle torch, CTranslate2 or pyannote into the launcher.",
+          "Put the environment or the data directory inside the install directory (Program Files, the .app, the AppImage are read-only or replaced on update).",
+          "Publish an artifact whose tag and scribe.version disagree."
+        ],
+        "exceptions": [
+          "Code signing is deferred by the user (2026-09-11); the unsigned first-open steps are documented in the README until certificates exist."
+        ],
+        "verification": [
+          ".github/workflows/release.yml (build, smoke, publish jobs).",
+          "tests/testlauncher.py for the launcher's state and sync decisions.",
+          "gh attestation verify -R rvdbreemen/MyScribe."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "packaging/launcher/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-009",
+      "title": "Pin the whole stack in one uv lockfile with a per-platform torch source, and register torch's DLL directory before CTranslate2 loads",
+      "path": "ADR-009-pin-the-whole-stack-in-one-uv-lockfile-with-a-per-platform-torch-source-and-register-torch-s-dll-directory-before-ctranslate2-loads.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-11",
+      "decision_summary": "Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated...",
+      "topics": [
+        "dependencies",
+        "gpu",
+        "packaging",
+        "windows"
+      ],
+      "aliases": [
+        "cuda_setup",
+        "cudnn_ops64_9.dll",
+        "pyproject.toml",
+        "pytorch-cu128",
+        "uv.lock"
+      ],
+      "components": [
+        "pyproject.toml",
+        "scribe.cuda_setup",
+        "uv.lock"
+      ],
+      "symbols": [
+        "ensure_cuda_libs",
+        "gpu_smoke"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Install from the committed uv.lock (uv sync, uv sync --frozen in CI and the launcher); change pins in pyproject.toml and re-lock, never by hand in the lock.",
+          "Source torch and torchaudio from the cu128 index on Windows through [tool.uv.sources] with an explicit index, so no other package can be resolved from it.",
+          "Call cudasetup.ensurecudalibs() before importing fasterwhisper or ctranslate2 in any process that will use the GPU.",
+          "doctor.checkgpuruntime fails when torch.version.cuda is None on a machine that should have CUDA.",
+          "Re-run the doctor on real hardware after any pin bump."
+        ],
+        "must_not": [
+          "Import fasterwhisper at module level in any module the web process imports.",
+          "File the doctor smoke timing under stage transcribe.",
+          "Resolve torch for Windows from PyPI (a CPU build)."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "uv lock --check; python -m scribe.doctor exit 0 on both GPU platforms; tests/testcudasetup.py; tests/testdoctor.py."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/doctor.py",
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -508,6 +638,48 @@
     {
       "source": "ADR-007",
       "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-008",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-008",
+      "target": "ADR-006",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-008",
+      "target": "ADR-009",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-005",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-006",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-008",
       "type": "related",
       "resolved": true
     }
