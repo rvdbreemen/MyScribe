@@ -120,7 +120,12 @@ def run(ctx: "RunnerContext") -> None:
     )
 
     inherit_speaker_names(ctx.conn, ctx.job["media_id"], run_id, speakers)
-    speaker_job = queue_speaker_pass(ctx.conn, ctx.job["media_id"], run_id, speakers)
+    # Asked even when every name carried over: a new transcript gets a new
+    # speaker analysis (Robert, 2026-09-11). The inherited names stand until
+    # it answers, and it never writes over one a person typed.
+    speaker_job = queue_speaker_pass(
+        ctx.conn, ctx.job["media_id"], run_id, speakers, even_if_named=True
+    )
     if speaker_job is not None:
         jobs.emit(ctx.conn, ctx.job["id"], "speakers-queued", job_id_queued=speaker_job)
 
@@ -194,9 +199,11 @@ def inherit_speaker_names(
 ) -> list[str]:
     """Carry the previous run's speaker names onto this one, when they still fit.
 
-    Re-transcribing with a better model should not cost a reasoning call to
-    work out again names that were already right, and should certainly not throw
-    away one a person typed.
+    A re-transcription should not throw away names that were already right,
+    and certainly not one a person typed. It does not save the speaker pass -
+    finalize asks again anyway (Robert, 2026-09-11) - but the names stand from
+    the moment the run is current, and one the new pass is not sure about
+    stays, since the pass only writes a name it is confident of.
 
     The condition is the voice behind each label, not the text. WHYcast
     compares a transcript fingerprint because its names live in a file beside
@@ -339,7 +346,12 @@ def _same_label_share(words: list[sqlite3.Row], other: list[sqlite3.Row]) -> dic
 
 
 def queue_speaker_pass(
-    conn: sqlite3.Connection, media_id: int, run_id: int, clusters: Sequence[str]
+    conn: sqlite3.Connection,
+    media_id: int,
+    run_id: int,
+    clusters: Sequence[str],
+    *,
+    even_if_named: bool = False,
 ) -> int | None:
     """Ask who the speakers are, as soon as there are speakers to ask about.
 
@@ -351,7 +363,10 @@ def queue_speaker_pass(
     cluster, so the transcript the pass reads is the finished one.
 
     Nothing is queued when there is nothing to ask - no diarization means no
-    clusters means no question.
+    clusters means no question. A run whose every cluster has a name is left
+    alone too, unless `even_if_named`: the catch-up sweep asks only where the
+    speakers were never assigned, and finalize asks again after every
+    transcription, re-transcriptions included (Robert, 2026-09-11 - TASK-037).
 
     A private recording is not sent to an external provider, and the pass is
     simply not queued. That is the same rule a bulk action follows, for a
@@ -372,9 +387,9 @@ def queue_speaker_pass(
                 "SELECT cluster_label FROM speaker_label WHERE run_id=?", (run_id,)
             )
         }
-    if named >= set(clusters):
-        # Every cluster already has a name - inherited, or typed by somebody.
-        # There is no question left to pay a model to answer.
+    if named >= set(clusters) and not even_if_named:
+        # Every cluster already has a name - typed by somebody, or an answer
+        # the catch-up is not the one to question.
         return None
 
     # Imported here: these pull the provider registry in, and a stage that runs

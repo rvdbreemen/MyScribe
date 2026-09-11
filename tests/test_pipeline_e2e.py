@@ -545,6 +545,38 @@ def test_finalize_writes_the_speakers_attribute_worked_out(conn, data_dir):
     assert [r["speaker"] for r in rows] == ["SPEAKER_00", "SPEAKER_01", None]
 
 
+def test_a_re_transcription_asks_who_is_speaking_again(conn, data_dir):
+    """Robert, 2026-09-11: re-transcribing means analysing the speakers again,
+    even when every name carried over by voice (TASK-031). The names stay on
+    the new run meanwhile, and the pass never writes over one a person typed
+    (llm.tasks.apply_speakers). Until then finalize asked only about clusters
+    left without a name, and a run whose names all carried over asked nothing."""
+    voices = [{"idx": i, "speaker": "SPEAKER_00" if i < 3 else "SPEAKER_01"} for i in range(6)]
+    job_a, run_a, media_id = a_finished_run(conn, words=6)
+    finalize.run(finalize_ctx(conn, job_a, run_a, words=voices))
+    with db.LOCK:
+        conn.executemany(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source) VALUES (?, ?, ?, ?)",
+            [(run_a, "SPEAKER_00", "Arthur", "llm"), (run_a, "SPEAKER_01", "Ford", "human")],
+        )
+        conn.commit()
+
+    job_b, run_b, _ = a_finished_run(conn, media_id=media_id, words=6)
+    finalize.run(finalize_ctx(conn, job_b, run_b, words=voices))
+
+    labels = {
+        row["cluster_label"]: (row["display_name"], row["source"])
+        for row in conn.execute("SELECT * FROM speaker_label WHERE run_id=?", (run_b,))
+    }
+    assert labels == {"SPEAKER_00": ("Arthur", "llm"), "SPEAKER_01": ("Ford", "human")}
+    asked = [
+        json.loads(row["params_json"])
+        for row in conn.execute("SELECT params_json FROM job WHERE type='llm' ORDER BY id")
+    ]
+    assert [(p["kind"], p["run_id"]) for p in asked] == [("speakers", run_a), ("speakers", run_b)]
+    assert [e["kind"] for e in jobs.events_after(conn, job_b, 0)].count("speakers-queued") == 1
+
+
 def test_finalize_only_clears_the_current_run_of_this_media(conn, data_dir):
     """Two files, each with a current run; finishing one must not blank the other."""
     job_a, run_a, media_a = a_finished_run(conn)

@@ -260,7 +260,10 @@ def test_only_the_label_whose_voice_moved_loses_its_name(conn):
     assert _labels(conn, new_run) == {"SPEAKER_02": ("Zaphod", "human")}
 
 
-def test_a_fully_inherited_run_does_not_pay_for_the_pass_again(conn):
+def test_a_run_every_name_is_on_is_asked_about_only_when_asked_to(conn):
+    """The catch-up leaves a run whose every cluster has a name: the speakers
+    were assigned, so there is nothing it should ask. A re-transcription asks
+    anyway (Robert, 2026-09-11) - finalize says so with `even_if_named`."""
     media_id = seed_media(conn, title="Guide")
     old_run = seed_run(conn, media_id)
     _name(conn, old_run, "SPEAKER_00", "Arthur")
@@ -268,9 +271,24 @@ def test_a_fully_inherited_run_does_not_pay_for_the_pass_again(conn):
     _set_provider(conn, "ollama")
 
     finalize.inherit_speaker_names(conn, media_id, new_run, ["SPEAKER_00"])
-    job_id = finalize.queue_speaker_pass(conn, media_id, new_run, ["SPEAKER_00"])
 
-    assert job_id is None
+    assert finalize.queue_speaker_pass(conn, media_id, new_run, ["SPEAKER_00"]) is None
+    assert _queued(conn) == []
+    job_id = finalize.queue_speaker_pass(conn, media_id, new_run, ["SPEAKER_00"], even_if_named=True)
+    assert job_id is not None
+    assert _queued(conn)[0]["run_id"] == new_run
+
+
+def test_asking_again_still_never_sends_a_private_recording_out(conn):
+    media_id = seed_media(conn, title="Guide")
+    run_id = seed_run(conn, media_id)
+    _name(conn, run_id, "SPEAKER_00", "Arthur")
+    _set_provider(conn, "openai")
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (media_id,))
+        conn.commit()
+
+    assert finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00"], even_if_named=True) is None
     assert _queued(conn) == []
 
 
@@ -346,6 +364,19 @@ def test_the_sweep_leaves_a_recording_that_was_already_asked(conn):
     _set_provider(conn, "ollama")
 
     assert finalize.sweep_speaker_passes(conn) == []
+
+
+def test_the_sweep_leaves_a_recording_a_person_named_whole(conn):
+    """No stored answer, but every speaker has a name somebody typed: the
+    speakers were assigned, so the catch-up has nothing to ask - Robert's rule
+    is for recordings whose speaker assignment never happened."""
+    media_id, run_id = _diarized(conn)
+    _name(conn, run_id, "SPEAKER_00", "Arthur", source="human")
+    _name(conn, run_id, "SPEAKER_01", "Ford", source="human")
+    _set_provider(conn, "ollama")
+
+    assert finalize.sweep_speaker_passes(conn) == []
+    assert _queued(conn) == []
 
 
 def test_the_sweep_never_offers_a_private_recording_to_an_external_provider(conn):
