@@ -4,8 +4,9 @@
 #   Linux: PyPI's torch wheel carries CUDA through the nvidia-* wheels it depends
 #          on, so an NVIDIA machine gets the GPU and any other machine the CPU.
 #   macOS: PyPI's torch is CPU + MPS. CTranslate2 (faster-whisper) has no MPS
-#          backend, so transcription runs int8 on the CPU there; diarization
-#          runs on the CPU as well (see scribe/stages/diarize.py:resolve_device).
+#          backend, so transcription runs int8 on the CPU unless
+#          requirements-macos.txt adds mlx-whisper; diarization runs on MPS
+#          on Apple Silicon (see scribe/accel.py).
 #
 #   pip install -r requirements.txt -r requirements-ml.txt
 #   python -m scribe.doctor

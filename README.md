@@ -6,10 +6,10 @@ everything; nothing leaves the machine unless you pick a cloud provider.
 
 Runs on Windows, Linux and macOS. Windows and Linux are verified on the
 author's machine (Windows 11 native, Ubuntu 24.04 under WSL2, both with an
-RTX 3080). **macOS is not verified**: the code has no platform-specific
-branches left that would stop it, the CPU path is the same one Linux uses,
-but nobody has run it there yet. If you do, the doctor's output is the bug
-report.
+RTX 3080); macOS on an Apple M2 (macOS 26.3): the doctor green and a
+two-speaker file transcribed on MLX and diarized on MPS through the app. An
+Intel Mac has not been tried. Wherever something fails, the doctor's output
+is the bug report.
 
 ## What you need
 
@@ -31,9 +31,9 @@ the Apple GPU, with word timestamps. Diarization (pyannote, PyTorch) runs on
 Metal through MPS; OpenTranscribe measured an M2 Max at 2-3.5x slower than an
 RTX 3080 on the GPU-bound stages and faster on the CPU-bound ones. The
 doctor's `accel` line says what was picked: `transcription on mlx,
-diarization on mps` is the good outcome. Written without a Mac (2026-09-07);
-the first doctor run on one is the acceptance test, and its output is the
-bug report if it is not.
+diarization on mps` is the good outcome. Measured on an M2 (2026-09-11), a
+44 s two-speaker file: transcription 11.7 s and diarization 25.4 s, both
+including the model load, which dominates a file that short.
 
 ## Install
 

@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-10 20:13'
+updated_date: '2026-09-11 20:56'
 labels:
   - dependencies
   - security
@@ -28,3 +29,9 @@ GHSA-rrmf-rvhw-rf47 (torch.jit.script memory corruption, low, local attack only)
 - [ ] #2 The chosen set passes the doctor, a real transcribe+diarize run, and the -m gpu tests on real hardware
 - [ ] #3 Dependabot alerts 3 and 7 (GHSA-rrmf-rvhw-rf47) close
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+State on 2026-09-11: ctranslate2 on PyPI is still 4.8.2 (no CUDA 13 build), so AC 1's first route is still closed; torch 2.14.0 is out. The description's 'deliberately left open rather than dismissed' no longer holds: rvdbreemen dismissed alerts 3 and 7 on 2026-09-11 as not_used - 'MyScribe never calls torch.jit.script; a runtime trace of import, diarize and transcribe saw 0 TorchScript compiles. The fix (pytorch#188779) ships in 2.14.0, not 2.13.0.' So AC 3 is met by that dismissal, and AC 1's target is 2.14 rather than 2.13. Whether the task stays open or closes on the dismissal is a human call.
+<!-- SECTION:NOTES:END -->
