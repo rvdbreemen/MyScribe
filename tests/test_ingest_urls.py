@@ -1067,3 +1067,49 @@ def test_a_url_without_an_entry_name_keeps_yt_dlp_s_title(conn, data_dir, monkey
     run_stages(make_ctx(conn, job_id))
 
     assert conn.execute("SELECT title FROM media").fetchone()["title"] == "Vogon Poetry Slam"
+
+
+# --- a bulk import waits behind work started by hand (TASK-031) ---------------
+
+
+def test_fanned_out_jobs_queue_below_the_default_priority(conn, data_dir, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(playlist_info(2))))
+    job_id = url_job(conn, "https://example.test/playlist?list=PL42")
+
+    run_stages(make_ctx(conn, job_id))
+
+    priorities = [row["priority"] for row in conn.execute(
+        "SELECT priority FROM job WHERE id<>? ORDER BY id", (job_id,))]
+    assert priorities == [url_stage.BULK_PRIORITY, url_stage.BULK_PRIORITY]
+    assert url_stage.BULK_PRIORITY < 0
+
+
+def test_an_episode_s_transcription_keeps_the_bulk_priority(conn, data_dir, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+    child = jobs.enqueue(conn, url_stage.JOB_TYPE, priority=url_stage.BULK_PRIORITY,
+                         params={"url": "https://example.test/watch?v=abc123", "from_playlist": True})
+
+    run_stages(make_ctx(conn, child))
+
+    queued = conn.execute("SELECT priority FROM job WHERE type='transcribe'").fetchone()
+    assert queued["priority"] == url_stage.BULK_PRIORITY
+
+
+def test_a_single_url_s_transcription_keeps_the_default_priority(conn, data_dir, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+    run_stages(make_ctx(conn, url_job(conn)))
+
+    assert conn.execute("SELECT priority FROM job WHERE type='transcribe'").fetchone()["priority"] == 0
+
+
+def test_a_recording_queued_after_a_feed_is_claimed_before_its_episodes(conn, data_dir, monkeypatch):
+    """The 2026-09-12 report: two recordings behind 47 episodes of a feed."""
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(playlist_info(3))))
+    feed_job = url_job(conn, "https://example.test/playlist?list=PL42")
+    run_stages(make_ctx(conn, feed_job))
+    with db.LOCK:
+        conn.execute("UPDATE job SET status='done' WHERE id=?", (feed_job,))
+        conn.commit()
+    recording = jobs.enqueue(conn, "transcribe", params={})
+
+    assert jobs.claim_next(conn)["id"] == recording

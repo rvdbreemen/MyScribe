@@ -64,6 +64,14 @@ depend on a router (ADR-001 keeps the traffic one-way)."""
 # copy them through untouched.
 OPTIONS_KEY = "options"
 
+BULK_PRIORITY = -10
+"""The priority a playlist's or feed's entries queue at, and the transcriptions
+they queue in turn. The queue runs one job at a time, priority first, then
+oldest (`jobs.claim_next`), so at the default 0 a pasted feed of 47 episodes
+put two recordings made afterwards behind all 47 (reported 2026-09-12). Work
+started one item at a time - a recording, an upload, a single link - stays at
+0 and goes first; the bulk import carries on after it."""
+
 ENTRY_TITLE_KEY = "entry_title"
 """What a fanned-out entry is called, carried from the playlist to its own job:
 a podcast feed knows "Ep 179 - The Courthouse - Revisited" while the episode's
@@ -172,6 +180,8 @@ def register(ctx: "RunnerContext") -> None:
         TRANSCRIBE_JOB_TYPE,
         media_id=row["id"],
         params=transcribe_params(ctx.params, terms),
+        # A feed's episode keeps its place behind hand-started work.
+        priority=int(ctx.job.get("priority") or 0),
     )
 
     jobs.emit(
@@ -203,6 +213,7 @@ def _fan_out(ctx: "RunnerContext", playlist: urls.UrlInfo) -> None:
         jobs.enqueue(
             ctx.conn,
             JOB_TYPE,
+            priority=BULK_PRIORITY,
             params={
                 **ctx.params,
                 "url": entry["url"],
