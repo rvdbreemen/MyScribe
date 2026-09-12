@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 17:33'
-updated_date: '2026-09-11 23:56'
+updated_date: '2026-09-12 01:18'
 labels:
   - transcribe
   - investigation
@@ -71,6 +71,8 @@ The rule the evidence supports, for whoever builds it:
 4. Fix the bounding first (noted above, media 20 at 1866.26): a widened detector wired into second_opinion would re-decode a stretch without the copy it flagged, and would then always read "disappeared".
 
 Also replayed: the 6 stored second-opinion records of current runs. The 5 replaced ones come back clean, and the kept one (media 20) still says "no" 4 times, so TASK-032's judgement holds on a fresh decode. The "A, B, B, B" opinion (media 34 at 800.58) came back as "cool." and "And that" this time, so it did not reproduce; the stored words around it describe a program printing strings of A and B, so it may well have been literal. Someone has to listen to settle that one.
+
+Correction to the note above about media 34 at 800.58. The replay used exactly the span TASK-035 replayed (800.58-802.63, run 99's record), so the two are measuring the same thing. Its 7 s opinion came back "And that" at T0, both in TASK-035's replay and here - the same two words run 99 stored, and the words the seam echo in TASK-035 is built around. The 20 s opinion fell back to T0.4 both times and sampled differently: "A, B, B, B, B, B, B, B." in the earlier replay, "cool." here. So "A, B, B, B" is one draw of a fallback, not a stable reading, and it is evidence about sampling at T>0 rather than about letters. The surrounding words do describe a two-threaded program writing "a string of A" and "a string of B letters", so a literal opinion was possible - but nothing here rests on it, and the sweep cannot see opinions anyway because only winning ones are stored.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
