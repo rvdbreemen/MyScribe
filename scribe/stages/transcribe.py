@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 import numpy as np
 
 from scribe import accel, cuda_setup, db, glossary, jobs
-from scribe.stages import mlx_backend, seams, second_opinion
+from scribe.stages import loudness, mlx_backend, seams, second_opinion
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
     from scribe.runner import RunnerContext
@@ -629,6 +629,7 @@ def transcribe_audio(
     model, device, compute_type = load_model(
         model_name, device=device, compute_type=compute_type
     )
+    extractor = getattr(model, "feature_extractor", None)
     duration = wav_duration(wav)
     segments: list[dict] = []
     words: list[dict] = []
@@ -645,7 +646,19 @@ def transcribe_audio(
             lookahead_seconds=lookahead_seconds,
         ):
             heard = (
-                np.concatenate([window.samples, window.lookahead])
+                np.concatenate(
+                    [
+                        window.samples,
+                        # Quieter than the window when it would otherwise raise
+                        # the log-mel floor for all of it (TASK-036). On Apple
+                        # Silicon there is no faster-whisper extractor to ask,
+                        # and mlx-whisper floors its own features elsewhere, so
+                        # the look-ahead goes as it is.
+                        loudness.scale_lookahead(extractor, window.samples, window.lookahead)
+                        if extractor is not None
+                        else window.lookahead,
+                    ]
+                )
                 if len(window.lookahead)
                 else window.samples
             )

@@ -354,6 +354,65 @@ def _run_windows(monkeypatch, tmp_path, answer):
     return segments, words
 
 
+def test_a_louder_next_window_reaches_the_decoder_quietened(monkeypatch, tmp_path):
+    """TASK-036: the look-ahead is scaled where it would raise the window's
+    log-mel floor, and the window's own samples are handed over untouched. The
+    model here carries faster-whisper's real extractor, which is what the stage
+    asks for the loudness; a model without one (mlx-whisper) is the test
+    below."""
+    from faster_whisper.feature_extractor import FeatureExtractor
+
+    quiet, loud = tone(10.0, amp=0.02), tone(15.0, amp=0.9)
+    quiet[int(9.5 * SR) : int(9.7 * SR)] = 0.0  # a dip for the cut to find
+    wav = write_wav(tmp_path / "loud_next.wav", np.concatenate([quiet, loud]))
+    shape = dict(window_seconds=10.0, search_seconds=2.0, lookahead_seconds=3.0)
+    windows = list(transcribe.iter_windows(wav, **shape))
+    heard: list[np.ndarray] = []
+
+    class Info:
+        language, language_probability, duration, duration_after_vad = "en", 0.9, 25.0, 25.0
+
+    class Model:
+        feature_extractor = FeatureExtractor(feature_size=128)
+
+        def transcribe(self, audio, **options):
+            heard.append(audio.copy())
+            return iter([]), Info()
+
+    monkeypatch.setattr(transcribe, "load_model", lambda name, **kw: (Model(), "cpu", "int8"))
+    transcribe.transcribe_audio(wav, language="en", on_progress=lambda p: None, **shape)
+
+    first, cut = heard[0], len(windows[0].samples)
+    np.testing.assert_array_equal(first[:cut], windows[0].samples)
+    ahead, raw = first[cut:], windows[0].lookahead
+    assert len(ahead) == len(raw)
+    assert np.abs(ahead).max() < np.abs(raw).max()  # quietened
+    assert np.abs(ahead).max() <= np.abs(windows[0].samples).max() * 2  # to about the window's own level
+
+
+def test_a_model_without_a_feature_extractor_gets_the_look_ahead_as_it_is(monkeypatch, tmp_path):
+    """Apple Silicon: mlx-whisper has no faster-whisper extractor to ask."""
+    wav = _dipped_25s(tmp_path)
+    shape = dict(window_seconds=10.0, search_seconds=2.0, lookahead_seconds=3.0)
+    windows = list(transcribe.iter_windows(wav, **shape))
+    heard: list[np.ndarray] = []
+
+    class Info:
+        language, language_probability, duration, duration_after_vad = "en", 0.9, 25.0, 25.0
+
+    class Model:
+        def transcribe(self, audio, **options):
+            heard.append(audio.copy())
+            return iter([]), Info()
+
+    monkeypatch.setattr(transcribe, "load_model", lambda name, **kw: (Model(), "mlx", "float16"))
+    transcribe.transcribe_audio(wav, language="en", on_progress=lambda p: None, **shape)
+
+    np.testing.assert_array_equal(
+        heard[0], np.concatenate([windows[0].samples, windows[0].lookahead])
+    )
+
+
 def _seam_run(monkeypatch, tmp_path, left, right):
     """Window 0 answering `left` and window 1 `right`, times relative to the
     first cut; window 2 says " fine". Returns (segments, words, the first cut)."""
