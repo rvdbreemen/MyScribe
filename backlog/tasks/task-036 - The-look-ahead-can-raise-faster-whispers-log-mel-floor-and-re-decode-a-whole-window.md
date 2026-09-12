@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 17:32'
-updated_date: '2026-09-12 01:16'
+updated_date: '2026-09-12 01:27'
 labels:
   - transcribe
   - investigation
@@ -84,6 +84,10 @@ The cheaper shape was measured and rejected (scratchpad t036_vadcost.py, all 156
 Landed 2026-09-12 as 34af00c on feat/feed-episode-import. Two failures the suite caught before the commit, both fixed: scribe/stages/loudness.py imported faster_whisper at module level, which would pull a model runtime into the web process and import CTranslate2 before cuda_setup.ensure_cuda_libs (ADR-006) - the import now happens inside the call; and the docstring spelled the default model name, which the package is only allowed to do in transcribe.py. Suites after the fix: Windows 1235 + 851 passed; Linux (WSL) 1225 passed 10 skipped and 834 passed 17 skipped, the same totals. adr-judge: 0 violations, 0 advisory.
 
 Decision recorded for AC3: adopt. The candidate keeps everything the look-ahead was for (0 end-of-window loops and 0 invented "Thank you" in 21 decodes of the windows it touches, the same as today) and gives back the window's own reading everywhere else, at +8.9 % on one measured recording. The alternative - leave it - keeps a recording's words hostage to audio that is thrown away, and nobody can tell from the transcript that it happened.
+
+Scope corrected 2026-09-12, after the fix landed. The survey behind this task covered the 43 media of the re-transcription batch; the library holds 55 current runs, so 12 were never looked at. Ran the question again over those 12 through the shipped code itself (scratchpad t036_rest.py: transcribe.iter_windows plus loudness.log_mel_max / scale_lookahead, read-only, no model): 38 look-ahead windows, 3 of them raised - media 15 w1 at 595.9 s (+0.035 decades), media 20 w1 at 599.4 s (+0.050) and media 55 w3 at 1796.2 s (+0.071). The other 35 are handed back untouched, which is also the first run of the shipped function over audio it has not seen.
+
+So the recordings whose current run carries a window decoded under a raised floor are ten, not seven: 10, 15, 20, 22, 34, 41, 50, 53, 54, 55. The three new ones were re-transcribed on 2026-09-11 in TASK-035's batch, which carried the seam fix but not this one. Nobody has compared their text against a decode without the look-ahead; the damage in the original seven was found that way and ranged from a wrong word to a dropped sentence.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
