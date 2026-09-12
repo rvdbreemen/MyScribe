@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 17:32'
-updated_date: '2026-09-12 01:27'
+updated_date: '2026-09-12 01:35'
 labels:
   - transcribe
   - investigation
@@ -88,6 +88,10 @@ Decision recorded for AC3: adopt. The candidate keeps everything the look-ahead 
 Scope corrected 2026-09-12, after the fix landed. The survey behind this task covered the 43 media of the re-transcription batch; the library holds 55 current runs, so 12 were never looked at. Ran the question again over those 12 through the shipped code itself (scratchpad t036_rest.py: transcribe.iter_windows plus loudness.log_mel_max / scale_lookahead, read-only, no model): 38 look-ahead windows, 3 of them raised - media 15 w1 at 595.9 s (+0.035 decades), media 20 w1 at 599.4 s (+0.050) and media 55 w3 at 1796.2 s (+0.071). The other 35 are handed back untouched, which is also the first run of the shipped function over audio it has not seen.
 
 So the recordings whose current run carries a window decoded under a raised floor are ten, not seven: 10, 15, 20, 22, 34, 41, 50, 53, 54, 55. The three new ones were re-transcribed on 2026-09-11 in TASK-035's batch, which carried the seam fix but not this one. Nobody has compared their text against a decode without the look-ahead; the damage in the original seven was found that way and ranged from a wrong word to a dropped sentence.
+
+How much the three new ones cost, decoded 2026-09-12 (scratchpad t036_decode_new3.py 1 --raised, one decode per variant): media 20 w1 and media 55 w3 read differently from their own window far from the cut today (difflib 0.9879 and 0.9890 against the no-look-ahead decode), and with the scaled look-ahead they match it exactly. Media 15 w1 comes out identical either way - its floor rose by 0.035 decades and that draw changed no word. So nine recordings carry text that a raised floor changed (10, 20, 22, 34, 41, 50, 53, 54, 55) and media 15 is raised without measured damage. Scaled reproduced the window-alone text in 3 of 3 here, unscaled in 1 of 3.
+
+Ready for whoever re-transcribes them: scratchpad verify10.py compares each new current run with the one before it - words, how much text is the same, the phrases this task measured, seam echoes, and any speaker name that moved, with a human name never allowed to go.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
