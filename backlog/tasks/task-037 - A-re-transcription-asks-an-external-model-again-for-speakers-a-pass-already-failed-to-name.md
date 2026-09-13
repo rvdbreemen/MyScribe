@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 17:33'
-updated_date: '2026-09-11 20:50'
+updated_date: '2026-09-13 12:21'
 labels:
   - speakers
   - llm
@@ -47,6 +47,14 @@ Landed 2026-09-11 ~22:15 on feat/feed-episode-import as 373f219 + 63a3c91 (cherr
 AC #2 ("If not: the finalize path skips the pass...") was removed on 2026-09-11 because Robert took the other branch ("Altijd opnieuw"). It is replaced by the AC for the branch he chose, so nothing is checked that was not built.
 
 Live outcome, 2026-09-11 22:41. All 25 passes are done, 0 failed: job 284 from finalize, 285-305 through the transcript endpoint for the 21, and 306-308 from the finalize of 20, 36 and 39. openrouter/auto; 404,494 prompt + 19,534 completion tokens; 0 private recordings. Name effect on the 25 (old current run vs new): 39 named clusters unchanged, 12 full names shortened to a first name on 6 recordings, 2 lengthened (media 29), 1 newly named (media 20), 0 gone, 0 role words. The shortening follows the prompt itself (speakers.md asks for the first name) and is filed as TASK-039 for Robert. None of the 25 runs held a name a person typed, so the human guard was held by tests, not by this batch. Suites on 372f681: Windows 1234 + 838 passed; Linux 1224 + 821 passed (10 + 17 skipped, same as before). Targeted: 119 passed.
+
+The human-name guard, proved in production 2026-09-13 (Robert asked for three of the 43-batch as a probe: jobs 336-338, media 4, 38, 59, prompt_version 2, deepseek-v4-flash, 48,060 + 37,713 tokens, 0 private, 0 failed).
+
+- Media 59 is the case the tests could only imitate: the model answered with the right names at 95 and 99, well over the threshold of 90, and nothing was written because both rows are a persons ("named": [], "left": ["SPEAKER_01","SPEAKER_00"]). The labels are still Paul Wouters and Josh Bressers, source human.
+- Media 4 shows why it matters: the model said "Ott" where a person typed "Ad". Two gates held - confidence 88 is under the threshold, and the row is human. Sam, Ad and Nancy are untouched.
+- Media 38 has no human rows, so it was written: Hash and Josh Bressers, the same names it already had.
+
+Until now apply_speakers refusing a human row was held by tests only (test_a_name_a_person_typed_is_never_overwritten and the rename-race test); this is the first time it fired on the live library. The remaining 17 recordings of that batch wait for Robert.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
