@@ -261,7 +261,7 @@ def test_both_runs_transcribed_the_same_recording_to_the_same_words(pipeline):
     `scribe` having changed. Greedy decoding at temperature 0 is deterministic
     for a fixed model and backend, so a faster-whisper or CTranslate2 bump that
     shifts a token by a hair breaks this and nothing else. If it ever fails
-    alone, suspect the pins in requirements-gpu.txt before suspecting the
+    alone, suspect the pins in uv.lock before suspecting the
     pipeline.
     """
     plain = [w["text"] for w in words_of(pipeline.conn, pipeline.plain.run_id)]
@@ -908,7 +908,7 @@ def test_the_whole_pipeline_on_the_gpu_with_the_default_model(client, monkeypatc
     * the xRT finalize records is a measurement of this machine.
 
     Read that xRT as a lower bound, not as throughput: the fixture is 30 s and
-    CUDA warmup dominates a clip that short (the frozen requirements file
+    CUDA warmup dominates a clip that short (the pinned stack
     measures ~1.1x on 30 s against 14.5x on five minutes). It is here to prove
     the number is real and positive, not to publish a benchmark.
 

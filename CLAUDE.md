@@ -62,5 +62,6 @@ the speaker name on every cue. Both passed review.
   check without disturbing the app on 4242.
 - `SCRIBE_UPDATE_GOLDENS=1 …pytest tests/test_exports_text.py` — regenerate export
   golden files. Read the diff before committing it.
-- `pip install -r requirements-gpu.txt` needs the CUDA index; its header has the
-  command. Without it pip installs CPU torch silently.
+- `uv sync` installs the environment from `uv.lock` on every OS; Windows gets the
+  cu128 torch through `[tool.uv.sources]` (ADR-012). Change pins in
+  `pyproject.toml`, then `uv lock`, and commit both. There is no pip in the venv.

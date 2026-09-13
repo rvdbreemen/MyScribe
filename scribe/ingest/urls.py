@@ -18,12 +18,12 @@ title still goes on the media row, where it is text and not a path.
 
 **yt-dlp ages by design.** Sites change their players and their APIs, and an
 extractor pinned three months ago stops working with no warning and no
-version bump on our side. This module pins nothing itself - `requirements.txt`
-does - but it does two things about it: `is_stale` says when the installed
+version bump on our side. This module pins nothing itself - `pyproject.toml`
+and `uv.lock` do - but it does two things about it: `is_stale` says when the installed
 copy is old enough to be the likely culprit, and a failure whose message
 smells like a broken extractor says so in words, with the installed version
 and the command that fixes it. That sentence is the difference between "this
-app is broken" and "run one pip command".
+app is broken" and "run one command".
 
 Windows note, and it is not a small one: `--cookies-from-browser` cannot read
 Chrome or Edge cookies since App-Bound Encryption (Chrome 127+). Firefox still
@@ -38,7 +38,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -70,6 +70,10 @@ _NOT_THE_MEDIA = (INFO_JSON_SUFFIX, ".part", ".ytdl", ".temp")
 # is roughly the interval over which a big site has changed something that
 # mattered; it is a heuristic in a hint, not a gate on anything.
 STALE_DAYS = 90
+
+# What to run about an old yt-dlp. The environment is uv's, which has no pip in
+# it (ADR-012); an installed copy gets a newer yt-dlp with the next release.
+UPDATE_COMMAND = "uv lock --upgrade-package yt-dlp && uv sync"
 
 # Seconds to wait on a socket. Long enough for a slow server, short enough that
 # a hung connection does not become a job that never ends.
@@ -174,9 +178,10 @@ class UrlInfo:
     """What `probe` learned without downloading anything.
 
     `entries` is empty for a single video and holds one ``{id, title, duration,
-    url, timestamp, source_id}`` per item for a playlist - flat, because a
-    playlist is expanded into one job per entry and each of those probes its
-    own URL properly.
+    url, name, timestamp, source_id}`` per item for a playlist - flat, because
+    a playlist is expanded into one job per entry and each of those probes its
+    own URL properly. ``name`` is what the entry's job and file are called:
+    the title, or for a podcast feed `episode_names`' number-and-title.
     """
 
     kind: Literal["single", "playlist"]
@@ -292,7 +297,7 @@ def stale_note() -> str:
     old = f", released {age} days ago" if age is not None else ""
     return (
         f"This usually means yt-dlp's extractor for this site is out of date "
-        f"(yt-dlp {version} installed{old}); update it with: pip install -U yt-dlp"
+        f"(yt-dlp {version} installed{old}); update it with: {UPDATE_COMMAND}"
     )
 
 
@@ -437,6 +442,14 @@ def probe(
         truncated = total > returned
     else:
         truncated = limit is not None and returned >= limit
+    # A podcast feed is what yt-dlp's Generic extractor reads an RSS document
+    # as; YouTube's playlists come from its own extractors and keep their titles.
+    if entries and info.get("extractor_key") == "Generic":
+        names = episode_names(entries)
+    else:
+        names = [entry["title"] for entry in entries]
+    for entry, name in zip(entries, names):
+        entry["name"] = name
     return UrlInfo(
         kind="playlist" if entries else "single",
         title=str(info.get("title") or ""),
@@ -683,9 +696,72 @@ def _entries(info: dict) -> list[dict]:
                 "url": str(url),
                 "timestamp": timestamp,
                 "source_id": source_id_for(entry),
+                # A podcast feed's itunes fields, as yt-dlp's RSS reader maps
+                # them; empty or None for anything that is not a feed.
+                "episode": str(entry.get("episode") or ""),
+                "episode_number": _as_int(entry.get("episode_number")),
+                "season_number": _as_int(entry.get("season_number")),
             }
         )
     return entries
+
+
+# "179: ", "#7 ", "Ep. 12 - ", "Episode 12 | " at the front of a title that
+# already says its number; group 1 is the number it says.
+_LEADING_NUMBER = re.compile(
+    r"^\s*(?:#|ep\.?|episode)?\s*(\d+)\s*(?:[:.|\-–—]\s*|\s+)", re.IGNORECASE
+)
+
+
+def episode_names(entries: list[dict]) -> list[str]:
+    """What each feed episode is called: its number and title from the feed.
+
+    ``Ep 179 - The Courthouse - Revisited`` when the feed numbers its episodes
+    (itunes:episode), using the feed's itunes:title when it has one and never
+    saying the number twice; numbers padded to the widest in the feed so the
+    files sort; the season only when the feed has more than one. An episode
+    without a number gets its release date instead (``2026-09-11 - Title``):
+    feeds are often a window onto a longer show, so a position in the list is
+    not an episode number and is never used as one.
+    """
+    numbers = [e["episode_number"] for e in entries if e.get("episode_number") is not None]
+    width = len(str(max(numbers))) if numbers else 0
+    seasons = {e["season_number"] for e in entries if e.get("season_number") is not None}
+
+    names = []
+    for entry in entries:
+        title = entry.get("episode") or entry.get("title") or ""
+        number = entry.get("episode_number")
+        if number is not None:
+            leading = _LEADING_NUMBER.match(title)
+            if leading and int(leading.group(1)) == number:
+                title = title[leading.end():]
+            prefix = f"Ep {number:0{width}d}"
+            if len(seasons) > 1 and entry.get("season_number") is not None:
+                prefix = f"S{entry['season_number']} {prefix}"
+            names.append(f"{prefix} - {title}".rstrip(" -"))
+        elif entry.get("timestamp") is not None:
+            day = datetime.fromtimestamp(entry["timestamp"], tz=timezone.utc).date()
+            names.append(f"{day.isoformat()} - {title}".rstrip(" -"))
+        else:
+            names.append(title)
+    return names
+
+
+# What `episode_names` puts in front of a title: "Ep 07 - ", "S2 Ep 07 - ",
+# "2026-09-11 - ". Group 0 is the whole prefix.
+_EPISODE_PREFIX = re.compile(r"^(?:S\d+\s+)?(?:Ep\s+\d+|\d{4}-\d{2}-\d{2})\s+-\s+")
+
+
+def spoken_title(name: str) -> str:
+    """`episode_names`' name without its number, for the decoder's hotwords.
+
+    "Ep 179 - The Courthouse" is what the library should call the recording,
+    but `hotword_terms` would read "Ep" as a name worth biasing towards - two
+    letters, capitalised, and in every episode of every feed. The number is
+    for people and for sorting; only the title is worth telling the decoder.
+    """
+    return _EPISODE_PREFIX.sub("", name).strip()
 
 
 def _uploader(info: dict) -> str:

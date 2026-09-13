@@ -822,7 +822,7 @@ class Watcher:
             print(
                 "scribe: no filesystem watcher could be started, so watched folders"
                 " are only read at startup. Reinstall watchdog"
-                " (pip install -r requirements.txt) to have files picked up as they land.",
+                " (uv sync) to have files picked up as they land.",
                 file=sys.stderr,
                 flush=True,
             )

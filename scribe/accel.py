@@ -21,10 +21,12 @@ Every probe here is cheap and import-guarded: asking costs no model load, and
 a machine without torch or mlx simply answers ``cpu``. An explicit device
 passed by a caller is never second-guessed anywhere; these are defaults.
 
-Nothing here has been run on a Mac by the author (2026-09-07): the mlx and
-mps branches are written from the libraries' documented interfaces and
-OpenTranscribe's measurements, and the doctor on an Apple Silicon machine is
-the acceptance run. See TASK-020.
+Written without a Mac (2026-09-07) and accepted on an M2 (2026-09-11): the
+doctor picked mlx and mps there, and a diarized file went through the app.
+See TASK-020.
+
+`cuda_available` imports torch, so nothing that runs in the web process may
+ask (ADR-001); the doctor's `accel` line is a GPU check for that reason.
 """
 
 from __future__ import annotations

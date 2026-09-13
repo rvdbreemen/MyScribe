@@ -443,7 +443,7 @@ def test_a_stale_extractor_says_so_instead_of_showing_a_stack_trace():
     message = str(exc.value)
     assert "Unable to extract nsig function" in message  # the reason, not the boilerplate
     assert "out of date" in message
-    assert "pip install -U yt-dlp" in message
+    assert urls.UPDATE_COMMAND in message
     assert urls.installed_version() in message
     assert "Traceback" not in message
 
@@ -878,7 +878,7 @@ def test_the_doctor_calls_an_old_yt_dlp_old_without_failing_the_gate(monkeypatch
 
     assert check.ok is True  # URL import still works; it just may not, per site
     assert "out of date" in check.detail
-    assert "pip install -U yt-dlp" in check.detail
+    assert urls.UPDATE_COMMAND in check.detail
 
 
 def test_the_doctor_says_so_when_yt_dlp_is_not_installed(monkeypatch):
@@ -888,7 +888,7 @@ def test_the_doctor_says_so_when_yt_dlp_is_not_installed(monkeypatch):
 
     assert check.ok is False
     assert check.optional is True  # nothing else in the app needs it
-    assert "pip install" in check.fix_hint
+    assert "uv sync" in check.fix_hint
 
 
 def test_reading_the_version_does_not_import_yt_dlp(monkeypatch):
@@ -1141,7 +1141,13 @@ def test_a_fan_out_child_carries_the_entry_s_title_and_the_feed_it_came_from(
         )
     ]
     assert len(children) == 4
-    assert children[1]["entry"] == {"title": "Lecture 1", "source_id": "Generic:guid-1"}
+    # The feed dates an episode it does not number (`urls.episode_names`),
+    # adopted with the macOS branch on 2026-09-13; before it this read
+    # "Lecture 1", the bare title.
+    assert children[1]["entry"] == {
+        "title": "2026-09-02 - Lecture 1",
+        "source_id": "Generic:guid-1",
+    }
     assert children[1]["source"] == {"url": FEED_URL, "title": "The Hitchhiker Lectures"}
     assert children[1]["url"].startswith("https://cdn.test/ep/default.mp3?d=1&e=1#__youtubedl_smuggle=")
     assert children[1]["from_playlist"] is True
@@ -1290,3 +1296,209 @@ def test_asking_again_by_hand_still_transcribes_what_the_library_has(
     event = _url_event(conn, again)
     assert event["deduped"] is True
     assert isinstance(event["transcribe_job"], int)
+
+
+# --- podcast feeds: episodes named from their metadata ------------------------
+#
+# yt-dlp's Generic extractor reads an RSS feed as a playlist whose entries carry
+# the itunes fields. Shapes below are the ones a real probe returned on
+# 2026-09-11 (Darknet Diaries: numbered; Planet Money: no numbers at all).
+
+
+def _utc(year, month, day) -> int:
+    from datetime import datetime, timezone
+
+    return int(datetime(year, month, day, 12, 0, tzinfo=timezone.utc).timestamp())
+
+
+def feed_entry(title, *, episode=None, number=None, season=None, when=None, url=None) -> dict:
+    return {
+        "_type": "url_transparent",
+        "url": url or f"https://cdn.example.test/{abs(hash(title))}/default.mp3",
+        "title": title,
+        "episode": episode,
+        "episode_number": number,
+        "season_number": season,
+        "timestamp": when,
+    }
+
+
+def feed_from(*entries) -> dict:
+    return {
+        "_type": "playlist",
+        "extractor_key": "Generic",
+        "title": "Darknet Diaries",
+        "webpage_url": "https://feeds.example.test/darknet",
+        "entries": list(entries),
+    }
+
+
+def _names(*entries) -> list[str]:
+    probed = urls.probe("https://feeds.example.test/darknet", ydl=FakeYdl(feed_from(*entries)))
+    return [e["name"] for e in probed.entries]
+
+
+def test_a_numbered_episode_is_named_with_its_number_and_clean_title():
+    assert _names(
+        feed_entry("179: The Courthouse - Revisited", episode="The Courthouse - Revisited",
+                   number=179, season=1, when=_utc(2026, 8, 31)),
+    ) == ["Ep 179 - The Courthouse - Revisited"]
+
+
+def test_the_number_in_the_title_is_not_doubled_when_there_is_no_itunes_title():
+    assert _names(
+        feed_entry("179: The Courthouse", number=179),
+        feed_entry("Episode 12 - Kinko's", number=12),
+        feed_entry("#7 Mini-Stories", number=7),
+    ) == ["Ep 179 - The Courthouse", "Ep 012 - Kinko's", "Ep 007 - Mini-Stories"]
+
+
+def test_numbers_are_padded_to_the_widest_so_the_files_sort():
+    assert _names(
+        feed_entry("Big", episode="Big", number=150),
+        feed_entry("Small", episode="Small", number=5),
+    ) == ["Ep 150 - Big", "Ep 005 - Small"]
+
+
+def test_the_season_is_named_only_when_the_feed_has_several():
+    assert _names(
+        feed_entry("A", episode="A", number=3, season=2),
+        feed_entry("B", episode="B", number=10, season=1),
+    ) == ["S2 Ep 03 - A", "S1 Ep 10 - B"]
+
+
+def test_an_episode_without_a_number_is_named_with_its_release_date():
+    assert _names(
+        feed_entry("The loan at the heart of a new foreclosure crisis", when=_utc(2026, 9, 11)),
+        feed_entry("LOW - Trailer", episode="LOW - Trailer", when=_utc(2026, 8, 6)),
+    ) == ["2026-09-11 - The loan at the heart of a new foreclosure crisis", "2026-08-06 - LOW - Trailer"]
+
+
+def test_an_episode_with_neither_keeps_its_title():
+    assert _names(feed_entry("Just a title")) == ["Just a title"]
+
+
+def test_a_youtube_playlist_keeps_its_titles():
+    """Not a feed (YoutubeTab, not Generic): nothing about naming changes."""
+    probed = urls.probe("https://example.test/playlist?list=PL42", ydl=FakeYdl(playlist_info(2)))
+    assert [e["name"] for e in probed.entries] == ["Lecture 0", "Lecture 1"]
+
+
+def test_a_feed_fans_out_with_each_episode_s_name(conn, data_dir, monkeypatch):
+    info = feed_from(
+        feed_entry("179: The Courthouse - Revisited", episode="The Courthouse - Revisited",
+                   number=179, url="https://cdn.example.test/e179/default.mp3"),
+        feed_entry("LOW - Trailer", when=_utc(2026, 8, 6), url="https://cdn.example.test/low/default.mp3"),
+    )
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(info)))
+    job_id = url_job(conn, "https://feeds.example.test/darknet")
+
+    run_stages(make_ctx(conn, job_id))
+
+    children = conn.execute(
+        "SELECT * FROM job WHERE type=? AND id<>? ORDER BY id", (url_stage.JOB_TYPE, job_id)
+    ).fetchall()
+    params = [json.loads(row["params_json"]) for row in children]
+    assert [p[url_stage.ENTRY_KEY]["title"] for p in params] == [
+        "Ep 179 - The Courthouse - Revisited",
+        "2026-08-06 - LOW - Trailer",
+    ]
+    # The board names each queued episode before any of them has a media row.
+    views = [jobs_ui.job_view(conn, {**dict(row), "media_title": None}, 0.0) for row in children]
+    assert [v["title"] for v in views] == ["Ep 179 - The Courthouse - Revisited", "2026-08-06 - LOW - Trailer"]
+
+
+def test_a_feed_episode_is_stored_under_its_name_not_the_enclosure_s(conn, data_dir, monkeypatch):
+    """What yt-dlp calls a bare `.../default.mp3` enclosure, measured on a real
+    feed: 'default.mp3_ywr3ahjkcgo_d69e0cb5864c0e62da44eafa2ce7b645_31070322'."""
+    garbage = "default.mp3_ywr3ahjkcgo_d69e0cb5864c0e62da44eafa2ce7b645_31070322"
+    fake = FakeYdl(single_info(title=garbage, ext="mp3"), files=("download.mp3",))
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(
+        conn, "https://cdn.example.test/e179/default.mp3",
+        from_playlist=True,
+        **{url_stage.ENTRY_KEY: {"title": "Ep 179 - The Courthouse - Revisited", "source_id": ""}},
+    )
+
+    run_stages(make_ctx(conn, job_id))
+
+    row = conn.execute("SELECT title, orig_name FROM media").fetchone()
+    assert row["title"] == "Ep 179 - The Courthouse - Revisited"
+    assert row["orig_name"] == "Ep 179 - The Courthouse - Revisited.mp3"
+    assert (paths.job_work_dir(job_id) / "Ep 179 - The Courthouse - Revisited.mp3").is_file()
+
+
+def test_a_url_without_an_entry_name_keeps_yt_dlp_s_title(conn, data_dir, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+    job_id = url_job(conn)
+
+    run_stages(make_ctx(conn, job_id))
+
+    assert conn.execute("SELECT title FROM media").fetchone()["title"] == "Vogon Poetry Slam"
+
+
+# --- a bulk import waits behind work started by hand (TASK-031) ---------------
+
+
+def test_fanned_out_jobs_queue_below_the_default_priority(conn, data_dir, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(playlist_info(2))))
+    job_id = url_job(conn, "https://example.test/playlist?list=PL42")
+
+    run_stages(make_ctx(conn, job_id))
+
+    priorities = [row["priority"] for row in conn.execute(
+        "SELECT priority FROM job WHERE id<>? ORDER BY id", (job_id,))]
+    assert priorities == [url_stage.BULK_PRIORITY, url_stage.BULK_PRIORITY]
+    assert url_stage.BULK_PRIORITY < 0
+
+
+def test_an_episode_s_transcription_keeps_the_bulk_priority(conn, data_dir, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+    child = jobs.enqueue(conn, url_stage.JOB_TYPE, priority=url_stage.BULK_PRIORITY,
+                         params={"url": "https://example.test/watch?v=abc123", "from_playlist": True})
+
+    run_stages(make_ctx(conn, child))
+
+    queued = conn.execute("SELECT priority FROM job WHERE type='transcribe'").fetchone()
+    assert queued["priority"] == url_stage.BULK_PRIORITY
+
+
+def test_a_single_url_s_transcription_keeps_the_default_priority(conn, data_dir, monkeypatch):
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(single_info())))
+    run_stages(make_ctx(conn, url_job(conn)))
+
+    assert conn.execute("SELECT priority FROM job WHERE type='transcribe'").fetchone()["priority"] == 0
+
+
+def test_a_recording_queued_after_a_feed_is_claimed_before_its_episodes(conn, data_dir, monkeypatch):
+    """The 2026-09-12 report: two recordings behind 47 episodes of a feed."""
+    monkeypatch.setattr(urls, "build_ydl", build_returning(FakeYdl(playlist_info(3))))
+    feed_job = url_job(conn, "https://example.test/playlist?list=PL42")
+    run_stages(make_ctx(conn, feed_job))
+    with db.LOCK:
+        conn.execute("UPDATE job SET status='done' WHERE id=?", (feed_job,))
+        conn.commit()
+    recording = jobs.enqueue(conn, "transcribe", params={})
+
+    assert jobs.claim_next(conn)["id"] == recording
+
+
+def test_the_episode_number_does_not_become_a_hotword(conn, data_dir, monkeypatch):
+    """The name is for people; "Ep" is two capitalised letters in every episode
+    of every feed, and `hotword_terms` would read it as a name worth biasing
+    towards (`urls.spoken_title`). Found merging the macOS branch, 2026-09-13."""
+    fake = FakeYdl(single_info(title="default.mp3_ywr3ahjkcgo_d69e", ext="mp3"), files=("download.mp3",))
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(
+        conn,
+        "https://cdn.example.test/e179/default.mp3",
+        from_playlist=True,
+        **{url_stage.ENTRY_KEY: {"title": "Ep 179 - The Courthouse", "source_id": ""}},
+    )
+
+    run_stages(make_ctx(conn, job_id))
+
+    queued = conn.execute("SELECT params_json FROM job WHERE type='transcribe'").fetchone()
+    terms = json.loads(queued["params_json"]).get(transcribe.EXTRA_HOTWORDS_KEY) or []
+    assert "Ep" not in terms
+    assert conn.execute("SELECT title FROM media").fetchone()["title"] == "Ep 179 - The Courthouse"

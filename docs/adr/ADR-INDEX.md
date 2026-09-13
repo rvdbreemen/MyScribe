@@ -16,3 +16,5 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-008 | Proposed | `scribe/templates/_url_panel.html`, `scribe/**` | Chosen: a feed is a row, polled by its own thread on a due-date, and every new episode is one ingesturl job, on top o... |
 | ADR-009 | Accepted | `scribe/[!d]*.py`, `scribe/*/**`, `scribe/**` | Chosen option: SQLite WAL with atomic SQL (ADR-002's decision, unchanged), with "no broker" checked by forbidimport r... |
 | ADR-010 | Proposed | `scribe/**` | Chosen option: A. |
+| ADR-011 | Proposed | `packaging/launcher/**` | Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps... |
+| ADR-012 | Proposed | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |

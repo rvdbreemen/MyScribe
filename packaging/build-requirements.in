@@ -1,0 +1,3 @@
+# The launcher build (ADR-011). Compile with:
+#   uv pip compile --universal --generate-hashes --python-version 3.12 packaging/build-requirements.in -o packaging/build-requirements.txt
+pyinstaller==6.22.2

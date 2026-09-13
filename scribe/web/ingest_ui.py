@@ -394,14 +394,20 @@ async def _add_episodes(
             "folder_id": folder_id,
             url_stage.OPTIONS_KEY: options.to_params(),
             "from_playlist": True,
-            url_stage.ENTRY_KEY: {"title": entry["title"], "source_id": entry["source_id"]},
+            url_stage.ENTRY_KEY: {
+                "title": entry.get("name") or entry["title"],
+                "source_id": entry["source_id"],
+            },
             url_stage.SOURCE_KEY: {"url": feed_url, "title": feed_title},
         }
         if cookies:
             params["cookies_file"] = cookies
         params_list.append(params)
 
-    queued = await run_in_threadpool(jobs.enqueue_many, conn, url_stage.JOB_TYPE, params_list)
+    # A ticked feed import is bulk too: it queues behind hand-started work.
+    queued = await run_in_threadpool(
+        jobs.enqueue_many, conn, url_stage.JOB_TYPE, params_list, url_stage.BULK_PRIORITY
+    )
     save_defaults(conn, options)
 
     # "Keep following this feed", ticked by default (ADR-008). Subscribing

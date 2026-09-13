@@ -6,16 +6,17 @@ everything; nothing leaves the machine unless you pick a cloud provider.
 
 Runs on Windows, Linux and macOS. Windows and Linux are verified on the
 author's machine (Windows 11 native, Ubuntu 24.04 under WSL2, both with an
-RTX 3080). **macOS is not verified**: the code has no platform-specific
-branches left that would stop it, the CPU path is the same one Linux uses,
-but nobody has run it there yet. If you do, the doctor's output is the bug
-report.
+RTX 3080); macOS on an Apple M2 (macOS 26.3): the doctor green and a
+two-speaker file transcribed on MLX and diarized on MPS through the app. An
+Intel Mac has not been tried. Wherever something fails, the doctor's output
+is the bug report.
 
 ## What you need
 
 | | Windows | Linux | macOS |
 |---|---|---|---|
-| Python | 3.12 | 3.12 (`python3-venv` for a venv with pip) | 3.12 (`brew install python@3.12`) |
+| [uv](https://docs.astral.sh/uv/) | `winget install astral-sh.uv` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | `brew install uv` |
+| Python | 3.12; uv fetches it when the machine has none | same | same |
 | ffmpeg + ffprobe | on `PATH` (`winget install Gyan.FFmpeg`) | `apt install ffmpeg`, or a static build in `~/.local/bin` | `brew install ffmpeg` |
 | GPU | NVIDIA + CUDA wheels from the cu128 index | NVIDIA: PyPI's torch brings CUDA along; otherwise CPU | CPU (Apple GPU: see below) |
 | Optional | `yt-dlp` for links, `node` for the recorder tests | same | same |
@@ -31,54 +32,31 @@ the Apple GPU, with word timestamps. Diarization (pyannote, PyTorch) runs on
 Metal through MPS; OpenTranscribe measured an M2 Max at 2-3.5x slower than an
 RTX 3080 on the GPU-bound stages and faster on the CPU-bound ones. The
 doctor's `accel` line says what was picked: `transcription on mlx,
-diarization on mps` is the good outcome. Written without a Mac (2026-09-07);
-the first doctor run on one is the acceptance test, and its output is the
-bug report if it is not.
+diarization on mps` is the good outcome. Measured on an M2 (2026-09-11), a
+44 s two-speaker file: transcription 11.7 s and diarization 25.4 s, both
+including the model load, which dominates a file that short.
 
 ## Install
 
-Clone, make a venv, install two requirement files. The first is the web app,
-the second the ML stack; they are separate because the second is 3 GB.
-
-### Linux and macOS
+Clone, then one command on every OS. `pyproject.toml` holds the pins and
+`uv.lock` the exact, hashed set for each platform (ADR-012): Windows gets
+torch built for CUDA 12.8 from PyTorch's index, Linux PyPI's torch with its
+CUDA wheels, an Apple Silicon Mac PyPI's CPU + MPS torch plus `mlx-whisper`.
+The first sync downloads about 3 GB on Windows and Linux.
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt -r requirements-ml.txt
+uv sync                                    # makes .venv from uv.lock
 .venv/bin/python -m scribe.doctor          # add --no-gpu to skip the model load
 .venv/bin/python -m scribe                 # opens http://127.0.0.1:4242
 ```
 
-`requirements-ml.txt` is `requirements-gpu.txt` without the `+cu128` build
-tags. On Linux, PyPI's torch depends on the `nvidia-*` wheels, so a machine
-with an NVIDIA driver gets the GPU without an extra index; the doctor says
-which device it found. On macOS the same file installs the CPU + MPS build.
+On Windows the paths are `.venv\Scripts\python`. Then read the doctor's
+`accel` and `gpu-runtime` lines: they say which device each stage will use.
+ADR-012 explains why the app registers torch's DLL directory before
+CTranslate2 loads on Windows.
 
-On an Apple Silicon Mac add the third file for the Metal transcription
-backend, then run the doctor and read its `accel` and `gpu-runtime` lines:
-
-```sh
-.venv/bin/pip install -r requirements-macos.txt
-.venv/bin/python -m scribe.doctor
-```
-
-If `python3 -m venv` gives you a venv without `pip` (Debian and Ubuntu do
-that until `python3-venv` is installed), either install that package or
-bootstrap pip: `curl -sL https://bootstrap.pypa.io/get-pip.py | .venv/bin/python`.
-
-### Windows
-
-```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
-.venv\Scripts\python -m scribe.doctor
-.venv\Scripts\python -m scribe
-```
-
-The CUDA index matters: without it pip installs a CPU-only torch and says
-nothing. ADR-006 explains the pin set and why the app registers torch's DLL
-directory before CTranslate2 loads.
+To change a pin, edit `pyproject.toml` and run `uv lock`; commit both files.
+Re-run the doctor on real hardware after any change to the ML stack.
 
 ### Then
 

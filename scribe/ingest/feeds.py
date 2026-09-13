@@ -237,7 +237,7 @@ def poll(
             url_stage.OPTIONS_KEY: options,
             "from_playlist": True,
             url_stage.ENTRY_KEY: {
-                "title": entry.get("title") or "",
+                "title": entry.get("name") or entry.get("title") or "",
                 "source_id": entry.get("source_id") or "",
             },
             url_stage.SOURCE_KEY: {"url": feed["url"], "title": info.title or feed["title"]},
@@ -245,7 +245,14 @@ def poll(
         }
         for entry in capped
     ]
-    queued = jobs.enqueue_many(conn, url_stage.JOB_TYPE, params_list) if params_list else []
+    # Below the default, like every other bulk import: the watcher queues
+    # what nobody asked for right now, so a recording started by hand goes
+    # first (url_stage.BULK_PRIORITY).
+    queued = (
+        jobs.enqueue_many(conn, url_stage.JOB_TYPE, params_list, priority=url_stage.BULK_PRIORITY)
+        if params_list
+        else []
+    )
 
     with db.LOCK:
         for entry in capped:
