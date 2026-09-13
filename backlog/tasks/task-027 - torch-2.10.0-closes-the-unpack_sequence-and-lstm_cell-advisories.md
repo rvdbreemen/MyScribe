@@ -4,7 +4,7 @@ title: torch 2.10.0 closes the unpack_sequence and lstm_cell advisories
 status: Done
 assignee: []
 created_date: '2026-09-10 20:13'
-updated_date: '2026-09-13 12:27'
+updated_date: '2026-09-13 12:29'
 labels:
   - dependencies
   - security
@@ -48,6 +48,8 @@ Verified 2026-09-11. AC4: 10 real recordings transcribed and diarized through th
 AC6 verified 2026-09-13. PR #1 is merged, so main now pins torch==2.10.0 and lightning==2.6.6 (read from origin/main:requirements-ml.txt). Dependabot on the default branch: alerts 1 and 5 (GHSA-vgrw-7cvw-pwgx, unpack_sequence, medium) and 2 and 6 (GHSA-qfhq-4f3w-5fph, lstm_cell, low) are all "fixed" - the four this task set out to close. Alerts 3 and 7 (GHSA-rrmf-rvhw-rf47, torch.jit.script) are dismissed as not_used and belong to TASK-028, which explains why 2.13 is out of reach.
 
 Left open, and not this task's: alerts 4 and 8, both GHSA-qqmf-gpg7-g8gw on lightning, high. They are the CalVer false positive - GitHub's range reads "< 2022.6.15", which 2.6.6 can never satisfy numerically, while 2.6.6 is exactly the release that added the _ALLOWED_INSTANTIATORS allowlist. They can only be closed by a person dismissing them as inaccurate; the push of 2026-09-13 still reported them ("2 vulnerabilities on the default branch").
+
+Robert decided 2026-09-13 to leave alerts 4 and 8 open rather than dismiss them as inaccurate. They stay visible as high on the default branch, which is honest about what GitHub reports even though the installed lightning 2.6.6 carries the fix (the _ALLOWED_INSTANTIATORS allowlist, read in the wheel on 2026-09-10). Nothing further is pending on this task: it is a standing choice, not an open item. If GitHub ever corrects the CalVer range, they close by themselves.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
