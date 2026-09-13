@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 17:33'
-updated_date: '2026-09-13 12:21'
+updated_date: '2026-09-13 12:23'
 labels:
   - speakers
   - llm
@@ -55,6 +55,10 @@ The human-name guard, proved in production 2026-09-13 (Robert asked for three of
 - Media 38 has no human rows, so it was written: Hash and Josh Bressers, the same names it already had.
 
 Until now apply_speakers refusing a human row was held by tests only (test_a_name_a_person_typed_is_never_overwritten and the rename-race test); this is the first time it fired on the live library. The remaining 17 recordings of that batch wait for Robert.
+
+The rest of the 43-batch, closed 2026-09-13. Robert chose to ask again only where a speaker still has no name. Measured over the 17 that were left (11, 12, 14, 16, 18, 21, 23, 26, 27, 35, 37, 42, 44, 45, 48, 49, 56): every one has both of its clusters named, so none qualifies and none was asked. Cost of that decision: nothing.
+
+For completeness, the same question library-wide: 10 of the 55 current runs still carry an unnamed cluster - media 1 (three of them), 9, 13, 25, 32, 33, 36, 39, 41 and 53. None of them is in the 17, and every one has been asked at least once already (media 13, 36, 39, 41 and 53 three times), so the startup sweep leaves them alone by design ("one stored answer is enough, because asking again is a decision"). Asking them again would be a new decision, and the odds are poor: the last pass on each of them had the words in front of it and still would not name that voice.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
