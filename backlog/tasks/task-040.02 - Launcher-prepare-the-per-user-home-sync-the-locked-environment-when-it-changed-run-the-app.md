@@ -1,5 +1,5 @@
 ---
-id: TASK-029.02
+id: TASK-040.02
 title: >-
   Launcher: prepare the per-user home, sync the locked environment when it
   changed, run the app
@@ -12,7 +12,7 @@ labels:
   - packaging
 dependencies:
   - TASK-029.01
-parent_task_id: TASK-029
+parent_task_id: TASK-040
 ordinal: 72000
 ---
 

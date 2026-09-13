@@ -1,5 +1,5 @@
 ---
-id: TASK-029
+id: TASK-040
 title: >-
   Release automation: per-OS installers for Windows, macOS and Linux built by CI
   on every release

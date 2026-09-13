@@ -1,5 +1,5 @@
 ---
-id: TASK-029.01
+id: TASK-040.01
 title: pyproject.toml and one universal uv.lock replace the three requirement files
 status: In Progress
 assignee:
@@ -10,7 +10,7 @@ labels:
   - packaging
   - dependencies
 dependencies: []
-parent_task_id: TASK-029
+parent_task_id: TASK-040
 ordinal: 71000
 ---
 

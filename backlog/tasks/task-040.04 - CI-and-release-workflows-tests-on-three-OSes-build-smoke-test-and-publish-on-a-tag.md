@@ -1,5 +1,5 @@
 ---
-id: TASK-029.04
+id: TASK-040.04
 title: >-
   CI and release workflows: tests on three OSes, build, smoke-test and publish
   on a tag
@@ -13,7 +13,7 @@ labels:
   - release
 dependencies:
   - TASK-029.03
-parent_task_id: TASK-029
+parent_task_id: TASK-040
 ordinal: 74000
 ---
 

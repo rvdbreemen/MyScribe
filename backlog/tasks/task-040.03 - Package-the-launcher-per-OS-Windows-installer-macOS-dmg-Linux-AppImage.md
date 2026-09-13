@@ -1,5 +1,5 @@
 ---
-id: TASK-029.03
+id: TASK-040.03
 title: 'Package the launcher per OS: Windows installer, macOS dmg, Linux AppImage'
 status: In Progress
 assignee:
@@ -10,7 +10,7 @@ labels:
   - packaging
 dependencies:
   - TASK-029.02
-parent_task_id: TASK-029
+parent_task_id: TASK-040
 ordinal: 73000
 ---
 
