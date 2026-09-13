@@ -3,11 +3,11 @@ id: TASK-039
 title: >-
   The speaker prompt asks for a first name, so asking again shortens a stored
   full name
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 20:43'
-updated_date: '2026-09-11 21:15'
+updated_date: '2026-09-13 10:00'
 labels:
   - speakers
   - llm
@@ -26,8 +26,8 @@ Cause, in the primary source: scribe/llm/prompts/speakers.md:40 asks for "the ac
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Robert decides which fix: (a) the prompt asks for the full name the transcript gives, measured on the library before and after; (b) apply_speakers keeps a stored name the new one is only the first part of, with a test for the case where the shorter name is the right one; or (c) accept first names
-- [x] #2 The chosen fix has a red/green test and, for (a), a before/after count over the named recordings
+- [x] #1 Robert decides which fix: (a) the prompt asks for the full name the transcript gives, measured on the library before and after; (b) apply_speakers keeps a stored name the new one is only the first part of, with a test for the case where the shorter name is the right one; or (c) accept first names
+- [ ] #2 The chosen fix has a red/green test and, for (a), a before/after count over the named recordings
 - [x] #3 Whether to put the 13 full names back on the current runs is decided with it; the previous runs hold them
 <!-- AC:END -->
 
@@ -58,4 +58,16 @@ Measured through the transcript endpoint after the commit: jobs 309-317, 0 faile
 AC #3: nothing was written by hand; the names came back through the new prompt. (The AC says 13; the recount is 12 on 6 recordings.)
 
 Not done, blocked: 22 re-transcriptions from the 43-batch (jobs 206-248; media 4, 10, 11, 12, 14, 16, 18, 21, 23, 26, 27, 35, 37, 38, 42, 44, 45, 48, 49, 54, 56, 59; all open, all fully named, 4 and 59 with names a person typed) were never asked on their current run. Robert's "Altijd opnieuw" would give each a pass. Queueing them was denied by the permission classifier (bulk external send), so it is Robert's call: about 22 x 13k prompt tokens.
+
+Robert decided 2026-09-13: keep the prompt as it was - option (c), accept first names. The full-name prompt is reverted in 0d7d8a8, so speakers.md asks for "the actual first name (or title and surname)" again and PROMPT_VERSION is back to 2. Suites after the revert: 1234 + 851 passed (one test fewer: the one that pinned the full-name wording went with the revert).
+
+AC #2 is unchecked again, because no fix ships: the red/green test it asked for was part of what was reverted. What was measured stands on the record above - with this prompt, on one model, the same host comes back as "Josh" in five episodes and "Josh Bressers" in seventeen, so which one a pass returns varies per call.
+
+The names are not rolled back. The 9 passes of 2026-09-12 wrote the full names to the current runs, and they stay there; nothing re-asks by itself. What follows from this decision: every future re-transcription queues a pass under this prompt (TASK-037), so a full name can come back shortened - including on the nine recordings being re-transcribed now for TASK-036. That is the accepted consequence, not a defect to file again.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Asking who is speaking again (TASK-037) shortened 12 full names to first names on 6 recordings, because the prompt asks for "the actual first name (or title and surname)" and which of the two a model returns varies per call - the same host is "Josh" in five episodes and "Josh Bressers" in seventeen. Option (a) was built and measured (multi-word names 3 of 22 -> 17 of 22 on the same model, all 12 names back, no invented surnames, no role words), and Robert chose to keep the old prompt instead: reverted in 0d7d8a8. The names the measurement restored stay on the current runs; a future pass may shorten them again, which is the accepted behaviour rather than an open bug.
+<!-- SECTION:FINAL_SUMMARY:END -->
