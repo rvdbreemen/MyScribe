@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 17:32'
-updated_date: '2026-09-12 01:35'
+updated_date: '2026-09-13 11:01'
 labels:
   - transcribe
   - investigation
@@ -92,6 +92,15 @@ So the recordings whose current run carries a window decoded under a raised floo
 How much the three new ones cost, decoded 2026-09-12 (scratchpad t036_decode_new3.py 1 --raised, one decode per variant): media 20 w1 and media 55 w3 read differently from their own window far from the cut today (difflib 0.9879 and 0.9890 against the no-look-ahead decode), and with the scaled look-ahead they match it exactly. Media 15 w1 comes out identical either way - its floor rose by 0.035 decades and that draw changed no word. So nine recordings carry text that a raised floor changed (10, 20, 22, 34, 41, 50, 53, 54, 55) and media 15 is raised without measured damage. Scaled reproduced the window-alone text in 3 of 3 here, unscaled in 1 of 3.
 
 Ready for whoever re-transcribes them: scratchpad verify10.py compares each new current run with the one before it - words, how much text is the same, the phrases this task measured, seam echoes, and any speaker name that moved, with a human name never allowed to go.
+
+Nine recordings re-transcribed 2026-09-13 on Robert's instruction (jobs 318-326 through the library's bulk route, runs 145-153; the nine with measured damage - media 15 was left out, its window is raised but no word changed). Every job done, none failed. Verified read-only with scratchpad verify10.py:
+
+- The words the raised floor had cost are back. Media 10: "Intellivision" 2x -> 5x, "television" 3x -> 0x, "Novell NetWare" 0x -> 2x, "Novell network" 2x -> 0x, "CypherCon" 11x -> 12x. Media 22: "Maybe a proto-freaker." is back. Media 34: "shelf lifter" gone and "relearn" back, but "shell script around find" did not come back in this draw - that window falls back to T0.8, so it samples; the phrase was there in the no-look-ahead and scaled decodes of 2026-09-12.
+- Text otherwise stable: same 0.9659 to 0.9985 against the previous run, word counts within 36, indices contiguous in all nine.
+- Seams: 0 same-word overlaps across the nine. One overlap of two different words remains (media 20), which TASK-035 left in scope for a listen.
+- Names: 0 lost, and no human-typed name was touched. The nine passes queued by finalize (jobs 327-335, all done, 150,313 prompt + 82,165 completion tokens, prompt_version 2 as Robert asked, all answered by deepseek-v4-flash) kept every full name: Michael Lenz, Josh Bressers, Lars Wirzenius, Shannon Fritz, Mike Goetzman, Steve Ragan, Melanie Ensign, Chloé, Gibson. The shortening TASK-039 warned about did not happen this round - that model answers with full names about 80% of the time. One LLM name moved: media 20 SPEAKER_01 "Cyberpunk Librarian" -> "Dan".
+
+So the recordings now read what their own windows say, which is what this task set out to fix.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
