@@ -887,3 +887,359 @@ def test_the_flash_region_is_filled_not_replaced():
     # And at least one template does flash out of band, or this tests nothing.
     assert any('hx-swap-oob="innerHTML:#flash"' in p.read_text(encoding="utf-8")
                for p in Path(web.TEMPLATES_DIR).glob("*.html"))
+
+
+# --- labels as a facet (TASK-023) --------------------------------------------------
+
+
+def _attach_label(conn, media_id, name, source="llm"):
+    with db.LOCK:
+        conn.execute("INSERT OR IGNORE INTO label(name, created_at) VALUES (?, 0.0)", (name,))
+        conn.execute(
+            "INSERT OR IGNORE INTO media_label(media_id, label_id, source, created_at)"
+            " SELECT ?, id, ?, 0.0 FROM label WHERE name = ? COLLATE NOCASE",
+            (media_id, source, name),
+        )
+        conn.commit()
+
+
+def test_filtering_on_a_label_lists_only_the_recordings_that_carry_it(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+    _attach_label(conn, library["beta"], "cooking")
+
+    body = client.get("/?label=hacking").text
+
+    assert "Alpha" in body and "Gamma" in body
+    assert "Beta" not in body
+
+
+def test_a_label_filter_crosses_folders(client, conn, library):
+    """The point of a label: Alpha is in Docs and Gamma is in no folder, and
+    one click gathers both. A folder cannot do that."""
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+
+    body = client.get("/?label=hacking").text
+
+    assert "Alpha" in body and "Gamma" in body
+    # Beta carries no label: without this the test passes on a page that
+    # ignored the filter and listed the whole library.
+    assert "Beta" not in body
+
+
+def test_a_label_matches_regardless_of_case(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+
+    body = client.get("/?label=Hacking").text
+
+    assert "Alpha" in body
+    assert "Beta" not in body and "Gamma" not in body
+
+
+def test_the_sidebar_lists_every_label_with_how_many_carry_it(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+    _attach_label(conn, library["beta"], "cooking")
+
+    ctx = web_library.sidebar_context(conn, web_library.State())
+
+    assert ctx["labels"] == [
+        {"name": "hacking", "count": 2},
+        {"name": "cooking", "count": 1},
+    ]
+
+
+def test_the_sidebar_renders_the_labels_as_links_that_filter(client, conn, library):
+    """The context test above proves the query; this proves the markup, which
+    is the half a person actually clicks."""
+    _attach_label(conn, library["alpha"], "hacker history")
+
+    body = client.get("/").text
+
+    assert "<h2>Labels</h2>" in body
+    assert 'href="/?label=hacker%20history"' in body
+    assert "hacker history" in body
+
+
+def test_the_labels_heading_is_absent_when_nothing_is_labelled(client, library):
+    assert "<h2>Labels</h2>" not in client.get("/").text
+
+
+def test_a_trashed_recording_does_not_count_toward_a_label(client, conn, library):
+    """The sidebar counts what a click would show, and a click does not show
+    the trash - the same rule the folder counts already follow."""
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["trashed"], "hacking")
+
+    ctx = web_library.sidebar_context(conn, web_library.State())
+
+    assert ctx["labels"] == [{"name": "hacking", "count": 1}]
+    assert "Trashed" not in client.get("/?label=hacking").text
+
+
+def test_a_label_that_nothing_carries_is_not_offered(client, conn, library):
+    """A label whose last recording was purged is not wrong, only unused, and
+    a sidebar row that always answers "nothing here" is noise."""
+    with db.LOCK:
+        conn.execute("INSERT INTO label(name, created_at) VALUES ('orphan', 0.0)")
+        conn.commit()
+
+    ctx = web_library.sidebar_context(conn, web_library.State())
+
+    assert ctx["labels"] == []
+
+
+def test_a_label_filter_and_a_title_filter_narrow_together(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+
+    body = client.get("/?label=hacking&q=Alph").text
+
+    assert "Alpha" in body
+    # Gamma has the label but not the title; Beta has neither.
+    assert "Gamma" not in body and "Beta" not in body
+
+
+def test_an_unknown_label_shows_an_empty_table_rather_than_an_error(client, library):
+    """A folder id that does not exist is a 404 because it came from the app's
+    own markup. A label comes from a URL a person may type, and "no results"
+    is the honest answer to a word nothing carries."""
+    resp = client.get("/?label=nothing-uses-this")
+
+    assert resp.status_code == 200
+    assert "Alpha" not in resp.text
+
+
+def test_the_heading_names_the_label_being_filtered_on(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking")
+
+    ctx = web_library.library_context(conn, web_library.State(label="hacking"))
+
+    assert ctx["heading"] == "hacking"
+
+
+def test_the_label_survives_a_sort_link(conn, library):
+    """Every link the page builds carries the state it was built from; a sort
+    that silently dropped the filter would be a different page."""
+    state = web_library.State(label="hacking")
+
+    assert "label=hacking" in state.url(sort="title")
+
+
+# --- adding and removing a label by hand (TASK-023 AC5) -----------------------------
+
+
+def _labels_of(conn, media_id):
+    return {
+        row["name"]: row["source"]
+        for row in conn.execute(
+            "SELECT l.name AS name, ml.source AS source FROM media_label ml"
+            " JOIN label l ON l.id = ml.label_id WHERE ml.media_id = ?",
+            (media_id,),
+        )
+    }
+
+
+def test_adding_a_label_by_hand_records_that_a_person_chose_it(client, conn, library):
+    resp = client.post(f"/media/{library['alpha']}/labels", data={"name": "lockpicking"}, headers=HX)
+
+    assert resp.status_code == 200
+    assert _labels_of(conn, library["alpha"]) == {"lockpicking": "human"}
+
+
+def test_a_hand_added_label_joins_the_vocabulary_rather_than_forking_it(client, conn, library):
+    _attach_label(conn, library["gamma"], "hacking")
+
+    client.post(f"/media/{library['alpha']}/labels", data={"name": "Hacking"}, headers=HX)
+
+    assert conn.execute("SELECT COUNT(*) FROM label").fetchone()[0] == 1
+    assert set(_labels_of(conn, library["alpha"])) == {"hacking"}
+
+
+def test_a_person_is_not_rationed_the_way_the_model_is(client, conn, library):
+    """MAX_NEW_LABELS governs what an automatic pass may invent, because the
+    pass cannot be asked whether it is sure. A person typing a label has
+    already decided; rationing that would be the app second-guessing its
+    user."""
+    for i in range(10):
+        resp = client.post(
+            f"/media/{library['alpha']}/labels", data={"name": f"subject {i}"}, headers=HX
+        )
+        assert resp.status_code == 200
+
+    assert len(_labels_of(conn, library["alpha"])) == 10
+
+
+def test_adding_a_label_the_recording_already_carries_changes_nothing(client, conn, library):
+    _attach_label(conn, library["alpha"], "hacking", source="llm")
+
+    resp = client.post(f"/media/{library['alpha']}/labels", data={"name": "hacking"}, headers=HX)
+
+    # The status matters: without it this passes on a route that does not
+    # exist, because "nothing happened" is what it asserts.
+    assert resp.status_code == 200
+    # Still one link, and still the model's - re-adding is not a claim about
+    # who decided it first.
+    assert _labels_of(conn, library["alpha"]) == {"hacking": "llm"}
+
+
+def test_removing_a_label_detaches_it_but_keeps_the_word(client, conn, library):
+    """The vocabulary outlives one recording's opinion of it: another file may
+    still carry the label, and a word that is briefly unused is not wrong."""
+    _attach_label(conn, library["alpha"], "hacking")
+    _attach_label(conn, library["gamma"], "hacking")
+
+    client.post(f"/media/{library['alpha']}/labels/remove", data={"name": "hacking"}, headers=HX)
+
+    assert _labels_of(conn, library["alpha"]) == {}
+    assert _labels_of(conn, library["gamma"]) == {"hacking": "llm"}
+    assert conn.execute("SELECT COUNT(*) FROM label").fetchone()[0] == 1
+
+
+def test_removing_a_label_that_is_not_there_is_not_an_error(client, conn, library):
+    resp = client.post(
+        f"/media/{library['alpha']}/labels/remove", data={"name": "never-attached"}, headers=HX
+    )
+
+    assert resp.status_code == 200
+
+
+def test_a_blank_label_is_refused(client, conn, library):
+    resp = client.post(f"/media/{library['alpha']}/labels", data={"name": "   "}, headers=HX)
+
+    assert resp.status_code == 400
+    assert _labels_of(conn, library["alpha"]) == {}
+
+
+def test_a_label_cannot_be_added_to_a_recording_that_does_not_exist(client):
+    assert client.post("/media/9999/labels", data={"name": "x"}, headers=HX).status_code == 404
+
+
+# --- the backfill: labelling what is already in the library ------------------------
+
+
+def _set_provider(conn, name):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO setting(key, value) VALUES ('llm_provider', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (name,),
+        )
+        conn.commit()
+
+
+def _llm_jobs(conn):
+    return [
+        json.loads(row["params_json"])
+        for row in conn.execute("SELECT params_json FROM job WHERE type='llm' ORDER BY id")
+    ]
+
+
+def test_bulk_label_queues_one_pass_per_chosen_recording(client, conn, library):
+    """How a library that predates the labels pass catches up."""
+    seed_run(conn, library["alpha"])
+    seed_run(conn, library["gamma"])
+    _set_provider(conn, "ollama")
+
+    resp = client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["gamma"]]},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    queued = _llm_jobs(conn)
+    assert [p["media_id"] for p in queued] == [library["alpha"], library["gamma"]]
+    assert {p["kind"] for p in queued} == {"labels"}
+
+
+def test_bulk_label_skips_a_recording_with_no_transcript(client, conn, library):
+    """The pass reads words. A job that can only fail is not worth a row on
+    the board."""
+    seed_run(conn, library["alpha"])
+    _set_provider(conn, "ollama")
+
+    client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["beta"]]},
+        headers=HX,
+    )
+
+    assert [p["media_id"] for p in _llm_jobs(conn)] == [library["alpha"]]
+
+
+def test_a_private_recording_is_skipped_by_a_bulk_pass_to_an_external_model(
+    client, conn, library
+):
+    """A private recording is never offered to an external service in bulk.
+    Sending one out is a decision taken for that recording, on its own page.
+
+    Skipped rather than refused, deliberately: a refusal only teaches the habit
+    of adjusting the selection until the button works, and a bulk button must
+    never be the thing that puts private words on somebody else's server. The
+    rest of the batch still runs."""
+    seed_run(conn, library["alpha"])
+    seed_run(conn, library["gamma"])
+    _set_provider(conn, "openai")
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (library["gamma"],))
+        conn.commit()
+
+    resp = client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["gamma"]]},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    assert [p["media_id"] for p in _llm_jobs(conn)] == [library["alpha"]]
+
+
+def test_the_skipped_private_recordings_are_reported_rather_than_dropped_quietly(
+    client, conn, library
+):
+    """A person who ticked forty rows should not have to count the jobs to
+    discover that three are not coming."""
+    seed_run(conn, library["alpha"])
+    seed_run(conn, library["gamma"])
+    _set_provider(conn, "openai")
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (library["gamma"],))
+        conn.commit()
+
+    resp = client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["gamma"]]},
+        headers=HX,
+    )
+
+    notice = json.loads(resp.headers["HX-Trigger"])["scribe-notice"]
+    assert "1 private recording was skipped" in notice
+    assert "openai" in notice
+
+
+def test_nothing_is_reported_when_nothing_was_skipped(client, conn, library):
+    seed_run(conn, library["alpha"])
+    _set_provider(conn, "ollama")
+
+    resp = client.post(
+        "/media/bulk", data={"action": "label", "ids": [library["alpha"]]}, headers=HX
+    )
+
+    assert "HX-Trigger" not in resp.headers
+
+
+def test_bulk_label_of_a_private_recording_is_fine_on_a_local_provider(client, conn, library):
+    seed_run(conn, library["gamma"])
+    _set_provider(conn, "ollama")
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (library["gamma"],))
+        conn.commit()
+
+    resp = client.post(
+        "/media/bulk", data={"action": "label", "ids": [library["gamma"]]}, headers=HX
+    )
+
+    assert resp.status_code == 200
+    assert [p["media_id"] for p in _llm_jobs(conn)] == [library["gamma"]]

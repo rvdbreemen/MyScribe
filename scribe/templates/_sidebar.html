@@ -82,4 +82,21 @@
     </select>
     <button type="submit">Add</button>
   </form>
+
+  {# Labels, beside the folders rather than inside them: a recording lives in
+     one folder and carries several labels, so this list crosses the tree
+     instead of nesting under it. Only labels something live carries are here
+     (library.label_counts), because a row that always answers "nothing here"
+     is noise. No actions: a label is added and removed on the recording. #}
+  {% if labels %}
+  <h2>Labels</h2>
+  <ul class="labels">
+    {% for entry in labels %}
+    <li>
+      <a href="/?label={{ entry.name | urlencode }}"{% if state.label|lower == entry.name|lower %} aria-current="page"{% endif %}>{{ entry.name }}</a>
+      <span class="count">{{ entry.count }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
 </aside>

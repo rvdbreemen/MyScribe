@@ -74,6 +74,9 @@ def fake_checks(monkeypatch):
         ),
     ]
     monkeypatch.setattr(doctor, "checks", lambda include_gpu=True: list(results))
+    # The settings page asks `web_checks` since TASK-022 - the CPU checks minus
+    # the accelerator one, which imports torch and may not run here.
+    monkeypatch.setattr(doctor, "web_checks", lambda: list(results))
     return results
 
 

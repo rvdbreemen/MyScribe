@@ -71,8 +71,8 @@
       "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner",
       "path": "ADR-002-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner.md",
       "format": "madr",
-      "status": "Accepted",
-      "date": "2026-09-03",
+      "status": "Superseded",
+      "date": "2026-09-13",
       "decision_summary": "Chosen option: SQLite WAL with atomic SQL, because the two hard problems are each one statement:",
       "topics": [
         "concurrency",
@@ -95,22 +95,10 @@
       ],
       "context_scope": "selective",
       "decision_contract": {
-        "must": [
-          "Job claims use begin immediate plus update … returning.",
-          "Terminal verdicts are written with a status guard so the first one wins.",
-          "db.LOCK (the one module-level lock in scribe.db) is the only lock guarding the database connection, and every database access in the web process holds it. A lock around a different resource is fine - scribe/web/transcript.py keeps one pe...",
-          "job.status stays constrained by a check (a rule SQLite enforces on every write) to exactly queued, running, done, failed, cancelled, interrupted."
-        ],
-        "must_not": [
-          "Introduce a second queue or a message broker for job state.",
-          "Store media bytes or transcript artifacts in the database."
-        ],
-        "exceptions": [
-          "None."
-        ],
-        "verification": [
-          "tests/testjobs.py::testclaimisatomicunderconcurrentthreads (name as in the suite), tests/testjobs.py first-verdict tests, tests/testdb.py::testwalandfkon."
-        ]
+        "must": [],
+        "must_not": [],
+        "exceptions": [],
+        "verification": []
       },
       "scope": {
         "path_globs": [
@@ -125,7 +113,7 @@
         "documents_shipped": false,
         "verified_in": [],
         "supersedes": [],
-        "superseded_by": null
+        "superseded_by": "ADR-009"
       }
     },
     {
@@ -442,6 +430,254 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-008",
+      "title": "A feed or channel is a subscription polled on a schedule; each new episode is one ingest_url job",
+      "path": "ADR-008-a-feed-or-channel-is-a-subscription-polled-on-a-schedule-each-new-episode-is-one-ingest-url-job.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-09",
+      "decision_summary": "Chosen: a feed is a row, polled by its own thread on a due-date, and every new episode is one ingesturl job, on top o...",
+      "topics": [
+        "feeds",
+        "ingest",
+        "provenance",
+        "scheduling",
+        "subscriptions",
+        "yt-dlp"
+      ],
+      "aliases": [
+        "channel import",
+        "episode list",
+        "feed import",
+        "feed polling",
+        "feed subscription",
+        "feeds page",
+        "podcast import",
+        "RSS import"
+      ],
+      "components": [
+        "scribe.app",
+        "scribe.ingest.feeds",
+        "scribe.ingest.urls",
+        "scribe.stages.url_stage",
+        "scribe.web.feeds_ui",
+        "scribe.web.ingest_ui"
+      ],
+      "symbols": [
+        "add_url",
+        "due_feeds",
+        "enqueue_many",
+        "FeedWatcher",
+        "known_sources",
+        "probe_in_slot",
+        "source_id_for"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "A feed, a channel or a playlist is listed by yt-dlp through urls.probe(limit=...); no other feed or HTML parser is added to scribe.",
+          "An interactive listing runs only under ingestui.probeinslot.",
+          "An entry's URL is fetched verbatim by the runner child; anything that compares or stores it strips the fragment first.",
+          "Every posted entry passes parseentry before any job is queued, and the jobs of one import are inserted by jobs.enqueuemany in one transaction.",
+          "The media row's sourceurl and sourceid are compared by knownsources and never rendered as an href.",
+          "The listing's title names the media row; the download's title is the fallback.",
+          "Periodic feed work runs in FeedWatcher's own thread with its own connection, every step wrapped so one bad feed cannot end the loop.",
+          "A feed's next poll is decided by its stored checkedat and interval, not by elapsed process time.",
+          "Nothing is queued for an episode knownsources already knows, and one poll queues at most MAXNEWPERPOLL jobs.",
+          "Subscribing queues nothing by itself: the episodes present at subscription time are recorded as known."
+        ],
+        "must_not": [
+          "Add periodic work to supervisor.loop, or express a schedule as a job that re-queues itself.",
+          "Poll a feed the person paused, or keep polling one whose probe has failed past the recorded limit without saying so on the Feeds page.",
+          "Render the checkbox value with |tojson; it is json.dumps output autoescaped as an attribute.",
+          "Read the ticked entries through fields, which keeps the last value per name.",
+          "Let a feed's own text - its title, an episode title - reach a template unescaped, or a shell in any form."
+        ],
+        "exceptions": [
+          "The fan-out inside the runner child (urlstage.fanout) still queues its children one jobs.enqueue at a time: it runs where the cost falls on nobody.",
+          "A person pressing \"poll now\" on the Feeds page bypasses the due check - that is the point of the button - but not the per-poll cap."
+        ],
+        "verification": [
+          "tests/testingesturls.py::testafeedentrykeepsitssmuggledurlandgetstheguidasitssourceid, ::testregisternamesafeedepisodeafterthefeednotthecdn, ::testytdlphonoursplaylistendonaflatplaylistandstillreportsthetotal.",
+          "tests/testweburldialog.py::testapatientpreviewattachestothelistingalreadyrunning, ::testonebadentryamonggoodonesqueuesnoneofthem, ::testnotemplatebindsanhreftoastrangersurl.",
+          "tests/testfeeds.py::testanewsubscriptionqueuesnothing, ::testonlyoverduefeedsarepolled, ::testanepisodealreadyinthelibraryorthetrashisnotqueuedagain, ::testapollqueuesatmostthecapandsaysso, ::testafeedwhoseproberaisesdoesnotendtheloop.",
+          "grep -rn \"feedparser\" scribe/ returns nothing."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/templates/_url_panel.html",
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-009",
+      "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner, restated with anchored import rules",
+      "path": "ADR-009-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner-restated-with-anchored-import-rules.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-13",
+      "decision_summary": "Chosen option: SQLite WAL with atomic SQL (ADR-002's decision, unchanged), with \"no broker\" checked by forbidimport r...",
+      "topics": [
+        "concurrency",
+        "enforcement",
+        "job-orchestration",
+        "storage"
+      ],
+      "aliases": [
+        "anchored import rules",
+        "atomic claim",
+        "first verdict wins",
+        "forbid_import false positive",
+        "job queue",
+        "no message broker"
+      ],
+      "components": [
+        "scribe.db",
+        "scribe.jobs"
+      ],
+      "symbols": [
+        "claim_next",
+        "db.LOCK",
+        "finish"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Job claims use begin immediate plus update ... returning (scribe/jobs.py:110-116).",
+          "Terminal verdicts are written with a status guard so the first one wins (scribe/jobs.py:148).",
+          "db.LOCK (the one module-level lock in scribe.db) is the only lock guarding database access in the web process, and every database access there holds it, whichever connection it uses. A lock around a different resource is fine (scribe/web...",
+          "job.status stays constrained by a check (a rule SQLite enforces on every write) to exactly queued, running, done, failed, cancelled, interrupted (scribe/db.py:50).",
+          "A declarative rule in this record's Enforcement block that forbids a module matches its import statement, not the module's name anywhere on a line."
+        ],
+        "must_not": [
+          "Introduce a second queue or a message broker for job state.",
+          "Import redis, celery or rq anywhere under scribe/.",
+          "Store media bytes or transcript artifacts in the database. The one BLOB (binary large object) column is speakerembedding.embedding (scribe/db.py:44-46)."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testjobs.py::testclaimraceexactlyonewinnerperjob, ::testfinishfirstverdictwins, ::testrequestcancelonqueuedcancelsinstantly, ::testemitmonotonicsequnderconcurrentemit.",
+          "tests/testdb.py::testwalandfkon, ::testjobstatuscheckconstraintrejectsbogus.",
+          "ADRKITNOLLM=1 adr-judge --dry-run-enforcement ADR-009 on a diff like the probe flags the import statements and none of the prose or look-alike lines (table in Context). The judge applies this record only once it is Accepted.",
+          "grep -rnE \"^\\s(import|from)\\s+(redis|celery|rq)\\b\" scribe/ returns nothing on 2026-09-11: the rules are a tripwire, not a cleanup."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/[!d]*.py",
+          "scribe/*/**",
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [
+          "ADR-002"
+        ],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-010",
+      "title": "Reasoning is a per-kind hint; an ignored hint is bounded only where the endpoint enforces the cap",
+      "path": "ADR-010-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-11",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "llm",
+        "output-budget",
+        "provenance",
+        "reasoning-models"
+      ],
+      "aliases": [
+        "cap not enforced",
+        "cleanup chunk size",
+        "finish_reason length",
+        "reasoning effort none",
+        "reasoning hint",
+        "reasoning_off",
+        "think false"
+      ],
+      "components": [
+        "scribe.llm.base",
+        "scribe.llm.ollama",
+        "scribe.llm.openai_like",
+        "scribe.llm.tasks"
+      ],
+      "symbols": [
+        "ChatRequest.reasoning_off",
+        "ChatResponse.hint_sent",
+        "check_cleaning",
+        "cleaned_parts",
+        "CONCAT_CHUNK_TOKENS",
+        "Provider.reasoning_off_body",
+        "reasoning_record",
+        "TaskSpec.reasoning_off"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Each provider class declares the hint's wire form in reasoningoffbody; a request without the hint carries none of reasoning, reasoningeffort or think.",
+          "A 400 while the hint is on the wire is retried once without it, unless it is a temperature refusal or a context-length refusal; the decision reads what was sent, never the vendor's wording.",
+          "ChatResponse.hintsent records what the answering call carried: None not asked, True sent, False refused and dropped. Unreported counts are None, never 0.",
+          "Every llmoutput row a call produces records hintsent, reasoningtokens, reasoningchars, upstream, hintignored and capnotenforced in paramsjson, judged against the cap that call was asked with.",
+          "A concat kind's answer that ended 'length' is refused before it is stored, whether it is one call or one of many, and the refusal names what the row would have held: finishreason, completion and reasoning tokens, reasoning characters, up...",
+          "A stored part is reused only when its segmentids are the chunk's.",
+          "The cleaning gate judges the parts the final row names (chunkoutputids), in that order - never the newest row per chunk index.",
+          "A cleaning whose every part came back as it went in, whitespace aside, is stored but not published."
+        ],
+        "must_not": [
+          "Branch on the provider's name in a caller to decide the hint.",
+          "Use effort: low or minimal for a kind that must keep [m:ss] stamps and speaker labels.",
+          "Count OpenRouter's message.reasoning trace as reasoning spent: luna spent 107 reasoning tokens with no trace.",
+          "Merge a provider's reasoningoffbody into a body by reference."
+        ],
+        "exceptions": [
+          "speakers and labels stay at the provider default until their own A/B.",
+          "Ollama's hint is never dropped: its daemon refuses only a truthy think."
+        ],
+        "verification": [
+          "tests/testllmproviders.py::testeachcloudprovidersaysnoreasoningitsownway, ::testarefusedhintisretriedoncewithoutit, ::testacontextlength400withthehintoniscontexttoolongafteronecall, ::testatemperaturerefusalthenahintrefusalisthreecalls,...",
+          "tests/testllmollama.py::testthehintisthinkfalseanditsabsencesendsnothink.",
+          "tests/testllmtasks.py::testthehintfollowsthekind, ::testeveryrowrecordswhatwassentandwhatreasoningcost.",
+          "tests/testllmtaskproviders.py::testcleanupreacheseachrealproviderwithitsownnoreasoningfield.",
+          "tests/testllmspeakers.py::testaonecallcleanupcutoffatthecapisrefusedandnothingisstored, ::testacutoffpartnameswhatitspentandwhetherthehintwent, ::testastoredpartcutonotherboundariesisaskedagain, ::testacleanupchunkiscuttotheconcatlimitno...",
+          "tests/testllmcleaninggate.py::testarerunpublishesitsownpartsnotanothermodelsnewerones, ::testacleaningthatcamebackasitwentinisrefused, ::testacleaningwithsomepartsunchangedisstillpublished, ::testapartwithitspunctuationfixedisachange, ::...",
+          "tests/testllmheadroomscript.py::testtheheadroomscriptplansthechunksizeitisgiven (step 0 measures the chunk size it is asked for), ::testthepincheckreadsnoverdictfromablockedoruncountedanswer, ::testacallthatgotnoanswerprintswhatwasaskedn..."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -467,6 +703,12 @@
       "source": "ADR-002",
       "target": "ADR-003",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-002",
+      "target": "ADR-009",
+      "type": "superseded-by",
       "resolved": true
     },
     {
@@ -508,6 +750,66 @@
     {
       "source": "ADR-007",
       "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-008",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-008",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-002",
+      "type": "supersedes",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-003",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-008",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-010",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-010",
+      "target": "ADR-007",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-010",
+      "target": "ADR-009",
       "type": "related",
       "resolved": true
     }

@@ -395,6 +395,22 @@ GPU_CHECKS = (
     check_gpu_smoke,
 )
 
+# The checks the WEB process may run, which is not the same question as
+# whether a check touches the card (TASK-022).
+#
+# `check_accelerators` calls accel.describe(), which asks accel.cuda_available()
+# whether there is a device, which does `import torch`. That is 687 modules and
+# a model runtime inside the one process ADR-001 says must never hold one - and
+# opening /settings was enough to do it, because the settings page renders a
+# doctor panel and the panel ran the CPU checks in the request.
+#
+# The distinction is deliberately not folded into `include_gpu`. That flag means
+# "do not load a model", and `python -m scribe.doctor --no-gpu` should still say
+# what the machine would transcribe on: importing torch in the CLI costs a
+# second and breaks nothing. Naming the real constraint separately keeps both
+# answers right instead of trading one for the other.
+WEB_SAFE_CHECKS = tuple(check for check in CPU_CHECKS if check is not check_accelerators)
+
 
 # --- the GPU checks as a job ---------------------------------------------------
 
@@ -550,6 +566,16 @@ def checks(include_gpu: bool = True) -> list[Check]:
     """Run the checks. `include_gpu=False` keeps the unit suite off the card."""
     selected = CPU_CHECKS + (GPU_CHECKS if include_gpu else ())
     return [fn() for fn in selected]
+
+
+def web_checks() -> list[Check]:
+    """The checks the web process may run (TASK-022).
+
+    A function rather than a comprehension at the call site, so there is one
+    seam to patch in a test and one place that answers "what may the web
+    process ask" - the same reason `checks()` exists for the other callers.
+    """
+    return [check() for check in WEB_SAFE_CHECKS]
 
 
 def render(results: list[Check]) -> str:

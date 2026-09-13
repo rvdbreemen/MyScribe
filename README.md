@@ -89,6 +89,10 @@ directory before CTranslate2 loads.
   `SCRIBE_DATA_DIR` elsewhere to move it.
 - `python -m scribe --port 4299 --no-supervisor --no-browser` runs a second
   instance for poking at without disturbing the one you use.
+- `scripts/start.ps1` and `scripts/start.sh` start the app with the venv's
+  python, refuse a second instance on a port that already answers, and take
+  `--detached` (`-Detached`) for a run that outlives the terminal - which is
+  what a long transcribe queue wants.
 
 ## Check that it works
 
@@ -102,6 +106,12 @@ and, unless `--no-gpu`, a real model load. Run it before blaming the code.
 
 Then put a file through the Transcribe dialog. The job page shows the text
 as it is decoded.
+
+The dialog's link tab takes a video, a podcast RSS feed, a YouTube channel or
+a playlist - pasted or dropped. A feed or channel lists its episodes with a
+filter; tick one or many and press Import, and each becomes its own download
+job. Episodes already in the library or already queued are marked as such
+the next time the feed is listed.
 
 ## Tests
 
@@ -122,5 +132,7 @@ see `pytest.ini`); run the two halves named in `CLAUDE.md` when it does.
 `docs/adr/` holds the architecture decisions: one web process and a runner
 child per job (ADR-001), SQLite as the only coordination (ADR-002), words as
 the canonical transcript (ADR-003), the default model (ADR-004), the
-preloaded waveform for diarization (ADR-005), the CUDA pins (ADR-006), and
-the application log as observation only (ADR-007).
+preloaded waveform for diarization (ADR-005), the CUDA pins (ADR-006), the
+application log as observation only (ADR-007), and the feed import - listed
+by yt-dlp in the web process, chosen in the browser, fetched one episode per
+job (ADR-008, proposed).

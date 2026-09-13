@@ -717,3 +717,41 @@ def test_each_tab_radio_names_the_panel_it_shows(client, board):
     for name in ("log", "events", "params"):
         assert f'id="jt-{name}" class="visually-hidden" aria-controls="jobpanel-{name}"' in body
         assert f'id="jobpanel-{name}"' in body
+
+
+# --- an ingest_url job is named after its episode (TASK-021) ----------------------
+
+
+def test_an_ingest_url_job_is_named_by_its_episode_from_queue_to_history(client, conn):
+    """Twenty jobs from one feed were twenty rows called "ingest_url job". The
+    listing's title names the row, the link itself when there was no listing,
+    and a failed child with no media row behind it keeps its name in history."""
+    job_id = jobs.enqueue(conn, "ingest_url", params={
+        "url": "https://cdn.example/default.mp3", "from_playlist": True,
+        "entry": {"title": "Love in the time of Palantir", "source_id": None},
+        "source": {"url": "https://feeds.npr.org/510289/podcast.xml", "title": "Planet Money"},
+    })
+    bare = jobs.enqueue(conn, "ingest_url", params={"url": "https://youtu.be/dQw4w9WgXcQ"})
+
+    queued = _section(client.get("/jobs").text, "queued")
+
+    assert f'href="/jobs/{job_id}"' in queued and ">Love in the time of Palantir<" in queued
+    assert f'href="/jobs/{bare}"' in queued and ">https://youtu.be/dQw4w9WgXcQ<" in queued
+    assert "ingest_url job" not in queued
+
+    jobs.claim_next(conn)
+    jobs.finish(conn, job_id, "failed", error_code="UNAVAILABLE", error_detail="HTTP Error 403")
+
+    history = _section(client.get("/jobs").text, "history")
+    assert ">Love in the time of Palantir<" in history and "UNAVAILABLE" in history
+    assert ">Love in the time of Palantir<" in client.get(f"/jobs/{job_id}").text
+
+
+def test_an_episode_title_that_is_markup_is_escaped_on_the_board(client, conn):
+    """The title now reaches the board through params_json, a new path; this
+    pins that it goes through the same autoescape as a media title."""
+    jobs.enqueue(conn, "ingest_url", params={"url": "https://cdn.example/x.mp3", "entry": {"title": "<b>Zaphod</b>"}})
+
+    body = client.get("/jobs").text
+
+    assert "&lt;b&gt;Zaphod&lt;/b&gt;" in body and "<b>Zaphod</b>" not in body

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -246,7 +247,8 @@ def rows(conn, media_id, kind: str | None = None) -> list[dict]:
 
 def test_the_kinds_are_the_ones_the_rail_offers_with_custom_last():
     assert set(tasks.TASKS) == {
-        "summary", "action_items", "chapters", "minutes", "blog", "speakers", "cleanup", "custom"
+        "summary", "action_items", "chapters", "minutes", "blog", "speakers", "labels",
+        "cleanup", "custom",
     }
     assert tasks.KINDS[-1] == "custom"
     assert tasks.PROMPT_VERSION and isinstance(tasks.PROMPT_VERSION, str)
@@ -264,7 +266,7 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "09f02a9823b38e0864cc303136e27ec640858107af8e254650b439cf19e92a0b"
+PROMPTS_DIGEST = "797bc9b36e5d58cbf3fb881a5524eee3b582b8c81a4be8b292cb2372ab8c416f"
 """sha256 over the prompt templates, for PROMPT_VERSION "1". Line endings are
 normalised first, because git rewrites them on checkout here.
 
@@ -282,6 +284,13 @@ def test_editing_a_template_means_bumping_the_prompt_version():
 
     If this fails and you did edit a template: bump `tasks.PROMPT_VERSION`, then
     put the new digest below. If you did not edit one, something else did.
+
+    *Adding* a template is the other case, and it has the opposite answer:
+    record the new digest and leave the version alone. A new kind has no stored
+    answers to be confused with, while bumping the version would change the key
+    of every *other* kind - orphaning answers that were paid for and are still
+    answers to exactly the question that was asked. TASK-023 added `labels.md`
+    on 2026-09-10 and did not bump.
     """
     digest = hashlib.sha256()
     for path in sorted(tasks.PROMPTS_DIR.glob("*.md")):
@@ -510,6 +519,207 @@ def test_the_model_column_is_the_model_asked_for_and_the_served_one_is_kept(conn
     assert json.loads(row["params_json"])["served_model"] == "fake-1-2026-09-02"
 
 
+# --- the reasoning hint, and what reasoning cost (TASK-029) ------------------------------------
+
+REASONING_KEYS = (
+    "hint_sent",
+    "reasoning_tokens",
+    "reasoning_chars",
+    "upstream",
+    "hint_ignored",
+    "cap_not_enforced",
+)
+
+
+def spent(
+    text: str,
+    *,
+    completion_tokens: int | None = 7,
+    hint_sent: bool | None = None,
+    reasoning_tokens: int | None = None,
+    reasoning_chars: int | None = None,
+    upstream: str | None = None,
+) -> base.ChatResponse:
+    """An answer that says what it cost, the way the real providers now do."""
+    return base.ChatResponse(
+        text=text,
+        model="fake-1-2026-09-02",
+        provider="fake",
+        prompt_tokens=11,
+        completion_tokens=completion_tokens,
+        raw_finish_reason="stop",
+        hint_sent=hint_sent,
+        reasoning_tokens=reasoning_tokens,
+        reasoning_chars=reasoning_chars,
+        upstream=upstream,
+    )
+
+
+def test_the_hint_follows_the_kind(conn, media, monkeypatch):
+    """cleanup is the one kind that asks for no reasoning (TASK-029's
+    decision): a mechanical rewrite that spent 22,515 reasoning tokens on 837
+    words, and got the same cleaning in 1,171 tokens without. The rest keep
+    the provider's default until they have measurements of their own.
+
+    Every call a kind makes carries its hint - a part, a one-call answer, a
+    note and a combine - which is proved for note and combine by giving
+    summary the hint for the length of this test."""
+    assert {kind: spec.reasoning_off for kind, spec in tasks.TASKS.items()} == {
+        "summary": False,
+        "action_items": False,
+        "chapters": False,
+        "minutes": False,
+        "blog": False,
+        "speakers": False,
+        "labels": False,
+        "cleanup": True,
+        "custom": False,
+    }
+
+    long_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, long_id, n_segments=12)
+    provider, calls = fake_provider(lambda req: "a part")
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+    tasks.run_task(
+        conn, media_id=long_id, kind="cleanup", provider_name="fake", model="fake-1", budget_tokens=100
+    )
+    cleanup_calls = len(calls)
+    assert cleanup_calls >= 3, "one single call and at least two parts"
+    assert [c.reasoning_off for c in calls] == [True] * cleanup_calls
+
+    notes_then_combine, summary_calls = fake_provider(map_reduce_script(ANSWERS["summary"]))
+    register(monkeypatch, notes_then_combine)
+    tasks.run_task(conn, media_id=media, kind="summary", provider_name="fake", model="fake-1")
+    tasks.run_task(
+        conn, media_id=long_id, kind="summary", provider_name="fake", model="fake-1", budget_tokens=100
+    )
+    assert summary_calls and [c.reasoning_off for c in summary_calls] == [False] * len(summary_calls)
+
+    monkeypatch.setitem(tasks.TASKS, "summary", replace(tasks.TASKS["summary"], reasoning_off=True))
+    hinted, hinted_calls = fake_provider(map_reduce_script(ANSWERS["summary"]))
+    register(monkeypatch, hinted)
+    tasks.run_task(
+        conn, media_id=long_id, kind="summary", provider_name="fake", model="fake-2", budget_tokens=100
+    )
+    assert any(CHUNK_MARKER in c.user for c in hinted_calls), "notes were asked for"
+    assert [c.reasoning_off for c in hinted_calls] == [True] * len(hinted_calls)
+
+
+@pytest.mark.parametrize(
+    "answer, cap, expected",
+    [
+        # Row 19, speakers at cap 8,000: 21,401 completion tokens, finish
+        # 'stop'. That endpoint did not enforce the cap.
+        (dict(completion_tokens=21401), 8000, dict(cap_not_enforced=True, hint_ignored=None)),
+        (dict(completion_tokens=5000), 6000, dict(cap_not_enforced=False)),
+        # The hint went on the wire and the model reasoned anyway.
+        (
+            dict(completion_tokens=1200, hint_sent=True, reasoning_tokens=500),
+            6000,
+            dict(hint_ignored=True, cap_not_enforced=False),
+        ),
+        (dict(hint_sent=True, reasoning_tokens=0), 6000, dict(hint_ignored=False)),
+        # Refused and dropped: the model reasoned at its default, and that is
+        # not the hint being ignored - it was never there to ignore.
+        (dict(hint_sent=False, reasoning_tokens=500), 6000, dict(hint_ignored=None)),
+        # Honoured, but the endpoint reported no count: nobody can say.
+        (dict(hint_sent=True), 6000, dict(hint_ignored=None)),
+        # Ollama counts thinking in characters.
+        (dict(hint_sent=True, reasoning_chars=0), 6000, dict(hint_ignored=False)),
+        (dict(hint_sent=True, reasoning_chars=12), 6000, dict(hint_ignored=True)),
+        # No usage at all: both flags unknown, never False.
+        (dict(completion_tokens=None), 6000, dict(hint_ignored=None, cap_not_enforced=None)),
+    ],
+    ids=[
+        "past-the-cap",
+        "under-the-cap",
+        "hint-ignored",
+        "hint-honoured",
+        "hint-dropped",
+        "hint-unmeasured",
+        "ollama-honoured",
+        "ollama-ignored",
+        "no-usage",
+    ],
+)
+def test_reasoning_record_says_what_happened_and_nothing_it_cannot_know(answer, cap, expected):
+    record = tasks.reasoning_record(spent("x", **answer), cap)
+
+    assert set(record) == set(REASONING_KEYS)
+    for key, value in expected.items():
+        assert record[key] is value, f"{key}: {record[key]!r}, expected {value!r}"
+
+
+def test_every_row_records_what_was_sent_and_what_reasoning_cost(conn, media, monkeypatch):
+    """Rows 6, 17 and 19 spent 5,651, 12,767 and 21,401 tokens against caps of
+    4,000 and 8,000 and finished 'stop'; nothing on them said the cap had not
+    held, or whether reasoning was the reason. Now every row says both.
+
+    A note is judged against the note budget it was asked with, not the kind's
+    answer cap: a 5,000-token note against a 4,000-token note budget broke the
+    cap even though the same number would sit under blog's 6,000."""
+    long_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, long_id, n_segments=12)
+
+    def blog(req):
+        if CHUNK_MARKER in req.user:
+            return spent("notes", completion_tokens=5000, upstream="Wafer")
+        return spent(ANSWERS["blog"], completion_tokens=21401, upstream="Wafer")
+
+    provider, _ = fake_provider(blog)
+    register(monkeypatch, provider)
+    tasks.run_task(
+        conn, media_id=long_id, kind="blog", provider_name="fake", model="fake-1", budget_tokens=100
+    )
+
+    notes = [r for r in rows(conn, long_id) if r["kind"].startswith("blog:chunk:")]
+    assert notes
+    for row in notes:
+        params = json.loads(row["params_json"])
+        assert set(REASONING_KEYS) <= set(params)
+        assert params["upstream"] == "Wafer"
+        assert params["hint_sent"] is None, "blog asks for no hint"
+        assert tasks.MIN_NOTE_TOKENS < 5000 < tasks.TASKS["blog"].max_output_tokens
+        assert params["cap_not_enforced"] is True, "judged against the note budget"
+    (final,) = rows(conn, long_id, "blog")
+    assert json.loads(final["params_json"])["cap_not_enforced"] is True
+
+    parts, _ = fake_provider(
+        lambda req: spent("a part", completion_tokens=1200, hint_sent=True, reasoning_tokens=500)
+    )
+    register(monkeypatch, parts)
+    tasks.run_task(
+        conn, media_id=long_id, kind="cleanup", provider_name="fake", model="fake-1", budget_tokens=100
+    )
+    part_rows = [r for r in rows(conn, long_id) if r["kind"].startswith("cleanup:chunk:")]
+    assert part_rows
+    for row in part_rows:
+        params = json.loads(row["params_json"])
+        assert (params["hint_sent"], params["reasoning_tokens"], params["hint_ignored"]) == (
+            True,
+            500,
+            True,
+        )
+        assert params["cap_not_enforced"] is False
+    (joined,) = rows(conn, long_id, "cleanup")
+    joined_params = json.loads(joined["params_json"])
+    assert set(REASONING_KEYS) <= set(joined_params)
+    assert all(joined_params[k] is None for k in REASONING_KEYS), "the parts carry the numbers"
+
+    dropped, _ = fake_provider([spent("cleaned", hint_sent=False, reasoning_tokens=500)])
+    register(monkeypatch, dropped)
+    tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+    (single,) = rows(conn, media, "cleanup")
+    params = json.loads(single["params_json"])
+    assert (params["hint_sent"], params["reasoning_tokens"], params["hint_ignored"]) == (
+        False,
+        500,
+        None,
+    )
+
+
 # --- long transcripts -----------------------------------------------------------------------
 
 
@@ -640,6 +850,59 @@ def test_a_note_cut_off_mid_sentence_is_not_stored_and_not_reused(conn, monkeypa
 
     assert len(again_calls) > 1, "the retry reused the truncated note"
     assert len(rows(conn, media_id, "summary")) == 1
+
+
+def test_a_cut_off_note_names_what_it_spent_and_whether_the_hint_went(conn, monkeypatch):
+    """A refused note writes no row either, so, like a refused cleanup part,
+    its error is the jobs board's only record of the call and has to carry
+    the spend, the upstream and the hint - or a reasoner that ran out of room
+    reads the same as a runaway."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    spent = dict(completion_tokens=400, reasoning_tokens=388, upstream="Azure", hint_sent=None)
+    cut_off, _ = fake_provider(
+        map_reduce_script(
+            ANSWERS["summary"],
+            note=lambda i: replace(truncated(f"notes {i} which stop mid-"), **spent),
+        )
+    )
+    register(monkeypatch, cut_off)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(
+            conn, media_id=media_id, kind="summary", provider_name="fake", model="fake-1",
+            budget_tokens=100,
+        )
+
+    message = str(caught.value)
+    assert "finish_reason='length'" in message
+    missing = [words for words in ("completion_tokens=400", "reasoning_tokens=388", "upstream='Azure'")
+               if words not in message]
+    assert missing == [], message
+
+
+def test_a_one_call_custom_answer_cut_off_at_the_cap_is_still_stored(conn, media, monkeypatch):
+    """The refusal of a cut-off one-call answer belongs to the concat kinds,
+    whose answer is a stretch of the transcript. `custom` keeps today's rule:
+    the row is stored and the panel marks it (`ai_ui.was_truncated`), because
+    half an answer to a free question is still worth reading once the page
+    says where it stopped."""
+    provider, calls = fake_provider([truncated("They agreed to raise the budget by")])
+    register(monkeypatch, provider)
+
+    tasks.run_task(
+        conn,
+        media_id=media,
+        kind="custom",
+        provider_name="fake",
+        model="fake-1",
+        custom_prompt="What did they decide about the budget?",
+    )
+
+    (row,) = rows(conn, media, "custom")
+    assert len(calls) == 1
+    assert row["content"] == "They agreed to raise the budget by"
+    assert json.loads(row["params_json"])["finish_reason"] == "length"
 
 
 def test_a_resumed_task_only_makes_the_calls_whose_chunk_rows_are_missing(conn, monkeypatch):
@@ -1164,8 +1427,16 @@ def test_a_private_media_still_runs_on_a_local_provider(conn, media, monkeypatch
 # --- the job type ---------------------------------------------------------------------------------
 
 
-def test_the_runner_knows_the_llm_job_type_and_its_three_stages():
-    assert [name for name, _fn in runner.STAGES["llm"]] == ["prepare", "generate", "store"]
+def test_the_runner_knows_the_llm_job_type_and_its_four_stages():
+    """`apply` joined the three in TASK-024. It is a no-op for the kinds that
+    only answer a question, and the step that used to be a person clicking for
+    the kinds that change something."""
+    assert [name for name, _fn in runner.STAGES["llm"]] == [
+        "prepare",
+        "generate",
+        "store",
+        "apply",
+    ]
     assert runner.STAGES["llm"] is llm_stage.STAGES
     assert all(callable(fn) for _name, fn in llm_stage.STAGES)
 
@@ -1191,7 +1462,7 @@ def test_an_llm_job_runs_end_to_end_and_leaves_one_output_row(conn, media, monke
     stage_names = [
         e["payload"]["name"] for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "stage"
     ]
-    assert stage_names == ["prepare", "generate", "store"]
+    assert stage_names == ["prepare", "generate", "store", "apply"]
     finished = [e for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "llm"]
     assert finished and finished[-1]["payload"]["output_id"] == stored[0]["id"]
 
@@ -1364,5 +1635,5 @@ def test_the_llm_stages_file_their_timings_under_the_model_that_answered(conn, m
     assert runner.main([str(job_id)]) == 0
 
     perf = [dict(r) for r in conn.execute("SELECT stage, model FROM stage_perf ORDER BY id")]
-    assert [r["stage"] for r in perf] == ["prepare", "generate", "store"]
+    assert [r["stage"] for r in perf] == ["prepare", "generate", "store", "apply"]
     assert {r["model"] for r in perf} == {"fake-1"}

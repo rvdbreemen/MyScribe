@@ -34,6 +34,19 @@
   else swallows the key. Opting in rather than out is the point: the
   speaker-hint inputs were missed by the first attempt at this precisely
   because opting out has to be remembered.
+
+  The link field previews on `input changed`, not on `change` (TASK-021).
+  The preview swap now holds the user's selection - a feed's episodes with
+  their ticks and the filter text - and `change` fires on blur, which is
+  the first click into that list: the field would re-probe and the swap
+  would replace the list that was just being ticked. `input` fires for
+  typing, keyboard paste, context-menu paste and drop, and `changed` dedupes
+  them (measured on the vendored htmx 2.0.10: one request in every path,
+  none on blur). hx-sync on the field pairs with the same on the panel's
+  patient retry: a keystroke aborts a listing in flight and the new link
+  previews. The row button hides while a list is showing (app.css), and the
+  route it posts to honours the ticks, so Enter from this field or from the
+  cookies field is harmless with a list on screen.
 #}
 {% import "_macros.html" as m %}
 <form class="transcribe" data-enter-scope method="post" action="/transcribe/upload" enctype="multipart/form-data"
@@ -77,9 +90,9 @@
 
     <div class="panel" data-panel="url">
       <div class="pick-url" data-submit-row>
-        <input type="url" name="url" placeholder="https://…" aria-label="Link to a video or podcast" autocomplete="off" spellcheck="false"
+        <input type="url" name="url" placeholder="https://… a video, a podcast feed or a channel" aria-label="Link to a video, a podcast feed or a channel" autocomplete="off" spellcheck="false"
                hx-post="/transcribe/url/preview" hx-target="#url-preview" hx-swap="outerHTML"
-               hx-params="url" hx-trigger="change, keyup changed delay:800ms">
+               hx-params="url" hx-trigger="input changed delay:800ms" hx-sync="closest [data-panel]:replace">
         <button type="submit" data-url-submit formaction="/transcribe/url" hx-post="/transcribe/url" hx-params="not files">Fetch and transcribe</button>
       </div>
       <div id="url-preview" class="url-preview"></div>

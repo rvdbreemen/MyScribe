@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 14
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -276,10 +276,184 @@ _SCHEMA_V9 = """
 ALTER TABLE word ADD COLUMN text_edited_by_user INTEGER NOT NULL DEFAULT 0;
 """
 
+# v10 (TASK-021, the feed import): where a recording came from, when it came
+# over the network. `source_url` is the fetched URL without its fragment;
+# `source_id` is yt-dlp's extractor-scoped id (`Youtube:<id>`, `Generic:<guid>`
+# for a feed item). Both nullable: an upload, a path, a recording and a watch
+# folder know no source, and every row from before v10 has none - the truth
+# about all of them, and the dedupe path fills a NULL in when the same bytes
+# arrive again through a feed. Read only by the transcribe dialog's listing,
+# to say "in library" and "queued"; never rendered as a link. No index:
+# measured 2026-09-08, the lookup costs 4-11 ms at 1k-10k rows against a
+# probe that takes seconds.
+_SCHEMA_V10 = """
+ALTER TABLE media ADD COLUMN source_url TEXT;
+ALTER TABLE media ADD COLUMN source_id TEXT;
+"""
+
+# v11 (TASK-023, content labels): what a recording is about, as a thing several
+# recordings share rather than a column one recording owns. Hence a table and a
+# link table: "show me everything about lockpicking" is then a join instead of a
+# scan over text.
+#
+# Three details carry the weight.
+#
+# `name` is UNIQUE COLLATE NOCASE because the vocabulary is only useful as a
+# filter if it does not fork. The pass hands the model the labels that exist and
+# asks it to reuse them; a model that answers "Hacking" where the library holds
+# "hacking" means the one that exists, and NOCASE is what makes the insert say
+# so instead of quietly creating a second row that splits the count.
+#
+# The link's primary key is the pair, so re-running the pass over a recording
+# cannot double what it already decided. `INSERT OR IGNORE` is then the whole
+# idempotency story.
+#
+# `source` says who decided - 'llm' or 'human' - and exists so an automatic run
+# can never overwrite a person's judgement. Without it the only way to protect a
+# hand-typed label would be to not re-run at all.
+#
+# The cascade is deliberately asymmetric: purging a recording drops its links
+# but leaves the labels, because the vocabulary goes on describing everything
+# else. A label nobody uses any more is not wrong, only unused.
+_SCHEMA_V11 = """
+CREATE TABLE label(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  created_at REAL NOT NULL);
+
+CREATE TABLE media_label(
+  media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+  label_id INTEGER NOT NULL REFERENCES label(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK(source IN ('llm', 'human')),
+  created_at REAL NOT NULL,
+  PRIMARY KEY(media_id, label_id));
+
+CREATE INDEX idx_media_label_label ON media_label(label_id);
+"""
+
+# v12 (TASK-024, speaker names applied automatically): who decided a speaker's
+# name, and what they decided it from.
+#
+# Until now a speaker_label row was just a name, and that was honest because a
+# person had typed every one of them. Once a pass writes them unattended the
+# row has to answer two more questions, and both are asked in anger rather than
+# in theory.
+#
+# "Why does this say Jeff Man?" - `llm_output_id` points at the analysis, which
+# holds the model, the prompt version, the tokens, the timestamp and the quote
+# with its [m:ss]. That is the whole accountability story, and it works because
+# tasks.py never overwrites an output row: a re-run adds one and the earlier
+# decision survives to be compared against.
+#
+# "May I overwrite this?" - `source`. An automatic pass must never quietly
+# replace a name a person chose. Existing rows default to 'human' because that
+# is what every one of them is: nothing else could have written them yet.
+#
+# ON DELETE SET NULL, not CASCADE. Losing the analysis must lose the receipt,
+# never the name - a speaker who was correctly identified does not become
+# anonymous because somebody purged an old llm_output row.
+#
+# `confidence` is what the model claimed, kept beside the name so the threshold
+# that let it through is visible afterwards. It is NOT a probability: a model
+# answering 95 is answering a question about its own certainty that nothing
+# trained it to answer well. It is stored for the audit, not for arithmetic.
+_SCHEMA_V12 = """
+ALTER TABLE speaker_label ADD COLUMN source TEXT NOT NULL DEFAULT 'human'
+  CHECK(source IN ('llm', 'human'));
+ALTER TABLE speaker_label ADD COLUMN llm_output_id INTEGER
+  REFERENCES llm_output(id) ON DELETE SET NULL;
+ALTER TABLE speaker_label ADD COLUMN confidence REAL;
+"""
+
+# v13 (TASK-026, the cleaned reading): a second way to read a transcript,
+# beside the words rather than instead of them.
+#
+# ADR-003 makes words canonical and every grouping derived at render time. A
+# cleaned transcript is a grouping in that sense - the same recording, read
+# differently - so it lives here and the words are never touched. That choice
+# is what makes Robert's undo free: refusing a bad cleaning means not writing
+# this row, and nothing has to be put back.
+#
+# Keyed by run, one reading each, because a cleaning is about the words a
+# particular run produced. Re-transcribing gives a new run and the old
+# reading stays with the old words, which is the truth about both.
+# ON DELETE CASCADE: a reading of words that no longer exist is not history,
+# it is a claim about a transcript nobody can check.
+#
+# `llm_output_id` is the receipt - which answer this text came from, with its
+# model and prompt version - and SET NULL for the reason speaker_label uses:
+# losing the receipt must not delete the reading. `words_in` and `words_out`
+# are what the gate measured, kept so a reader can see how much shorter this
+# is without counting, and so a refusal and an acceptance are recorded in the
+# same units.
+_SCHEMA_V13 = """
+CREATE TABLE clean_reading(
+  run_id INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  llm_output_id INTEGER REFERENCES llm_output(id) ON DELETE SET NULL,
+  words_in INTEGER NOT NULL,
+  words_out INTEGER NOT NULL,
+  created_at REAL NOT NULL);
+"""
+
+# v14 (TASK-025, feeds as subscriptions): a feed you started with stays
+# watched. ADR-008 revised, 2026-09-09.
+#
+# One row per source URL. `url` is UNIQUE because a second row for the same
+# feed would poll it twice and race itself into queueing every new episode
+# twice - the one mistake this table must make impossible.
+#
+# `checked_at` is the whole scheduling mechanism. Due-ness is compared against
+# it rather than counted down in a sleeping thread, because this is a desktop
+# app that is off more than it is on: a laptop closed for a week must come back
+# and find everything overdue, and a restart must lose nothing. "Check daily"
+# and "check at startup" are then the same code rather than two mechanisms
+# that can disagree.
+#
+# `paused` is the per-feed switch, and `failures` with `last_result` are what
+# the Feeds page shows: a feed whose probe keeps failing has to say so rather
+# than going quiet, which is how a subscription becomes a surprise.
+#
+# `feed_seen` is how subscribing imports no back catalogue. The episodes on a
+# feed the day you subscribe are recorded as seen and never queued; only what
+# appears afterwards is new. Without it, following The Daily would queue its
+# 2970 episodes at once, which is the opposite of what subscribing means.
+#
+# It holds source ids rather than URLs because that is what identifies an
+# episode across a CDN move (v10), and it is a second line of defence rather
+# than the only one: `known_sources` still asks the library and the live jobs,
+# so an episode already downloaded is not queued twice even if this table
+# somehow lost it.
+#
+# No cascade to media. A recording keeps its own provenance in media.source_url
+# and media.source_id (v10), so unsubscribing from a feed does not disown the
+# episodes it brought in - they are still yours, and still say where they came
+# from.
+_SCHEMA_V14 = """
+CREATE TABLE feed(
+  id INTEGER PRIMARY KEY,
+  url TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL DEFAULT '',
+  interval_seconds INTEGER NOT NULL DEFAULT 86400,
+  checked_at REAL,
+  last_result TEXT NOT NULL DEFAULT '',
+  failures INTEGER NOT NULL DEFAULT 0,
+  paused INTEGER NOT NULL DEFAULT 0,
+  folder_id INTEGER REFERENCES folder(id) ON DELETE SET NULL,
+  created_at REAL NOT NULL);
+
+CREATE INDEX idx_feed_due ON feed(checked_at) WHERE paused = 0;
+
+CREATE TABLE feed_seen(
+  feed_id INTEGER NOT NULL REFERENCES feed(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL,
+  PRIMARY KEY(feed_id, source_id));
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
-    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9,
+    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13, _SCHEMA_V14,
 ]
 
 

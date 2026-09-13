@@ -45,6 +45,7 @@ STATIC_DIR = PACKAGE_DIR / "static"
 NAV: tuple[tuple[str, str], ...] = (
     ("Library", "/"),
     ("Jobs", "/jobs"),
+    ("Feeds", "/feeds"),
     ("Log", "/logs"),
     ("Settings", "/settings"),
 )
@@ -89,18 +90,45 @@ def asset_url(name: str) -> str:
     return f"/static/{name}?v={stamp}"
 
 
+# What a date these two cannot render becomes. Both raise on an epoch the
+# platform's C library will not take - on Windows that is every negative one,
+# measured here 2026-09-09: `time.localtime(-1)` and, a little further out,
+# `datetime.fromtimestamp(-31536000, tz=utc)` both give OSError [Errno 22].
+# Linux takes them, which is exactly why this can pass review on one machine
+# and take a page down on the other.
+#
+# App-generated epochs are never negative. A stranger's are: a feed's pubDate
+# reaches these filters through yt-dlp's `unified_timestamp`, which clamps
+# nothing, and it takes no archive to get there - epoch zero stamped with any
+# offset east of Greenwich is already below zero (`Thu, 01 Jan 1970 00:00:00
+# +0100` -> -3600). One such episode in a 50-item listing used to 500 the
+# whole panel, on the one route whose contract is that failures are content.
+#
+# So an undisplayable date renders empty, the same answer a missing one
+# already gets. The row keeps its title, its checkbox and its import.
+_UNRENDERABLE = (OSError, OverflowError, ValueError)
+
+
 def localtime(epoch: float | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
     """A unix epoch as this machine's local wall-clock time; None renders empty."""
     if not epoch:
         return ""
-    return time.strftime(fmt, time.localtime(float(epoch)))
+    try:
+        return time.strftime(fmt, time.localtime(float(epoch)))
+    except _UNRENDERABLE:
+        return ""
 
 
 def isotime(epoch: float | None) -> str:
     """A unix epoch as an ISO 8601 UTC instant, for <time datetime="...">."""
     if not epoch:
         return ""
-    return datetime.fromtimestamp(float(epoch), tz=timezone.utc).isoformat(timespec="seconds")
+    try:
+        return datetime.fromtimestamp(float(epoch), tz=timezone.utc).isoformat(
+            timespec="seconds"
+        )
+    except _UNRENDERABLE:
+        return ""
 
 
 # The filters every template may use. Media time (a position in a
@@ -156,6 +184,7 @@ def mount(app: FastAPI) -> None:
     from scribe.web import (
         ai_ui,
         exports_ui,
+        feeds_ui,
         ingest_ui,
         jobs_ui,
         library,
@@ -170,6 +199,7 @@ def mount(app: FastAPI) -> None:
     app.include_router(transcribe_dialog.router)
     app.include_router(ingest_ui.router)
     app.include_router(jobs_ui.router)
+    app.include_router(feeds_ui.router)
     app.include_router(transcript.router)
     app.include_router(exports_ui.router)
     app.include_router(ai_ui.router)

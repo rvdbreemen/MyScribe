@@ -41,6 +41,7 @@ same trade `prepare` makes, for the same reason.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Sequence
+from urllib.parse import urldefrag
 
 from scribe import jobs, media, paths
 from scribe.ingest import urls
@@ -63,6 +64,36 @@ depend on a router (ADR-001 keeps the traffic one-way)."""
 # params so the two vocabularies cannot collide and the playlist fan-out can
 # copy them through untouched.
 OPTIONS_KEY = "options"
+
+ENTRY_KEY = "entry"
+"""What the listing knew about this one item: ``{"title", "source_id"}``.
+
+Set by `_fan_out` and by the dialog's per-episode jobs; absent on a typed
+link. It exists because a feed episode fetched on its own has no name worth
+keeping - measured 2026-09-08, a bare enclosure probes as its CDN filename,
+`default.mp3_ywr3ahjkcgo_…` - and the feed is the only thing that knew what
+the episode was called. `source_id` is the extractor-scoped identity
+(`urls.source_id_for`) the next listing compares to say "in library"."""
+
+SOURCE_KEY = "source"
+"""The feed or channel an entry came from: ``{"url", "title"}``.
+
+The URL is the one the user pasted and the route checked - never the
+playlist's `webpage_url`, which is a stranger's - so that a whole-feed fetch
+and a ticked import write the same source for the same feed. The title
+stands in for the uploader when the download reports none (a feed enclosure
+never does), so "Planet Money" biases the decoder for a podcast the way a
+channel name does for a video."""
+
+FEED_KEY = "feed_id"
+"""The subscription that queued this job, when the feed watcher did.
+
+Its presence is what says nobody asked for this episode by hand, and that is
+the whole of its use: `register` transcribes a download the library already
+holds only when a person asked for it (see app.py's upload rule), the way a
+watched folder never re-queues a file it has seen. A feed that rewrote its
+guids looks new by id and known by content, and would otherwise put every
+episode it already had through the GPU a second time."""
 
 MAX_FAN_OUT = 500
 """The most entries one link may become jobs for, inclusive.
@@ -142,30 +173,50 @@ def fetch(ctx: "RunnerContext") -> None:
         paths.job_work_dir(ctx.job["id"]),
         on_progress=ctx.report,
         cookies_file=cookies_file,
+        title_hint=_entry_title(ctx),
     )
 
 
 def register(ctx: "RunnerContext") -> None:
-    """Take what fetch found into the library, and queue the work on it."""
+    """Take what fetch found into the library, and queue the work on it.
+
+    The listing's word wins over the download's where the two disagree: the
+    title, because a feed names its episodes and a CDN names its files
+    (YouTube says the same thing both ways); the uploader only as a fallback,
+    because a video from a channel listing still knows its channel and an
+    enclosure knows nothing. The provenance written here is what the dialog's
+    next listing compares - the fetched URL without its fragment, and the
+    listing's id when it had one. Content the library already holds is
+    transcribed again only when a person asked for it (`FEED_KEY`).
+    """
     playlist = ctx.state.get("playlist")
     if playlist is not None:
         _fan_out(ctx, playlist)
         return
 
     downloaded: urls.DownloadedMedia = ctx.state["downloaded"]
+    url = _url(ctx)
+    entry = _entry(ctx)
+    source = ctx.params.get(SOURCE_KEY) or {}
+    title = _entry_title(ctx) or downloaded.title
     row = media.ingest_path(
         ctx.conn,
         downloaded.path,
-        title=downloaded.title or None,
+        title=title or None,
         folder_id=ctx.params.get("folder_id"),
+        source_url=urldefrag(url).url,
+        source_id=_source_id(entry, downloaded.info),
     )
-    terms = urls.hotword_terms(downloaded.info)
-    queued = jobs.enqueue(
-        ctx.conn,
-        TRANSCRIBE_JOB_TYPE,
-        media_id=row["id"],
-        params=transcribe_params(ctx.params, terms),
-    )
+    uploader = downloaded.uploader or str(source.get("title") or "")
+    terms = urls.hotword_terms({**downloaded.info, "title": title, "uploader": uploader})
+    queued = None
+    if not (row.get("deduped") and ctx.params.get(FEED_KEY)):
+        queued = jobs.enqueue(
+            ctx.conn,
+            TRANSCRIBE_JOB_TYPE,
+            media_id=row["id"],
+            params=transcribe_params(ctx.params, terms),
+        )
 
     jobs.emit(
         ctx.conn,
@@ -183,8 +234,36 @@ def register(ctx: "RunnerContext") -> None:
     ctx.report(1.0)
 
 
+def _entry(ctx: "RunnerContext") -> dict:
+    """The listing's ``{title, source_id}`` for this job, or an empty dict."""
+    entry = ctx.params.get(ENTRY_KEY)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _entry_title(ctx: "RunnerContext") -> str:
+    return str(_entry(ctx).get("title") or "").strip()
+
+
+def _source_id(entry: dict, info: dict) -> str | None:
+    """The listing's id when it had one; else the download's, unless it is the
+    generic extractor's, whose id for a bare file is the file's name - which
+    would mark the wrong episode as known."""
+    listed = entry.get("source_id")
+    if listed:
+        return str(listed)
+    key, ident = info.get("extractor_key"), info.get("id")
+    if key and ident and str(key) != "Generic":
+        return f"{key}:{ident}"
+    return None
+
+
 def _fan_out(ctx: "RunnerContext", playlist: urls.UrlInfo) -> None:
-    """One `ingest_url` job per entry, carrying this job's options forward."""
+    """One `ingest_url` job per entry, carrying this job's options forward.
+
+    Each child also gets the listing's word on its entry (`ENTRY_KEY`) and on
+    where it came from (`SOURCE_KEY`, keyed on this job's own validated URL,
+    read before the spread below replaces it with the entry's).
+    """
     if len(playlist.entries) > MAX_FAN_OUT:
         raise urls.TooManyEntries(
             f"{playlist.title or 'that link'} holds {len(playlist.entries)} videos"
@@ -192,11 +271,21 @@ def _fan_out(ctx: "RunnerContext", playlist: urls.UrlInfo) -> None:
             " A channel URL usually means the whole channel; add the playlists"
             " inside it one at a time, or the videos you actually want."
         )
+    source = {"url": _url(ctx), "title": playlist.title}
     queued = [
         jobs.enqueue(
             ctx.conn,
             JOB_TYPE,
-            params={**ctx.params, "url": entry["url"], "from_playlist": True},
+            params={
+                **ctx.params,
+                "url": entry["url"],
+                "from_playlist": True,
+                ENTRY_KEY: {
+                    "title": str(entry.get("title") or ""),
+                    "source_id": entry.get("source_id"),
+                },
+                SOURCE_KEY: source,
+            },
         )
         for entry in playlist.entries
     ]

@@ -54,9 +54,9 @@ import json
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Sequence
 
 import jinja2
 from pydantic import BaseModel, BeforeValidator, ValidationError
@@ -67,7 +67,7 @@ from scribe.llm import base, chunking, ollama, openai_like, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
 """Bumped whenever a template in `prompts/` changes, because it is part of the
 stored key: answers to an edited question are not answers to the old one, and a
 panel showing both without saying so would be comparing two different things."""
@@ -172,11 +172,66 @@ class Blog(BaseModel):
     body: str
 
 
+SPEAKER_CONFIDENCE_THRESHOLD = 90.0
+"""How sure the pass must be before a name is written without being asked.
+
+Robert's number (TASK-024). Worth being honest about what it is: a model
+answering 96 is answering a question about its own certainty, and nothing
+trained it to answer that well. This is a policy dial, not a probability, and
+the real check on an applied name is the quote with its [m:ss] that the answer
+carries and `speaker_label.llm_output_id` points back to."""
+
+_WORD_CONFIDENCE = {"high": 85.0, "medium": 50.0, "low": 20.0}
+"""What the older three-word scale maps to.
+
+Every one of them lands BELOW the threshold on purpose. A model that answered
+"high" where a number was asked for has not given the evidence an automatic
+write needs, so its guess is shown and can be accepted by hand, but nothing is
+written unattended on the strength of a word. Tolerated rather than refused,
+because refusing would turn a model that answered the older way into a failed
+job while its answer is still perfectly useful to a person."""
+
+
+def _confidence(value: Any) -> float:
+    """A confidence as a number out of a hundred; anything unreadable is zero.
+
+    Zero rather than a middling default: an answer that did not say how sure it
+    was has not earned a write, and a default that could clear a threshold is
+    how a gate stops being one.
+
+    A fraction is read as a percentage. 0.96 and 96 mean the same thing to the
+    person reading them, and that must not be the difference between naming a
+    speaker and leaving them anonymous.
+    """
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            return 0.0
+        if 0.0 < number <= 1.0:
+            number *= 100.0
+        return max(0.0, min(100.0, number))
+    if isinstance(value, str):
+        text = value.strip().rstrip("%").strip()
+        word = _WORD_CONFIDENCE.get(text.lower())
+        if word is not None:
+            return word
+        try:
+            return _confidence(float(text))
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+Confidence = Annotated[float, BeforeValidator(_confidence)]
+
+
 class SpeakerGuess(BaseModel):
     cluster: str
     name: str = ""
     role: str = ""
-    confidence: str = "low"
+    confidence: Confidence = 0.0
     evidence: str = ""
     notes: str = ""
 
@@ -189,6 +244,26 @@ class Speakers(BaseModel):
 
     format: str = ""
     speakers: list[SpeakerGuess] = []
+
+
+class LabelGuess(BaseModel):
+    label: str
+    confidence: str = "low"
+    evidence: str = ""
+
+
+class Labels(BaseModel):
+    """What a recording is about, in words the library can be filtered by.
+
+    Deliberately no `new` flag for the model to set. Whether a label is one the
+    library already holds is a fact about the database, not a claim the answer
+    gets to make, and asking the model to self-report it would put the cap on
+    invented labels at the mercy of the thing being capped. `apply_labels`
+    decides reuse against the vocabulary it read, and enforces the ceiling
+    itself - the prompt asks, the code guarantees.
+    """
+
+    labels: list[LabelGuess] = []
 
 
 # --- the six kinds -----------------------------------------------------------------------
@@ -238,6 +313,33 @@ class TaskSpec:
     kind's own prompt over each chunk and the answers joined in order - for a
     task whose answer *is* the transcript, rewritten, where notes would lose
     the words."""
+    reasoning_off: bool = False
+    """Ask the model not to reason first (`ChatRequest.reasoning_off`), on
+    every call the kind makes. TASK-029's decision: on for `cleanup`, a
+    mechanical rewrite for which deepseek-v4-flash spent 22,515 reasoning
+    tokens on 837 words where 1,171 tokens without reasoning gave the same
+    cleaning. Off - the provider's default - for the rest: `speakers` and
+    `labels` wait for an A/B of their own, because they are queued without a
+    person and `speakers` writes names; the others have no recorded length
+    failure. `effort: low` is used nowhere: on media 1 it dropped the [m:ss]
+    stamps and the speaker labels."""
+    apply: Callable[[sqlite3.Connection, "TaskPlan", Any, int], dict] | None = None
+    """What to do with the answer once it is stored, for the kinds that change
+    something rather than only report.
+
+    Until TASK-024 there was no such thing: a job stored its answer and ended,
+    so `speakers` produced a mapping nobody applied and `labels` produced labels
+    nobody attached, and every kind that *did* something needed a person to
+    press a button afterwards. An artifact nobody applied was a reachable state
+    of the system, and this is what stops it being one.
+
+    Called as `(conn, plan, payload, output_id)` and returns a small report the
+    job emits. The whole plan rather than a media id, because what an answer
+    belongs to is the *run* it was made from: `speaker_label` hangs off a run,
+    and a re-transcription that landed while the analysis was in flight must
+    not have its clusters named from an answer about the previous one. It runs inside the job that produced the answer, on purpose:
+    a failure to apply then lands on the jobs board beside the analysis it came
+    from, rather than in a second job that can be cancelled or lost."""
 
 
 TASKS: dict[str, TaskSpec] = {
@@ -290,6 +392,35 @@ TASKS: dict[str, TaskSpec] = {
             "the quote and its time"
         ),
         with_speakers=True,
+        # Measured against openrouter/auto on 2026-09-10, over five Hacker
+        # History episodes: the answer itself is tiny - two or three names with
+        # a quote each - but the thinking in front of it is not, and it varies
+        # by more than a factor of ten depending on which model auto picks.
+        # 347 completion tokens on one episode, 3779 on another with the same
+        # two clusters, and two outright failures at the 4000 default:
+        # "openrouter answered with no message content (finish_reason=
+        # 'length')". A three-cluster episode was one of them.
+        #
+        # Twice the default, for the reason DEFAULT_MAX_OUTPUT_TOKENS gives:
+        # this is a cap, not a spend. A cloud provider bills what was
+        # generated, so carrying room for a model that thinks costs a model
+        # that does not exactly nothing - while the failure it prevents costs
+        # the whole call and leaves the speakers unnamed.
+        max_output_tokens=8000,
+    ),
+    "labels": TaskSpec(
+        kind="labels",
+        label="Labels",
+        template="labels",
+        schema=Labels,
+        goal=(
+            "name what this recording is about in a handful of short labels, reusing the ones "
+            "the library already has wherever they fit"
+        ),
+        # Who spoke is noise here: a label describes the subject, and a
+        # transcript carrying SPEAKER_00 in front of every line spends budget
+        # on something the answer never mentions.
+        with_speakers=False,
     ),
     "cleanup": TaskSpec(
         kind="cleanup",
@@ -302,6 +433,7 @@ TASKS: dict[str, TaskSpec] = {
         max_output_tokens=6000,
         with_speakers=True,
         combine="concat",
+        reasoning_off=True,
     ),
     "custom": TaskSpec(
         kind="custom",
@@ -391,6 +523,56 @@ no new calls. Unrecoverable, by the mechanism meant to make retries cheap.
 `combine_capacity` is that same arithmetic done in `plan_task`, where nothing
 has been spent yet. Ollama's guard stays as the backstop it should always have
 been: this one knows the plan, that one knows the wire."""
+
+CONCAT_CHUNK_TOKENS = 3000
+"""The most transcript one part of a concat kind (cleanup) is cut to, in
+estimated tokens - so that a model reasoning inside the answer cap has room.
+
+The arithmetic, derived rather than measured (two samples, scaled to the gate):
+deepseek cleaned media 1 in 1,403 tokens for a 1,557-token chunk (0.90) and
+luna media 12's first part in about 4,722 for 5,968 (0.79). Scaled to
+`CLEAN_MAX_RATIO` (1.15) a part is at most 1.04-1.07 x its chunk. A 5,999-token
+chunk - what `min(budget, cap)` planned for media 12 - then needs about 6,420
+tokens from a 6,000 cap: no room even without reasoning. A 3,000 chunk needs
+about 3,210 and leaves about 2,790 (46%) for reasoning and hidden tokens.
+Planned read-only on 2026-09-11: media 12 goes from 4 chunks (1,605-5,999) to
+7 (1,722-2,993; the tail is the short one); media 1 stays one chunk of 1,557.
+Local runs are unchanged: the 8,192 window binds first, at 1,798-1,799.
+
+Its own constant rather than a share of the cap, so a later cap change buys
+reasoning room instead of bigger chunks.
+
+Step 0 kept it. The rule it had to pass: every counted chunk ends 'stop' with
+content and spends at most half its reserve (about 1,395 tokens) reasoning;
+had luna failed, this constant and its `min()` in `plan_task` would have gone.
+Measured 2026-09-11 with `scripts/task029_headroom.py` on media 12, $0.36 in
+all. At 3,000 (7 chunks): gpt-5.6-luna on Azure without the hint ended 'stop'
+with content on 18 of 18 answered calls - 134-597 reasoning tokens on the six
+full chunks, 504-1,301 on the 1,722-token tail, at least 3,010 tokens left
+under the cap; with the hint, 19 of 19 and 0 reasoning. 5 of luna's 42 calls
+at 3,000 got OpenRouter's rate-limit envelope (HTTP 200, no usage), not a cap
+failure.
+gemini-3.5-flash-lite on Google refused the hint every time (the drop worked
+on all 21 calls here, and on the 4 at 6,000) and reported 0 reasoning: 21 of
+21 'stop', at least 2,895 left, the
+largest part 3,105 tokens for a 2,974-token chunk (1.04x, inside the band
+above). That Google holds the cap comes from a manual probe (60 completion
+tokens at max_tokens 64, 'length'), not from the script's pin check, which
+read Google's blocked answer as enforced (ADR-010, Chunks).
+
+The deciding reason is margin, not a luna failure. At 6,000 (4 chunks,
+1,605-5,999) luna finished every chunk too, hinted and not, but left only
+997-1,801 tokens on the full chunks, about a third of the room at 3,000. The
+2026-09-10 'length' on luna's later chunks did not reproduce. gemini's second
+6,000 chunk did end 'length', at 5,996 of 6,000 with 0 reasoning tokens
+reported - so, as far as its usage shows, the answer alone overran the cap:
+the case this constant exists for, seen once.
+
+What it does not show: one recording, one upstream per model (the account's
+routing filtered the others out), so nothing about an endpoint that ignores
+the cap (TASK-029's case 3). And the script's per-chunk rule cannot judge
+6,000: its reserve there, 6,000 - 1.07 x 5,999, is negative and fails at any
+reasoning, so finish and tokens left were read instead."""
 
 TRUNCATED_FINISH = "length"
 """How both provider families say "I stopped because I ran out of room".
@@ -517,18 +699,24 @@ def user_prompt(
     duration: float,
     custom_prompt: str | None = None,
     notes_from: int = 0,
+    known_labels: Sequence[str] = (),
 ) -> str:
     """The kind's own prompt over `transcript`.
 
     Used twice: over the transcript when it fits in one call, and over the
     combined notes when it did not. The task is the same either way, which is
     why there is one template rather than two that can drift.
+
+    `known_labels` is handed to every template and read by the one that asks
+    for it, the same way `prompt` is: a template that does not mention it
+    renders exactly as before.
     """
     return render_prompt(
         spec.template,
         transcript=transcript,
         source_label=source_label(title, duration, notes_from=notes_from),
         prompt=(custom_prompt or "").strip(),
+        known_labels=list(known_labels),
     )
 
 
@@ -725,6 +913,12 @@ class TaskPlan:
     budget_tokens: int
     max_output_tokens: int
     custom_prompt: str | None = None
+    known_labels: tuple[str, ...] = ()
+    """The vocabulary the library already uses, for the kinds whose prompt
+    offers it. Read once when the plan is made rather than at each call, so
+    every call in one run sees the same list - a chunked recording that grew
+    its own vocabulary halfway through would be asked to reuse labels it had
+    just invented, from a run that has not finished deciding them yet."""
     provider_supports_schema: bool = False
     note_budget: int = 0
     """The answer cap for one chunk's notes, decided here rather than in
@@ -816,10 +1010,24 @@ def plan_task(
         )
 
     if spec.combine == "concat":
-        # Each chunk comes back about as long as it went in, so a chunk may
-        # not be bigger than the answer cap; and a seam repeated in two
-        # answers would be a sentence said twice, so no overlap.
-        budget_tokens = min(budget_tokens, output_tokens)
+        # Each chunk comes back about as long as it went in, so a chunk is cut
+        # to at most CONCAT_CHUNK_TOKENS - never more than the answer cap -
+        # which leaves a model that reasons inside the cap room to do it; and a
+        # seam repeated in two answers would be a sentence said twice, so no
+        # overlap.
+        #
+        # Measured 2026-09-10: cleanup failing with finish_reason='length'
+        # against openrouter/auto is reasoning, not runaway - 22,515 reasoning
+        # tokens for a cleaning deepseek-v4-flash also gave in 1,171 with
+        # reasoning off. TASK-029's rule: the kind asks for no reasoning
+        # (`TaskSpec.reasoning_off`); a model that ignores that either finishes
+        # each chunk inside its cap, or ends 'length' and is refused before
+        # anything is stored (`_refuse_a_cut_off_part`); and on an endpoint that
+        # does not enforce the cap only the hint bounds it, which each row
+        # records (`reasoning_record`). The one true runaway (168 words in,
+        # 5,742 out) was a transcript that is itself a 112-word "La, la" loop;
+        # the cleaning gate refuses that kind.
+        budget_tokens = min(budget_tokens, output_tokens, CONCAT_CHUNK_TOKENS)
         overlap_segments = 0
     chunks = chunking.plan(
         doc,
@@ -855,6 +1063,7 @@ def plan_task(
         budget_tokens=budget_tokens,
         max_output_tokens=output_tokens,
         custom_prompt=(custom_prompt or "").strip() or None,
+        known_labels=vocabulary(conn) if spec.kind == "labels" else (),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
         note_budget=note_budget,
     )
@@ -1039,8 +1248,8 @@ def _insert_output(
         return int(cur.lastrowid)
 
 
-def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, index: int) -> dict | None:
-    """The stored answer for chunk `index` of this exact task, if there is one.
+def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, chunk: Chunk) -> dict | None:
+    """The stored answer for `chunk` of this exact task, if there is one.
 
     The whole key matters. The run is in it because the chunk boundaries are a
     property of the segments, so an answer about chunk 3 of a previous
@@ -1049,6 +1258,18 @@ def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, index: int) -> dict |
     another; and for `custom` the question is in it (inside the kind, via
     `chunk_kind`) because notes taken for one question are not notes about a
     different one.
+
+    **And the segments.** Within one run the boundaries still move when the
+    chunk budget does, so the newest row under the key is reused only when its
+    `segment_ids` are this chunk's; otherwise the chunk is asked again. A row
+    that does not name its segments cannot prove it covers these, and is asked
+    again too. The receipt is row 14: media 12's cleanup part 0, made on
+    6,000-token chunks, covers 184 segments. Reused by its index under
+    3,000-token chunks it would stand in for a shorter stretch, the next part
+    would repeat what lies between, and the gate would refuse media 12 on every
+    run. Only the newest row is looked at. An older row with the same segments
+    would be a correct reuse too; not looking for it costs one call after the
+    budget has moved twice, and keeps this one query.
 
     **The job id is deliberately not in it, and that has a consequence worth
     stating**: resuming an interrupted task and deliberately re-running a
@@ -1063,19 +1284,64 @@ def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, index: int) -> dict |
     """
     with db.LOCK:
         row = conn.execute(
-            "SELECT id, content FROM llm_output"
+            "SELECT id, content, params_json FROM llm_output"
             " WHERE media_id=? AND run_id IS ? AND kind=? AND provider=? AND model=?"
             "   AND prompt_version=? ORDER BY id DESC LIMIT 1",
             (
                 plan.media_id,
                 plan.run_id,
-                chunk_kind(plan.kind, index, plan.note_question),
+                chunk_kind(plan.kind, chunk.index, plan.note_question),
                 plan.provider_name,
                 plan.model,
                 PROMPT_VERSION,
             ),
         ).fetchone()
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    try:
+        params = json.loads(row["params_json"] or "{}")
+    except ValueError:
+        return None
+    if not isinstance(params, dict) or params.get("segment_ids") != list(chunk.segment_ids):
+        return None
+    return {"id": row["id"], "content": row["content"]}
+
+
+def reasoning_record(response: ChatResponse, cap: int) -> dict[str, Any]:
+    """What one call's reasoning cost, and what can honestly be said about it.
+
+    Rows 6, 17 and 19 spent 5,651, 12,767 and 21,401 tokens against caps of
+    4,000 and 8,000 and came back 'stop', and nothing on them said the cap had
+    not held or that reasoning was why. So every row now carries the four
+    reported numbers - `hint_sent`, `reasoning_tokens`, `reasoning_chars`,
+    `upstream`, each None when unreported - and two flags derived from them:
+
+    * `hint_ignored` - the hint went on the wire (`hint_sent` True) and the
+      model reasoned anyway. Judged only when a count came back: reasoning
+      tokens from a cloud provider, thinking characters from Ollama. A dropped
+      hint (`hint_sent` False) is not an ignored one, and stays None.
+    * `cap_not_enforced` - more completion tokens came back than `cap` allowed,
+      so the endpoint did not hold the line, and only the hint bounded the
+      spend. None when no count came back.
+
+    `cap` is the cap *this call* was asked with: the note budget for a note,
+    the kind's answer cap for everything else. No schema change: `params_json`
+    is only ever read by key.
+    """
+    spent = (
+        response.reasoning_tokens
+        if response.reasoning_tokens is not None
+        else response.reasoning_chars
+    )
+    completion = response.completion_tokens
+    return {
+        "hint_sent": response.hint_sent,
+        "reasoning_tokens": response.reasoning_tokens,
+        "reasoning_chars": response.reasoning_chars,
+        "upstream": response.upstream,
+        "hint_ignored": spent > 0 if response.hint_sent is True and spent is not None else None,
+        "cap_not_enforced": completion > cap if completion is not None else None,
+    }
 
 
 def store_output(conn: sqlite3.Connection, plan: TaskPlan, result: TaskResult) -> int:
@@ -1085,7 +1351,9 @@ def store_output(conn: sqlite3.Connection, plan: TaskPlan, result: TaskResult) -
     is a key: the resume above reads it, and a provider answering with a dated
     snapshot id (`gpt-4o-mini-2024-07-18`) would otherwise split one key into
     one per snapshot. What actually served the request is provenance and goes
-    into `params_json` next to it.
+    into `params_json` next to it - and so does what its reasoning cost
+    (`reasoning_record`). A joined concat row carries None there: it was no
+    single call, and its parts' rows hold the numbers.
     """
     params: dict[str, Any] = {
         "chunks": len(plan.chunks),
@@ -1094,6 +1362,7 @@ def store_output(conn: sqlite3.Connection, plan: TaskPlan, result: TaskResult) -
         "served_model": result.response.model,
         "finish_reason": result.response.raw_finish_reason,
         "calls": result.calls,
+        **reasoning_record(result.response, plan.max_output_tokens),
     }
     if result.chunk_output_ids:
         params["chunk_output_ids"] = list(result.chunk_output_ids)
@@ -1145,6 +1414,9 @@ def _ask(
     `llm.chat` and not a provider directly: the pin, the registry and the retry
     policy all live behind it, and a caller that goes around it goes around all
     three.
+
+    The kind's reasoning hint rides on every call made here - a note, a part,
+    a single answer, a combine - so no call of a hinted kind goes out without it.
     """
     request = ChatRequest(
         system=system,
@@ -1152,6 +1424,7 @@ def _ask(
         model=plan.model,
         max_output_tokens=max_output_tokens,
         json_schema=json_schema,
+        reasoning_off=plan.spec.reasoning_off,
     )
     return llm.chat(
         conn,
@@ -1201,12 +1474,21 @@ def generate(
                 title=plan.title,
                 duration=plan.duration,
                 custom_prompt=plan.custom_prompt,
+                known_labels=plan.known_labels,
             ),
             max_output_tokens=plan.max_output_tokens,
             json_schema=schema,
             **provider_kwargs,
         )
         step()
+        if plan.spec.combine == "concat":
+            # The same refusal `_collect_parts` makes, for the recording short
+            # enough to be one part. Row 15 (2026-09-11) is why: media 7's
+            # cleanup came back at 12,000 of 12,000 tokens, finish 'length',
+            # and was stored as the cleaning. `custom` is left as it was - its
+            # row is stored and the panel says it was cut off - and a schema
+            # kind's cut-off object already fails `repair_json`.
+            _refuse_a_cut_off_part(plan, plan.chunks[0], response)
         payload = parse_answer(plan.spec, response.text)
         return TaskResult(
             content=content_for(plan.spec, payload),
@@ -1245,6 +1527,7 @@ def generate(
         duration=plan.duration,
         custom_prompt=plan.custom_prompt,
         notes_from=len(notes),
+        known_labels=plan.known_labels,
     )
     response = _ask(
         conn,
@@ -1289,7 +1572,7 @@ def _collect_notes(
     calls = 0
 
     for chunk in plan.chunks:
-        existing = stored_chunk(conn, plan, chunk.index)
+        existing = stored_chunk(conn, plan, chunk)
         if existing is not None:
             notes.append(existing["content"])
             chunk_ids.append(existing["id"])
@@ -1331,7 +1614,7 @@ def _collect_notes(
             raise base.BadResponse(
                 f"the model ran out of room writing its notes for chunk {chunk.index} of the "
                 f"{plan.kind!r} task {where}: it stopped at the {note_budget}-token cap "
-                f"(finish_reason={response.raw_finish_reason!r}) rather than finishing, so the "
+                f"({_spent(response)}) rather than finishing, so the "
                 "notes are cut off mid-sentence and have not been stored. What it managed: "
                 + clip(text)
             )
@@ -1358,6 +1641,8 @@ def _collect_notes(
                     # one nobody looks at again, which is exactly why it needs
                     # to say how the model stopped.
                     "finish_reason": response.raw_finish_reason,
+                    # Judged against the note budget this call was asked with.
+                    **reasoning_record(response, note_budget),
                 },
             )
         )
@@ -1383,7 +1668,7 @@ def _collect_parts(
     chunk_ids: list[int] = []
     calls = 0
     for chunk in plan.chunks:
-        existing = stored_chunk(conn, plan, chunk.index)
+        existing = stored_chunk(conn, plan, chunk)
         if existing is not None:
             parts.append(existing["content"])
             chunk_ids.append(existing["id"])
@@ -1411,13 +1696,7 @@ def _collect_parts(
             raise base.BadResponse(
                 f"the model returned nothing for chunk {chunk.index} of the {plan.kind!r} task {where}"
             )
-        if response.raw_finish_reason == TRUNCATED_FINISH:
-            raise base.BadResponse(
-                f"the model ran out of room on chunk {chunk.index} of the {plan.kind!r} task "
-                f"{where}: it stopped at the {plan.max_output_tokens}-token cap rather than "
-                "finishing, so the part is cut off and has not been stored. What it managed: "
-                + clip(text)
-            )
+        _refuse_a_cut_off_part(plan, chunk, response)
         chunk_ids.append(
             _insert_output(
                 conn,
@@ -1438,12 +1717,56 @@ def _collect_parts(
                     "oversized": chunk.oversized,
                     "served_model": response.model,
                     "finish_reason": response.raw_finish_reason,
+                    **reasoning_record(response, plan.max_output_tokens),
                 },
             )
         )
         parts.append(text)
         step()
     return parts, chunk_ids, calls
+
+
+def _refuse_a_cut_off_part(plan: TaskPlan, chunk: Chunk, response: ChatResponse) -> None:
+    """Refuse, before it is stored, a concat answer that stopped at its cap.
+
+    A concat kind's answer is a stretch of the transcript rewritten, so one
+    that ran out of room has lost its tail without a word, and a stored part is
+    reused by every later run. One helper for both places a part is asked for -
+    each chunk in `_collect_parts`, and `generate`'s single call when the
+    recording is one chunk - so the two cannot drift into different rules.
+
+    The message carries what the row would have (`reasoning_record`'s
+    numbers, and the hint in words), because a refused part writes no row and
+    this error is then the jobs board's only record of the call. Measured
+    2026-09-11: openai/gpt-5-mini spent 5,632 of its 6,000 tokens reasoning,
+    upstream Azure, after the hint was refused - and the board said only the
+    cap and 'length', which cannot tell a reasoner from a runaway.
+    """
+    if response.raw_finish_reason != TRUNCATED_FINISH:
+        return
+    where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
+    raise base.BadResponse(
+        f"the model ran out of room on chunk {chunk.index} of the {plan.kind!r} task "
+        f"{where}: it stopped at the {plan.max_output_tokens}-token cap "
+        f"({_spent(response)}) rather than finishing, so the part "
+        "is cut off and has not been stored. What it managed: " + clip(response.text or "")
+    )
+
+
+def _spent(response: ChatResponse) -> str:
+    """What a call spent, in the words a refusal quotes.
+
+    The fields `reasoning_record` would have written to the row, because the
+    two refusals that use this - a cut-off part and a cut-off note - write no
+    row, and their error is then the jobs board's only record of the call.
+    """
+    return (
+        f"finish_reason={response.raw_finish_reason!r}, "
+        f"completion_tokens={response.completion_tokens}, "
+        f"reasoning_tokens={response.reasoning_tokens}, "
+        f"reasoning_chars={response.reasoning_chars}, upstream={response.upstream!r}, "
+        f"{base.hint_words(response.hint_sent)}"
+    )
 
 
 def run_task(
@@ -1461,11 +1784,17 @@ def run_task(
     budget_tokens: int | None = None,
     **provider_kwargs: Any,
 ) -> int:
-    """Plan, call, store; returns the new `llm_output.id`.
+    """Plan, call, store, apply; returns the new `llm_output.id`.
 
-    The three steps are separate functions because the `llm` job runs them as
-    three stages, and one composed function is the only way the job and a
-    direct caller cannot drift apart.
+    The steps are separate functions because the `llm` job runs them as
+    stages, and one composed function is the only way the job and a direct
+    caller cannot drift apart.
+
+    The apply step is here for that reason and no other. It has no production
+    callers - every real request goes through the job - so this function exists
+    to be the same thing the job is. A version of it that stopped at `store`
+    would quietly make every test that uses it a test of three quarters of the
+    pipeline, and the quarter it skipped is the one that changes the library.
     """
     plan = plan_task(
         conn,
@@ -1480,4 +1809,521 @@ def run_task(
         budget_tokens=budget_tokens,
     )
     result = generate(conn, plan, on_progress=on_progress, **provider_kwargs)
-    return store_output(conn, plan, result)
+    output_id = store_output(conn, plan, result)
+    if plan.spec.apply is not None:
+        plan.spec.apply(conn, plan, result.payload, output_id)
+    return output_id
+
+
+# --- the labels a recording carries ------------------------------------------------------
+
+MAX_NEW_LABELS = 3
+"""How many labels one pass may add once the vocabulary is established.
+
+The prompt asks the model to reuse what exists; this is what makes it true.
+A prompt rule is a request and a code rule is a guarantee, and the thing being
+capped is exactly the thing that would be doing the self-reporting - so the
+model is never asked whether a label is new. `apply_labels` decides that
+against the vocabulary it read, and stops at the allowance.
+
+Three because the failure it prevents is one-sided: a recording that gets one
+label too few is found by its other labels and by full-text search, while a
+vocabulary that grows a label per recording stops being a filter at all - fifty
+episodes of one podcast would end in "hacking", "hackers", "hacker culture",
+"hacker history" and nothing to click on."""
+
+MAX_NEW_LABELS_COLD = 6
+"""The allowance while the library is still learning its own words.
+
+Measured on the first real run, 2026-09-10: an episode answered into an *empty*
+library with six labels that were all good, and a flat cap of three dropped
+"incident response" and "computer forensics" for want of room they were not
+competing for. Nothing can be reused when there is nothing to reuse, so a cap
+there does not prevent fragmentation - it only loses what the pass found. The
+next episode, with three labels to work from, reused two and invented three,
+and dropped nothing.
+
+Six rather than unlimited because a cold library is exactly where a talkative
+model would do the most damage: every label it invents becomes the vocabulary
+the next recording is asked to reuse."""
+
+VOCABULARY_ESTABLISHED = 20
+"""Where "still learning" ends and "has words of its own" begins.
+
+A judgement, not a measurement, and the reasoning is worth more than the
+number: the risk the cap exists for is a subject arriving under four
+spellings, and that risk needs something to fragment *against*. Two episodes
+of one podcast produced six distinct labels here, so twenty leaves room for a
+second and third source to establish their own words before the cap tightens.
+Moving it is one constant and breaks nothing."""
+
+
+def new_label_allowance(known: int) -> int:
+    """How many new labels a pass may add, given how many the library has."""
+    return MAX_NEW_LABELS if known >= VOCABULARY_ESTABLISHED else MAX_NEW_LABELS_COLD
+
+MAX_LABEL_LENGTH = 40
+"""A label is a subject, not a sentence. Longer than this is the model
+answering the wrong question, and a sidebar cannot show it anyway."""
+
+
+def vocabulary(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Every label the library already uses, most-used first.
+
+    Ordered by use because it is handed to a model with a budget: when the list
+    ever grows past what a prompt should carry, the labels that earn their place
+    are the ones that already describe the most recordings.
+    """
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT l.name AS name, COUNT(ml.media_id) AS uses"
+            " FROM label l LEFT JOIN media_label ml ON ml.label_id = l.id"
+            " GROUP BY l.id, l.name ORDER BY uses DESC, l.name"
+        ).fetchall()
+    return tuple(str(row["name"]) for row in rows)
+
+
+def _clean_label(raw: Any) -> str:
+    """One label as it should be stored, or "" when it is not one at all."""
+    text = " ".join(str(raw or "").split())
+    text = text.strip().strip(".,;:!?").strip()
+    return text[:MAX_LABEL_LENGTH].strip()
+
+
+def apply_labels(
+    conn: sqlite3.Connection,
+    media_id: int,
+    payload: Any,
+    *,
+    now: float | None = None,
+) -> dict[str, list[str]]:
+    """Write a labels answer onto a recording, and say what it did.
+
+    Reuse is free and invention is capped: a label that matches one the library
+    already holds - case-insensitively, because "Hacking" and "hacking" are the
+    same subject - lands on the existing row however many there are, while a
+    label nobody has used before is taken only while under `MAX_NEW_LABELS`.
+
+    Nothing here overwrites: the link is written `INSERT OR IGNORE`, so a pair
+    that exists already keeps the `source` it has. That is the whole mechanism
+    protecting a label a person typed from a later automatic run - the row a
+    human made simply survives, and this function never needs to know which
+    rows those are.
+
+    Returns the three lists a caller wants to report: what was reused, what was
+    created, and what was dropped for want of room.
+    """
+    stamp = time.time() if now is None else now
+    known = {name.casefold(): name for name in vocabulary(conn)}
+    allowance = new_label_allowance(len(known))
+
+    reused: list[str] = []
+    created: list[str] = []
+    dropped: list[str] = []
+    seen: set[str] = set()
+
+    guesses = getattr(payload, "labels", None) or []
+    for guess in guesses:
+        name = _clean_label(getattr(guess, "label", None) or (guess or {}).get("label"))
+        if not name or name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        if name.casefold() in known:
+            reused.append(known[name.casefold()])
+        elif len(created) < allowance:
+            created.append(name)
+        else:
+            dropped.append(name)
+
+    with db.LOCK:
+        for name in created:
+            conn.execute(
+                "INSERT OR IGNORE INTO label(name, created_at) VALUES (?, ?)", (name, stamp)
+            )
+        for name in reused + created:
+            conn.execute(
+                "INSERT OR IGNORE INTO media_label(media_id, label_id, source, created_at)"
+                " SELECT ?, id, 'llm', ? FROM label WHERE name = ? COLLATE NOCASE",
+                (media_id, stamp, name),
+            )
+        conn.commit()
+
+    return {"reused": reused, "created": created, "dropped": dropped}
+
+
+def _apply_labels(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> dict:
+    """The `labels` kind's apply hook. `output_id` is unused here: which
+    analysis chose a label is not recorded on the link today, unlike a speaker
+    name, because a label is a word several passes may reach independently
+    while a name is one decision about one person."""
+    return apply_labels(conn, plan.media_id, payload)
+
+
+def labels_for(conn: sqlite3.Connection, media_id: int) -> list[dict]:
+    """The labels on one recording, with who decided each."""
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT l.name AS name, ml.source AS source FROM media_label ml"
+            " JOIN label l ON l.id = ml.label_id WHERE ml.media_id = ?"
+            " ORDER BY l.name",
+            (media_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+# The apply hooks, attached here rather than in the TASKS literal because the
+# functions they name are defined below it. `dataclasses.replace` keeps the
+# spec frozen: the entry is swapped for a new one, never mutated.
+TASKS["labels"] = replace(TASKS["labels"], apply=_apply_labels)
+
+
+# --- naming the speakers ------------------------------------------------------------------
+
+
+# The role words prompts/speakers.md offers for `name` when the transcript
+# gives no name, and the placeholders a model reaches for instead; with an
+# article or a number they are still a role ("The host", "Guest 2").
+ROLE_WORDS = frozenset({
+    "host", "cohost", "guest", "expert", "other", "speaker", "unknown",
+    "interviewer", "interviewee", "moderator", "presenter", "narrator",
+    "the", "a", "an",
+})
+
+
+def is_role_word(name: str) -> bool:
+    """True when `name` says what somebody is, not who: every word of it, case,
+    hyphens and numbers aside, is in ROLE_WORDS."""
+    words = re.sub(r"[^a-z\s]", "", name.casefold().replace("-", "")).split()
+    return bool(words) and all(word in ROLE_WORDS for word in words)
+
+
+def apply_speakers(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> dict:
+    """Write the confident names onto the run the analysis was made from.
+
+    Three rules, and each of them is the answer to a way this could go wrong.
+
+    **Only above the threshold.** A cluster the model was not sure about keeps
+    its "Speaker 2" and stays a suggestion the panel offers. The bar is
+    exclusive: 90 does not clear 90, because a number chosen as the bar should
+    not also be the first value that passes it.
+
+    **Never over a person.** A row whose source is 'human' is left exactly as
+    it is, however sure the model claims to be. This is the rule that makes
+    running the pass unattended safe: the worst it can do to a name somebody
+    typed is nothing. The write itself says so too, so a rename the web
+    process commits after the human rows were read still stands.
+
+    **A role is not a name.** "Guest" replaces "Speaker 2" with something no
+    more informative and harder to spot as a default, so a guess with no actual
+    name is skipped whatever its confidence - an empty name, or a role word in
+    the name field, which is where the prompt asks for one (`is_role_word`).
+    Since a re-transcription asks again (TASK-037), this is also what keeps
+    "Host" off a cluster that inherited "Arthur".
+
+    Every row written records `llm_output_id` and the confidence, so a name can
+    be traced back to the analysis that chose it and the quote that analysis
+    rested on. That trace is the real safeguard here - a model's confidence is
+    a claim about itself, not a probability.
+    """
+    run_id = plan.run_id
+    guesses = getattr(payload, "speakers", None) or []
+
+    with db.LOCK:
+        human = {
+            str(row["cluster_label"])
+            for row in conn.execute(
+                "SELECT cluster_label FROM speaker_label WHERE run_id=? AND source='human'",
+                (run_id,),
+            )
+        }
+
+        named: list[str] = []
+        left: list[str] = []
+        for guess in guesses:
+            cluster = str(getattr(guess, "cluster", "") or "").strip()
+            name = " ".join(str(getattr(guess, "name", "") or "").split())
+            confidence = float(getattr(guess, "confidence", 0.0) or 0.0)
+            if not cluster:
+                continue
+            if cluster in human:
+                left.append(cluster)
+                continue
+            if not name or is_role_word(name) or confidence <= SPEAKER_CONFIDENCE_THRESHOLD:
+                left.append(cluster)
+                continue
+            written = conn.execute(
+                "INSERT INTO speaker_label(run_id, cluster_label, display_name, source,"
+                " llm_output_id, confidence) VALUES (?, ?, ?, 'llm', ?, ?)"
+                " ON CONFLICT(run_id, cluster_label) DO UPDATE SET"
+                " display_name=excluded.display_name, source='llm',"
+                " llm_output_id=excluded.llm_output_id, confidence=excluded.confidence"
+                " WHERE speaker_label.source <> 'human'",
+                (run_id, cluster, name[:library_max_name()], output_id, confidence),
+            ).rowcount
+            (named if written else left).append(cluster)
+        conn.commit()
+
+    return {"named": named, "left": left, "threshold": SPEAKER_CONFIDENCE_THRESHOLD}
+
+
+def library_max_name() -> int:
+    """The cap a display name shares with every other name in this app.
+
+    Imported lazily and through a function: `scribe.web.library` imports this
+    module's siblings, and a top-level import here would be a cycle for the
+    sake of one integer.
+    """
+    from scribe.web import library
+
+    return int(library.MAX_NAME)
+
+
+TASKS["speakers"] = replace(TASKS["speakers"], apply=apply_speakers)
+
+
+# --- the cleaning gate --------------------------------------------------------------------
+
+CLEAN_MIN_RATIO = 0.55
+"""How short a cleaned reading may be, as a share of the words that went in.
+
+Robert's rule: a clean version stays as close to the original as it can and
+must not collapse in length; when it does, the cleaning is undone.
+
+This number is ARGUED, not measured, and the honest reason is written here
+rather than implied. The plan was to measure it - run cleanup over real
+episodes, take the ratio of answers a person judged good, put the floor under
+the worst of them. That measurement could not be taken on 2026-09-10: nothing
+produced an honest cleaning to measure. openrouter/auto died twice on
+finish_reason='length'; ollama qwen3.5:9b twice spent its entire answer budget,
+21-24k characters for inputs of 837 and 168 words. Clean transcripts, two
+providers, three models.
+
+So the number comes from what the two failures cost instead. Honest cleaning
+deletes real words - filler, repetition, false starts, restarts - and on spoken
+English that is commonly a fifth of them and can be more in a rambling stretch.
+A summary of the same material is a different order of magnitude: a tenth, a
+twentieth. 0.55 sits in the gap with room on both sides. It forgives a cleaner
+that removed nearly half of what was said, and refuses anything that kept less
+than half, which no cleaning does and every summary does.
+
+Replace it the day there is a measurement, and cite the run here."""
+
+CLEAN_MAX_RATIO = 1.15
+"""How long a cleaned reading may be, for the same reason in the other
+direction: a rewrite that comes back longer than what went in did not clean, it
+invented. Punctuation and a spelled-out contraction cost a few words; a
+sixth more is already somebody writing rather than tidying.
+
+Not hypothetical. The runaway measured here failed on this side - a
+recording of 168 words came back as 5742, because its transcript was a
+112-word "La, la" loop and the model carried the loop on."""
+
+
+def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
+    """Does this cleaned reading still say what the transcript said?
+
+    Word counts, per chunk and overall. Per chunk matters because a concat task
+    joins its parts: one chunk that collapsed into a summary hides inside an
+    otherwise healthy total, and the overall ratio would pass while a page of
+    the transcript had quietly become a paragraph.
+
+    Returns a verdict with its numbers, so a refusal can say which chunk and by
+    how much rather than only that it happened.
+
+    **And whether anything was cleaned at all.** Each part records
+    `unchanged`: it came back as it went in, whitespace aside. A word count
+    cannot tell a copy from a cleaning, because a copy sits in the middle of
+    the band. A reading in which every part came back unchanged is refused:
+    nothing was cleaned, and it would publish the transcript under the name
+    of its cleaning.
+
+    What the comparison sees. Whitespace is the only difference ignored, so a
+    copy that only re-spaced its lines - a blank line between them - is still
+    a copy. The `[m:ss]` stamps and `SPEAKER_xx:` labels count as words, and
+    `cleanup.md` does not ask for whitespace: its paragraphs keep only the
+    stamp and label that start each stretch, so a regrouped answer drops the
+    ones inside it. The rule therefore catches a copy that kept every line's
+    stamp and label, and no other: a copy regrouped the way the prompt asks,
+    its words untouched, passes - a known gap. Punctuation is not ignored:
+    fixing it is the job, so a comparison blind to it would call honest work
+    a copy.
+
+    It can refuse an honest answer, in one narrow case: every line starts its
+    own stretch (a one-segment recording, or speakers alternating line by
+    line) and the text needs no fixing, so what `cleanup.md` asks for is the
+    input with blank lines added. That reading is stored and not published,
+    and the recording reads as it did before - its transcript, or an earlier
+    cleaning of the same run, since `apply_cleanup` writes `clean_reading`
+    only on a pass and a refusal leaves the older row in place.
+
+    That guards a total copy, and the live check of TASK-029 produced none;
+    the copy it did produce still publishes. Measured 2026-09-11 on a copy of
+    the library: qwen3.5:4b with think:false answered media 12's part 0 with
+    its input's counts, twice - 963 words in and out, 45 of 45 stamps, and
+    5,486 characters against the chunk's 5,442, one more for each of its 44
+    line breaks. The answers were not kept, so "a copy with blank lines
+    added" is inferred from those counts, not compared. The other ten parts
+    changed words (ratios 0.79-0.999), so not every part was a copy and the
+    reading passed, at 0.894 and 0.902, as it did before this rule. That part
+    had work to do: 43 of its 45 lines continue the speaker before them, and
+    `cleanup.md` keeps only the stamp that starts each stretch. Refusing one
+    copied part is ADR-010's open question, for Robert: it would refuse this
+    reading, and a rerun on the same provider, model and prompt version
+    reuses the stored parts, copy included (`stored_chunk` does not ask
+    whether a reading was published), so it would be refused again.
+    """
+    per_chunk = [
+        {
+            "index": i,
+            "words_in": len(a.split()),
+            "words_out": len(b.split()),
+            "ratio": len(b.split()) / len(a.split()) if a.split() else 0.0,
+            "unchanged": a.split() == b.split(),
+        }
+        for i, (a, b) in enumerate(zip(source, cleaned))
+    ]
+    total_in = sum(part["words_in"] for part in per_chunk)
+    total_out = sum(part["words_out"] for part in per_chunk)
+    overall = total_out / total_in if total_in else 0.0
+
+    reasons: list[str] = []
+    if len(source) != len(cleaned):
+        reasons.append(
+            f"the cleaning came back in {len(cleaned)} part(s) where the transcript "
+            f"was cut into {len(source)}"
+        )
+    if overall < CLEAN_MIN_RATIO:
+        reasons.append(f"the whole reading kept {overall:.0%} of the words, under {CLEAN_MIN_RATIO:.0%}")
+    if overall > CLEAN_MAX_RATIO:
+        reasons.append(f"the whole reading is {overall:.0%} of the words, over {CLEAN_MAX_RATIO:.0%}")
+    # `per_chunk and`: all() of nothing is True, and no parts is not a copy.
+    if per_chunk and all(part["unchanged"] for part in per_chunk):
+        reasons.append(
+            f"every part came back as it went in ({len(per_chunk)} of {len(per_chunk)}, "
+            "whitespace aside): nothing was cleaned"
+        )
+    for part in per_chunk:
+        if part["ratio"] < CLEAN_MIN_RATIO:
+            reasons.append(
+                f"part {part['index']} kept {part['ratio']:.0%} of its words "
+                f"({part['words_in']} -> {part['words_out']})"
+            )
+        elif part["ratio"] > CLEAN_MAX_RATIO:
+            reasons.append(
+                f"part {part['index']} is {part['ratio']:.0%} of its words "
+                f"({part['words_in']} -> {part['words_out']})"
+            )
+
+    return {
+        "ok": not reasons,
+        "overall": overall,
+        "words_in": total_in,
+        "words_out": total_out,
+        "chunks": per_chunk,
+        "reasons": reasons,
+    }
+
+
+def cleaned_parts(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> list[str]:
+    """The cleaning, in the same pieces the transcript was cut into.
+
+    A one-call cleaning is one part and it is the answer itself. A chunked one
+    was stored piece by piece as it was made - that is what makes the job
+    resumable - so the pieces are read back rather than recovered by splitting
+    the joined text, which would come apart on any part that contains a blank
+    line.
+
+    **Which pieces: the ones the final row names** (`chunk_output_ids`, in
+    chunk order), never the newest row per index. One run can hold parts from
+    several providers, models and prompt versions, and `stored_chunk` reuses a
+    part only under its own provider, model and segments - so the newest part
+    at an index can belong to somebody else. Measured 2026-09-11 on a copy of
+    the library: media 12 cleaned on the cloud (7 parts), then locally (11),
+    then on the cloud again; the last run reused its own 7 parts, the gate
+    read the newer local ones and refused a good cleaning ('part 1 kept 48%').
+    Where the other model's parts pass the gate, that read publishes them
+    under this row's id instead: the rerun test in
+    `tests/test_llm_cleaning_gate.py` is red against it.
+    Read by position in the list, not by row id: a resumed run can name an
+    old part after a new one. A missing or unreadable list yields no parts,
+    and the gate refuses the count - the safe direction.
+    """
+    if len(plan.chunks) <= 1:
+        return [str(payload)]
+    with db.LOCK:
+        final = conn.execute(
+            "SELECT params_json FROM llm_output WHERE id=?", (output_id,)
+        ).fetchone()
+        try:
+            ids = json.loads(final["params_json"] or "{}").get("chunk_output_ids") or []
+        except (TypeError, ValueError, AttributeError):
+            ids = []
+        rows = conn.execute(
+            f"SELECT id, content FROM llm_output WHERE media_id=? AND run_id=?"
+            f" AND id IN ({','.join('?' * len(ids))})",
+            (plan.media_id, plan.run_id, *ids),
+        ).fetchall() if ids else []
+    by_id = {int(row["id"]): str(row["content"]) for row in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def apply_cleanup(
+    conn: sqlite3.Connection, plan: "TaskPlan", payload: Any, output_id: int
+) -> dict:
+    """Publish the cleaned reading, or refuse it and publish nothing.
+
+    Robert's rule, and the whole reason the reading is derived rather than a
+    replacement: when a cleaning collapses in length, or pads itself out, the
+    cleaning is undone. Undoing costs nothing here because nothing was replaced
+    - the words are untouched either way, and refusing means this row is not
+    written. A recording whose cleaning was refused reads exactly as it did
+    before, and says so.
+
+    The verdict is returned whatever it decides, and the job records it, so a
+    refusal can be read afterwards with the numbers it rested on. The refused
+    answer itself is already stored: `store_output` ran before this stage, and
+    that is deliberate - "this cleaning was refused for shrinking part three to
+    22 percent" is only checkable while the thing that was refused survives.
+    """
+    parts = cleaned_parts(conn, plan, payload, output_id)
+    verdict = check_cleaning([chunk.text for chunk in plan.chunks], parts)
+
+    if not verdict["ok"]:
+        return {"published": False, **verdict}
+
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO clean_reading(run_id, text, llm_output_id, words_in, words_out,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(run_id) DO UPDATE SET text=excluded.text,"
+            " llm_output_id=excluded.llm_output_id, words_in=excluded.words_in,"
+            " words_out=excluded.words_out, created_at=excluded.created_at",
+            (
+                plan.run_id,
+                "\n\n".join(parts),
+                output_id,
+                verdict["words_in"],
+                verdict["words_out"],
+                time.time(),
+            ),
+        )
+        conn.commit()
+    return {"published": True, **verdict}
+
+
+def clean_reading(conn: sqlite3.Connection, run_id: int) -> dict | None:
+    """The cleaned reading for a run, when one was published."""
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT * FROM clean_reading WHERE run_id=?", (run_id,)
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+TASKS["cleanup"] = replace(TASKS["cleanup"], apply=apply_cleanup)

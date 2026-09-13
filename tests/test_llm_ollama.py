@@ -144,6 +144,46 @@ def test_the_posted_body_asks_for_the_context_window_and_the_budget_it_needs():
     assert body["options"]["temperature"] == 0.4
 
 
+def test_the_hint_is_think_false_and_its_absence_sends_no_think():
+    """Ollama's own spelling of "no reasoning", at the top level of the body
+    and not inside `options`. Measured 2026-09-11 on the real cleanup template:
+    qwen3.5:4b spent 6,000 of 6,000 tokens thinking and wrote nothing, and with
+    `think: false` answered a correct cleaning in 107 tokens and 1.5 s.
+
+    Absent, not `true`, when the hint is off: a model without the thinking
+    capability refuses a truthy `think`, and today's body sends no key."""
+    hinted = Recorder(chat_answer())
+    provider(hinted).complete(
+        base.ChatRequest(system="", user="hi", model="qwen3.5:4b", reasoning_off=True)
+    )
+    assert hinted.body()["think"] is False
+    assert "think" not in hinted.body()["options"]
+
+    plain = Recorder(chat_answer())
+    provider(plain).complete(REQUEST)
+    assert "think" not in plain.body()
+
+
+def test_thinking_is_reported_in_characters_never_as_a_token_count():
+    """Ollama reports one `eval_count` for thinking and answer together, so the
+    thinking is measured in the only unit the answer carries - its characters -
+    and `reasoning_tokens` stays None rather than a number nobody reported."""
+    rec = Recorder(chat_answer("Paris", thinking="abc"))
+
+    answer = provider(rec).complete(
+        base.ChatRequest(system="", user="hi", model="qwen3.5:4b", reasoning_off=True)
+    )
+
+    assert answer.reasoning_chars == 3
+    assert answer.reasoning_tokens is None
+    assert answer.hint_sent is True, "ollama never refuses think:false, so the hint went"
+    assert answer.upstream is None
+
+    unhinted = provider(Recorder(chat_answer("Paris"))).complete(REQUEST)
+    assert unhinted.reasoning_chars == 0, "no thinking field is no thinking"
+    assert unhinted.hint_sent is None, "no hint was asked for"
+
+
 def test_an_empty_system_prompt_sends_no_system_message():
     rec = Recorder(chat_answer())
     provider(rec).complete(base.ChatRequest(system="   ", user="hi", model="m"))

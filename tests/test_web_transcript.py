@@ -844,3 +844,139 @@ def test_the_panel_carries_the_inline_editor_template_and_the_correct_url(client
     body = client.get(f"/media/{media_id}").text
     assert "<template data-correct-template>" in body
     assert f'data-correct-url="/media/{media_id}/words/"' in body
+
+
+# --- who owns a name (TASK-024) ----------------------------------------------------
+
+
+def _label_row(conn, run_id, cluster):
+    return dict(
+        conn.execute(
+            "SELECT display_name, source, llm_output_id, confidence FROM speaker_label"
+            " WHERE run_id=? AND cluster_label=?",
+            (run_id, cluster),
+        ).fetchone()
+    )
+
+
+def test_renaming_a_speaker_the_model_named_takes_ownership_of_the_name(
+    client, conn, transcribed
+):
+    """The rule that makes an unattended pass safe is 'never over a human', and
+    that rule reads speaker_label.source. A rename that left the column alone
+    would hand the name a person just typed back to the next pass to overwrite,
+    because the row would still say 'llm' - whoever wrote it first.
+
+    The analysis link goes with it: 'which analysis chose this' has no honest
+    answer once somebody has typed over it.
+    """
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    with db.LOCK:
+        conn.execute(
+            "UPDATE speaker_label SET source='llm', confidence=97.0 WHERE run_id=?"
+            " AND cluster_label='SPEAKER_00'",
+            (run_id,),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO speaker_label(run_id, cluster_label, display_name,"
+            " source, confidence) VALUES (?, 'SPEAKER_00', 'Arthur', 'llm', 97.0)",
+            (run_id,),
+        )
+        conn.commit()
+
+    assert _rename(client, media_id, "SPEAKER_00", display_name="Ford").status_code == 200
+
+    row = _label_row(conn, run_id, "SPEAKER_00")
+    assert row["display_name"] == "Ford"
+    assert row["source"] == "human"
+    assert row["llm_output_id"] is None and row["confidence"] is None
+
+
+def test_a_name_typed_from_scratch_belongs_to_the_person_who_typed_it(
+    client, conn, transcribed
+):
+    media_id, run_id = transcribed["media"], transcribed["run"]
+
+    _rename(client, media_id, "SPEAKER_00", display_name="Ford")
+
+    assert _label_row(conn, run_id, "SPEAKER_00")["source"] == "human"
+
+
+def test_the_panel_can_say_where_a_speakers_name_came_from(client, conn, transcribed):
+    """Accountability has to reach the page, not stop at the table."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source, confidence)"
+            " VALUES (?, 'SPEAKER_00', 'Arthur', 'llm', 96.5)"
+            " ON CONFLICT(run_id, cluster_label) DO UPDATE SET"
+            "   display_name='Arthur', source='llm', confidence=96.5",
+            (run_id,),
+        )
+        conn.commit()
+
+    speakers = transcript.run_speakers(conn, run_id)
+    arthur = next(s for s in speakers if s["cluster"] == "SPEAKER_00")
+
+    assert arthur["source"] == "llm"
+    assert arthur["confidence"] == 96.5
+
+
+# --- the two readings (TASK-026) ---------------------------------------------------
+
+
+def _publish_reading(conn, run_id, cleaned, words_in=100, words_out=90):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+            " VALUES (?, ?, ?, ?, 0.0)",
+            (run_id, cleaned, words_in, words_out),
+        )
+        conn.commit()
+
+
+def test_a_published_cleaning_puts_both_readings_on_the_page(client, conn, transcribed):
+    """Both are already there, so the switch is a local matter and the
+    transcript is one click away whichever is showing."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _publish_reading(conn, run_id, "The cleaned words.")
+
+    body = client.get(f"/media/{media_id}").text
+
+    assert 'id="transcript"' in body
+    assert 'id="clean-reading"' in body
+    assert "The cleaned words." in body
+    assert "data-reading-toggle" in body
+
+
+def test_the_page_says_which_reading_it_is_showing(client, conn, transcribed):
+    """A reader who cannot tell has been handed an edit without being told."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _publish_reading(conn, run_id, "The cleaned words.")
+
+    body = client.get(f"/media/{media_id}").text
+
+    assert "Showing the transcript as it was heard." in body
+    assert "100 words became" in body and "90" in body
+
+
+def test_the_cleaned_block_starts_hidden_so_the_words_are_what_loads(
+    client, conn, transcribed
+):
+    """The transcript is the default reading. The derived one is offered."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _publish_reading(conn, run_id, "The cleaned words.")
+
+    body = client.get(f"/media/{media_id}").text
+    block = body.split('id="clean-reading"')[1][:120]
+
+    assert "hidden" in block
+
+
+def test_no_switch_at_all_when_nothing_was_published(client, transcribed):
+    """A cleaning that the gate refused leaves no trace on the page: the
+    recording reads exactly as it did before."""
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    assert "data-reading-toggle" not in body
+    assert 'id="clean-reading"' not in body

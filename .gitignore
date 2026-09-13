@@ -56,3 +56,6 @@ backlog/.locks/
 
 # Stray saved-webpage artifact some tool drops in the repo root
 r1.json
+
+# Isolated git worktrees that Claude Code workflows create for parallel agents
+.claude/worktrees/

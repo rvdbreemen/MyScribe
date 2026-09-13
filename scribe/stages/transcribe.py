@@ -44,14 +44,14 @@ import json
 import sqlite3
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 
 import numpy as np
 
 from scribe import accel, cuda_setup, db, glossary, jobs
-from scribe.stages import mlx_backend
+from scribe.stages import loudness, mlx_backend, seams, second_opinion
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
     from scribe.runner import RunnerContext
@@ -142,6 +142,15 @@ COMPRESSION_RATIO_THRESHOLD = 2.4
 # nominal second is what keeps a word from being split across two decodes.
 WINDOW_SECONDS = 600.0
 SEARCH_SECONDS = 5.0
+# How much of the next window each decode hears past its own cut; what it
+# says there is dropped (`collect_segments`' limit) and said again, properly,
+# by the next window. Without it every cut is, to Whisper, the end of the
+# file, and the end of a file is where Whisper hallucinates. Measured
+# 2026-09-10: 7 of 50 Hacker History episodes carried a run of ~100 identical
+# words ("um, um, um") in 0.3 s just before a multiple of 600 s, and decoding
+# those windows again gave end-of-window garbage every run, while the same
+# windows with 30 s appended came back clean. Capped at half a window.
+LOOKAHEAD_SECONDS = 30.0
 # A tail shorter than this rides along with the previous window: Whisper has
 # nothing to say about half a second, and the extra decode costs a model call.
 MIN_TAIL_SECONDS = 1.0
@@ -258,6 +267,9 @@ class Window:
 
     offset: float  # seconds from the start of the file
     samples: np.ndarray  # float32, mono, SAMPLE_RATE
+    # The start of the next window, heard but not kept (LOOKAHEAD_SECONDS).
+    # Empty for the last window: the real end of the file is where it ends.
+    lookahead: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
 
 
 def quietest_cut(samples: np.ndarray, sample_rate: int, *, search_seconds: float) -> int:
@@ -290,6 +302,7 @@ def iter_windows(
     window_seconds: float = WINDOW_SECONDS,
     search_seconds: float = SEARCH_SECONDS,
     min_tail_seconds: float = MIN_TAIL_SECONDS,
+    lookahead_seconds: float = LOOKAHEAD_SECONDS,
 ) -> Iterator[Window]:
     """Yield the prepared wav one window at a time, never holding the file.
 
@@ -299,6 +312,10 @@ def iter_windows(
     converted. Each window ends at `quietest_cut` of a nominal-length read,
     and the samples past the cut are carried into the next window, so the
     windows are contiguous and add up to the file exactly.
+
+    Every window but the last also carries `lookahead`: the first
+    `lookahead_seconds` of the next one (at most half a window), read ahead
+    into the carry, so the decoder hears speech go on past the cut.
     """
     with wave.open(str(wav), "rb") as source:
         if source.getsampwidth() != 2 or source.getnchannels() != 1:
@@ -309,6 +326,9 @@ def iter_windows(
         rate = source.getframerate()
         nominal = int(window_seconds * rate)
         min_tail = int(min_tail_seconds * rate)
+        # Half a window at most: a carry longer than that would make the next
+        # read smaller than the window it is meant to fill.
+        lookahead = int(min(lookahead_seconds, window_seconds / 2) * rate)
         total = source.getnframes()
         carry = np.empty(0, dtype=np.float32)
         consumed = 0  # frames read from the file
@@ -333,8 +353,15 @@ def iter_windows(
                 rest = np.frombuffer(source.readframes(total - consumed), dtype="<i2").astype(np.float32) / 32768.0
                 yield Window(offset_frames / rate, np.concatenate([buffer, rest]))
                 return
-            yield Window(offset_frames / rate, buffer[:cut])
             carry = buffer[cut:].copy()
+            short = lookahead - len(carry)
+            if short > 0 and consumed < total:
+                # Read the look-ahead now; it is the next window's start, so
+                # the next read is that much smaller and nothing is read twice.
+                ahead = np.frombuffer(source.readframes(short), dtype="<i2").astype(np.float32) / 32768.0
+                consumed += len(ahead)
+                carry = np.concatenate([carry, ahead])
+            yield Window(offset_frames / rate, buffer[:cut], carry[:lookahead])
             offset_frames += cut
 
 
@@ -344,6 +371,16 @@ def read_wav(wav: str | Path) -> "np.ndarray":
     stage itself never uses this: it windows with `iter_windows`."""
     with wave.open(str(wav), "rb") as source:
         frames = source.readframes(source.getnframes())
+    return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+
+
+def read_clip(wav: str | Path, start: float, end: float) -> "np.ndarray":
+    """Seconds [start, end) of the prepared wav as float32 samples, and only
+    those - a second opinion's clip, read without touching the rest."""
+    with wave.open(str(wav), "rb") as source:
+        rate = source.getframerate()
+        source.setpos(min(max(0, int(start * rate)), source.getnframes()))
+        frames = source.readframes(max(0, int((end - start) * rate)))
     return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
 
 
@@ -357,8 +394,16 @@ def collect_segments(
     idx0: int = 0,
     word_idx0: int = 0,
     on_segment: Callable[[dict], None] | None = None,
+    limit: float | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Walk Whisper's segment generator, reporting where it has got to.
+
+    `limit`, in seconds of this window, is where the window's own audio ends
+    and its look-ahead begins (`LOOKAHEAD_SECONDS`). A word that starts there
+    or later is the next window's to say, so it is dropped; the segment it
+    ends is cut back to the words before it; and the first segment that starts
+    past the limit ends the walk without the generator being asked for more,
+    which is what keeps the look-ahead from costing a decode of its own.
 
     `on_segment`, when given, sees each segment row the moment it is built -
     the hook the live log's glimpse of the text hangs on. It is called after
@@ -397,13 +442,26 @@ def collect_segments(
 
     stop_if_cancelled()
     for segment in segments:
+        if limit is not None and float(segment.start) >= limit:
+            break
+        words = list(segment.words or ())
+        end = float(segment.end)
+        text = (segment.text or "").strip()
+        if limit is not None:
+            kept = [word for word in words if _midpoint(word) < limit]
+            if words and not kept:
+                break
+            if len(kept) < len(words):
+                words = kept
+                end = float(kept[-1].end)
+                text = "".join(word.word for word in kept).strip()
         idx = idx0 + len(segment_rows)
         segment_rows.append(
             {
                 "idx": idx,
                 "start": offset + float(segment.start),
-                "end": offset + float(segment.end),
-                "text": (segment.text or "").strip(),
+                "end": offset + end,
+                "text": text,
                 "avg_logprob": _as_float(segment.avg_logprob),
                 "no_speech_prob": _as_float(segment.no_speech_prob),
                 "compression_ratio": _as_float(segment.compression_ratio),
@@ -412,7 +470,7 @@ def collect_segments(
         )
         if on_segment is not None:
             on_segment(segment_rows[-1])
-        for word in segment.words or ():
+        for word in words:
             word_rows.append(
                 {
                     "idx": word_idx0 + len(word_rows),
@@ -425,13 +483,59 @@ def collect_segments(
             )
 
         if duration > 0:
-            fraction = min(1.0, (offset + float(segment.end)) / duration)
+            reached = end if limit is None else min(end, limit)
+            fraction = min(1.0, (offset + reached) / duration)
             highest = max(highest, fraction)
             on_progress(highest)
 
         stop_if_cancelled()
 
     return segment_rows, word_rows
+
+
+def _midpoint(word: Any) -> float:
+    """Where most of a word's sound is - which side of a cut it belongs to.
+
+    Not its start: a cut can run through a word (it falls at the quietest
+    100 ms, which is not always a pause), and then both windows hear part of
+    it. Measured on clip30 cut at 19.2 s: "we" ran 19.12-19.48, the window
+    before the cut kept it by its start, the window after heard the rest and
+    wrote it again - "we we". By its midpoint it is the second window's, which
+    heard most of it; "Revspace" (27.88-28.48, cut at 28.4) stays with the
+    first, which heard nearly all of it. A word whose start is stretched back
+    past the cut can still be kept here and said again after it; that is
+    `_drop_echoes`' to catch."""
+    return (float(word.start) + float(word.end)) / 2
+
+
+def _drop_echoes(segments: list[dict], words: list[dict], cuts: list[int]) -> tuple[list[dict], list[dict]]:
+    """Each word written by both windows at a cut, written once (TASK-035).
+
+    `cuts` are the positions in `words` where each window after the first
+    begins. The midpoint rule is not the whole story once a window hears past
+    its cut: the window before can keep a word by its midpoint, and the window
+    after, starting at the cut, says it again - media 17's "opportunities when
+    when they are presented". `seams.echo` finds that: the same words, the
+    left copy running into the right.
+
+    The left copy goes. Measured over the 18 such words in the library on
+    2026-09-11: both copies end within 0.02 s of each other, and the left one
+    lasts 0.50-2.04 s ("like," in media 22) where the right one lasts
+    0.16-0.56 s - the left copy's start is stretched back over what came
+    before it. The left copy is looked for only in the window just before the
+    cut: a word from further back was heard by no other decode. Worked from
+    the last cut back, so the positions of the ones still to do do not move.
+    """
+    dropped = False
+    for k in range(len(cuts) - 1, -1, -1):
+        at, floor = cuts[k], cuts[k - 1] if k else 0
+        n = seams.echo(words[max(floor, at - seams.ECHO_WORDS):at], words[at:at + seams.ECHO_WORDS])
+        if n:
+            segments, words = seams.remove_words(segments, words, range(at - n, at))
+            dropped = True
+    if dropped:
+        seams.renumber(segments, words)
+    return segments, words
 
 
 # --- the model ------------------------------------------------------------------
@@ -468,6 +572,23 @@ def load_model(
     return WhisperModel(model_name, device=device, compute_type=compute_type), device, compute_type
 
 
+def _decode_options(language: str | None, task: str, hotwords: str | None) -> dict:
+    """What every decode in this stage is asked with - the windows and the
+    second opinions alike, so an opinion differs from the first decode only in
+    where its clip starts."""
+    return {
+        "language": language,
+        "task": task,
+        # hotwords, not initial_prompt: re-injected into every decode window
+        # instead of only the first (spec section 3).
+        "hotwords": hotwords or None,
+        "word_timestamps": True,
+        "vad_filter": True,
+        "condition_on_previous_text": True,
+        "compression_ratio_threshold": COMPRESSION_RATIO_THRESHOLD,
+    }
+
+
 def transcribe_audio(
     wav: str | Path,
     *,
@@ -481,6 +602,7 @@ def transcribe_audio(
     compute_type: str | None = None,
     window_seconds: float = WINDOW_SECONDS,
     search_seconds: float = SEARCH_SECONDS,
+    lookahead_seconds: float = LOOKAHEAD_SECONDS,
     on_segment: Callable[[dict], None] | None = None,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Transcribe one prepared wav; returns (info, segments, words).
@@ -491,6 +613,10 @@ def transcribe_audio(
     with their times shifted by the window's offset and their indices
     continuing from the previous window's, so the result is indistinguishable
     from one decode of the whole file - except that it fits in memory.
+
+    Each decode hears its window plus the window's look-ahead, and keeps only
+    what was said before the cut (`collect_segments`' `limit`): a cut is not
+    the end of the recording, and must not sound like one to the decoder.
 
     Language is detected on the first window only and then held for the rest.
     Letting every window detect for itself would let a recording that switches
@@ -503,6 +629,7 @@ def transcribe_audio(
     model, device, compute_type = load_model(
         model_name, device=device, compute_type=compute_type
     )
+    extractor = getattr(model, "feature_extractor", None)
     duration = wav_duration(wav)
     segments: list[dict] = []
     words: list[dict] = []
@@ -510,26 +637,41 @@ def transcribe_audio(
     language_probability: float | None = None
     duration_after_vad = 0.0
     stream = None
+    cuts: list[int] = []  # where each window after the first begins in `words`
     try:
         for window in iter_windows(
-            wav, window_seconds=window_seconds, search_seconds=search_seconds
+            wav,
+            window_seconds=window_seconds,
+            search_seconds=search_seconds,
+            lookahead_seconds=lookahead_seconds,
         ):
+            heard = (
+                np.concatenate(
+                    [
+                        window.samples,
+                        # Quieter than the window when it would otherwise raise
+                        # the log-mel floor for all of it (TASK-036). On Apple
+                        # Silicon there is no faster-whisper extractor to ask,
+                        # and mlx-whisper floors its own features elsewhere, so
+                        # the look-ahead goes as it is.
+                        loudness.scale_lookahead(extractor, window.samples, window.lookahead)
+                        if extractor is not None
+                        else window.lookahead,
+                    ]
+                )
+                if len(window.lookahead)
+                else window.samples
+            )
+            limit = len(window.samples) / SAMPLE_RATE if len(window.lookahead) else None
             stream, raw = model.transcribe(
-                window.samples,
-                language=detected_language,
-                task=task,
-                # hotwords, not initial_prompt: re-injected into every decode
-                # window instead of only the first (spec section 3).
-                hotwords=hotwords or None,
-                word_timestamps=True,
-                vad_filter=True,
-                condition_on_previous_text=True,
-                compression_ratio_threshold=COMPRESSION_RATIO_THRESHOLD,
+                heard, **_decode_options(detected_language, task, hotwords)
             )
             if detected_language is None:
                 detected_language = raw.language
             if language_probability is None:
                 language_probability = _as_float(raw.language_probability)
+            # Speech Whisper was handed, look-ahead included: up to
+            # LOOKAHEAD_SECONDS per cut is counted in two windows.
             duration_after_vad += _as_float(getattr(raw, "duration_after_vad", None)) or 0.0
             new_segments, new_words = collect_segments(
                 stream,
@@ -540,7 +682,10 @@ def transcribe_audio(
                 idx0=len(segments),
                 word_idx0=len(words),
                 on_segment=on_segment,
+                limit=limit,
             )
+            if window.offset > 0:
+                cuts.append(len(words))
             segments.extend(new_segments)
             words.extend(new_words)
             # Each window's generator is closed as soon as it is drained; the
@@ -548,6 +693,29 @@ def transcribe_audio(
             if hasattr(stream, "close"):
                 stream.close()
             stream = None
+
+        segments, words = _drop_echoes(segments, words, cuts)
+
+        # The stretches where the decode failed by its own measure get a second
+        # opinion while the model is still loaded (TASK-032).
+        def decode(audio: np.ndarray, offset: float, until: float) -> tuple[list[dict], list[dict]]:
+            opinion, _raw = model.transcribe(audio, **_decode_options(detected_language, task, hotwords))
+            try:
+                return collect_segments(opinion, 0.0, on_progress=lambda _p: None, offset=offset, limit=until)
+            finally:
+                if hasattr(opinion, "close"):
+                    opinion.close()
+
+        def stop_if_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise Cancelled("cancel requested during a second opinion")
+
+        segments, words, reviewed = second_opinion.review(
+            segments, words,
+            read_clip=lambda start, end: read_clip(wav, start, end),
+            decode=decode, duration=duration, threshold=COMPRESSION_RATIO_THRESHOLD,
+            cancelled=stop_if_cancelled,
+        )
         info = {
             "model": model_name,
             "device": device,
@@ -557,6 +725,7 @@ def transcribe_audio(
             "language_probability": language_probability,
             "duration": duration,
             "duration_after_vad": duration_after_vad,
+            "second_opinions": reviewed,
         }
     finally:
         # Closing comes first and is not optional. An abandoned generator keeps
@@ -634,6 +803,14 @@ def run(ctx: "RunnerContext") -> None:
         n_segments=len(segments),
         n_words=len(words),
     )
+    if info.get("second_opinions"):
+        jobs.emit(
+            ctx.conn,
+            ctx.job["id"],
+            "second-opinion",
+            replaced=sum(r["outcome"] == "replaced" for r in info["second_opinions"]),
+            records=info["second_opinions"],
+        )
     ctx.report(1.0)
 
 
@@ -722,6 +899,10 @@ def _persist(
         "duration": info["duration"],
         "duration_after_vad": info["duration_after_vad"],
         "language_probability": info["language_probability"],
+        # Every stretch the first decode failed by its own measure, and what
+        # the second opinion made of it: a transcript changed after its first
+        # decode says so, and says what it said before (TASK-032).
+        "second_opinions": info.get("second_opinions") or [],
     }
 
     with db.LOCK:

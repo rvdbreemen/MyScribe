@@ -35,6 +35,17 @@ http://127.0.0.1:11434, `qwen3.5:4b` / `qwen3.5:9b` / `gemma4:12b` pulled):
   a successful empty answer. The consequence for callers: on the shipped local
   default, a per-task output budget below roughly a thousand tokens buys a
   `BadResponse` rather than a short answer.
+* **`think: false` switches the thinking off** (TASK-029, Ollama 0.33.3,
+  2026-09-11). `qwen3.5:4b`, `qwen3.5:9b` and `gemma4:12b` all report the
+  `thinking` capability. On the real cleanup template and system prompt,
+  `qwen3.5:4b` with thinking on spent 6,000 of 6,000 tokens, returned an
+  empty `content` and took 78.7 s; with `think: false` it wrote a correct
+  cleaning in 107 tokens and 1.5 s. So `ChatRequest.reasoning_off` is sent as
+  a top-level `think: false`, and it is never dropped: the daemon's routes.go
+  refuses only a truthy `think` for a model without the capability. Measured
+  on the 4B only; what the 9B and the 12B write with thinking off is not.
+  `eval_count` covers thinking and answer together, so the thinking is
+  reported in the one unit the answer carries - its characters.
 * **An overflowing prompt is not an error, and it takes two checks to catch.**
   Asked for `num_ctx: 512` with a ~3,600-token prompt, the daemon answered
   **HTTP 200** with `prompt_eval_count: 1026` and `done_reason: "length"` - and
@@ -162,6 +173,8 @@ class OllamaProvider(base.Provider):
     # A bigger model is a settings change, not a code change.
     default_model = "qwen3.5:4b"
     key_env_vars = ()  # nothing to resolve: loopback, no credential
+    # Top level of the /api/chat body, not `options` (module docstring).
+    reasoning_off_body = {"think": False}
 
     def __init__(
         self,
@@ -308,8 +321,11 @@ class OllamaProvider(base.Provider):
         will happily spend an unbounded one. `stream: false` because a job
         stores a finished answer - streaming to a runner child that writes one
         row at the end would buy nothing.
+
+        The reasoning hint adds `think: false`; without it no `think` key is
+        sent at all, which is the body this provider always sent.
         """
-        return {
+        body: dict[str, Any] = {
             "model": req.model,
             "messages": self._messages(req),
             "stream": False,
@@ -320,6 +336,9 @@ class OllamaProvider(base.Provider):
             },
             "keep_alive": KEEP_ALIVE,
         }
+        if req.reasoning_off:
+            body.update(dict(self.reasoning_off_body))
+        return body
 
     # --- reading the answer ---------------------------------------------------------
 
@@ -359,6 +378,11 @@ class OllamaProvider(base.Provider):
             prompt_tokens=prompt_tokens,
             completion_tokens=payload.get("eval_count"),
             raw_finish_reason=finish,
+            # Never refused (module docstring), so a hint asked for is a hint sent.
+            hint_sent=True if req.reasoning_off else None,
+            # Characters, because `eval_count` does not split thinking from
+            # answer; `reasoning_tokens` stays None rather than a guess.
+            reasoning_chars=len(message.get("thinking") or ""),
         )
 
     def _empty_answer_reason(self, payload: dict, message: dict, req: ChatRequest, finish) -> str:

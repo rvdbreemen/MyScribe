@@ -137,3 +137,48 @@ __all__ = [
     "setting_key",
     "with_retry",
 ]
+
+
+# --- what a request opens with -------------------------------------------------------
+
+PROVIDER_SETTING = "llm_provider"
+MODEL_SETTING_PREFIX = "llm_model_"
+
+
+def setting_value(conn, key: str) -> str:
+    """One settings row, or "" - the only settings read this package does.
+
+    Here rather than in `scribe.web.ai_ui`, where it used to live alone,
+    because the runner child needs the same answer and a pipeline stage
+    importing the web layer would drag FastAPI into a process that exists to
+    hold a model (ADR-001 keeps that boundary in the other direction; this
+    keeps it in this one).
+    """
+    from scribe import db
+
+    with db.LOCK:
+        row = conn.execute("SELECT value FROM setting WHERE key=?", (key,)).fetchone()
+    return "" if row is None else str(row["value"] or "")
+
+
+def default_provider(conn) -> str:
+    """The provider a new request opens with.
+
+    A stored name that is no longer registered falls back to the shipped
+    default rather than raising: a provider can be removed from `PROVIDERS` by
+    a later version, and a settings row from before that must not break every
+    transcript page.
+    """
+    from scribe.llm import tasks
+
+    stored = setting_value(conn, PROVIDER_SETTING).strip()
+    return stored if stored in PROVIDERS else tasks.DEFAULT_PROVIDER
+
+
+def default_model(conn, provider_name: str) -> str:
+    """The model this provider opens with: the saved one, else its own default."""
+    stored = setting_value(conn, MODEL_SETTING_PREFIX + provider_name).strip()
+    if stored:
+        return stored
+    cls = PROVIDERS.get(provider_name)
+    return cls.default_model if cls is not None else ""

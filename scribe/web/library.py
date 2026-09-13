@@ -49,7 +49,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from fastapi import APIRouter, Form, HTTPException, Request
 from starlette.responses import FileResponse, RedirectResponse, Response
 
-from scribe import db, glossary, jobs, options, paths
+from scribe import db, glossary, jobs, llm, options, paths
+from scribe.llm import privacy
+from scribe.stages import llm_stage
 from scribe.stages import transcribe
 from scribe.media import proxy_path_for
 from scribe.web import render
@@ -72,7 +74,7 @@ DEFAULT_SORT = "created_at"
 # What a bulk form may ask for, and the job a re-transcribe enqueues. The
 # export action is `scribe.web.exports_ui`'s: the same route, so the row
 # checkboxes and the ids they post serve every action.
-BULK_ACTIONS = ("move", "trash", "restore", "retranscribe", "export")
+BULK_ACTIONS = ("move", "trash", "restore", "retranscribe", "export", "label")
 TRANSCRIBE_JOB_TYPE = "transcribe"
 
 # The most hits a search page shows. bm25 orders them, so the best come first.
@@ -98,6 +100,7 @@ class State:
     folder: int | None = None
     sort: str = DEFAULT_SORT
     q: str = ""  # title filter
+    label: str = ""  # label name, matched case-insensitively
 
     @property
     def query(self) -> dict[str, str]:
@@ -110,6 +113,8 @@ class State:
             out["sort"] = self.sort
         if self.q:
             out["q"] = self.q
+        if self.label:
+            out["label"] = self.label
         return out
 
     def url(self, **changes: object) -> str:
@@ -150,7 +155,17 @@ def parse_state(params: Mapping[str, str], *, strict: bool = True) -> State:
             )
         sort = DEFAULT_SORT
 
-    return State(view=view, folder=folder, sort=sort, q=(params.get("q") or "").strip())
+    return State(
+        view=view,
+        folder=folder,
+        sort=sort,
+        q=(params.get("q") or "").strip(),
+        # Not whitelisted, unlike view and sort: those name things the page
+        # offers, so a value outside the list came from a broken link. A label
+        # is a word, and a word nothing carries deserves an empty table rather
+        # than an error page.
+        label=(params.get("label") or "").strip()[:MAX_NAME],
+    )
 
 
 # --- reading the library ---------------------------------------------------------
@@ -196,6 +211,28 @@ def folder_counts(conn: sqlite3.Connection) -> tuple[dict[int | None, int], dict
     return live, total
 
 
+def label_counts(conn: sqlite3.Connection) -> list[dict]:
+    """Every label something live carries, with how many carry it.
+
+    Two rules it shares with the folder counts, for the same reason: the trash
+    is excluded, because the sidebar counts what a click would show; and a
+    label nothing carries is left out entirely, because a row that always
+    answers "nothing here" is noise rather than information. A label with no
+    recordings is not wrong - the vocabulary outlives a purge on purpose - it
+    simply has nothing to offer this sidebar today.
+    """
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT l.name AS name, COUNT(*) AS count"
+            " FROM media_label ml"
+            " JOIN label l ON l.id = ml.label_id"
+            " JOIN media m ON m.id = ml.media_id AND m.trashed_at IS NULL"
+            " GROUP BY l.id, l.name"
+            " ORDER BY count DESC, l.name COLLATE NOCASE"
+        ).fetchall()
+    return [{"name": str(row["name"]), "count": int(row["count"])} for row in rows]
+
+
 def trash_count(conn: sqlite3.Connection) -> int:
     with db.LOCK:
         return conn.execute(
@@ -217,6 +254,15 @@ def _where(state: State) -> tuple[str, list]:
         escaped = state.q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         clauses.append("m.title LIKE ? ESCAPE '\\'")
         args.append(f"%{escaped}%")
+    if state.label:
+        # EXISTS rather than a JOIN: this builder feeds a SELECT that already
+        # joins a job and a run, and a join here would multiply the row list by
+        # however many links matched instead of narrowing it.
+        clauses.append(
+            "EXISTS (SELECT 1 FROM media_label ml JOIN label l ON l.id = ml.label_id"
+            " WHERE ml.media_id = m.id AND l.name = ? COLLATE NOCASE)"
+        )
+        args.append(state.label)
     return " AND ".join(clauses), args
 
 
@@ -251,6 +297,8 @@ def _heading(state: State, folders: list[dict]) -> str:
         return "Uncategorized"
     if state.view == "trash":
         return "Trash"
+    if state.label:
+        return state.label
     if state.folder is not None:
         for folder in folders:
             if folder["id"] == state.folder:
@@ -274,6 +322,7 @@ def sidebar_context(conn: sqlite3.Connection, state: State) -> dict:
         "uncategorized_count": live.get(None, 0),
         "total_count": sum(live.values()),
         "trash_count": trash_count(conn),
+        "labels": label_counts(conn),
     }
 
 
@@ -593,6 +642,59 @@ def move_media(
     return _after_change(request, conn)
 
 
+@router.post("/media/{media_id}/labels", include_in_schema=False)
+def add_label(media_id: int, request: Request, name: Annotated[str, Form()] = "") -> Response:
+    """Put a label on a recording, by hand.
+
+    Not subject to `tasks.MAX_NEW_LABELS`. That ceiling exists because an
+    automatic pass cannot be asked whether it is sure, and a model inventing a
+    label per recording turns the vocabulary into a word cloud. A person typing
+    a label has already decided; rationing that would be the app second-
+    guessing its user.
+
+    The label is matched case-insensitively against the vocabulary before it is
+    created, so typing "Hacking" where "hacking" exists joins that word rather
+    than forking it - the same rule `apply_labels` follows, for the same reason.
+    """
+    conn = request.app.state.conn
+    _get_media(conn, media_id)
+    clean = _clean_name(name, "label")
+    now = time.time()
+    with db.LOCK:
+        conn.execute(
+            "INSERT OR IGNORE INTO label(name, created_at) VALUES (?, ?)", (clean, now)
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO media_label(media_id, label_id, source, created_at)"
+            " SELECT ?, id, 'human', ? FROM label WHERE name = ? COLLATE NOCASE",
+            (media_id, now, clean),
+        )
+        conn.commit()
+    return _after_change(request, conn)
+
+
+@router.post("/media/{media_id}/labels/remove", include_in_schema=False)
+def remove_label(media_id: int, request: Request, name: Annotated[str, Form()] = "") -> Response:
+    """Take a label off a recording.
+
+    The link goes; the word stays. Another recording may still carry it, and a
+    label briefly used by nothing is not wrong - `label_counts` simply stops
+    offering it. Removing something that was not there is not an error: the
+    page ends in the state that was asked for either way.
+    """
+    conn = request.app.state.conn
+    _get_media(conn, media_id)
+    clean = _clean_name(name, "label")
+    with db.LOCK:
+        conn.execute(
+            "DELETE FROM media_label WHERE media_id = ? AND label_id ="
+            " (SELECT id FROM label WHERE name = ? COLLATE NOCASE)",
+            (media_id, clean),
+        )
+        conn.commit()
+    return _after_change(request, conn)
+
+
 @router.get("/media/{media_id}/status", include_in_schema=False)
 def media_status(media_id: int, request: Request) -> Response:
     """One row's status cell, for the cell to fetch itself with.
@@ -750,10 +852,95 @@ async def bulk(request: Request) -> Response:
         _set_trashed(conn, ids, True)
     elif action == "restore":
         _set_trashed(conn, ids, False)
+    elif action == "label":
+        notice = _enqueue_labels(conn, ids)
+        if notice:
+            response = _after_change(request, conn)
+            # htmx fires this on the body from the header; app.js flashes it.
+            response.headers["HX-Trigger"] = json.dumps({"scribe-notice": notice})
+            return response
     else:
         for media_id in ids:
             jobs.enqueue(conn, TRANSCRIBE_JOB_TYPE, media_id=media_id, params=_last_params(conn, media_id))
     return _after_change(request, conn)
+
+
+def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> str:
+    """One `labels` pass per selected recording.
+
+    This is how a library that predates the labels pass catches up: tick the
+    rows, choose the action, and each becomes a job like any other - visible on
+    the jobs board, cancellable, and paid for one at a time rather than in a
+    sweep nobody can stop.
+
+    Imported here rather than at the top: `ai_ui` builds on this module, so a
+    top-level import would be a cycle. `exports_ui` is reached the same way.
+
+    A private recording is never sent to an external service *in bulk*. Sending
+    one out is a decision a person takes for that recording, on its own page,
+    knowing which recording it is - so a bulk action skips it rather than
+    refusing the batch. Refusing would only teach the habit of adjusting the
+    selection until the button works, and a bulk button must never be the thing
+    that puts private words on somebody else's server. On a local provider
+    nothing leaves the machine and there is nothing to protect them from, so
+    they are queued like the rest.
+
+    A recording with no transcript is skipped too, for a duller reason: the
+    pass reads words, and a job that can only fail is not worth a row on the
+    board.
+
+    Returns what it skipped and why, because a silent skip is the other way to
+    get this wrong - a person who ticked forty rows should not have to count
+    the jobs to discover that three of them are not coming.
+    """
+    from scribe.web import ai_ui
+
+    provider_name = ai_ui.default_provider(conn)
+    model = ai_ui.default_model(conn, provider_name)
+    external = not llm.provider_class(provider_name).is_local
+
+    private: list[int] = []
+    if external:
+        private = [media_id for media_id in ids if privacy.is_private(conn, media_id)]
+
+    with db.LOCK:
+        has_words = {
+            int(row["media_id"])
+            for row in conn.execute(
+                "SELECT DISTINCT r.media_id AS media_id FROM run r"
+                f" WHERE r.is_current = 1 AND r.media_id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+        }
+    skipped_private = set(private)
+    no_transcript: list[int] = []
+    for media_id in ids:
+        if media_id in skipped_private:
+            continue
+        if media_id not in has_words:
+            no_transcript.append(media_id)
+            continue
+        jobs.enqueue(
+            conn,
+            llm_stage.JOB_TYPE,
+            media_id,
+            {"media_id": media_id, "kind": "labels", "provider": provider_name, "model": model},
+        )
+
+    notes: list[str] = []
+    if private:
+        notes.append(
+            f"{len(private)} private "
+            f"{'recording was' if len(private) == 1 else 'recordings were'} skipped: "
+            f"{provider_name} is not local, and sending a private recording out is a decision "
+            "to take one at a time, on its own page."
+        )
+    if no_transcript:
+        notes.append(
+            f"{len(no_transcript)} without a transcript "
+            f"{'was' if len(no_transcript) == 1 else 'were'} skipped."
+        )
+    return " ".join(notes)
 
 
 def _parse_ids(values: list) -> list[int]:

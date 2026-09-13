@@ -44,10 +44,14 @@ POST the browser's own `Sec-Fetch-Site` closes it, with no token and no login.
 
 Second, the probe runs in a worker thread started with `abandon_on_cancel=True`
 and wrapped in `move_on_after`, so at the timeout the *request* returns and the
-thread is let go - it cannot hold the page open, and yt-dlp's own
-`SOCKET_TIMEOUT` ends it shortly after. A thread that was merely waited on
-would answer with exactly the same words, ten seconds later, which is the
-failure that design is about.
+thread is let go - it cannot hold the page open. A thread that was merely
+waited on would answer with exactly the same words, ten seconds later, which
+is the failure that design is about. What ends the abandoned thread is the
+listing itself: yt-dlp's `SOCKET_TIMEOUT` ends one whose host has gone silent,
+but a host that keeps answering - a long channel, a slow feed - keeps the
+thread and its slot until the listing is complete. `MAX_LISTED` caps that
+work for a paginated channel; a feed is one document and the cap does not
+shorten it. What is bounded is the slot, not the seconds.
 
 Third, `PREVIEW_WORKERS` bounds how many probes may be in flight, and the
 count is kept by the probe itself rather than by the request. That is not
@@ -58,26 +62,51 @@ future`) while the worker thread is still sitting on the socket, so anything
 that counts *requests* counts none of the abandoned ones. `_preview_slots` is
 taken and given back inside the thread, so what it bounds is live probes.
 
-Everything the probe returns is a stranger's text. It goes into the template
-as data and is escaped by the environment like every other string in this app;
-nothing here is `|safe`, and the page URL yt-dlp reports is deliberately *not*
-rendered as a link - autoescaping quotes an `href` correctly and would still
-happily emit `javascript:`.
+**One listing per URL at a time.** A probe that outran the 10 s budget is
+still listing when the user presses "List the episodes anyway", and that
+press must not start a second listing of the same URL on a second slot - it
+would double the load on the site and, with a typo in between, put the whole
+dialog on `HINT_BUSY`. So `probe_in_slot` keeps the listings in flight by
+URL: the first thread for a URL is the *leader*, takes the slot and does the
+work; a later thread for the same URL is a *follower*, holds no slot, and
+waits on the leader's future. The patient request therefore usually answers
+within seconds of the first listing finishing, and the 60 s budget covers the
+2500-entry case it was sized on rather than starting it over.
+
+**The list, and what the url route does with it.** A feed, a channel or a
+playlist is rendered as one checkbox per episode, each carrying the entry as
+JSON in its value. The selection lives in the browser's form between the two
+requests, not in a table: there is nothing to keep in sync and nothing to
+sweep. `POST /transcribe/url` then has three cases, in this order: ticked
+entries (every one checked before any job is queued, then one `ingest_url`
+job each in a single transaction), a `feed_url` with nothing ticked (a 400
+that says so), and neither - today's door, one job on the link as pasted.
+
+Everything the probe returns is a stranger's text, and so is everything the
+browser posts back. It goes into the template as data and is escaped by the
+environment like every other string in this app; nothing here is `|safe`, and
+no URL that came over the network is ever rendered as a link - autoescaping
+quotes an `href` correctly and would still happily emit `javascript:`. The
+same URLs do appear as *text* on a job's parameters tab, in `/api/jobs` and on
+the log page, exactly as a typed link does today.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
+from concurrent.futures import Future
 from pathlib import Path
+from urllib.parse import urldefrag
 
 from anyio import move_on_after, to_thread
 from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
-from scribe import applog, fsbrowse, jobs
-from scribe.ingest import recording, urls
+from scribe import applog, db, fsbrowse, jobs
+from scribe.ingest import feeds, recording, urls
 from scribe.options import parse_options
 from scribe.stages import url_stage
 from scribe.web import library, render
@@ -125,6 +154,59 @@ _preview_slots = threading.BoundedSemaphore(PREVIEW_WORKERS)
 """Taken and given back *inside* the worker thread - see the module docstring.
 A `threading` primitive rather than an anyio one because the thing being
 counted outlives the request that started it."""
+
+_inflight: dict[str, Future] = {}
+"""The listings running right now, by the URL text as posted (no
+normalisation: a differently spelled URL is simply a second probe). A thread
+that finds its URL here becomes a follower of that future; see the module
+docstring. Guarded by `_inflight_lock`, and a `threading` primitive for the
+same reason as the semaphore: the entry outlives the request."""
+
+_inflight_lock = threading.Lock()
+
+PATIENT_TIMEOUT_SECONDS = 60.0
+"""How long "List the episodes anyway" waits. Sized on the measured 40
+entries a second yt-dlp pages a channel at: `MAX_LISTED` entries take about
+a minute. Read at call time, never as a default argument, because the tests
+patch it and `PREVIEW_TIMEOUT_SECONDS` alike."""
+
+MAX_LISTED = 2500
+"""The most entries one listing asks yt-dlp for (`playlistend`).
+
+Two costs, and the second is the binding one. A channel pages at about 40
+entries a second, so this is about a minute of listing - the patient budget.
+And every entry is a row swapped into a modal dialog, walked by the filter
+on every keystroke: measured 2026-09-08, 920 Computerphile rows are 450 KB
+and 2500 rows of The Daily, whose enclosure URLs carry four tracking
+prefixes each, are 2.4 MB. That feed's 2970 episodes are not covered, and
+that is the trade; the header says "the first 2500 of 2970" so nobody
+mistakes the cut for the whole."""
+
+FORM_FIELD_CEILING = MAX_LISTED + 64
+"""How many form fields the url route will read.
+
+The panel renders at most `MAX_LISTED` `entry` checkboxes plus the dialog's
+own fields. Starlette's `Request.form()` refuses more than 1000 fields with
+its own sentence, for multipart and url-encoded bodies alike, so without
+this "All shown, Import" on any feed over about 985 entries would never reach
+this route's "at most 500"."""
+
+MAX_ENTRY_BYTES = 4096
+"""The most one posted entry value may be. A JSON entry is a few hundred
+bytes; the title inside it is cut at `library.MAX_NAME` anyway."""
+
+MAX_FEED_TITLE = 120
+"""The feed's title as the flash repeats it; a feed's own title field is a
+stranger's text too."""
+
+EPISODES_FLASH = (
+    "Fetching {count} episode{s} of {feed}. Each is a job of its own; "
+    "the transcription is queued behind each download."
+)
+
+HINT_NONE_TICKED = (
+    "tick at least one episode - All shown takes everything the filter left"
+)
 
 
 class PreviewBusy(RuntimeError):
@@ -177,18 +259,81 @@ def _cookies_file(conn: sqlite3.Connection, raw: str | None) -> str:
     return str(path)
 
 
+def _refuse_constant(name: str):
+    """`json.loads` would otherwise accept NaN and Infinity, which are not
+    JSON and not numbers this app wants on a job row."""
+    raise ValueError(f"{name} is not a number this app accepts")
+
+
+def parse_entry(raw: str, index: int) -> dict:
+    """One ticked episode, as the browser echoed it back: checked, not trusted.
+
+    The value was written by `preview_view` as JSON, but what comes back is
+    whatever the browser - or anything else on the same origin - chose to
+    post. So: a size cap before parsing, a parser that refuses NaN, a shape
+    check, and the URL through the same `_web_url` as a typed link, which is
+    where `file://`, `javascript:` and a bare search string are refused. The
+    title is text cut at the library's own name limit. A `UrlError` is a
+    `RuntimeError`, so the URL check is not inside the broad `except` below:
+    it has to be a 400 with the scheme sentence, not a 500.
+
+    ``index`` is 1-based and names the episode in the 400, because "one of
+    them was wrong" helps nobody with three hundred ticked.
+    """
+
+    def bad(why: str) -> HTTPException:
+        return HTTPException(
+            status_code=400,
+            detail=f"episode {index} is not something this app can read ({why})",
+        )
+
+    if not isinstance(raw, str) or len(raw) > MAX_ENTRY_BYTES:
+        raise bad("too long")
+    try:
+        obj = json.loads(raw, parse_constant=_refuse_constant)
+    except (ValueError, TypeError, RecursionError):
+        raise bad("not JSON") from None
+    if not isinstance(obj, dict):
+        raise bad("not an object")
+    url = obj.get("url")
+    if not isinstance(url, str):
+        raise bad("no url")
+    try:
+        url = urls.ensure_http_url(url)
+    except urls.UrlError as exc:
+        raise bad(str(exc)) from None
+    title = str(obj.get("title") or "")[: library.MAX_NAME]
+    source_id = obj.get("source_id")
+    source_id = source_id if isinstance(source_id, str) and source_id else None
+    return {"url": url, "title": title, "source_id": source_id}
+
+
 @router.post("/transcribe/url", include_in_schema=False)
 async def add_url(request: Request) -> Response:
-    """Queue the fetch of one link; answer like every other library mutation.
+    """Queue the fetch of one link, or of the ticked episodes of a listing.
 
-    Deliberately probe-free. Whether the URL is a video or a playlist of fifty
-    is `url_stage.fetch`'s question, asked in the child where the answer can
-    take as long as it takes; asking it here would put a network round trip in
-    front of a button press for no decision this route makes.
+    Three cases, checked in this order: ticked entries, a list with nothing
+    ticked, and neither - see the module docstring. The entries are read with
+    `form.getlist`, not through `_fields`, which keeps the last value per
+    name: right for the hidden-0/checkbox-1 option pairs, and wrong for a
+    checkbox list, where it would turn three ticks into one job with no
+    error. The field ceiling is this route's own (`FORM_FIELD_CEILING`).
+
+    The plain case is deliberately probe-free. Whether the URL is a video or
+    a playlist of fifty is `url_stage.fetch`'s question, asked in the child
+    where the answer can take as long as it takes; asking it here would put
+    a network round trip in front of a button press for no decision this
+    route makes.
     """
     conn = request.app.state.conn
-    form = await request.form()
+    form = await request.form(max_fields=FORM_FIELD_CEILING)
     fields = _fields(form)
+    raw_entries = [value for value in form.getlist("entry") if isinstance(value, str)]
+
+    if raw_entries:
+        return await _add_episodes(request, conn, fields, raw_entries)
+    if (fields.get("feed_url") or "").strip():
+        raise HTTPException(status_code=400, detail=HINT_NONE_TICKED)
 
     url = _web_url(fields.get("url"))
     options = parse_options(fields)
@@ -213,29 +358,203 @@ async def add_url(request: Request) -> Response:
     return response
 
 
+async def _add_episodes(
+    request: Request, conn: sqlite3.Connection, fields: dict, raw_entries: list[str]
+) -> Response:
+    """One `ingest_url` job per ticked episode - after every one has passed.
+
+    The count is checked before a single entry is parsed, so two and a half
+    thousand JSON blobs are not read only to be refused. Every entry, the
+    feed's URL, the options, the folder and the cookies file are checked
+    before anything is queued, and the queueing is one transaction
+    (`jobs.enqueue_many`, in the threadpool: five hundred inserts have no
+    business on the event loop), so a bad entry queues nothing - including
+    the good ones beside it.
+    """
+    cap = url_stage.MAX_FAN_OUT  # read at request time: the tests patch it
+    if len(raw_entries) > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(raw_entries)} episodes ticked, and this app queues at most"
+                f" {cap} in one go; tick fewer"
+            ),
+        )
+    entries = [parse_entry(raw, index) for index, raw in enumerate(raw_entries, start=1)]
+    feed_url = _web_url(fields.get("feed_url"))
+    feed_title = str(fields.get("feed_title") or "").strip()[:MAX_FEED_TITLE]
+    options = parse_options(fields)
+    folder_id = library._folder_id_from(conn, fields.get("folder_id"))
+    cookies = _cookies_file(conn, fields.get("cookies_file"))
+
+    params_list = []
+    for entry in entries:
+        params: dict = {
+            "url": entry["url"],
+            "folder_id": folder_id,
+            url_stage.OPTIONS_KEY: options.to_params(),
+            "from_playlist": True,
+            url_stage.ENTRY_KEY: {"title": entry["title"], "source_id": entry["source_id"]},
+            url_stage.SOURCE_KEY: {"url": feed_url, "title": feed_title},
+        }
+        if cookies:
+            params["cookies_file"] = cookies
+        params_list.append(params)
+
+    queued = await run_in_threadpool(jobs.enqueue_many, conn, url_stage.JOB_TYPE, params_list)
+    save_defaults(conn, options)
+
+    # "Keep following this feed", ticked by default (ADR-008). Subscribing
+    # queues nothing by itself: the entries on screen right now are recorded as
+    # seen, so only what appears after today counts as new. The ones just
+    # queued are among them, which is exactly right - they are accounted for.
+    if str(fields.get("follow_feed") or "").strip() not in ("", "0", "false"):
+        feeds.subscribe(
+            conn,
+            feed_url,
+            title=feed_title,
+            folder_id=folder_id,
+            entries=entries,
+        )
+
+    applog.log("ingest.episodes", feed=feed_url, title=feed_title, count=len(queued),
+               first=queued[0], last=queued[-1])
+
+    flash = EPISODES_FLASH.format(
+        count=len(entries), s="" if len(entries) == 1 else "s", feed=feed_title or "the feed"
+    )
+    response = library._after_change(request, conn, flash=flash)
+    response.headers["HX-Trigger"] = "jobs-changed"
+    return response
+
+
 # --- the preview --------------------------------------------------------------------
 
 
-def preview_view(info: urls.UrlInfo) -> dict:
+def preview_view(
+    info: urls.UrlInfo, *, url: str, states: list[str | None] | None = None, cap: int | None = None
+) -> dict:
     """What `_url_panel.html` shows for a link that answered.
 
     `webpage_url` is not among the fields on purpose: it is a URL chosen by
     whoever wrote the page, and the only thing to do with it in a template is
     make it an `href`, which is how a `javascript:` scheme would get onto a
-    page of ours. The title says enough about what was found.
+    page of ours. The title says enough about what was found. ``url`` is the
+    pasted, checked text the panel echoes back as `feed_url` - never the
+    page's own idea of where it lives.
+
+    Each entry's `value` is the JSON the checkbox carries, produced here with
+    `json.dumps` and handed to the template as a plain string so the
+    environment escapes it like any attribute. Never `|tojson`: that returns
+    Markup, leaves `"` unescaped, and breaks a double-quoted value at the
+    first quote in a title.
     """
+    states = states or [None] * len(info.entries)
+    entries = [
+        {
+            "title": entry["title"],
+            "duration": entry["duration"],
+            "timestamp": entry.get("timestamp"),
+            "state": state,
+            "value": json.dumps(
+                {"url": entry["url"], "title": entry["title"], "source_id": entry.get("source_id")}
+            ),
+        }
+        for entry, state in zip(info.entries, states)
+    ]
     return {
         "state": "ok",
         "kind": info.kind,
         "title": info.title,
         "uploader": info.uploader,
         "duration": info.duration,
-        "entries": len(info.entries),
+        "entries": entries,
+        "count": len(entries),
+        "total": info.total,
+        "truncated": info.truncated,
+        "feed_url": url,
+        "feed_title": info.title,
+        "cap": cap if cap is not None else url_stage.MAX_FAN_OUT,
     }
 
 
+def _job_params(text: str | None) -> dict:
+    try:
+        params = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return params if isinstance(params, dict) else {}
+
+
+def known_sources(conn: sqlite3.Connection, entries: list[dict]) -> list[str | None]:
+    """One state per listed entry: "queued", "library", "trash" or None.
+
+    Matched by the entry's URL without its fragment and by its extractor-
+    scoped `source_id`, against the media rows' provenance (v10) and the
+    `ingest_url` jobs still queued or running. Precedence queued > library >
+    trash: the transient fact that stops a duplicate download wins, and "in
+    library" reappears on its own once the job finishes. A trashed recording
+    is named as such rather than hidden, because re-importing it would dedupe
+    onto the trashed row and the finished transcript would be invisible.
+
+    One statement for the media side: at most two parameters per entry, so
+    5000 at `MAX_LISTED`, well under the 32766 that SQLite >= 3.35 (asserted
+    in `db.connect`) allows. Under `db.LOCK`, like every read in this process
+    (ADR-002).
+    """
+    url_keys = [urldefrag(str(entry.get("url") or "")).url for entry in entries]
+    id_keys = [entry.get("source_id") or None for entry in entries]
+    wanted_urls = sorted({key for key in url_keys if key})
+    wanted_ids = sorted({key for key in id_keys if key})
+    by_url: dict[str, str] = {}
+    by_id: dict[str, str] = {}
+
+    with db.LOCK:
+        if wanted_urls or wanted_ids:
+            clauses, params = [], []
+            if wanted_urls:
+                clauses.append(f"source_url IN ({','.join('?' * len(wanted_urls))})")
+                params.extend(wanted_urls)
+            if wanted_ids:
+                clauses.append(f"source_id IN ({','.join('?' * len(wanted_ids))})")
+                params.extend(wanted_ids)
+            rows = conn.execute(
+                "SELECT source_url, source_id, trashed_at FROM media WHERE " + " OR ".join(clauses),
+                params,
+            ).fetchall()
+            for row in rows:
+                state = "library" if row["trashed_at"] is None else "trash"
+                for key, table in ((row["source_url"], by_url), (row["source_id"], by_id)):
+                    if key and table.get(key) != "library":
+                        table[key] = state
+        live = conn.execute(
+            "SELECT params_json FROM job WHERE type=? AND status IN ('queued', 'running')",
+            (url_stage.JOB_TYPE,),
+        ).fetchall()
+
+    queued_urls: set[str] = set()
+    queued_ids: set[str] = set()
+    for row in live:
+        params = _job_params(row["params_json"])
+        queued_urls.add(urldefrag(str(params.get("url") or "")).url)
+        entry = params.get(url_stage.ENTRY_KEY)
+        if isinstance(entry, dict) and entry.get("source_id"):
+            queued_ids.add(str(entry["source_id"]))
+
+    out: list[str | None] = []
+    for url_key, id_key in zip(url_keys, id_keys):
+        if (url_key and url_key in queued_urls) or (id_key and id_key in queued_ids):
+            out.append("queued")
+            continue
+        found = {by_url.get(url_key or ""), by_id.get(id_key or "")} - {None}
+        out.append("library" if "library" in found else ("trash" if "trash" in found else None))
+    return out
+
+
 def probe_in_slot(url: str) -> urls.UrlInfo:
-    """`urls.probe`, holding one of `PREVIEW_WORKERS` slots while it runs.
+    """`urls.probe`, holding one of `PREVIEW_WORKERS` slots while it runs -
+    unless the same URL is being listed already, in which case this thread
+    waits for that answer instead.
 
     Both halves happen here, in the worker thread, and that placement is the
     whole design. Taken in the event loop instead, a slot would have to be
@@ -243,32 +562,63 @@ def probe_in_slot(url: str) -> urls.UrlInfo:
     the socket is still open, counting exactly the ones worth counting as
     free. Taken here it is held for as long as the probe really runs.
 
-    Raising rather than waiting: a request that queued behind three slow sites
-    would sit out the timeout and answer `HINT_SLOW`, which is true but
-    unhelpful. `HINT_BUSY` says what actually happened.
+    Leader or follower is decided under `_inflight_lock`, in the thread, so
+    there is no check-then-act gap between a lookup and a registration. A
+    follower holds no slot: it does no network work, only waits on the
+    leader's future, and gets the same answer or the same `UrlError`. The
+    leader removes its entry and releases its slot in `finally`, so a
+    listing that raised is gone from the table by the time anyone retries.
+
+    Raising rather than waiting when every slot is taken: a request that
+    queued behind three slow sites would sit out the timeout and answer
+    `HINT_SLOW`, which is true but unhelpful. `HINT_BUSY` says what actually
+    happened.
 
     A thread that finds no slot has cost nothing - anyio hands it straight
     back to `idle_workers`, and a request cancelled before the thread picked
     the job up never runs this at all (`WorkerThread.run` checks the future).
     """
-    if not _preview_slots.acquire(blocking=False):
-        raise PreviewBusy(HINT_BUSY)
+    with _inflight_lock:
+        future = _inflight.get(url)
+        leader = future is None
+        if leader:
+            if not _preview_slots.acquire(blocking=False):
+                raise PreviewBusy(HINT_BUSY)
+            future = Future()
+            _inflight[url] = future
+    if not leader:
+        return future.result()
     try:
-        return urls.probe(url)
+        info = urls.probe(url, limit=MAX_LISTED)
+    except BaseException as exc:
+        future.set_exception(exc)
+        raise
+    else:
+        future.set_result(info)
+        return info
     finally:
+        with _inflight_lock:
+            if _inflight.get(url) is future:
+                del _inflight[url]
         _preview_slots.release()
 
 
-async def probe_or_none(url: str) -> urls.UrlInfo | None:
+async def probe_or_none(url: str, *, patient: bool = False) -> urls.UrlInfo | None:
     """`probe_in_slot` in a worker thread; None when it took too long.
 
     `abandon_on_cancel=True` is the whole point of the function. Without it the
     cancel scope waits for the thread to come back, so the timeout would change
     *what the page says* but not *when it says it* - the request would still
     hang for as long as the site does. Abandoned, the thread finishes into
-    nothing, yt-dlp's socket timeout collects it, and its slot goes back then.
+    nothing and its slot goes back then.
+
+    ``patient`` is the retry button: a longer wait, not more work, because the
+    thread attaches to the listing already running for that URL. The budget
+    is read from the module at call time, never as a default argument: the
+    tests patch both names.
     """
-    with move_on_after(PREVIEW_TIMEOUT_SECONDS):
+    budget = PATIENT_TIMEOUT_SECONDS if patient else PREVIEW_TIMEOUT_SECONDS
+    with move_on_after(budget):
         return await to_thread.run_sync(probe_in_slot, url, abandon_on_cancel=True)
     return None
 
@@ -297,8 +647,15 @@ async def url_preview(request: Request) -> Response:
     fetch, and this route takes only the URL, as the plan's interface says. The
     visible consequence is that a members-only link can preview as unavailable
     and still download fine once the cookies file is filled in.
+
+    ``patient`` is the retry button's field: the same request with the long
+    budget. The slow hint offers the button only once - a patient request
+    that still timed out gets the hint without it.
     """
-    text = str(_fields(await request.form()).get("url") or "").strip()
+    conn = request.app.state.conn
+    fields = _fields(await request.form())
+    text = str(fields.get("url") or "").strip()
+    patient = bool(str(fields.get("patient") or "").strip())
     if not text:
         return _panel(request, {"state": "empty", "message": HINT_EMPTY})
     try:
@@ -309,12 +666,13 @@ async def url_preview(request: Request) -> Response:
         return _panel(request, {"state": "error", "message": str(exc)})
 
     try:
-        info = await probe_or_none(text)
+        info = await probe_or_none(text, patient=patient)
     except (urls.UrlError, PreviewBusy) as exc:
         return _panel(request, {"state": "error", "message": str(exc)})
     if info is None:
-        return _panel(request, {"state": "error", "message": HINT_SLOW})
-    return _panel(request, preview_view(info))
+        return _panel(request, {"state": "error", "message": HINT_SLOW, "retry": not patient})
+    states = await run_in_threadpool(known_sources, conn, info.entries) if info.entries else []
+    return _panel(request, preview_view(info, url=text, states=states, cap=url_stage.MAX_FAN_OUT))
 
 
 # --- recording from the microphone ------------------------------------------------

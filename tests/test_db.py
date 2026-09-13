@@ -23,6 +23,11 @@ EXPECTED_TABLES = {
     "watch_folder",
     "word_correction",
     "segment_fts",
+    "label",
+    "media_label",
+    "clean_reading",
+    "feed",
+    "feed_seen",
 }
 
 
@@ -373,3 +378,379 @@ def test_fts_triggers_sync(conn):
         ).fetchone()[0]
         == 0
     )
+
+
+def test_schema_v10_gives_media_two_nullable_provenance_columns(conn):
+    """The feed import (TASK-021) writes where a recording came from, so the
+    dialog can say "in library" the next time the feed is listed. Both are
+    nullable because an upload, a path, a recording and a watch folder know
+    no source."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 10
+    assert {"source_url", "source_id"} <= _columns(conn, "media")
+
+
+def test_migrate_walks_a_v9_database_up_to_the_provenance_columns(tmp_path):
+    """A library from before the feed import is at user_version 9. It gains
+    the two columns and every recording it already holds reads as "arrived
+    without a source", which is the truth: nothing wrote one down."""
+    path = tmp_path / "v9.db"
+    old = db.connect(path)
+    for script in db._MIGRATIONS[:9]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 9")
+    old.commit()
+    _seed_media_and_run(old)
+    assert "source_url" not in _columns(old, "media")
+
+    db.migrate(old)
+
+    assert old.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    row = old.execute("SELECT source_url, source_id FROM media").fetchone()
+    assert (row["source_url"], row["source_id"]) == (None, None)
+    old.close()
+
+
+def test_schema_v11_gives_labels_their_own_table_and_a_link_to_media(conn):
+    """TASK-023. A label is a thing a recording *has*, and several recordings
+    share one - so a table and a link, not a comma-separated column. `source`
+    records who decided: an LLM pass may not quietly overwrite a name a person
+    typed, and that rule needs somewhere to read the answer from."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 11
+    assert {"id", "name", "created_at"} <= _columns(conn, "label")
+    assert {"media_id", "label_id", "source", "created_at"} <= _columns(conn, "media_label")
+
+
+def test_two_labels_that_differ_only_in_case_are_one_label(conn):
+    """The vocabulary is only useful as a filter if it does not fork. A model
+    that answers "Hacking" where the library already holds "hacking" must land
+    on the row that exists, so the uniqueness is NOCASE rather than exact."""
+    db.migrate(conn)
+    conn.execute("INSERT INTO label(name, created_at) VALUES ('hacking', 0.0)")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO label(name, created_at) VALUES ('Hacking', 0.0)")
+
+
+def test_a_recording_holds_one_row_per_label(conn):
+    """Re-running the pass must not double what it already decided."""
+    db.migrate(conn)
+    media_id = _seed_media_and_run(conn) and conn.execute(
+        "SELECT id FROM media"
+    ).fetchone()["id"]
+    conn.execute("INSERT INTO label(name, created_at) VALUES ('hacking', 0.0)")
+    label_id = conn.execute("SELECT id FROM label").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO media_label(media_id, label_id, source, created_at) VALUES (?,?,'llm',0.0)",
+        (media_id, label_id),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO media_label(media_id, label_id, source, created_at)"
+            " VALUES (?,?,'human',0.0)",
+            (media_id, label_id),
+        )
+
+
+def test_deleting_a_recording_takes_its_label_links_but_not_the_labels(conn):
+    """A purged recording must not leave a dangling link, and must not take
+    the vocabulary down with it: the label goes on describing the others."""
+    db.migrate(conn)
+    _seed_media_and_run(conn)
+    media_id = conn.execute("SELECT id FROM media").fetchone()["id"]
+    conn.execute("INSERT INTO label(name, created_at) VALUES ('hacking', 0.0)")
+    label_id = conn.execute("SELECT id FROM label").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO media_label(media_id, label_id, source, created_at) VALUES (?,?,'llm',0.0)",
+        (media_id, label_id),
+    )
+
+    conn.execute("DELETE FROM media WHERE id=?", (media_id,))
+
+    assert conn.execute("SELECT COUNT(*) FROM media_label").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM label").fetchone()[0] == 1
+
+
+def test_migrate_walks_a_v10_database_up_to_the_labels(tmp_path):
+    """A library from the feed-import build is at user_version 10. It gains
+    two empty tables and loses nothing: every recording it holds reads as
+    unlabelled, which is the truth."""
+    path = tmp_path / "v10.db"
+    old = db.connect(path)
+    for script in db._MIGRATIONS[:10]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 10")
+    old.commit()
+    _seed_media_and_run(old)
+
+    db.migrate(old)
+
+    assert old.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    assert old.execute("SELECT COUNT(*) FROM label").fetchone()[0] == 0
+    assert old.execute("SELECT COUNT(*) FROM media_label").fetchone()[0] == 0
+    assert old.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 1
+    old.close()
+
+
+def test_schema_v12_says_who_named_a_speaker_and_what_they_named_it_from(conn):
+    """TASK-024. Once a pass writes speaker names unattended, the row has to
+    answer two questions a hand-typed name never had to: why does it say this,
+    and may an automatic run overwrite it."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 12
+    assert {"source", "llm_output_id", "confidence"} <= _columns(conn, "speaker_label")
+
+
+def test_a_speaker_name_that_predates_the_pass_reads_as_a_persons_choice(tmp_path):
+    """Every name in the table before v12 was typed by somebody - nothing else
+    could have written one - so 'human' is the truth about all of them, not a
+    convenient default."""
+    path = tmp_path / "v11.db"
+    old = db.connect(path)
+    for script in db._MIGRATIONS[:11]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 11")
+    old.commit()
+    run_id = _seed_media_and_run(old)
+    old.execute(
+        "INSERT INTO speaker_label(run_id, cluster_label, display_name)"
+        " VALUES (?, 'SPEAKER_00', 'Arthur')",
+        (run_id,),
+    )
+    old.commit()
+
+    db.migrate(old)
+
+    row = old.execute("SELECT * FROM speaker_label").fetchone()
+    assert (row["display_name"], row["source"]) == ("Arthur", "human")
+    assert row["llm_output_id"] is None and row["confidence"] is None
+    old.close()
+
+
+def test_losing_the_analysis_loses_the_receipt_but_not_the_name(conn):
+    """ON DELETE SET NULL, not CASCADE: a speaker who was correctly identified
+    does not become anonymous because somebody purged an old analysis."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    media_id = conn.execute("SELECT id FROM media").fetchone()["id"]
+    cur = conn.execute(
+        "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+        " content, created_at) VALUES (?, 'speakers', 'p', 'm', '1', '{}', 0.0)",
+        (media_id,),
+    )
+    output_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO speaker_label(run_id, cluster_label, display_name, source,"
+        " llm_output_id, confidence) VALUES (?, 'SPEAKER_00', 'Arthur', 'llm', ?, 96.0)",
+        (run_id, output_id),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM llm_output WHERE id=?", (output_id,))
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM speaker_label").fetchone()
+    assert row["display_name"] == "Arthur"
+    assert row["llm_output_id"] is None
+    assert row["source"] == "llm"
+
+
+def test_a_speaker_label_source_is_one_of_two_words(conn):
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO speaker_label(run_id, cluster_label, display_name, source)"
+            " VALUES (?, 'SPEAKER_00', 'Arthur', 'guessed')",
+            (run_id,),
+        )
+
+
+def test_schema_v13_puts_a_cleaned_reading_beside_the_words_not_over_them(conn):
+    """TASK-026. ADR-003 makes words canonical, so a cleaned transcript is a
+    second way to read the same run - a row of its own, keyed by run."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 13
+    assert {"run_id", "text", "llm_output_id", "words_in", "words_out", "created_at"} <= _columns(
+        conn, "clean_reading"
+    )
+
+
+def test_a_run_has_at_most_one_cleaned_reading(conn):
+    """Re-cleaning is a correction, not a second opinion to keep beside the
+    first: the reading is derived and regenerable, unlike the analysis it came
+    from, which llm_output keeps forever."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    conn.execute(
+        "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+        " VALUES (?, 'first', 10, 8, 0.0)",
+        (run_id,),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+            " VALUES (?, 'second', 10, 8, 0.0)",
+            (run_id,),
+        )
+
+
+def test_deleting_a_run_takes_its_reading_with_it(conn):
+    """A reading of words that no longer exist is not history, it is a claim
+    about a transcript nobody can check."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    conn.execute(
+        "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+        " VALUES (?, 'x', 10, 8, 0.0)",
+        (run_id,),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM run WHERE id=?", (run_id,))
+    conn.commit()
+
+    assert conn.execute("SELECT COUNT(*) FROM clean_reading").fetchone()[0] == 0
+
+
+def test_losing_the_analysis_keeps_the_reading(conn):
+    """Same asymmetry as a speaker's name: the receipt may go, the thing it
+    vouched for stays."""
+    db.migrate(conn)
+    run_id = _seed_media_and_run(conn)
+    media_id = conn.execute("SELECT id FROM media").fetchone()["id"]
+    cur = conn.execute(
+        "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+        " content, created_at) VALUES (?, 'cleanup', 'p', 'm', '1', 'x', 0.0)",
+        (media_id,),
+    )
+    conn.execute(
+        "INSERT INTO clean_reading(run_id, text, llm_output_id, words_in, words_out, created_at)"
+        " VALUES (?, 'cleaned', ?, 10, 8, 0.0)",
+        (run_id, cur.lastrowid),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM llm_output WHERE id=?", (cur.lastrowid,))
+    conn.commit()
+
+    row = conn.execute("SELECT text, llm_output_id FROM clean_reading").fetchone()
+    assert (row["text"], row["llm_output_id"]) == ("cleaned", None)
+
+
+def test_schema_v14_makes_a_feed_a_row_you_can_come_back_to(conn):
+    """TASK-025. A subscription outlives the dialog that created it, so it is
+    a row rather than something re-derived from the library each time."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 14
+    assert {
+        "url", "title", "interval_seconds", "checked_at", "last_result",
+        "failures", "paused", "folder_id", "created_at",
+    } <= _columns(conn, "feed")
+
+
+def test_one_row_per_feed_url(conn):
+    """Two rows for one feed would poll it twice and race themselves into
+    queueing every new episode twice - the one mistake this table has to make
+    impossible."""
+    db.migrate(conn)
+    conn.execute(
+        "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+        )
+
+
+def test_a_new_feed_has_never_been_checked_and_is_not_paused(conn):
+    """NULL checked_at is 'never', which every due test must treat as overdue:
+    a feed nobody has looked at yet is exactly the one to look at."""
+    db.migrate(conn)
+    conn.execute("INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)")
+
+    row = conn.execute("SELECT * FROM feed").fetchone()
+    assert row["checked_at"] is None
+    assert (row["paused"], row["failures"], row["last_result"]) == (0, 0, "")
+    assert row["interval_seconds"] == 86400  # a day
+
+
+def test_unsubscribing_does_not_disown_the_episodes_the_feed_brought_in(conn):
+    """A recording keeps its own provenance (media.source_url, source_id from
+    v10). Dropping the subscription drops the watching, not the library."""
+    db.migrate(conn)
+    _seed_media_and_run(conn)
+    conn.execute(
+        "UPDATE media SET source_url='https://cdn.test/ep1.mp3', source_id='Generic:g1'"
+    )
+    conn.execute("INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)")
+    conn.commit()
+
+    conn.execute("DELETE FROM feed")
+    conn.commit()
+
+    row = conn.execute("SELECT source_url, source_id FROM media").fetchone()
+    assert row["source_id"] == "Generic:g1"
+    assert conn.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 1
+
+
+def test_a_feed_may_name_a_folder_and_survives_that_folder_being_deleted(conn):
+    """Deleting a folder is a tidying decision, not an instruction to stop
+    following a podcast."""
+    db.migrate(conn)
+    folder = conn.execute("INSERT INTO folder(name) VALUES ('Podcasts') RETURNING id").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO feed(url, folder_id, created_at) VALUES ('https://example.test/f.xml', ?, 0.0)",
+        (folder,),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM folder WHERE id=?", (folder,))
+    conn.commit()
+
+    row = conn.execute("SELECT url, folder_id FROM feed").fetchone()
+    assert row["url"] == "https://example.test/f.xml"
+    assert row["folder_id"] is None
+
+
+def test_the_episodes_present_at_subscription_are_recorded_as_seen(conn):
+    """How subscribing imports no back catalogue. Following The Daily must not
+    queue its 2970 episodes; only what appears afterwards is new."""
+    db.migrate(conn)
+    feed_id = conn.execute(
+        "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+        " RETURNING id"
+    ).fetchone()["id"]
+    conn.execute("INSERT INTO feed_seen(feed_id, source_id) VALUES (?, 'Generic:g1')", (feed_id,))
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO feed_seen(feed_id, source_id) VALUES (?, 'Generic:g1')", (feed_id,)
+        )
+
+
+def test_unsubscribing_forgets_what_that_feed_had_seen(conn):
+    """The memory is about watching a feed, so it goes when the watching does.
+    The library keeps its own record of what it holds."""
+    db.migrate(conn)
+    feed_id = conn.execute(
+        "INSERT INTO feed(url, created_at) VALUES ('https://example.test/f.xml', 0.0)"
+        " RETURNING id"
+    ).fetchone()["id"]
+    conn.execute("INSERT INTO feed_seen(feed_id, source_id) VALUES (?, 'Generic:g1')", (feed_id,))
+    conn.commit()
+
+    conn.execute("DELETE FROM feed WHERE id=?", (feed_id,))
+    conn.commit()
+
+    assert conn.execute("SELECT COUNT(*) FROM feed_seen").fetchone()[0] == 0

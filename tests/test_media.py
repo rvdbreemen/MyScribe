@@ -325,3 +325,58 @@ def test_the_default_reads_the_same_words_as_every_other_checkbox(conn, value, e
     set_default(conn, value)
 
     assert media.private_default(conn) is expected
+
+
+# --- provenance (TASK-021): where a recording came from --------------------
+
+
+def test_ingest_records_where_a_file_came_from(conn, data_dir, src_dir):
+    row = media.ingest_path(
+        conn, make_file(src_dir, "ep.mp3"),
+        source_url="https://cdn.test/ep.mp3", source_id="Generic:guid-0",
+    )
+
+    stored = conn.execute(
+        "SELECT source_url, source_id FROM media WHERE id=?", (row["id"],)
+    ).fetchone()
+    assert (stored["source_url"], stored["source_id"]) == ("https://cdn.test/ep.mp3", "Generic:guid-0")
+    assert (row["source_url"], row["source_id"]) == ("https://cdn.test/ep.mp3", "Generic:guid-0")
+
+
+def test_an_upload_records_no_source(conn, data_dir, src_dir):
+    row = media.ingest_path(conn, make_file(src_dir, "one.wav"))
+
+    assert (row["source_url"], row["source_id"]) == (None, None)
+
+
+def test_a_deduped_arrival_fills_in_a_missing_source_and_keeps_a_set_one(conn, data_dir, src_dir):
+    """An upload first, the feed later: the row gains the provenance it lacked,
+    or it would never be marked "in library" however often it was re-imported.
+    The feed first, another URL later: the first source stands, like the title
+    and the folder do."""
+    src = make_file(src_dir, "ep.mp3")
+    first = media.ingest_path(conn, src)
+    assert first["source_url"] is None
+
+    second = media.ingest_path(conn, src, source_url="https://a.test/1.mp3", source_id="Generic:g1")
+
+    assert second["deduped"] is True and second["id"] == first["id"]
+    assert (second["source_url"], second["source_id"]) == ("https://a.test/1.mp3", "Generic:g1")
+
+    third = media.ingest_path(conn, src, source_url="https://b.test/1.mp3", source_id="Generic:g2")
+
+    assert (third["source_url"], third["source_id"]) == ("https://a.test/1.mp3", "Generic:g1")
+    stored = conn.execute("SELECT source_url, source_id, COUNT(*) AS n FROM media").fetchone()
+    assert (stored["source_url"], stored["source_id"], stored["n"]) == (
+        "https://a.test/1.mp3", "Generic:g1", 1
+    )
+
+
+def test_a_deduped_arrival_without_a_source_changes_nothing(conn, data_dir, src_dir):
+    src = make_file(src_dir, "ep.mp3")
+    media.ingest_path(conn, src, source_url="https://a.test/1.mp3", source_id="Generic:g1")
+
+    again = media.ingest_path(conn, src)
+
+    assert again["deduped"] is True
+    assert (again["source_url"], again["source_id"]) == ("https://a.test/1.mp3", "Generic:g1")

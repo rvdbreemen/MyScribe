@@ -314,14 +314,20 @@ def test_the_preview_says_what_a_single_link_is(client, monkeypatch):
     assert "0:42" in body  # 42 seconds, as every player shows it
 
 
-def test_the_preview_of_a_playlist_counts_the_entries_and_says_all_of_them(client, monkeypatch):
+def test_the_preview_of_a_playlist_counts_the_entries(client, monkeypatch):
+    """Until TASK-021 this panel said "A playlist of 3 videos. Fetching it
+    queues all 3": the count was the confirmation, because nothing could be
+    fetched one at a time. Now the list under it is the picker, the row
+    button hides while it shows, and "all 3" would describe a press that is
+    no longer on offer."""
     _probing(monkeypatch, FakeYdl(playlist_info(3)))
 
     body = _preview(client, "https://example.test/playlist?list=PL42").text
 
     assert "The Hitchhiker Lectures" in body
-    assert "3 videos" in body
-    assert "all 3" in body  # the confirmation: nothing is fetched one at a time
+    assert "3 episodes" in body
+    assert "all 3" not in body
+    assert body.count('name="entry"') == 3
 
 
 def test_the_preview_escapes_a_title_that_is_markup(client, monkeypatch):
@@ -529,7 +535,9 @@ it from lying:
   than making every test spell it out.
 
 Measured 2026-09-04 on this machine: the four Node tests here run in about
-0.6 s together, one `node` process each.
+0.6 s together, one `node` process each. TASK-021 added seven more (the
+episode list's filter, All shown, the cap, the patient retry, a dropped link)
+and three lines to the stub: `checked` on inputs, `dispatchEvent`, `Event`.
 """
 
 STATIC = Path(__file__).resolve().parent.parent / "scribe" / "static"
@@ -643,11 +651,17 @@ function el(tag, attrs) {
   node.click = function () { node.clicked += 1; };
   node.close = function () { node.closed += 1; node.open = false; };
   node.showModal = function () { node.open = true; };
+  node.focus = function () { node.focused = (node.focused || 0) + 1; };
+  /* dispatchEvent calls the listeners registered on this node, and nothing
+     else - the same "never propagated" rule as fire(). app.js dispatches an
+     `input` on the link field after a drop, so the field's own trigger runs. */
+  node.dispatchEvent = function (ev) { return fire(node, ev.type, ev); };
   /* A <button> with no type attribute submits, and an <input> with none is
      text. Those two defaults are the whole point of the rule app.js applies,
-     so the stub has them rather than every fixture spelling them out. */
+     so the stub has them rather than every fixture spelling them out. A
+     checkbox starts unticked, which is the default that matters to a count. */
   if (node.tagName === 'BUTTON') { node.type = node.attrs.type || 'submit'; }
-  if (node.tagName === 'INPUT') { node.type = node.attrs.type || 'text'; }
+  if (node.tagName === 'INPUT') { node.type = node.attrs.type || 'text'; node.checked = false; }
   return node;
 }
 
@@ -692,6 +706,15 @@ function event(props) {
   ev.stopPropagation = function () { ev.stopped += 1; };
   return ev;
 }
+
+/* `new Event('input', {bubbles: true})` as app.js writes it: the same plain
+   object event() builds, with its type on it, so dispatchEvent can route it. */
+function Event(type, props) {
+  const ev = event(props);
+  ev.type = type;
+  return ev;
+}
+globalThis.Event = Event;
 
 /* ---- the page ------------------------------------------------------------ */
 
@@ -1050,3 +1073,898 @@ def test_the_dialog_form_is_a_scope_where_enter_never_falls_through(client):
     assert len(fields) >= 6, f"only {len(fields)} fields found; the selector went stale"
     for field in fields:
         assert 'name="' in field, f"a field with no name: {field[:90]}"
+
+
+# --- the feed import (TASK-021): the list, the marks, the patient retry, the ticks ---
+
+"""
+A feed or a channel pasted into the link field lists its episodes, and the
+url route grows two cases in front of today's one: ticked entries become one
+job each, and a list with nothing ticked is a 400. The feed-shaped fixture is
+`feed_info` from `test_ingest_urls` - yt-dlp's own reading of a feed, smuggled
+guid and all - because that is the input the feature is about; `playlist_info`
+stays for the YouTube shape.
+"""
+
+import calendar
+import html
+
+from scribe import jobs, media
+from scribe.web import library
+from test_ingest_urls import FEED_URL, feed_info
+
+PLAYLIST = "https://example.test/playlist?list=PL42"
+
+
+def _entry(url: str, title: str = "Episode", source_id: str | None = None) -> str:
+    return json.dumps({"url": url, "title": title, "source_id": source_id})
+
+
+def _entries(n: int) -> list[str]:
+    return [
+        _entry(f"https://example.test/ep{i}.mp3", f"Episode {i}", f"Generic:g{i}")
+        for i in range(n)
+    ]
+
+
+def _post_episodes(client, entries, feed_url=FEED_URL, feed_title="The Hitchhiker Lectures", **extra):
+    data = {"url": feed_url, "feed_url": feed_url, "feed_title": feed_title, "entry": entries, **extra}
+    return client.post("/transcribe/url", data=data, headers=HX)
+
+
+def _rows(body: str) -> list[str]:
+    return re.findall(r"<li>(.*?)</li>", body, re.S)
+
+
+def _checkbox_values(body: str) -> list[dict]:
+    values = re.findall(r'<input type="checkbox" name="entry" value="([^"]*)"', body)
+    return [json.loads(html.unescape(value)) for value in values]
+
+
+def _seed_media(conn, tmp_path, name: str, **provenance) -> dict:
+    path = tmp_path / name
+    path.write_bytes(f"bytes of {name}".encode())
+    return media.ingest_path(conn, path, **provenance)
+
+
+# --- the list ------------------------------------------------------------------------
+
+
+def test_the_playlist_preview_lists_one_row_per_entry_with_a_value_that_round_trips(
+    client, monkeypatch
+):
+    """The checkbox value is the entry as JSON, autoescaped into the attribute
+    and unescaped by the browser on the way back; a title with quotes, an
+    ampersand and an angle bracket has to survive that trip untouched."""
+    _probing(monkeypatch, FakeYdl(feed_info()))
+
+    body = _preview(client, FEED_URL).text
+
+    values = _checkbox_values(body)
+    assert len(values) == 4
+    assert values[0]["title"] == 'Trump drinks Venezuela\'s milkshake & "more" <3 café'
+    assert values[0]["source_id"] == "Generic:guid-0"
+    assert values[0]["url"].startswith("https://cdn.test/ep/default.mp3?d=1&e=0#")
+    assert "<script" not in body and "&lt;3 café" in body
+    assert "4 episodes" in body
+    assert f'name="feed_url" value="{FEED_URL}"' in body
+    assert 'name="feed_title" value="The Hitchhiker Lectures"' in body
+
+
+def test_the_preview_marks_what_is_in_the_library_in_the_trash_and_queued(
+    client, conn, tmp_path, monkeypatch
+):
+    info = playlist_info(4)
+    info["entries"][1]["ie_key"] = "Youtube"  # source_id Youtube:vid1
+    _probing(monkeypatch, FakeYdl(info))
+    _seed_media(conn, tmp_path, "a.mp3", source_url="https://example.test/watch?v=vid0")
+    trashed = _seed_media(conn, tmp_path, "b.mp3", source_id="Youtube:vid1")
+    conn.execute("UPDATE media SET trashed_at=? WHERE id=?", (time.time(), trashed["id"]))
+    conn.commit()
+    jobs.enqueue(conn, url_stage.JOB_TYPE, params={"url": "https://example.test/watch?v=vid2#frag"})
+
+    rows = _rows(_preview(client, PLAYLIST).text)
+
+    assert len(rows) == 4
+    assert "in library" in rows[0] and "queued" not in rows[0]
+    assert "in trash" in rows[1] and "in library" not in rows[1]
+    assert "queued" in rows[2]
+    assert "ep-state" not in rows[3]
+
+
+def test_a_queued_job_wins_over_a_library_row_for_the_same_url(client, conn, tmp_path, monkeypatch):
+    """The transient fact that stops a duplicate download wins; "in library"
+    reappears on its own once the job finishes."""
+    _probing(monkeypatch, FakeYdl(playlist_info(1)))
+    _seed_media(conn, tmp_path, "a.mp3", source_url="https://example.test/watch?v=vid0")
+    jobs.enqueue(conn, url_stage.JOB_TYPE, params={"url": "https://example.test/watch?v=vid0"})
+
+    row = _rows(_preview(client, PLAYLIST).text)[0]
+
+    assert "queued" in row and "in library" not in row
+
+
+def test_known_sources_marks_queued_and_running_jobs_but_no_terminal_one(conn):
+    urls_ = [f"https://example.test/watch?v=s{i}" for i in range(7)]
+    running = jobs.enqueue(conn, url_stage.JOB_TYPE, params={"url": urls_[1]})
+    jobs.claim_next(conn)  # the oldest queued job: `running` is now running
+    jobs.enqueue(conn, url_stage.JOB_TYPE, params={"url": urls_[0]})
+    for i, status in zip((2, 3, 4, 5), ("done", "failed", "cancelled", "interrupted")):
+        job_id = jobs.enqueue(conn, url_stage.JOB_TYPE, params={"url": urls_[i]})
+        assert jobs.finish(conn, job_id, status)
+    jobs.enqueue(conn, url_stage.JOB_TYPE, params={"url": FEED_URL})  # the feed itself, from Fetch
+    assert conn.execute("SELECT status FROM job WHERE id=?", (running,)).fetchone()["status"] == "running"
+
+    states = ingest_ui.known_sources(conn, [{"url": u, "source_id": None} for u in urls_])
+
+    assert states == ["queued", "queued", None, None, None, None, None]
+
+
+def test_known_sources_matches_on_the_id_when_the_url_differs(conn, tmp_path, data_dir):
+    """A channel video added by hand as youtu.be/ID is the same recording
+    the channel listing calls watch?v=ID; the extractor-scoped id says so."""
+    _seed_media(conn, tmp_path, "a.mp3", source_url="https://youtu.be/vid0", source_id="Youtube:vid0")
+
+    states = ingest_ui.known_sources(
+        conn,
+        [
+            {"url": "https://www.youtube.com/watch?v=vid0", "source_id": "Youtube:vid0"},
+            {"url": "https://www.youtube.com/watch?v=vid1", "source_id": "Youtube:vid1"},
+        ],
+    )
+
+    assert states == ["library", None]
+
+
+def test_the_header_says_the_first_n_when_the_listing_was_cut(client, monkeypatch):
+    monkeypatch.setattr(ingest_ui, "MAX_LISTED", 3)
+    info = playlist_info(3)
+    info["playlist_count"] = 7
+    fake = _probing(monkeypatch, FakeYdl(info))
+
+    body = _preview(client, PLAYLIST).text
+
+    assert "the first 3 of 7 episodes" in body
+    assert fake.opts["playlistend"] == 3  # the limit reached the seam
+
+    _probing(monkeypatch, FakeYdl(playlist_info(3)))  # a channel: no total
+    assert "the first 3 episodes" in _preview(client, PLAYLIST).text
+
+
+def test_the_header_names_the_cap(client, monkeypatch):
+    _probing(monkeypatch, FakeYdl(playlist_info(2)))
+
+    body = _preview(client, PLAYLIST).text
+
+    assert f"at most {url_stage.MAX_FAN_OUT} per import" in body
+    assert f'data-max="{url_stage.MAX_FAN_OUT}"' in body
+
+
+def test_an_episode_row_shows_its_date_and_duration_and_copes_without_either(
+    client, monkeypatch
+):
+    """Noon UTC, so the local date is the same in every zone from UTC-12 to
+    UTC+11 - the reasoning the export tests record for NOON."""
+    info = playlist_info(3)
+    info["entries"][0]["timestamp"] = calendar.timegm((2026, 9, 4, 12, 0, 0))
+    info["entries"][0]["duration"] = 1527.0
+    info["entries"][1]["timestamp"] = calendar.timegm((2026, 9, 2, 12, 0, 0))
+    info["entries"][1].pop("duration")
+    info["entries"][2].pop("duration")
+    _probing(monkeypatch, FakeYdl(info))
+
+    rows = _rows(_preview(client, PLAYLIST).text)
+
+    assert "2026-09-04" in rows[0] and "25:27" in rows[0]
+    assert "2026-09-02" in rows[1] and "·" not in re.sub(r"\s+", " ", rows[1]).split("2026-09-02")[1]
+    assert "Lecture 2" in rows[2]
+    assert "None" not in rows[2] and "1970" not in rows[2]
+
+
+def test_an_episode_dated_before_1970_still_lists(client, monkeypatch):
+    """A feed sets pubDate and yt-dlp parses it with `unified_timestamp`, which
+    clamps nothing: a 1969 date is a negative epoch, and on Windows both
+    `time.localtime` and `datetime.fromtimestamp` refuse one with OSError
+    [Errno 22]. The panel renders the epoch twice per row (the search key and
+    the visible date), so one old episode turned this route into a 500 - and
+    this is the route whose docstring promises "Always a 200 ... The failure
+    *is* the content here". Measured on this machine 2026-09-09: an offset of
+    +0100 on epoch zero is enough (-3600), so a feed generator that emits "no
+    date" in any zone east of Greenwich reaches it without an archive in sight.
+    """
+    info = playlist_info(3)
+    info["entries"][0]["timestamp"] = -31536000.0        # 1969-01-01
+    info["entries"][1]["timestamp"] = -3600.0            # epoch zero, +0100
+    info["entries"][2]["timestamp"] = calendar.timegm((2026, 9, 4, 12, 0, 0))
+    _probing(monkeypatch, FakeYdl(info))
+
+    resp = _preview(client, PLAYLIST)
+
+    assert resp.status_code == 200
+    rows = _rows(resp.text)
+    # What every platform owes: the listing arrives, all three episodes are on
+    # it, and each is tickable. What the date cell says is deliberately not
+    # asserted - Windows cannot render a negative epoch and leaves it empty,
+    # Linux renders 1969-01-01, and both are correct. The invariant that the
+    # filters never raise is pinned in test_web_scaffold.py, where it bites on
+    # Windows and passes trivially on Linux.
+    assert len(rows) == 3
+    assert all(row.count('name="entry"') == 1 for row in rows)
+    assert "2026-09-04" in rows[2]
+
+
+def test_the_import_button_is_the_row_button_s_twin_and_the_tools_are_not_submits(
+    client, monkeypatch
+):
+    _probing(monkeypatch, FakeYdl(playlist_info(3)))
+
+    body = _preview(client, PLAYLIST).text
+
+    tag = re.search(r"<button[^>]*data-episodes-submit[^>]*>", body).group(0)
+    assert 'type="submit"' in tag and 'formaction="/transcribe/url"' in tag
+    assert 'hx-post="/transcribe/url"' in tag and 'hx-params="not files"' in tag
+    for name in ("data-episodes-all", "data-episodes-none"):
+        other = re.search(rf"<button[^>]*{name}[^>]*>", body).group(0)
+        assert 'type="button"' in other
+    filter_tag = re.search(r"<input[^>]*data-episode-filter[^>]*>", body).group(0)
+    assert " name=" not in filter_tag
+
+
+def test_the_link_field_previews_on_input_never_on_change(client):
+    """`change` fires on blur - the first click into the list - and the swap
+    would replace the list, ticks and filter text and all."""
+    body = client.get("/transcribe", headers=HX).text
+    tag = re.search(r'<input[^>]*name="url"[^>]*>', body).group(0)
+    trigger = re.search(r'hx-trigger="([^"]*)"', tag).group(1)
+    specs = [spec.strip().split()[0] for spec in trigger.split(",")]
+
+    assert "change" not in specs and "input" in specs
+    assert 'hx-sync="closest [data-panel]:replace"' in tag
+
+
+# --- the patient retry ---------------------------------------------------------------
+
+
+def _patient(client, url: str):
+    return client.post("/transcribe/url/preview", data={"url": url, "patient": "1"}, headers=HX)
+
+
+def test_a_slow_preview_offers_to_list_the_episodes_anyway(client, monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(urls, "build_ydl", lambda opts: BlockingYdl(release))
+    monkeypatch.setattr(ingest_ui, "PREVIEW_TIMEOUT_SECONDS", 0.2)
+    try:
+        body = _preview(client, "https://example.test/slow").text
+    finally:
+        release.set()
+
+    assert ingest_ui.HINT_SLOW in body
+    tag = re.search(r'<button[^>]*hx-post="/transcribe/url/preview"[^>]*>', body).group(0)
+    assert 'type="button"' in tag
+    assert 'hx-params="url,patient"' in tag and "patient" in re.search(r"hx-vals='([^']*)'", tag).group(1)
+    assert 'hx-target="#url-preview"' in tag and 'hx-swap="outerHTML"' in tag
+    assert "hx-sync=" in tag and 'hx-disabled-elt="this"' in tag
+
+
+def test_a_patient_preview_waits_past_the_short_budget(client, monkeypatch):
+    """Same site, same delay: the short budget gave up on it and the patient
+    one did not. That is what "a different budget" means."""
+    release = threading.Event()
+    monkeypatch.setattr(urls, "build_ydl", lambda opts: BlockingYdl(release))
+    monkeypatch.setattr(ingest_ui, "PREVIEW_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(ingest_ui, "PATIENT_TIMEOUT_SECONDS", 3.0)
+    try:
+        assert "took too long" in _preview(client, "https://example.test/slow").text
+        threading.Timer(0.6, release.set).start()
+        started = time.perf_counter()
+        body = _patient(client, "https://example.test/slow").text
+        elapsed = time.perf_counter() - started
+    finally:
+        release.set()
+
+    assert "Vogon Poetry Slam" in body and "took too long" not in body
+    assert 0.2 < elapsed < 3.0, f"the patient preview answered after {elapsed:.2f}s"
+
+
+def test_a_patient_preview_attaches_to_the_listing_already_running(client, monkeypatch):
+    """The 10 s probe's thread is still listing when the button is pressed;
+    the patient request joins it rather than starting a second listing of
+    the same URL on a second slot."""
+    release = threading.Event()
+    builds: list = []
+    slow = BlockingYdl(release)
+    monkeypatch.setattr(urls, "build_ydl", lambda opts: (builds.append(opts), slow)[1])
+    monkeypatch.setattr(ingest_ui, "PREVIEW_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(ingest_ui, "PATIENT_TIMEOUT_SECONDS", 3.0)
+    try:
+        _preview(client, "https://example.test/slow")
+        threading.Timer(0.3, release.set).start()
+        body = _patient(client, "https://example.test/slow").text
+    finally:
+        release.set()
+
+    assert "Vogon Poetry Slam" in body
+    assert len(builds) == 1
+
+
+def test_a_patient_preview_that_still_times_out_offers_no_second_retry(client, monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(urls, "build_ydl", lambda opts: BlockingYdl(release))
+    monkeypatch.setattr(ingest_ui, "PATIENT_TIMEOUT_SECONDS", 0.2)
+    try:
+        started = time.perf_counter()
+        body = _patient(client, "https://example.test/slow").text
+        elapsed = time.perf_counter() - started
+    finally:
+        release.set()
+
+    assert ingest_ui.HINT_SLOW in body
+    assert "patient" not in body
+    assert elapsed < 3.0
+
+
+def test_a_follower_holds_no_slot(client, monkeypatch):
+    """Two requests, one listing: the second is a follower and takes no
+    slot, so with every other slot held it still waits on the listing rather
+    than answering busy - while a different URL, which would need a slot of
+    its own, is refused."""
+    release = threading.Event()
+    slow = BlockingYdl(release)
+    monkeypatch.setattr(urls, "build_ydl", lambda opts: slow)
+    monkeypatch.setattr(ingest_ui, "PREVIEW_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(ingest_ui, "PATIENT_TIMEOUT_SECONDS", 0.2)
+    held = _hold_slots(ingest_ui.PREVIEW_WORKERS - 1)
+    try:
+        assert "took too long" in _preview(client, "https://example.test/slow").text
+        assert slow.started.wait(2)
+        follower = _patient(client, "https://example.test/slow").text
+        other = _preview(client, "https://example.test/another").text
+    finally:
+        release.set()
+        _release_slots(held)
+
+    assert "took too long" in follower and "at once" not in follower
+    assert "at once" in other
+
+
+@pytest.mark.parametrize("patient", [None, "1"])
+def test_the_preview_refuses_rather_than_starting_an_unbounded_number_of_probes_patient_or_not(
+    client, monkeypatch, patient
+):
+    _refuse_to_probe(monkeypatch)
+    data = {"url": URL}
+    if patient:
+        data["patient"] = patient
+    held = _hold_slots(ingest_ui.PREVIEW_WORKERS)
+    try:
+        body = client.post("/transcribe/url/preview", data=data, headers=HX).text
+    finally:
+        _release_slots(held)
+
+    assert "at once" in body
+
+
+def test_a_page_on_another_site_cannot_list_a_feed_patiently_either(client, monkeypatch):
+    _refuse_to_probe(monkeypatch)
+    elsewhere = {**HX, "Sec-Fetch-Site": "cross-site"}
+
+    refused = client.post(
+        "/transcribe/url/preview",
+        data={"url": "http://127.0.0.1:1/probe-me", "patient": "1"},
+        headers=elsewhere,
+    )
+
+    assert refused.status_code == 403
+
+
+# --- the url route with a list on screen ---------------------------------------------
+
+
+def test_ticked_entries_become_one_job_each_in_posted_order(client, conn):
+    resp = _post_episodes(client, _entries(3))
+
+    assert resp.status_code == 200
+    rows = _jobs(conn)
+    assert [row["type"] for row in rows] == [url_stage.JOB_TYPE] * 3
+    params = [_params(row) for row in rows]
+    assert [p["url"] for p in params] == [f"https://example.test/ep{i}.mp3" for i in range(3)]
+    for i, p in enumerate(params):
+        assert p["from_playlist"] is True
+        assert p["entry"] == {"title": f"Episode {i}", "source_id": f"Generic:g{i}"}
+        assert p["source"] == {"url": FEED_URL, "title": "The Hitchhiker Lectures"}
+        assert p["options"] == transcribe_defaults()
+        assert p["folder_id"] is None
+    assert all(p["url"] != FEED_URL for p in params)
+
+
+def transcribe_defaults() -> dict:
+    from scribe.options import TranscribeOptions
+
+    return TranscribeOptions().to_params()
+
+
+def test_exactly_the_cap_s_worth_are_all_queued_and_one_more_is_refused_with_both_numbers(
+    client, conn, monkeypatch
+):
+    """The boundary is inclusive here as it is in the fan-out: the cap is a
+    size that works, and one past it names both numbers."""
+    monkeypatch.setattr(url_stage, "MAX_FAN_OUT", 3)
+
+    refused = _post_episodes(client, _entries(4))
+    assert refused.status_code == 400
+    assert "4" in refused.json()["detail"] and "3" in refused.json()["detail"]
+    assert _jobs(conn) == []
+
+    accepted = _post_episodes(client, _entries(3))
+    assert accepted.status_code == 200
+    assert len(_jobs(conn)) == 3
+
+
+def test_a_whole_listing_posted_at_once_is_refused_by_this_route_not_by_starlette(client, conn):
+    """Starlette's form parser refuses more than 1000 fields with its own
+    sentence; "All shown, Import" on a big feed must reach this route's
+    answer instead."""
+    resp = _post_episodes(client, _entries(ingest_ui.MAX_LISTED))
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "at most" in detail and "Too many fields" not in detail
+    assert _jobs(conn) == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not json",
+        "[1]",
+        '"str"',
+        "null",
+        "{}",
+        '{"url": "file:///etc/passwd"}',
+        '{"url": "ytsearch:how to make bread"}',
+        '{"url": "javascript:alert(1)"}',
+        '{"url": 5}',
+        '{"url": "https://x.test/a", "title": NaN}',
+        pytest.param("x" * 5000, id="oversize"),
+        pytest.param("[" * 50000 + "]" * 50000, id="nested-100k"),
+    ],
+)
+def test_one_bad_entry_among_good_ones_queues_none_of_them(client, conn, bad, monkeypatch):
+    """Between two good ones on purpose: good-then-bad catches a route that
+    enqueues as it validates, bad-then-good one that skips the bad entry and
+    queues the rest."""
+    _refuse_to_probe(monkeypatch)
+    good = _entry("https://example.test/ep1.mp3", "Lecture 1")
+
+    resp = _post_episodes(client, [good, bad, good])
+
+    assert resp.status_code == 400
+    assert "episode 2" in resp.json()["detail"]
+    assert _jobs(conn) == []
+
+
+def test_an_entry_title_is_cut_at_the_library_s_name_limit(client, conn):
+    _post_episodes(client, [_entry("https://example.test/ep.mp3", "x" * 400)])
+
+    assert len(_params(_jobs(conn)[0])["entry"]["title"]) == library.MAX_NAME
+
+
+def test_a_feed_url_that_is_not_http_is_refused_and_queues_nothing(client, conn):
+    resp = _post_episodes(client, _entries(1), feed_url="file:///etc/passwd")
+
+    assert resp.status_code == 400
+    assert _jobs(conn) == []
+
+
+def test_a_list_with_nothing_ticked_is_refused_and_queues_nothing(client, conn, monkeypatch):
+    _refuse_to_probe(monkeypatch)
+
+    resp = client.post(
+        "/transcribe/url",
+        data={"url": FEED_URL, "feed_url": FEED_URL, "feed_title": "The Hitchhiker Lectures"},
+        headers=HX,
+    )
+
+    assert resp.status_code == 400
+    assert "tick at least one" in resp.json()["detail"]
+    assert _jobs(conn) == []
+
+
+def test_a_post_with_neither_still_queues_one_job_on_the_link(client, conn):
+    """Today's door, unchanged: a single video, a paste without scripting, a
+    feed whose listing timed out - the child's fan-out stays the fallback."""
+    resp = client.post("/transcribe/url", data={"url": URL}, headers=HX)
+
+    assert resp.status_code == 200
+    rows = _jobs(conn)
+    assert len(rows) == 1 and _params(rows[0])["url"] == URL
+    assert set(_params(rows[0])) == {"url", "folder_id", "options"}
+
+
+def test_the_cookies_file_travels_to_every_episode_job(client, conn, roots):
+    cookies = roots / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+
+    _post_episodes(client, _entries(2), cookies_file=str(cookies))
+
+    assert [_params(row)["cookies_file"] for row in _jobs(conn)] == [str(cookies)] * 2
+
+
+def test_the_flash_names_the_feed_and_the_count(client):
+    body = _post_episodes(client, _entries(3)).text
+
+    assert "Fetching 3 episodes of The Hitchhiker Lectures" in body
+
+
+def test_a_feed_title_is_cut_for_the_flash(client):
+    body = _post_episodes(client, _entries(1), feed_title="y" * 400).text
+
+    assert "y" * ingest_ui.MAX_FEED_TITLE in body
+    assert "y" * (ingest_ui.MAX_FEED_TITLE + 1) not in body
+
+
+# --- never an href -------------------------------------------------------------------
+
+
+def test_a_javascript_source_url_on_a_job_is_text_on_the_details_page_never_an_href(client, conn):
+    job_id = jobs.enqueue(
+        conn, url_stage.JOB_TYPE,
+        params={"url": "https://example.test/x", "source": {"url": "javascript:alert(1)", "title": "t"}},
+    )
+
+    body = client.get(f"/jobs/{job_id}/details", headers=HX).text
+
+    assert 'href="javascript:' not in body
+    assert "javascript:alert(1)" in html.unescape(body)
+
+
+def test_no_template_binds_an_href_to_a_stranger_s_url():
+    """A URL that came over the network is text on every page it reaches.
+    Autoescaping quotes an attribute correctly and does nothing about a
+    javascript: scheme, so the invariant is "never an href"."""
+    from scribe import web
+
+    names = r"(source_url|webpage_url|feed_url|params\.url|source\.url|entry\.url|e\.url)"
+    offenders, mentions = [], 0
+    for path in sorted(Path(web.TEMPLATES_DIR).glob("*.html")):
+        text = path.read_text(encoding="utf-8")
+        mentions += len(re.findall(names, text))
+        for match in re.finditer(r"""href=["']\{\{[^}]*""" + names, text):
+            offenders.append((path.name, match.group(0)))
+
+    assert offenders == []
+    assert mentions > 0, "the guard tests nothing if no template names one of these"
+
+
+# --- the episode list's conveniences, which live in JavaScript (TASK-021) -------------
+
+EPISODES_FIXTURE = r"""
+    /* The URL panel as _url_panel.html renders a listing into it: the
+       sources block with the link tab's radio, the panel with the toolbar,
+       three rows whose data-search carries a date, and the Import submit.
+       data-max is 2 so the cap is reachable with three rows. */
+    const sources = form.append(el('div', { 'data-sources': '' }));
+    const srcUrl = sources.append(el('input', { type: 'radio', id: 'src-url', name: 'source_tab' }));
+    sources.append(urlRow.remove());
+    const panel = sources.append(el('div', { id: 'url-preview', 'data-panel': 'url' }));
+    const tools = panel.append(el('div', { 'data-episodes': '' }));
+    const filter = tools.append(el('input', { type: 'search', 'data-episode-filter': '' }));
+    const allShown = tools.append(el('button', { type: 'button', 'data-episodes-all': '' }));
+    const none = tools.append(el('button', { type: 'button', 'data-episodes-none': '' }));
+    const count = tools.append(el('span', { 'data-episodes-count': '', 'data-max': '2' }));
+    const list = panel.append(el('ul', { class: 'episodes' }));
+    function row(search) {
+      const li = list.append(el('li'));
+      const label = li.append(el('label', { class: 'episode', 'data-search': search }));
+      const box = label.append(el('input', { type: 'checkbox', name: 'entry', value: '{}' }));
+      return { label: label, box: box };
+    }
+    const r1 = row('love in the time of palantir 2025-03-14');
+    const r2 = row('the indicator crossover 2026-08-28');
+    const r3 = row('vogon poetry slam 2026-09-01');
+    const importIt = panel.append(el('button', { type: 'submit', 'data-episodes-submit': '' }));
+    function tick(r, on) {
+      r.box.checked = on;
+      fire(document, 'input', event({ target: r.box }));
+    }
+    function typeFilter(text) {
+      filter.value = text;
+      fire(document, 'input', event({ target: filter }));
+    }
+"""
+
+
+@needs_node
+def test_the_filter_matches_the_date_so_a_year_selects_that_years_episodes(tmp_path):
+    """No digits in any title, so a match on "2025" can only come from the
+    date the row carries beside it - "filter on 2025, All shown, Import" is
+    the flow the list is sold on."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    typeFilter('2025');
+    const hidden = [r1.label.hidden, r2.label.hidden, r3.label.hidden];
+    fire(document, 'click', event({ target: allShown }));
+    done({ hidden: hidden, ticked: [r1.box.checked, r2.box.checked, r3.box.checked], count: count.textContent });
+""",
+    )
+
+    assert result["hidden"] == [False, True, True]
+    assert result["ticked"] == [True, False, False]
+    assert result["count"] == "1 selected"
+
+
+@needs_node
+def test_all_shown_ticks_only_what_the_filter_left_and_none_clears(tmp_path):
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    typeFilter('palantir');
+    fire(document, 'click', event({ target: allShown }));
+    const afterAll = [r1.box.checked, r2.box.checked, r3.box.checked];
+    typeFilter('');
+    const shownAgain = [r1.label.hidden, r2.label.hidden, r3.label.hidden];
+    fire(document, 'click', event({ target: none }));
+    done({ afterAll: afterAll, shownAgain: shownAgain,
+           afterNone: [r1.box.checked, r2.box.checked, r3.box.checked], count: count.textContent });
+""",
+    )
+
+    assert result["afterAll"] == [True, False, False]
+    assert result["shownAgain"] == [False, False, False]
+    assert result["afterNone"] == [False, False, False]
+    assert result["count"] == "0 selected"
+
+
+@needs_node
+def test_ticking_past_the_cap_disables_import_and_says_so(tmp_path):
+    """The server's 400 with the count is the backstop; with scripting on the
+    cap is shown where the decision is made, before the press."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    tick(r1, true); tick(r2, true); tick(r3, true);
+    const over = { disabled: importIt.disabled, count: count.textContent, marked: count.classList.contains('over') };
+    tick(r3, false);
+    done({ over: over, back: { disabled: importIt.disabled, count: count.textContent, marked: count.classList.contains('over') } });
+""",
+    )
+
+    assert result["over"] == {"disabled": True, "count": "3 selected - at most 2 in one go", "marked": True}
+    assert result["back"] == {"disabled": False, "count": "2 selected", "marked": False}
+
+
+@needs_node
+def test_listing_the_episodes_anyway_does_not_close_the_dialog_and_import_does(tmp_path):
+    """CR-001's class again: the retry is a POST that always answers 200 and
+    must leave the dialog open; Import is the work being done and closes it."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    const retry = panel.append(el('button', { type: 'button' }));
+    fire(document.body, 'htmx:afterRequest', event({
+      detail: { elt: retry, successful: true, requestConfig: { verb: 'POST' } }
+    }));
+    const afterRetry = dialog.closed;
+    fire(document.body, 'htmx:afterRequest', event({
+      detail: { elt: importIt, successful: true, requestConfig: { verb: 'POST' } }
+    }));
+    done({ afterRetry: afterRetry, afterImport: dialog.closed });
+""",
+    )
+
+    assert result == {"afterRetry": 0, "afterImport": 1}
+
+
+DROPZONE_FIXTURE = r"""
+    /* The file half of the dialog as transcribe_dialog.html builds it: the
+       drop zone, the file input inside it and the hint that names what was
+       chosen. */
+    const zone = form.append(el('div', { class: 'dropzone', 'data-dropzone': '' }));
+    const fileInput = zone.append(el('input', { type: 'file', name: 'files' }));
+    const fileSummary = zone.append(el('p', { class: 'hint', 'data-file-summary': '' }));
+    fileSummary.textContent = 'No files chosen yet.';
+"""
+
+
+READING_FIXTURE = r"""
+    /* The two readings as _transcript_panel.html renders them: the words
+       showing, the cleaned block hidden, and one button between them. */
+    const readingSwitch = body.append(el('div', { 'data-reading-switch': '' }));
+    const readingButton = readingSwitch.append(el('button', { type: 'button', 'data-reading-toggle': '' }));
+    readingButton.textContent = 'Show the cleaned reading';
+    const readingSays = readingSwitch.append(el('span', { 'data-reading-says': '' }));
+    readingSays.textContent = 'Showing the transcript as it was heard.';
+    const wordsBlock = body.append(el('div', { id: 'transcript', 'data-reading': 'words' }));
+    const cleanBlock = body.append(el('div', { id: 'clean-reading', 'data-reading': 'clean' }));
+    cleanBlock.hidden = true;
+"""
+
+
+@needs_node
+def test_one_click_shows_the_cleaned_reading_and_one_more_brings_the_words_back(tmp_path):
+    """Robert asked for one click each way. No request, no state: both
+    readings are on the page and this decides which is on screen."""
+    result = run_dom(
+        tmp_path,
+        READING_FIXTURE + r"""
+    load(APP);
+    fire(document, 'click', event({ target: readingButton }));
+    const shown = { words: wordsBlock.hidden, clean: cleanBlock.hidden,
+                    label: readingButton.textContent, says: readingSays.textContent,
+                    pressed: readingButton.getAttribute('aria-pressed') };
+    fire(document, 'click', event({ target: readingButton }));
+    const back = { words: wordsBlock.hidden, clean: cleanBlock.hidden,
+                   label: readingButton.textContent, pressed: readingButton.getAttribute('aria-pressed') };
+    done({ shown: shown, back: back });
+""",
+    )
+
+    assert result["shown"]["words"] is True and result["shown"]["clean"] is False
+    assert result["shown"]["label"] == "Show the transcript"
+    assert result["shown"]["pressed"] == "true"
+    assert "cleaned reading" in result["shown"]["says"]
+
+    assert result["back"]["words"] is False and result["back"]["clean"] is True
+    assert result["back"]["label"] == "Show the cleaned reading"
+    assert result["back"]["pressed"] == "false"
+
+
+@needs_node
+def test_a_dropped_file_still_reaches_the_file_input_and_leaves_the_link_field_alone(tmp_path):
+    """The drop listener took the link path on top of the file path, so this
+    pins the older half: files dropped on the zone go to the file input, the
+    hint names them, and nothing switches to the link tab. Both halves share
+    one listener now, and a `return` is all that separates them."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + DROPZONE_FIXTURE + r"""
+    load(APP);
+    const drop = event({ target: zone, dataTransfer: {
+      files: [{ name: 'vogon-poetry.m4a' }],
+      getData: function () { throw new Error('a file drop must not read the link formats'); }
+    } });
+    fire(document, 'drop', drop);
+    done({ prevented: drop.defaultPrevented, chosen: (fileInput.files || []).map(function (f) { return f.name; }),
+           summary: fileSummary.textContent, over: zone.classList.contains('over'),
+           tab: srcUrl.checked, url: urlField.value });
+""",
+    )
+
+    assert result == {
+        "prevented": 1,
+        "chosen": ["vogon-poetry.m4a"],
+        "summary": "vogon-poetry.m4a",
+        "over": False,
+        "tab": False,
+        "url": "",
+    }
+
+
+@needs_node
+def test_a_dropped_link_opens_the_link_tab_fills_the_field_and_previews(tmp_path):
+    """"Drop a URL", read literally: a link dragged from an address bar or a
+    feed icon onto the dialog lands in the link field, and the field's own
+    trigger (an `input` event) starts the preview. text/uri-list may carry
+    several lines and comments (RFC 2483); the first real line is the link."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    let previews = 0;
+    listen(urlField, 'input', function () { previews += 1; });
+    const over = event({ target: sources });
+    fire(document, 'dragover', over);
+    const drop = event({ target: sources, dataTransfer: { files: [], getData: function (kind) {
+      return kind === 'text/uri-list' ? '# from a feed icon\r\nhttps://feeds.npr.org/510289/podcast.xml\r\n' : '';
+    } } });
+    fire(document, 'drop', drop);
+    done({ dragPrevented: over.defaultPrevented, prevented: drop.defaultPrevented, tab: srcUrl.checked,
+           value: urlField.value, previews: previews, focused: urlField.focused || 0 });
+""",
+    )
+
+    assert result["dragPrevented"] == 1 and result["prevented"] == 1
+    assert result["tab"] is True
+    assert result["value"] == "https://feeds.npr.org/510289/podcast.xml"
+    assert result["previews"] == 1
+    assert result["focused"] == 1
+
+
+@needs_node
+def test_a_dropped_text_that_is_not_a_link_is_ignored(tmp_path):
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    const drop = event({ target: sources, dataTransfer: { files: [], getData: function (kind) {
+      return kind === 'text/plain' ? 'D:\\music\\x.mp3' : '';
+    } } });
+    fire(document, 'drop', drop);
+    done({ tab: srcUrl.checked, value: urlField.value });
+""",
+    )
+
+    assert result["tab"] is False
+    assert result["value"] == ""
+
+
+@needs_node
+def test_enter_in_the_link_field_with_a_list_present_still_presses_the_row_button(tmp_path):
+    """The row button hides under CSS while a list shows, but Enter still
+    clicks it - and that is harmless now, because the route it posts to
+    honours the ticks. The key must keep going to the row, not to the list."""
+    result = run_dom(
+        tmp_path,
+        DIALOG_FIXTURE + EPISODES_FIXTURE + r"""
+    load(APP);
+    tick(r1, true);
+    const ev = event({ key: 'Enter', target: urlField });
+    fire(document, 'keydown', ev);
+    done({ fetchIt: fetchIt.clicked, importIt: importIt.clicked, addFile: addFile.clicked, prevented: ev.defaultPrevented });
+""",
+    )
+
+    assert result == {"fetchIt": 1, "importIt": 0, "addFile": 0, "prevented": 1}
+
+
+# --- keeping the feed (TASK-025) ---------------------------------------------------
+
+
+def _feeds(conn):
+    from scribe.ingest import feeds as feeds_mod
+
+    return feeds_mod.all_feeds(conn)
+
+
+def test_importing_follows_the_feed_by_default(client, conn):
+    """ADR-008: once you start with a feed it stays watched. The box is ticked
+    unless a person unticks it."""
+    _post_episodes(client, _entries(2), follow_feed="1")
+
+    followed = _feeds(conn)
+    assert [f["url"] for f in followed] == [FEED_URL]
+    assert followed[0]["title"] == "The Hitchhiker Lectures"
+
+
+def test_the_panel_offers_the_box_ready_ticked(client, monkeypatch):
+    _probing(monkeypatch, FakeYdl(playlist_info(2)))
+
+    body = _preview(client, PLAYLIST).text
+
+    assert 'name="follow_feed"' in body
+    assert "keep following this feed" in body
+
+
+def test_unticking_it_imports_without_following(client, conn):
+    """So one episode can be plucked from a feed without binding yourself to
+    it - an unchecked box sends nothing at all."""
+    _post_episodes(client, _entries(1))
+
+    assert _feeds(conn) == []
+
+
+def test_following_records_what_is_on_screen_so_the_back_catalogue_stays_put(
+    client, conn
+):
+    """Subscribing queues nothing by itself. The episodes listed today are
+    accounted for; only what appears after today is new."""
+    _post_episodes(client, _entries(3), follow_feed="1")
+
+    feed_id = _feeds(conn)[0]["id"]
+    seen = {
+        row["source_id"]
+        for row in conn.execute("SELECT source_id FROM feed_seen WHERE feed_id=?", (feed_id,))
+    }
+    assert seen == {"Generic:g0", "Generic:g1", "Generic:g2"}
+
+
+def test_importing_from_the_same_feed_again_follows_it_once(client, conn):
+    _post_episodes(client, _entries(1), follow_feed="1")
+    _post_episodes(client, _entries(2), follow_feed="1")
+
+    assert len(_feeds(conn)) == 1

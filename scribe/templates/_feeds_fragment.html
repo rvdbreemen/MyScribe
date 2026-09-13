@@ -1,0 +1,83 @@
+{#
+  The feeds board, and the element that refreshes itself.
+
+  Context (scribe.web.feeds_ui.board_context):
+    feeds           list: url, title, checked_at, never_checked, due_in,
+                    last_result, failures, failing, paused
+    any_failing     bool: at least one feed has stopped answering
+    interval_hours  int, cap int: what the page above says about the schedule
+
+  The poll interval is rendered into the fragment like the jobs board's, so
+  each swap carries the next one. Slower than that board's two seconds: a feed
+  changes on the hour, and a page that asks every two seconds about something
+  that moves once a day is only noise.
+#}
+{% import "_macros.html" as m %}
+<div id="feeds-live" class="feeds-live"
+     hx-get="/feeds/fragment" hx-trigger="every 60s, refresh, feeds-changed from:body"
+     hx-swap="outerHTML">
+  {% if any_failing %}
+  <p class="flash bad" role="status">
+    A feed has stopped answering. It is still being checked - a host that is
+    down for a week is no reason to forget a podcast - but nothing new will
+    arrive from it until it comes back.
+  </p>
+  {% endif %}
+
+  <table class="feeds">
+    <thead>
+      <tr>
+        <th>Feed</th>
+        <th>Last checked</th>
+        <th>What it found</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for feed in feeds %}
+      <tr data-feed="{{ feed.id }}"{% if feed.paused %} class="paused"{% endif %}>
+        <td>
+          {# Never an href: this URL came over the network from a stranger's
+             feed, and the same rule holds here as in the episode list. #}
+          <strong>{{ feed.title or "(untitled feed)" }}</strong>
+          <div class="muted mono">{{ feed.url }}</div>
+          {% if feed.paused %}<span class="badge">paused</span>{% endif %}
+          {% if feed.failing %}<span class="badge fail">not answering</span>{% endif %}
+        </td>
+        <td>
+          {% if feed.never_checked %}
+          <span class="muted">not yet</span>
+          {% else %}
+          {{ m.when(feed.checked_at) }}
+          {% endif %}
+        </td>
+        <td>{{ feed.last_result or "-" }}</td>
+        <td class="feed-actions">
+          <form method="post" action="/feeds/{{ feed.id }}/poll"
+                hx-post="/feeds/{{ feed.id }}/poll" hx-target="#feeds-live" hx-swap="outerHTML"
+                hx-disabled-elt="find button" hx-indicator="closest tr">
+            <button type="submit">Check now</button>
+          </form>
+          <form method="post" action="/feeds/{{ feed.id }}/pause"
+                hx-post="/feeds/{{ feed.id }}/pause" hx-target="#feeds-live" hx-swap="outerHTML">
+            <input type="hidden" name="paused" value="{{ 0 if feed.paused else 1 }}">
+            <button type="submit">{{ "Resume" if feed.paused else "Pause" }}</button>
+          </form>
+          <form method="post" action="/feeds/{{ feed.id }}/unsubscribe"
+                data-confirm="Stop following {{ feed.title or feed.url }}? The episodes it already brought in stay in your library."
+                hx-post="/feeds/{{ feed.id }}/unsubscribe" hx-target="#feeds-live" hx-swap="outerHTML">
+            <button type="submit" class="danger">Unsubscribe</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="4" class="muted">
+          Nothing is being followed yet. Import from a podcast feed or a
+          YouTube channel and leave "keep following this feed" ticked.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

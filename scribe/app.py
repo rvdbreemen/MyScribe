@@ -25,6 +25,19 @@ dialog uses (`language`, `tier`, `diarize`, ...), validated by
 mean the same thing by them, or a raw `params` object for a caller who knows
 the stage keys. Not both: two answers to one question would need a precedence
 rule, and a 400 is clearer than one.
+
+The raw object is held to `options.PARAM_KEYS`, and a key outside it is a 400
+that names it (TASK-034). It used to go onto the job unread, and the diarize
+stage used to hand `params["diarization_model"]` to its pipeline loader, which
+builds whatever class that pipeline's config names - so any process on this
+machine, another Windows account included, could choose code the runner
+executed. `scribe.guard` stops a browser; it cannot stop a local client, and
+this is the only route that reads a client's params object at all. A retry is
+the same door a second time, so it replays a stored transcribe request - a
+transcribe job's params, or the options an ingest_url job will hand the
+transcribe job it queues - through the same sieve, and drops a model that is
+not a speech model: a job stored before the fix is never re-validated
+otherwise.
 """
 
 import json
@@ -37,9 +50,9 @@ from starlette.concurrency import run_in_threadpool
 
 import scribe
 from scribe import applog, db, fsbrowse, guard, jobs, media, paths, supervisor, web
-from scribe.ingest import recording, watching
-from scribe.options import OPTION_FIELDS, parse_options
-from scribe.stages import transcribe
+from scribe.ingest import feeds, recording, watching
+from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options, replayable
+from scribe.stages import finalize, transcribe, url_stage
 
 # The form field carrying the upload, and the job type ingest queues.
 _UPLOAD_FIELD = "file"
@@ -93,6 +106,19 @@ def _ingest_options(source: dict) -> tuple[str | None, int | None, dict]:
             raise HTTPException(status_code=400, detail=f"params is not valid JSON: {exc}")
     if not isinstance(params, dict):
         raise HTTPException(status_code=400, detail="params must be a JSON object")
+    # Refused rather than dropped: a caller who sent a key meant something by
+    # it, and a job that silently ignores it is a worse answer than a 400 that
+    # says which one. Checked before anything is filed, so a refusal leaves no
+    # media row behind.
+    foreign = sorted(key for key in params if key not in PARAM_KEYS)
+    if foreign:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"params carries {', '.join(map(repr, foreign))}, which a transcribe "
+                f"job does not take; it takes {', '.join(sorted(PARAM_KEYS))}"
+            ),
+        )
 
     given = {key: source[key] for key in OPTION_FIELDS if key in source}
     if given:
@@ -216,6 +242,11 @@ def create_app(
         supervisor.reconcile(conn)
         supervisor.sweep_stderr()
         recording.sweep(conn)
+        # And one question about what this app could not do yet when those
+        # recordings were made: which of them still say "Speaker 1" because
+        # the identification pass did not exist. It queues a job each and
+        # finds nothing the second time (TASK-024).
+        finalize.sweep_speaker_passes(conn)
         app.state.conn = conn
         sup: supervisor.Supervisor | None = None
         if start_supervisor:
@@ -227,9 +258,20 @@ def create_app(
             watcher = watching.Watcher(db_path or paths.DB_PATH)
             watcher.start()
         app.state.watcher = watcher
+        # The feeds, on a thread of their own for the reason ADR-008 gives:
+        # the supervisor's tick is claim-a-job and nothing else, and a slow
+        # feed there would stall the queue. It follows the watcher's switch
+        # because both are "the app looks for work by itself".
+        feed_watcher: feeds.FeedWatcher | None = None
+        if start_watcher:
+            feed_watcher = feeds.FeedWatcher(db_path or paths.DB_PATH)
+            feed_watcher.start()
+        app.state.feed_watcher = feed_watcher
         try:
             yield
         finally:
+            if feed_watcher is not None:
+                feed_watcher.stop()
             if watcher is not None:
                 watcher.stop()
             if sup is not None:
@@ -308,11 +350,30 @@ def create_app(
                     f"{'/'.join(jobs.RETRYABLE_STATUSES)} jobs can be retried"
                 ),
             )
+        params = json.loads(row["params_json"] or "{}")
+        # A job stored before TASK-034 may carry a key the door now refuses;
+        # replaying it verbatim would be the old door with extra steps. So a
+        # transcribe request is replayed through `options.replayable` - the
+        # door's keys, and a model only if it is a speech model - in both
+        # places one is stored: a transcribe job's params (`_INGEST_JOB_TYPE`
+        # is "transcribe", the job this app's ingest queues), and an
+        # ingest_url job's nested options, which `url_stage.transcribe_params`
+        # copies unread into the transcribe job its download queues. The rest
+        # of an ingest_url job (`feed_id`, `entry`, ...) and a language-model
+        # job's `prompt` are their own vocabularies, not strays. Options that
+        # are not a dict are left alone: every producer writes `to_params()`,
+        # and the stage no longer reads the key that made this matter.
+        if row["type"] == _INGEST_JOB_TYPE:
+            params = replayable(params)
+        elif row["type"] == url_stage.JOB_TYPE and isinstance(
+            params.get(url_stage.OPTIONS_KEY), dict
+        ):
+            params[url_stage.OPTIONS_KEY] = replayable(params[url_stage.OPTIONS_KEY])
         new_id = jobs.enqueue(
             conn,
             row["type"],
             media_id=row["media_id"],
-            params=json.loads(row["params_json"] or "{}"),
+            params=params,
             priority=row["priority"],
             retry_of=job_id,
         )

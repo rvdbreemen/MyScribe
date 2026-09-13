@@ -654,10 +654,13 @@ def test_a_chat_job_runs_end_to_end_and_stores_the_pair(conn, short_media, monke
     assert stored[1]["content"] == ANSWER
 
     events = jobs.events_after(conn, job_id, 0)
+    # `apply` joined the stages in TASK-024 and is a no-op for chat: a turn
+    # answers a question and changes nothing about the recording.
     assert [e["payload"]["name"] for e in events if e["kind"] == "stage"] == [
         "prepare",
         "generate",
         "store",
+        "apply",
     ]
     done = [e for e in events if e["kind"] == "chat"]
     assert done and done[-1]["payload"]["message_id"] == stored[1]["id"]
@@ -723,7 +726,7 @@ def test_a_chat_job_files_its_timings_under_the_model_that_answered(
     assert runner.main([str(job_id)]) == 0
 
     perf = [dict(r) for r in conn.execute("SELECT stage, model FROM stage_perf ORDER BY id")]
-    assert [r["stage"] for r in perf] == ["prepare", "generate", "store"]
+    assert [r["stage"] for r in perf] == ["prepare", "generate", "store", "apply"]
     assert {r["model"] for r in perf} == {"fake-1"}
 
 

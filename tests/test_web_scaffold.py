@@ -7,6 +7,7 @@ helpers every later UI test builds on write rows the schema actually accepts.
 No GPU, no models, no pipeline - a seeded temp database and the TestClient.
 """
 
+import calendar
 import os
 
 import re
@@ -169,6 +170,46 @@ def test_the_switch_offers_system_light_and_dark_with_system_pressed(client):
     for choice in ("system", "light", "dark"):
         assert f'data-theme-choice="{choice}"' in body
     assert 'data-theme-choice="system" aria-pressed="true"' in body
+
+
+# --- the date filters ---------------------------------------------------------
+
+
+NEGATIVE_EPOCHS = [
+    pytest.param(-1.0, id="one-second-before-epoch"),
+    pytest.param(-3600.0, id="epoch-zero-stamped-+0100"),
+    pytest.param(-31536000.0, id="1969"),
+    pytest.param(-2208988800.0, id="1900"),
+]
+
+
+@pytest.mark.parametrize("epoch", NEGATIVE_EPOCHS)
+def test_a_date_filter_never_raises_on_an_epoch_the_platform_dislikes(epoch):
+    """The filters take dates from strangers, so they may not raise.
+
+    A podcast's pubDate reaches `localtime` and `isotime` through yt-dlp's
+    `unified_timestamp`, which clamps nothing. On Windows the C library
+    refuses every negative epoch - measured 2026-09-09 on this machine,
+    `time.localtime(-1)` and `datetime.fromtimestamp(-31536000, tz=utc)` both
+    give OSError [Errno 22] - and one such episode used to turn the whole
+    episode list into a 500.
+
+    This test is asymmetric on purpose and says so: on Windows it bites, on
+    Linux and macOS the conversions succeed and it only proves the guard did
+    not swallow a good date. So it asserts the contract both platforms share -
+    a string comes back, never an exception - and leaves the text to the
+    platform.
+    """
+    assert isinstance(web.localtime(epoch), str)
+    assert isinstance(web.isotime(epoch), str)
+
+
+def test_a_date_the_platform_can_render_is_still_rendered():
+    """The other half: the guard must not turn every date into an empty cell."""
+    noon = calendar.timegm((2026, 9, 4, 12, 0, 0))
+
+    assert web.localtime(noon, "%Y-%m-%d") == "2026-09-04"
+    assert web.isotime(noon) == "2026-09-04T12:00:00+00:00"
 
 
 # --- .env ---------------------------------------------------------------------

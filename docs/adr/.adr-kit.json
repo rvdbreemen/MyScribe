@@ -1,6 +1,7 @@
 {
   "judge": {
     "backend": "host",
-    "llm_enabled": true
+    "llm_enabled": true,
+    "max_diff_bytes": 4194304
   }
 }

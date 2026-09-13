@@ -686,7 +686,13 @@ def test_param_keys_covers_everything_to_params_can_produce():
     assert transcribe.EXTRA_HOTWORDS_KEY in imported  # the key this test exists for
 
     # Every key the sieve admits is one some producer writes; nothing decorative.
-    assert options.PARAM_KEYS == set(fullest.to_params()) | {transcribe.EXTRA_HOTWORDS_KEY}
+    # `device` and `compute_type` joined with TASK-034, when the sieve became
+    # the door: their producer is a raw params object on `POST /api/media`
+    # (tests/test_pipeline_e2e.py's CPU_PARAMS runs tiny on the CPU that way),
+    # and the stages that read them are transcribe.run and diarize.run.
+    assert options.PARAM_KEYS == set(fullest.to_params()) | {
+        transcribe.EXTRA_HOTWORDS_KEY, "device", "compute_type"
+    }
 
 
 def test_param_keys_covers_every_producer_of_a_transcribe_job():

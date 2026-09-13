@@ -48,7 +48,7 @@ from starlette.responses import Response, StreamingResponse
 
 from scribe import db, jobs, runner
 from scribe.render import format_ts
-from scribe.stages import transcribe
+from scribe.stages import transcribe, url_stage
 from scribe.web import library, render
 
 router = APIRouter()
@@ -157,6 +157,24 @@ def _params(row: dict) -> dict:
     return params if isinstance(params, dict) else {}
 
 
+def _job_title(row: dict, params: dict) -> str:
+    """What the board calls a job.
+
+    A job with a recording is its recording. An `ingest_url` job has none yet,
+    so it is its episode's name when a listing gave one, else the link itself:
+    twenty jobs from one feed were twenty rows called "ingest_url job", which
+    told nobody which download had failed. A stranger's text either way, and
+    escaped by the template like every other title.
+    """
+    if row.get("media_title"):
+        return str(row["media_title"])
+    if row["type"] == url_stage.JOB_TYPE:
+        entry = params.get(url_stage.ENTRY_KEY)
+        title = str(entry.get("title") or "").strip() if isinstance(entry, dict) else ""
+        return title or str(params.get("url") or "").strip() or f"{row['type']} job"
+    return f"{row['type']} job"
+
+
 def job_view(conn: sqlite3.Connection, row: dict, now: float) -> dict:
     """A job row plus what the templates show: title, summary, stepper
     steps, elapsed and took, and for a running job the time left in its
@@ -167,7 +185,7 @@ def job_view(conn: sqlite3.Connection, row: dict, now: float) -> dict:
     transcribing = row["type"] == TRANSCRIBE_JOB_TYPE
     view = {
         **row,
-        "title": row.get("media_title") or f"{row['type']} job",
+        "title": _job_title(row, params),
         "params": params,
         "summary": params_summary(params) if transcribing else "",
         "steps": stepper_steps(row["status"], row["stage"], stage_names_for(row["type"])),
