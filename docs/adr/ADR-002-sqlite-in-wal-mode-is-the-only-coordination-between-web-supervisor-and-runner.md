@@ -1,14 +1,14 @@
 ---
 id: "ADR-002"
 title: "SQLite in WAL mode is the only coordination between web, supervisor and runner"
-status: "Accepted"
-date: "2026-09-03"
+status: "Superseded"
+date: "2026-09-13"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
-superseded_by: null
+superseded_by: "ADR-009"
 topics:
   - "storage"
   - "job-orchestration"
@@ -34,7 +34,7 @@ format: "madr"
 
 ## Status
 
-Accepted, 2026-09-03.
+Superseded by ADR-009, 2026-09-13.
 
 ## Status History
 
@@ -49,6 +49,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: "Accepted by Robert in an interactive session on 2026-09-03. Every claim verified against the code: the atomic claim at jobs.py:66-72, the first-verdict guard returning rowcount==1, the SQLite 3.35 assert, the status CHECK constraint, and speaker_embedding as the only BLOB. The lock rule was narrowed from 'the only lock' to 'the only lock guarding the database connection' after the grill found the proxy transcode locks in scribe/web/transcript.py."
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-13
+    status: Superseded
+    changed_by: "User: Robert van den Breemen"
+    reason: ADR-009 restates it with anchored forbid_import patterns (TASK-033)
     changed_via: adr-kit lifecycle
 ```
 

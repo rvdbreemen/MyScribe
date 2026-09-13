@@ -71,8 +71,8 @@
       "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner",
       "path": "ADR-002-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner.md",
       "format": "madr",
-      "status": "Accepted",
-      "date": "2026-09-03",
+      "status": "Superseded",
+      "date": "2026-09-13",
       "decision_summary": "Chosen option: SQLite WAL with atomic SQL, because the two hard problems are each one statement:",
       "topics": [
         "concurrency",
@@ -95,22 +95,10 @@
       ],
       "context_scope": "selective",
       "decision_contract": {
-        "must": [
-          "Job claims use begin immediate plus update … returning.",
-          "Terminal verdicts are written with a status guard so the first one wins.",
-          "db.LOCK (the one module-level lock in scribe.db) is the only lock guarding the database connection, and every database access in the web process holds it. A lock around a different resource is fine - scribe/web/transcript.py keeps one pe...",
-          "job.status stays constrained by a check (a rule SQLite enforces on every write) to exactly queued, running, done, failed, cancelled, interrupted."
-        ],
-        "must_not": [
-          "Introduce a second queue or a message broker for job state.",
-          "Store media bytes or transcript artifacts in the database."
-        ],
-        "exceptions": [
-          "None."
-        ],
-        "verification": [
-          "tests/testjobs.py::testclaimisatomicunderconcurrentthreads (name as in the suite), tests/testjobs.py first-verdict tests, tests/testdb.py::testwalandfkon."
-        ]
+        "must": [],
+        "must_not": [],
+        "exceptions": [],
+        "verification": []
       },
       "scope": {
         "path_globs": [
@@ -125,7 +113,7 @@
         "documents_shipped": false,
         "verified_in": [],
         "supersedes": [],
-        "superseded_by": null
+        "superseded_by": "ADR-009"
       }
     },
     {
@@ -538,8 +526,8 @@
       "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner, restated with anchored import rules",
       "path": "ADR-009-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner-restated-with-anchored-import-rules.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-09-11",
+      "status": "Accepted",
+      "date": "2026-09-13",
       "decision_summary": "Chosen option: SQLite WAL with atomic SQL (ADR-002's decision, unchanged), with \"no broker\" checked by forbidimport r...",
       "topics": [
         "concurrency",
@@ -600,7 +588,9 @@
         "gate": null,
         "documents_shipped": false,
         "verified_in": [],
-        "supersedes": [],
+        "supersedes": [
+          "ADR-002"
+        ],
         "superseded_by": null
       }
     },
@@ -716,6 +706,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-002",
+      "target": "ADR-009",
+      "type": "superseded-by",
+      "resolved": true
+    },
+    {
       "source": "ADR-003",
       "target": "ADR-002",
       "type": "related",
@@ -779,6 +775,12 @@
       "source": "ADR-009",
       "target": "ADR-002",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-002",
+      "type": "supersedes",
       "resolved": true
     },
     {

@@ -3,10 +3,10 @@ id: TASK-033
 title: >-
   ADR-002's forbid_import patterns match substrings, so prose like "rediscover"
   blocks a commit
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-10 23:21'
-updated_date: '2026-09-13 12:30'
+updated_date: '2026-09-13 14:00'
 labels:
   - adr
 dependencies: []
@@ -21,7 +21,7 @@ ADR-002 (Accepted) forbids "redis", "celery" and "rq" under scribe/** as forbid_
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Robert decides: a successor ADR with anchored patterns, or keep ADR-002 as it is and live with the false positive
+- [x] #1 Robert decides: a successor ADR with anchored patterns, or keep ADR-002 as it is and live with the false positive
 - [x] #2 If a successor is written, adr-judge on the reproduction diff reports the import lines and not the docstring
 <!-- AC:END -->
 
@@ -36,4 +36,19 @@ Ready for Robert, 2026-09-13. Everything but the gate is done: ADR-009 is writte
     bin/adr supersede ADR-002 --by ADR-009
 
 After that, AC1 can be checked and the task set Done.
+
+Closed 2026-09-13 on Robert's instruction in the session ("ADR accept ADR-009", and the supersede after he was shown the half-done state). Ran with the plugin's own CLI (the guide's bin/adr is not in this worktree; adr-kit 0.56.0 lives in the plugin cache):
+
+    adr accept ADR-009 --confirm --reason "..."      -> accepted
+    adr supersede ADR-002 --by ADR-009 --reason "..." -> superseded
+
+The kit refused the first attempt without --confirm ("acceptance writes that name into a history that is immutable afterwards, so it has to be asked for rather than arrived at") and signed as "User: Robert van den Breemen" from git config. ADR-002 now reads status Superseded with superseded_by ADR-009, and ADR-009 reads Accepted with supersedes ADR-002 - the kit writes both ends together. adr-lint --strict passes; the one advisory left is ADR-010's profile, unrelated.
+
+Worth knowing before the macOS branch lands: origin/fix/macos-acceptance carries its own ADR-008 and ADR-009 with different decisions (a per-OS launcher, and one uv lockfile). Two branches claimed the same numbers independently. Whichever merges second has to renumber, and the accepted ADR-009 here is the one this task is about.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+ADR-002's forbid_import patterns matched any substring, so the word "rediscover" in a docstring blocked a commit. Rather than weaken the rule, ADR-009 restates ADR-002 in full with the same decision and anchored patterns (^\s*(?:import|from)\s+(?:redis|celery|rq)\b per module), and the enforcement dry run reports the import lines and not the prose. Robert accepted ADR-009 and superseded ADR-002 on 2026-09-13; the kit signed both ends and adr-lint --strict passes.
+<!-- SECTION:FINAL_SUMMARY:END -->
