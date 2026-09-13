@@ -306,8 +306,8 @@
       "title": "Pin the CUDA stack and register torch's DLL directory before CTranslate2 loads",
       "path": "ADR-006-pin-the-cuda-stack-and-register-torch-s-dll-directory-before-ctranslate2-loads.md",
       "format": "madr",
-      "status": "Accepted",
-      "date": "2026-09-06",
+      "status": "Superseded",
+      "date": "2026-09-14",
       "decision_summary": "Chosen option: the cu128 pin set with torch/lib registration, frozen in requirements-gpu.txt on 2026-09-02 after the...",
       "topics": [
         "dependencies",
@@ -329,21 +329,10 @@
       ],
       "context_scope": "selective",
       "decision_contract": {
-        "must": [
-          "Install the GPU (graphics processing unit) stack from requirements-gpu.txt with the CUDA index URL (uniform resource locator) in its header.",
-          "Call cudasetup.ensurecudalibs() before importing fasterwhisper or ctranslate2 in any process that will use the GPU.",
-          "doctor.checkgpuruntime fails when torch.version.cuda is None."
-        ],
-        "must_not": [
-          "Import fasterwhisper at module level in any module the web process imports.",
-          "File the doctor smoke timing under stage transcribe (it is warmup-dominated and would poison the ETA (estimated time of arrival) median)."
-        ],
-        "exceptions": [
-          "None."
-        ],
-        "verification": [
-          "python -m scribe.doctor exit 0; tests/testcudasetup.py; tests/testdoctor.py::testsmoketimingsneverlandunderthetranscribestage."
-        ]
+        "must": [],
+        "must_not": [],
+        "exceptions": [],
+        "verification": []
       },
       "scope": {
         "path_globs": [
@@ -357,7 +346,7 @@
         "documents_shipped": false,
         "verified_in": [],
         "supersedes": [],
-        "superseded_by": null
+        "superseded_by": "ADR-012"
       }
     },
     {
@@ -748,8 +737,8 @@
       "title": "Pin the whole stack in one uv lockfile with a per-platform torch source, and register torch's DLL directory before CTranslate2 loads",
       "path": "ADR-012-pin-the-whole-stack-in-one-uv-lockfile-with-a-per-platform-torch-source-and-register-torch-s-dll-directory-before-ctranslate2-loads.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-09-11",
+      "status": "Accepted",
+      "date": "2026-09-14",
       "decision_summary": "Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated...",
       "topics": [
         "dependencies",
@@ -785,7 +774,7 @@
         "must_not": [
           "Import fasterwhisper at module level in any module the web process imports.",
           "File the doctor smoke timing under stage transcribe.",
-          "Resolve torch for Windows from PyPI (a CPU build)."
+          "Resolve torch for Windows from PyPI (a CPU (central processing unit) build)."
         ],
         "exceptions": [
           "None."
@@ -805,7 +794,9 @@
         "gate": null,
         "documents_shipped": false,
         "verified_in": [],
-        "supersedes": [],
+        "supersedes": [
+          "ADR-006"
+        ],
         "superseded_by": null
       }
     }
@@ -869,6 +860,12 @@
       "source": "ADR-006",
       "target": "ADR-005",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-006",
+      "target": "ADR-012",
+      "type": "superseded-by",
       "resolved": true
     },
     {
@@ -977,6 +974,12 @@
       "source": "ADR-012",
       "target": "ADR-006",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-012",
+      "target": "ADR-006",
+      "type": "supersedes",
       "resolved": true
     },
     {

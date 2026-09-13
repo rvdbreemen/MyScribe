@@ -1,14 +1,14 @@
 ---
 id: "ADR-006"
 title: "Pin the CUDA stack and register torch's DLL directory before CTranslate2 loads"
-status: "Accepted"
-date: "2026-09-06"
+status: "Superseded"
+date: "2026-09-14"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
-superseded_by: null
+superseded_by: "ADR-012"
 topics:
   - "dependencies"
   - "gpu"
@@ -33,7 +33,7 @@ format: "madr"
 
 ## Status
 
-Accepted, 2026-09-06.
+Superseded by ADR-012, 2026-09-14.
 
 ## Status History
 
@@ -48,6 +48,11 @@ status_history:
     status: Accepted
     changed_by: Robert van den Breemen
     reason: "Accepted by the user in session 2026-09-06 (explicit: 'Accept ADR-006')"
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-14
+    status: Superseded
+    changed_by: "User: Robert van den Breemen"
+    reason: the pin set moved from requirements-gpu.txt into the uv lockfile; ADR-012 keeps the DLL registration
     changed_via: adr-kit lifecycle
 ```
 

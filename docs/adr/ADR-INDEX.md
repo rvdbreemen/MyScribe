@@ -11,10 +11,10 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-003 | Accepted | `scribe/**` | Chosen option: words are canonical. |
 | ADR-004 | Accepted | `scribe/app.py`, `scribe/doctor.py`, `scribe/runner.py`, `scribe/web/**`, `scribe/**` | Chosen option: turbo default with large-v3 substitution for translate. |
 | ADR-005 | Accepted | `scribe/**` | Chosen option: preloaded waveform, diarize stage only. |
-| ADR-006 | Accepted | `scribe/doctor.py`, `scribe/**` | Chosen option: the cu128 pin set with torch/lib registration, frozen in requirements-gpu.txt on 2026-09-02 after the... |
+| ADR-006 | Superseded | `scribe/doctor.py`, `scribe/**` | Chosen option: the cu128 pin set with torch/lib registration, frozen in requirements-gpu.txt on 2026-09-02 after the... |
 | ADR-007 | Accepted | `scribe/**`, `scribe/[!w]*/**` | Chosen option: the JSON-Lines file with a bounded lock and the observation rule, because a log that lives in the data... |
 | ADR-008 | Proposed | `scribe/templates/_url_panel.html`, `scribe/**` | Chosen: a feed is a row, polled by its own thread on a due-date, and every new episode is one ingesturl job, on top o... |
 | ADR-009 | Accepted | `scribe/[!d]*.py`, `scribe/*/**`, `scribe/**` | Chosen option: SQLite WAL with atomic SQL (ADR-002's decision, unchanged), with "no broker" checked by forbidimport r... |
 | ADR-010 | Proposed | `scribe/**` | Chosen option: A. |
 | ADR-011 | Proposed | `packaging/launcher/**` | Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps... |
-| ADR-012 | Proposed | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |
+| ADR-012 | Accepted | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |
