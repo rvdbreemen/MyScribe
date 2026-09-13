@@ -39,7 +39,7 @@ including the model load, which dominates a file that short.
 ## Install
 
 Clone, then one command on every OS. `pyproject.toml` holds the pins and
-`uv.lock` the exact, hashed set for each platform (ADR-009): Windows gets
+`uv.lock` the exact, hashed set for each platform (ADR-012): Windows gets
 torch built for CUDA 12.8 from PyTorch's index, Linux PyPI's torch with its
 CUDA wheels, an Apple Silicon Mac PyPI's CPU + MPS torch plus `mlx-whisper`.
 The first sync downloads about 3 GB on Windows and Linux.
@@ -52,7 +52,7 @@ uv sync                                    # makes .venv from uv.lock
 
 On Windows the paths are `.venv\Scripts\python`. Then read the doctor's
 `accel` and `gpu-runtime` lines: they say which device each stage will use.
-ADR-009 explains why the app registers torch's DLL directory before
+ADR-012 explains why the app registers torch's DLL directory before
 CTranslate2 loads on Windows.
 
 To change a pin, edit `pyproject.toml` and run `uv lock`; commit both files.

@@ -15,9 +15,9 @@ labels:
 dependencies: []
 references:
   - >-
-    docs/adr/ADR-008-ship-each-platform-as-a-small-launcher-that-installs-the-locked-environment-with-uv-on-first-run.md
+    docs/adr/ADR-011-ship-each-platform-as-a-small-launcher-that-installs-the-locked-environment-with-uv-on-first-run.md
   - >-
-    docs/adr/ADR-009-pin-the-whole-stack-in-one-uv-lockfile-with-a-per-platform-torch-source-and-register-torch-s-dll-directory-before-ctranslate2-loads.md
+    docs/adr/ADR-012-pin-the-whole-stack-in-one-uv-lockfile-with-a-per-platform-torch-source-and-register-torch-s-dll-directory-before-ctranslate2-loads.md
 priority: high
 ordinal: 70000
 ---
@@ -25,7 +25,7 @@ ordinal: 70000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Installing MyScribe means cloning, a venv, and a different pip command per OS - with the CUDA index URL on Windows or pip silently installs a CPU torch. The user asked (2026-09-11) for deployable executables on Windows, Linux and macOS, produced by release automation that can be trusted to build them for every release. Decided with the user the same day: a small per-OS launcher that installs the locked environment with uv on first run (ADR-008), one universal uv.lock replacing the three requirement files (ADR-009, successor to ADR-006), unsigned artifacts for now with signing steps that activate when secrets exist, and releases kept in the private repo. Research and a spike (uv.lock resolved for all three platforms; synced on an M2 it matched the verified venv and passed the doctor) are recorded in the ADRs.
+Installing MyScribe means cloning, a venv, and a different pip command per OS - with the CUDA index URL on Windows or pip silently installs a CPU torch. The user asked (2026-09-11) for deployable executables on Windows, Linux and macOS, produced by release automation that can be trusted to build them for every release. Decided with the user the same day: a small per-OS launcher that installs the locked environment with uv on first run (ADR-011), one universal uv.lock replacing the three requirement files (ADR-012, successor to ADR-006), unsigned artifacts for now with signing steps that activate when secrets exist, and releases kept in the private repo. Research and a spike (uv.lock resolved for all three platforms; synced on an M2 it matched the verified venv and passed the doctor) are recorded in the ADRs.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

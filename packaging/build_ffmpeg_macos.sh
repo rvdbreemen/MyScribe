@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LGPL ffmpeg + ffprobe for macOS arm64, from the release tarball (ADR-008).
+# LGPL ffmpeg + ffprobe for macOS arm64, from the release tarball (ADR-011).
 #
 # No ready-made LGPL static build exists for Apple Silicon (Martin Riedl's
 # carry x264/x265, which makes them GPL). MyScribe needs only FFmpeg's own

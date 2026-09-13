@@ -72,7 +72,7 @@ _NOT_THE_MEDIA = (INFO_JSON_SUFFIX, ".part", ".ytdl", ".temp")
 STALE_DAYS = 90
 
 # What to run about an old yt-dlp. The environment is uv's, which has no pip in
-# it (ADR-009); an installed copy gets a newer yt-dlp with the next release.
+# it (ADR-012); an installed copy gets a newer yt-dlp with the next release.
 UPDATE_COMMAND = "uv lock --upgrade-package yt-dlp && uv sync"
 
 # Seconds to wait on a socket. Long enough for a slow server, short enough that

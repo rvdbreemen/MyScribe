@@ -17,7 +17,7 @@ ordinal: 71000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-ADR-009: three hand-maintained requirement files (gpu, ml, macos) had drifted into hand edits and nothing checked that they agreed. One pyproject with the same pins and a per-platform torch source, locked once for win-amd64, macos-arm64 and linux-x86_64, is what the launcher, CI and developers install from.
+ADR-012: three hand-maintained requirement files (gpu, ml, macos) had drifted into hand edits and nothing checked that they agreed. One pyproject with the same pins and a per-platform torch source, locked once for win-amd64, macos-arm64 and linux-x86_64, is what the launcher, CI and developers install from.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

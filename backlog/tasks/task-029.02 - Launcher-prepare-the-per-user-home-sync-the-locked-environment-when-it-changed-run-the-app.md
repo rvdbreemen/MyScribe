@@ -19,7 +19,7 @@ ordinal: 72000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-ADR-008: the executable a user double-clicks. It runs before any Python environment exists, so it is stdlib-only and frozen per OS; it must show progress through a first sync of about 3 GB on Windows, keep the app from being started twice, and give the user a way to quit - today the app has no quit path at all.
+ADR-011: the executable a user double-clicks. It runs before any Python environment exists, so it is stdlib-only and frozen per OS; it must show progress through a first sync of about 3 GB on Windows, keep the app from being started twice, and give the user a way to quit - today the app has no quit path at all.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

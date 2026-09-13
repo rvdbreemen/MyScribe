@@ -17,7 +17,7 @@ ordinal: 73000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-ADR-008: each OS needs a native artifact carrying the frozen launcher, the app source, uv.lock, a pinned and checksum-verified uv binary and an LGPL ffmpeg/ffprobe, small enough for a GitHub release asset. Builds must run unattended on GitHub runners.
+ADR-011: each OS needs a native artifact carrying the frozen launcher, the app source, uv.lock, a pinned and checksum-verified uv binary and an LGPL ffmpeg/ffprobe, small enough for a GitHub release asset. Builds must run unattended on GitHub runners.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

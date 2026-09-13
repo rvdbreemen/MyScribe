@@ -1,5 +1,5 @@
 {
-  "_comment": "Third-party binaries shipped in each payload (ADR-008). Every download is verified against its sha256 before it is packaged. uv sums come from the uv release's .sha256 files; BtbN's from GitHub's asset digests; the ffmpeg source was also checked against its PGP signature (FFmpeg release signing key) on 2026-09-11.",
+  "_comment": "Third-party binaries shipped in each payload (ADR-011). Every download is verified against its sha256 before it is packaged. uv sums come from the uv release's .sha256 files; BtbN's from GitHub's asset digests; the ffmpeg source was also checked against its PGP signature (FFmpeg release signing key) on 2026-09-11.",
   "uv": {
     "version": "0.12.13",
     "license_url": "https://raw.githubusercontent.com/astral-sh/uv/0.12.13/LICENSE-MIT",

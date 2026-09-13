@@ -63,5 +63,5 @@ the speaker name on every cue. Both passed review.
 - `SCRIBE_UPDATE_GOLDENS=1 …pytest tests/test_exports_text.py` — regenerate export
   golden files. Read the diff before committing it.
 - `uv sync` installs the environment from `uv.lock` on every OS; Windows gets the
-  cu128 torch through `[tool.uv.sources]` (ADR-009). Change pins in
+  cu128 torch through `[tool.uv.sources]` (ADR-012). Change pins in
   `pyproject.toml`, then `uv lock`, and commit both. There is no pip in the venv.

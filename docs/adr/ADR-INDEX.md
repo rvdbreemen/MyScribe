@@ -13,5 +13,5 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-005 | Accepted | `scribe/**` | Chosen option: preloaded waveform, diarize stage only. |
 | ADR-006 | Accepted | `scribe/doctor.py`, `scribe/**` | Chosen option: the cu128 pin set with torch/lib registration, frozen in requirements-gpu.txt on 2026-09-02 after the... |
 | ADR-007 | Accepted | `scribe/**`, `scribe/[!w]*/**` | Chosen option: the JSON-Lines file with a bounded lock and the observation rule, because a log that lives in the data... |
-| ADR-008 | Proposed | `packaging/launcher/**` | Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps... |
-| ADR-009 | Proposed | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |
+| ADR-011 | Proposed | `packaging/launcher/**` | Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps... |
+| ADR-012 | Proposed | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |

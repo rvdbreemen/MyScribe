@@ -1,4 +1,4 @@
-"""Build one platform's MyScribe artifact, end to end (ADR-008).
+"""Build one platform's MyScribe artifact, end to end (ADR-011).
 
     python packaging/build_release.py --platform macos-arm64 [--ffmpeg-dir DIR]
 

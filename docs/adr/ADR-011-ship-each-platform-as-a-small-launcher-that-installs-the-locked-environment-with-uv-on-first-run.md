@@ -1,5 +1,5 @@
 ---
-id: "ADR-008"
+id: "ADR-011"
 title: "Ship each platform as a small launcher that installs the locked environment with uv on first run"
 status: "Proposed"
 date: "2026-09-11"
@@ -31,7 +31,7 @@ context_scope: "selective"
 
 <!-- markdownlint-disable MD025 -->
 
-# ADR-008 Ship each platform as a small launcher that installs the locked environment with uv on first run
+# ADR-011 Ship each platform as a small launcher that installs the locked environment with uv on first run
 
 ## Status
 
@@ -68,7 +68,7 @@ The facts that shape the answer, measured or sourced that day:
   to the source tree. A frozen interpreter (PyInstaller, Nuitka) breaks all
   four; a real venv breaks none of them.
 * One universal `uv.lock` resolves the current pins for all three platforms
-  (ADR-009). On an Apple M2 an environment synced from it with a
+  (ADR-012). On an Apple M2 an environment synced from it with a
   uv-managed Python was package-for-package identical to the verified venv
   (129 packages) and passed the doctor with `transcription on mlx,
   diarization on mps`.
@@ -213,7 +213,7 @@ their secrets are configured.
 
 ## Related Decisions
 
-* ADR-009 (the lockfile this launcher installs from; successor to ADR-006).
+* ADR-012 (the lockfile this launcher installs from; successor to ADR-006).
 * ADR-001 (the runner child the launcher's environment must keep working).
 
 ## References
@@ -229,7 +229,7 @@ their secrets are configured.
 ```json
 {
   "forbid_pattern": [
-    {"pattern": "^\\s*(import|from)\\s+(scribe|torch|faster_whisper|ctranslate2|pyannote|fastapi|uvicorn)\\b", "path_glob": "packaging/launcher/**", "message": "The launcher runs before the environment exists: stdlib only (ADR-008)."}
+    {"pattern": "^\\s*(import|from)\\s+(scribe|torch|faster_whisper|ctranslate2|pyannote|fastapi|uvicorn)\\b", "path_glob": "packaging/launcher/**", "message": "The launcher runs before the environment exists: stdlib only (ADR-011)."}
   ],
   "forbid_import": [],
   "require_pattern": []

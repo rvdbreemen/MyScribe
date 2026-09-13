@@ -1,4 +1,4 @@
-"""Assemble a launcher payload: ``app/`` and ``bin/`` for one platform (ADR-008).
+"""Assemble a launcher payload: ``app/`` and ``bin/`` for one platform (ADR-011).
 
     python packaging/build_payload.py --platform macos-arm64 --out build/payload \\
         [--ffmpeg-dir DIR]     # macOS: the output of build_ffmpeg_macos.sh

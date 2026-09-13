@@ -444,9 +444,9 @@
       }
     },
     {
-      "id": "ADR-008",
+      "id": "ADR-011",
       "title": "Ship each platform as a small launcher that installs the locked environment with uv on first run",
-      "path": "ADR-008-ship-each-platform-as-a-small-launcher-that-installs-the-locked-environment-with-uv-on-first-run.md",
+      "path": "ADR-011-ship-each-platform-as-a-small-launcher-that-installs-the-locked-environment-with-uv-on-first-run.md",
       "format": "madr",
       "status": "Proposed",
       "date": "2026-09-11",
@@ -508,9 +508,9 @@
       }
     },
     {
-      "id": "ADR-009",
+      "id": "ADR-012",
       "title": "Pin the whole stack in one uv lockfile with a per-platform torch source, and register torch's DLL directory before CTranslate2 loads",
-      "path": "ADR-009-pin-the-whole-stack-in-one-uv-lockfile-with-a-per-platform-torch-source-and-register-torch-s-dll-directory-before-ctranslate2-loads.md",
+      "path": "ADR-012-pin-the-whole-stack-in-one-uv-lockfile-with-a-per-platform-torch-source-and-register-torch-s-dll-directory-before-ctranslate2-loads.md",
       "format": "madr",
       "status": "Proposed",
       "date": "2026-09-11",
@@ -642,44 +642,44 @@
       "resolved": true
     },
     {
-      "source": "ADR-008",
+      "source": "ADR-011",
       "target": "ADR-001",
       "type": "related",
       "resolved": true
     },
     {
-      "source": "ADR-008",
+      "source": "ADR-011",
       "target": "ADR-006",
       "type": "related",
       "resolved": true
     },
     {
-      "source": "ADR-008",
-      "target": "ADR-009",
+      "source": "ADR-011",
+      "target": "ADR-012",
       "type": "related",
       "resolved": true
     },
     {
-      "source": "ADR-009",
+      "source": "ADR-012",
       "target": "ADR-001",
       "type": "related",
       "resolved": true
     },
     {
-      "source": "ADR-009",
+      "source": "ADR-012",
       "target": "ADR-005",
       "type": "related",
       "resolved": true
     },
     {
-      "source": "ADR-009",
+      "source": "ADR-012",
       "target": "ADR-006",
       "type": "related",
       "resolved": true
     },
     {
-      "source": "ADR-009",
-      "target": "ADR-008",
+      "source": "ADR-012",
+      "target": "ADR-011",
       "type": "related",
       "resolved": true
     }

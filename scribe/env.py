@@ -25,7 +25,7 @@ REPO_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = REPO_DIR / ".env"
 
 # Names the file instead. An installed copy runs from a read-only source tree,
-# so its launcher keeps `.env` in the user's MyScribe folder (ADR-008).
+# so its launcher keeps `.env` in the user's MyScribe folder (ADR-011).
 PATH_VARIABLE = "SCRIBE_ENV_FILE"
 
 

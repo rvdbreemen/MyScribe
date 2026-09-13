@@ -1,5 +1,5 @@
 ---
-id: "ADR-009"
+id: "ADR-012"
 title: "Pin the whole stack in one uv lockfile with a per-platform torch source, and register torch's DLL directory before CTranslate2 loads"
 status: "Proposed"
 date: "2026-09-11"
@@ -33,12 +33,12 @@ context_scope: "selective"
 
 <!-- markdownlint-disable MD025 -->
 
-# ADR-009 Pin the whole stack in one uv lockfile with a per-platform torch source, and register torch's DLL directory before CTranslate2 loads
+# ADR-012 Pin the whole stack in one uv lockfile with a per-platform torch source, and register torch's DLL directory before CTranslate2 loads
 
 ## Status
 
 Proposed, 2026-09-11. Intended successor to ADR-006: on acceptance, run
-`bin/adr supersede ADR-006 --by ADR-009` (human-gated).
+`bin/adr supersede ADR-006 --by ADR-012` (human-gated).
 
 ## Status History
 
@@ -47,7 +47,7 @@ status_history:
   - date: 2026-09-11
     status: Proposed
     changed_by: Claude Opus 5 (agent)
-    reason: "Initial proposal: successor to ADR-006, required by ADR-008's single lockfile"
+    reason: "Initial proposal: successor to ADR-006, required by ADR-011's single lockfile"
     changed_via: adr-kit
 ```
 
@@ -59,7 +59,7 @@ cu128 index URL, and derived `requirements-ml.txt` (Linux, macOS) and
 rather than edit", had drifted into being hand-edited twice by 2026-09-10
 (commit d772289), and nothing checks that they agree.
 
-ADR-008 installs one environment per OS from a lockfile. The pin set itself
+ADR-011 installs one environment per OS from a lockfile. The pin set itself
 does not change - torch 2.10.0 (+cu128 on Windows), CTranslate2 4.8.2,
 faster-whisper 1.2.1, pyannote.audio 4.0.7 - and neither does the DLL
 failure ADR-006 exists for: CTranslate2 delay-loads cuDNN and cuBLAS on the
@@ -95,7 +95,7 @@ with the model load.
 
 Chosen option: **`pyproject.toml` + universal `uv.lock`**, because it
 replaces three hand-maintained files with one generated, hashed lock that
-developers (`uv sync`), CI and ADR-008's launcher all install from.
+developers (`uv sync`), CI and ADR-011's launcher all install from.
 
 The pins move into `pyproject.toml` unchanged. `[tool.uv.sources]` sends
 `torch` and `torchaudio` to an explicit `pytorch-cu128` index for
@@ -188,7 +188,7 @@ the three supported platforms; the mlx stack carries a
 
 * Supersedes ADR-006 on acceptance (same DLL rules; the pins move from
   `requirements-gpu.txt` to `uv.lock`).
-* ADR-008 (the launcher that installs from this lock), ADR-005, ADR-001.
+* ADR-011 (the launcher that installs from this lock), ADR-005, ADR-001.
 
 ## References
 
@@ -202,8 +202,8 @@ the three supported platforms; the mlx stack carries a
 {
   "forbid_import": [],
   "forbid_pattern": [
-    {"pattern": "record_stage_perf\\(conn, \"transcribe\"", "path_glob": "scribe/doctor.py", "message": "Smoke timings are warmup-dominated; file them under 'smoke', never 'transcribe' (ADR-009)."},
-    {"pattern": "^from faster_whisper import|^import faster_whisper", "path_glob": "scribe/**", "message": "Import faster_whisper inside the function that needs it, after ensure_cuda_libs() (ADR-009)."}
+    {"pattern": "record_stage_perf\\(conn, \"transcribe\"", "path_glob": "scribe/doctor.py", "message": "Smoke timings are warmup-dominated; file them under 'smoke', never 'transcribe' (ADR-012)."},
+    {"pattern": "^from faster_whisper import|^import faster_whisper", "path_glob": "scribe/**", "message": "Import faster_whisper inside the function that needs it, after ensure_cuda_libs() (ADR-012)."}
   ],
   "require_pattern": []
 }

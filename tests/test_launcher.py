@@ -1,4 +1,4 @@
-"""The launcher (ADR-008): paths, the sync decision, the child environment,
+"""The launcher (ADR-011): paths, the sync decision, the child environment,
 one instance, and Quit reaching the runner children - all without network.
 
 The launcher is stdlib-only and lives outside the `scribe` package, so it is

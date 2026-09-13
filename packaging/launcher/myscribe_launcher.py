@@ -1,4 +1,4 @@
-"""MyScribe's launcher: the program a user starts (ADR-008).
+"""MyScribe's launcher: the program a user starts (ADR-011).
 
 Stdlib only, because it runs before the environment it creates exists. It
 

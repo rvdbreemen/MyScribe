@@ -217,7 +217,7 @@ def test_load_dotenv_defaults_to_the_repository_env_file():
 
 def test_load_dotenv_reads_the_file_scribe_env_file_names(tmp_path, environ):
     """An installed copy runs from a read-only source tree, so its launcher
-    keeps `.env` in the user's MyScribe folder and names it here (ADR-008)."""
+    keeps `.env` in the user's MyScribe folder and names it here (ADR-011)."""
     dotenv = tmp_path / "home" / ".env"
     dotenv.parent.mkdir()
     dotenv.write_text("SCRIBE_T2_FROM_HOME=yes\n", encoding="utf-8")
