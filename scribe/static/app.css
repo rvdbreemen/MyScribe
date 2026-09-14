@@ -1174,17 +1174,107 @@ table.presets td.actions form { margin: 0; }
 /* The pin, wherever it shows: a lock is the whole word, so it stays legible
    next to a title and inside a table cell. */
 .badge.private { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
-.ai-panel .privacy { padding: .4rem .5rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-soft); }
-.ai-panel .privacy.on { border-color: var(--warn); background: var(--warn-bg); }
-.ai-panel .privacy-state { margin: 0 0 .3rem; font-size: .85rem; }
+.ai-region .privacy { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; padding: .4rem .6rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-soft); }
+.ai-region .privacy.on { border-color: var(--warn); background: var(--warn-bg); }
+.ai-region .privacy-state { margin: 0; font-size: .85rem; }
 /* The marker the plan asks for: red, next to the choice that sends the words
    off this machine, not hidden in a tooltip. */
-.ai-panel .leaves { color: var(--bad); font-size: .8rem; margin: .1rem 0 .3rem; }
-.ai-panel .ai-actions { display: flex; flex-wrap: wrap; gap: .3rem; }
-.ai-panel textarea { width: 100%; font-size: 13px; }
+.ai-region .leaves { color: var(--bad); font-size: .8rem; margin: .3rem 0 0; }
+.ai-region textarea { width: 100%; font-size: 13px; }
 
-/* The answers: one card per kind, under the transcript and outside the panel
-   that re-fetches itself, so a rename cannot swap away an answer being made. */
+/* ---- the AI region: menu, tabs, one bounded panel (TASK-053.04) ---- */
+
+/* Above the transcript and outside #transcript-panel. The whole point is
+   that the words below it start in the same place on every visit, so every
+   part of this has a ceiling: the menu wraps, the panel scrolls itself. */
+.ai-region {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  margin: 0 0 1.2rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  background: var(--bg-panel);
+}
+
+/* The menu. Nine things to ask, wrapping rather than scrolling: a row that
+   scrolls sideways hides half its options behind a gesture. */
+.ai-menu { display: flex; flex-wrap: wrap; gap: .3rem; }
+
+/* The tabs. A dot says what the card holds without opening it, which is what
+   makes the strip worth looking at while something is still being written. */
+.ai-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .15rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: .3rem;
+}
+.ai-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  padding: .25rem .55rem;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ai-tab:hover { color: var(--fg); background: var(--bg-soft); }
+.ai-tab[aria-selected="true"] {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--line);
+  border-bottom-color: var(--bg);
+  margin-bottom: -.3rem;
+  padding-bottom: .55rem;
+  font-weight: 600;
+}
+.ai-tab .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.ai-tab .dot.has { background: var(--ok); }
+.ai-tab .dot.working { background: var(--accent); animation: ai-pulse 1.4s ease-in-out infinite; }
+@keyframes ai-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .ai-tab .dot.working { animation: none; } }
+
+/* One panel, bounded. `blog` allows 6000 output tokens and `cleanup` is as
+   long as the input, so without a ceiling here the transcript would start
+   several screens down on every later visit - the fault this rebuild removes,
+   moved rather than fixed. */
+.ai-panels { max-height: min(38dvh, 24rem); overflow-y: auto; overscroll-behavior: contain; }
+/* Closed is the resting state: the transcript is the page, and a panel open
+   by default costs it 300px of a 800px window on every visit. The tabs stay
+   whichever way this goes - what holds an answer is worth seeing without
+   opening one. */
+.ai-region[data-open="false"] .ai-panels { display: none; }
+.ai-toggle {
+  margin-left: auto;
+  align-self: center;
+  padding: .2rem .45rem;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.ai-toggle:hover { color: var(--fg); background: var(--bg-soft); }
+.ai-toggle .chev {
+  display: inline-block;
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid currentColor;
+  transition: transform .12s ease;
+}
+.ai-toggle[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .ai-toggle .chev { transition: none; } }
+.ai-panels .ai-output { border: none; background: none; padding: .5rem .1rem; }
+
+/* The answers: one card per kind, outside the panel that re-fetches itself,
+   so a rename cannot swap away an answer being made. */
 .ai-outputs { display: flex; flex-direction: column; gap: .8rem; margin: 1.2rem 0; }
 .ai-output { padding: .6rem .8rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); }
 .ai-output h3 { margin: 0; font-size: .95rem; }

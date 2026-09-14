@@ -218,11 +218,6 @@
         <a class="button" href="/media/{{ media.id }}/download">Download audio{% if audio_size %}<span class="sub">{{ audio_size }}</span>{% endif %}</a>
       </section>
 
-      {# The AI section: the pin, the provider and the six questions. Its
-         buttons target the answer panels in transcript.html, which sit
-         outside this element so a rename cannot swap away an answer being
-         written. #}
-      {% include "_ai_panel.html" %}
 
       {# What the file is called and where it lives - properties, not verbs,
          which is why they are not under the heading with Export. Trash closes

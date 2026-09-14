@@ -1,0 +1,165 @@
+{#
+  The AI region: a menu of what this recording can be asked, a tab per answer,
+  and one panel showing the tab you chose (TASK-053.04).
+
+  Robert, after the first three steps landed: "Het moet wel heel eenvoudig
+  benaderbaar zijn, de kern is en blijft het transcript. Wellicht is het
+  handiger om een menu bovenaan het scherm te hebben, met de verschillende
+  opties. En een soort van tabbladen of iets dergelijks om snel te schakelen
+  tussen de verschillende kaarten."
+
+  Three things carry the weight, and each answers a way this could go wrong.
+
+  **It sits ABOVE the transcript and OUTSIDE #transcript-panel.** Above,
+  because an answer thirty thousand pixels below the button that asked for it
+  is the fault this rebuild exists to remove. Outside, because
+  #transcript-panel swaps its own outerHTML after a rename, a move or a word
+  correction - and an answer being written must survive that. Being a sibling
+  before it is what keeps both true at once.
+
+  **Every panel is rendered; all but one are hidden.** `hx-trigger="every 2s"`
+  only fires for an element that is in the document, so a card left out to
+  save markup would stop polling and its answer would never arrive. Hidden is
+  not absent. This is also why the tab strip shows which kinds are working:
+  the poll is running whether or not you are looking at it.
+
+  **A button activates its own tab before it posts.** `scrollIntoView` and
+  htmx's `show:` are no-ops inside a hidden container, so asking a question
+  while another tab is open would put the answer somewhere nobody can see -
+  the same bug as the thirty thousand pixels, one layer up. app.js switches
+  the tab on click, before the request leaves.
+
+  Context is `ai` from scribe.web.ai_ui.panel_context; `ai.selected` is the
+  kind to open on, which the browser then overrides from what was open last
+  time for this recording.
+#}
+<section id="ai-region" class="ai-region" aria-label="Ask about this recording"
+         data-ai-region data-media="{{ ai.media_id }}"
+         data-open="{{ 'true' if ai.open else 'false' }}">
+
+  {# The pin is a privacy fact about the recording and belongs where the
+     sending happens. It targets this region rather than the transcript panel:
+     pinning changes which providers are offered, not a single word. #}
+  <div class="privacy {{ 'on' if ai.private else 'off' }}">
+    <p class="privacy-state">
+      {% if ai.private %}
+      <span class="badge private" title="Pinned private">🔒 Private</span>
+      This recording's text never leaves this machine.
+      {% else %}
+      <span class="badge">Not private</span>
+      Its text may be sent to the provider you choose.
+      {% endif %}
+    </p>
+    <form method="post" action="/media/{{ ai.media_id }}/private"
+          hx-post="/media/{{ ai.media_id }}/private" hx-target="#ai-region" hx-swap="outerHTML">
+      <input type="hidden" name="private" value="{{ '0' if ai.private else '1' }}">
+      <button type="submit">{{ 'Un-pin' if ai.private else 'Pin private' }}</button>
+    </form>
+  </div>
+
+  {% if ai.has_transcript %}
+  {# Outside the collapsed part on purpose: which provider is selected is a
+     privacy fact, and a fact that only shows when you go looking is not a
+     warning. #}
+  {% for p in ai.providers %}{% if p.selected and not p.local %}
+  <p class="warn leaves">⚠ {{ p.label }} is not on this machine: the transcript is sent to it.</p>
+  {% endif %}{% endfor %}
+
+  <form class="ai-ask" method="post" action="/media/{{ ai.media_id }}/ai/summary">
+    {# One form, eight buttons: each carries its own formaction and hx-post, so
+       the provider, the model and the custom prompt are posted once from one
+       set of fields rather than repeated eight times. formaction is what does
+       the same without scripting. #}
+    <div class="ai-menu" role="group" aria-label="What to ask">
+      {% for panel in ai.panels[:-1] %}
+      <button type="submit" class="ai-action" data-asks="{{ panel.kind }}"
+              formaction="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
+              hx-post="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
+              hx-target="#ai-{{ panel.kind }}" hx-swap="outerHTML">{{ panel.label }}</button>
+      {% endfor %}
+    </div>
+
+    {# The ninth needs a question, and the provider and model need saying only
+       when they are wrong - so they collapse behind a line that says what they
+       currently are. hx-preserve because eleven unrelated actions used to
+       throw away what was half typed here (TASK-053.03). #}
+    <details class="options" id="ai-options" hx-preserve="true">
+      <summary>
+        <span class="summary-title">Ask &amp; provider</span>
+        <span class="summary-line">{{ ai.summary_line }}</span>
+      </summary>
+
+      <label class="field">Question <span class="muted">(for “{{ ai.panels[-1].label }}”)</span>
+        <textarea id="ai-prompt" name="prompt" rows="2" maxlength="2000"
+                  placeholder="What did they decide about the budget?"></textarea>
+      </label>
+      <button type="submit" class="ai-action" data-asks="{{ ai.panels[-1].kind }}"
+              formaction="/media/{{ ai.media_id }}/ai/{{ ai.panels[-1].kind }}"
+              hx-post="/media/{{ ai.media_id }}/ai/{{ ai.panels[-1].kind }}"
+              hx-target="#ai-{{ ai.panels[-1].kind }}" hx-swap="outerHTML">{{ ai.panels[-1].label }}</button>
+
+      <label class="field">Provider
+        <select id="ai-provider" name="provider">
+          {% for p in ai.providers %}
+          <option value="{{ p.name }}"{% if p.selected %} selected{% endif %}{% if p.disabled %} disabled{% endif %}>{{ p.label }}{% if not p.local %} · leaves your machine{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="field">Model
+        <input type="text" id="ai-model" name="model" value="{{ ai.model }}" list="ai-models" autocomplete="off" spellcheck="false">
+      </label>
+      <datalist id="ai-models">
+        {% for name in ai.models %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
+
+      <a class="button" href="/media/{{ ai.media_id }}/chat">Chat with this transcript</a>
+    </details>
+  </form>
+
+  {# The tabs. Real buttons with aria-selected rather than radios, because
+     app.js has to be able to switch them from a click on an Ask button too,
+     and because the Node-less test setup here checks attributes rather than
+     CSS state (app.js:969). A tab says what its card holds without opening
+     it: working, an answer, or nothing asked yet. #}
+  <div class="ai-tabs" role="tablist" aria-label="Answers">
+    {% for panel in ai.panels %}
+    <button type="button" role="tab" class="ai-tab"
+            id="tab-{{ panel.kind }}" data-tab="{{ panel.kind }}"
+            aria-controls="ai-{{ panel.kind }}"
+            aria-selected="{{ 'true' if panel.kind == ai.selected else 'false' }}"
+            tabindex="{{ '0' if panel.kind == ai.selected else '-1' }}">
+      {{ panel.label }}
+      {% if panel.job %}<span class="dot working" title="Working"></span>
+      {% elif panel.output %}<span class="dot has" title="Answered"></span>
+      {% endif %}
+    </button>
+    {% endfor %}
+
+    {# The answer panel costs 300px of a 800px window, so it is closed unless
+       something is being written. The tabs stay whatever this says: which
+       kinds hold an answer is worth seeing without opening one. Clicking a
+       tab opens it, and so does asking. #}
+    <button type="button" class="ai-toggle" data-ai-toggle
+            aria-controls="ai-panels" aria-expanded="{{ 'true' if ai.open else 'false' }}">
+      <span class="chev" aria-hidden="true"></span>
+      <span class="visually-hidden">Show or hide the answer</span>
+    </button>
+  </div>
+
+  {# One panel, bounded. `blog` allows 6000 output tokens and `cleanup` is as
+     long as the input, so an unbounded panel here would open every later
+     visit on screens of answer - the fault this rebuild removes, moved rather
+     than fixed. It scrolls inside itself and the transcript starts in the
+     same place forever. #}
+  <div class="ai-panels" id="ai-panels" data-ai-panels>
+    {% for panel in ai.panels %}
+    <div class="ai-slot" data-slot="{{ panel.kind }}"{% if panel.kind != ai.selected %} hidden{% endif %}>
+      {% include "_ai_output.html" %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="hint">Transcribe this file first; there is nothing to ask about yet.</p>
+  {% endif %}
+</section>

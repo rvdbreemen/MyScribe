@@ -259,12 +259,12 @@ def test_the_five_canned_questions_are_in_view_and_the_custom_one_is_beside_its_
     lives inside the collapsed block next to the box it reads."""
     body = client.get(f"/media/{media}").text
 
-    panel = re.search(r'<section id="ai-panel".*?</section>', body, re.DOTALL).group(0)
+    region = re.search(r'<section id="ai-region".*?</section>', body, re.DOTALL).group(0)
     # The tag carries an id and hx-preserve since TASK-053.03, so the
     # pattern stops at the tag's own ">" rather than assuming the class
     # closes it.
-    collapsed = re.search(r"<details class=\"options\"[^>]*>.*?</details>", panel, re.DOTALL).group(0)
-    visible = panel.replace(collapsed, "")
+    collapsed = re.search(r"<details class=\"options\"[^>]*>.*?</details>", region, re.DOTALL).group(0)
+    visible = region.replace(collapsed, "")
 
     custom = tasks.KINDS[-1]
     for kind in tasks.KINDS[:-1]:
@@ -290,13 +290,13 @@ def test_the_privacy_warning_stays_out_of_the_collapsed_block(client, media):
     when you go looking is not a warning."""
     body = client.get(f"/media/{media}").text
 
-    panel = re.search(r'<section id="ai-panel".*?</section>', body, re.DOTALL).group(0)
+    region = re.search(r'<section id="ai-region".*?</section>', body, re.DOTALL).group(0)
     # The tag carries an id and hx-preserve since TASK-053.03, so the
     # pattern stops at the tag's own ">" rather than assuming the class
     # closes it.
-    collapsed = re.search(r"<details class=\"options\"[^>]*>.*?</details>", panel, re.DOTALL).group(0)
+    collapsed = re.search(r"<details class=\"options\"[^>]*>.*?</details>", region, re.DOTALL).group(0)
 
-    assert "is not on this machine" in panel.replace(collapsed, "")
+    assert "is not on this machine" in region.replace(collapsed, "")
 
 
 def test_summary_line_names_the_provider_and_model_and_is_quiet_about_local_ones():

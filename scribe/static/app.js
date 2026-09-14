@@ -1608,6 +1608,112 @@
     seekFromUrlOrResume();
   }
 
+
+  /* ---- the AI region: a menu, tabs, and one panel (TASK-053.04) ----
+
+    Nine answers share one bounded panel. Every card stays in the document,
+    because `hx-trigger="every 2s"` only fires for an element that is in it -
+    a card removed to save markup would stop polling and its answer would
+    never arrive. Hidden is not absent.
+
+    Everything here is delegated from `document`, like the rest of this file,
+    because the region is replaced wholesale when the pin is toggled.
+
+    `el.hidden` and attributes, never `:checked` or `[hidden]` selectors: the
+    tests here parse the source rather than run it, so a CSS-state check would
+    pass the suite and fail in Chrome (see wireReadingSwitch).
+  */
+  var TAB_KEY_PREFIX = 'scribe:ai-tab:';
+  var OPEN_KEY_PREFIX = 'scribe:ai-open:';
+
+  function openPanel(region, open) {
+    if (!region) { return; }
+    region.setAttribute('data-open', open ? 'true' : 'false');
+    var toggle = region.querySelector('[data-ai-toggle]');
+    if (toggle) { toggle.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+    var media = region.getAttribute('data-media');
+    if (media) { writeStore(OPEN_KEY_PREFIX + media, open ? '1' : '0'); }
+  }
+
+  function showTab(kind, open) {
+    var region = document.querySelector('[data-ai-region]');
+    if (!region || !kind) { return; }
+    region.querySelectorAll('.ai-tab').forEach(function (tab) {
+      var mine = tab.getAttribute('data-tab') === kind;
+      tab.setAttribute('aria-selected', mine ? 'true' : 'false');
+      tab.setAttribute('tabindex', mine ? '0' : '-1');
+    });
+    region.querySelectorAll('[data-slot]').forEach(function (slot) {
+      slot.hidden = slot.getAttribute('data-slot') !== kind;
+    });
+    var media = region.getAttribute('data-media');
+    if (media) { writeStore(TAB_KEY_PREFIX + media, kind); }
+    if (open) { openPanel(region, true); }
+  }
+
+  function wireAiTabs() {
+    document.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== 'function') { return; }
+
+      var toggle = target.closest('[data-ai-toggle]');
+      if (toggle) {
+        var region = toggle.closest('[data-ai-region]');
+        openPanel(region, region.getAttribute('data-open') !== 'true');
+        return;
+      }
+
+      /* A tab opens the panel: clicking "Chapters" to read nothing would be
+         a control that looks broken. */
+      var tab = target.closest('.ai-tab');
+      if (tab) { showTab(tab.getAttribute('data-tab'), true); return; }
+
+      /* An Ask button switches to its own tab BEFORE the request leaves.
+         htmx's swap lands in #ai-<kind>, and a swap into a hidden container
+         is invisible - the same bug as an answer thirty thousand pixels down,
+         one layer up. */
+      var ask = target.closest('[data-asks]');
+      if (ask) { showTab(ask.getAttribute('data-asks'), true); }
+    });
+
+    /* Left and right move along the strip, which is what a tablist owes a
+       keyboard: the tabs carry roving tabindex, so Tab enters the strip once
+       and the arrows walk it. */
+    document.addEventListener('keydown', function (event) {
+      var tab = event.target && event.target.closest
+        ? event.target.closest('.ai-tab')
+        : null;
+      if (!tab || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) { return; }
+      var tabs = Array.prototype.slice.call(
+        tab.parentElement.querySelectorAll('.ai-tab')
+      );
+      var next = tabs[(tabs.indexOf(tab) + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+      if (!next) { return; }
+      event.preventDefault();
+      showTab(next.getAttribute('data-tab'), false);
+      next.focus();
+    });
+
+    /* What was open last time for THIS recording. The server picked a sane
+       tab already - a running job, else the newest answer - so this only
+       overrides it when a choice was actually made and that card is still
+       there. */
+    function restoreTab() {
+      var region = document.querySelector('[data-ai-region]');
+      if (!region) { return; }
+      var media = region.getAttribute('data-media');
+      var kind = media ? readStore(TAB_KEY_PREFIX + media) : null;
+      if (kind && region.querySelector('[data-slot="' + kind + '"]')) { showTab(kind, false); }
+      /* Only an explicit choice overrides the server, which already opened
+         the panel if something is being written. */
+      var was = media ? readStore(OPEN_KEY_PREFIX + media) : null;
+      if (was === '1' || was === '0') { openPanel(region, was === '1'); }
+    }
+
+    document.body.addEventListener('htmx:afterSwap', restoreTab);
+    restoreTab();
+  }
+
   function start() {
     wireForms();
     wireSelectAll();
@@ -1615,6 +1721,7 @@
     wireDialogs();
     wireTranscribeDialog();
     wireReadingSwitch();
+    wireAiTabs();
     wireExportDialog();
     wireJobLog();
     wireTranscript();

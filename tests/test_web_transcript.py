@@ -720,18 +720,21 @@ def test_page_carries_the_speaker_controls_app_js_wires(client, transcribed):
     assert 'value="Arthur"' in rail and 'value="Speaker 2"' in rail
 
 
-def test_the_rail_is_four_titled_groups_rather_than_one_list(client, transcribed):
+def test_the_rail_is_titled_groups_rather_than_one_list(client, transcribed):
     """The rail carried one "Actions" heading over four unrelated subjects, so
     an AI provider select and a rename box read as more of the same column.
     Each subject is a card with its own heading now, and the headings are what
-    this asserts - the styling can move without failing it."""
+    this asserts - the styling can move without failing it.
+
+    AI left the rail in TASK-053.04: the menu is above the transcript, where
+    the answer it produces now appears. What stays here is the file and the
+    reading of it."""
     body = client.get(f"/media/{transcribed['media']}").text
 
     rail = re.search(r'<aside class="rail"[^>]*>(.*?)</aside>', body, re.S).group(1)
     headings = re.findall(r"<h2[^>]*>([^<]+)</h2>", rail)
-    assert headings == ["Take away", "AI", "File", "Speakers", "This transcript"], headings
-    # The AI section carries the class alongside its own, so match the class
-    # rather than the whole attribute.
+    assert headings == ["Take away", "File", "Speakers", "This transcript"], headings
+    assert "AI" not in headings
     assert len(re.findall(r'class="[^"]*rail-group', rail)) == len(headings)
 
 
@@ -1036,7 +1039,7 @@ def test_the_comments_do_not_claim_six_questions(client):
 
     root = pathlib.Path(__file__).resolve().parents[1]
     assert len(tasks.KINDS) == 9
-    for rel in ("scribe/templates/_ai_panel.html", "scribe/templates/transcript.html"):
+    for rel in ("scribe/templates/_ai_region.html", "scribe/templates/transcript.html"):
         text = (root / rel).read_text(encoding="utf-8")
         assert "six" not in text.lower().replace("sixth", ""), rel
 
@@ -1210,3 +1213,181 @@ def test_the_typed_question_survives_a_panel_refresh(client, transcribed):
     assert 'id="ai-options"' in details.group(0)
     for control in ('id="ai-prompt"', 'id="ai-provider"', 'id="ai-model"'):
         assert control in body, control
+
+
+# --- steps 4 and 5: the menu, the tabs, the bounded panel (TASK-053.04/.05) ----------
+
+
+def _region(body: str) -> str:
+    return re.search(r'<section id="ai-region".*?</section>\s*\n\n', body, re.DOTALL).group(0)
+
+
+def test_the_ai_region_comes_before_the_transcript_and_is_not_inside_it(client, transcribed):
+    """Two properties, and the second is the one the whole rebuild rests on.
+
+    Before, because an answer thirty thousand pixels below the button that
+    asked for it is the fault this exists to remove. Outside, because
+    #transcript-panel swaps its own outerHTML and would destroy an answer
+    being written.
+
+    Asserted as "a sibling, earlier" rather than "follows #transcript-panel",
+    because the old test was the latter and it is exactly the assertion
+    somebody fixes instead of thinking about.
+    """
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    region_at = body.index('id="ai-region"')
+    panel_at = body.index('id="transcript-panel"')
+    assert region_at < panel_at
+
+    panel = body[panel_at:]
+    assert "ai-region" not in panel.split("</aside>")[0]
+
+
+def test_an_htmx_refresh_of_the_panel_carries_no_answer_markup(client, transcribed):
+    """The other half of the same property, from the server's side: the
+    fragment a rename gets back must contain nothing the answers own, or the
+    swap would replace them with a copy that has lost its polling."""
+    body = client.get(f"/media/{transcribed['media']}", headers=HX).text
+
+    assert "ai-region" not in body
+    assert 'id="ai-' not in body
+
+
+def test_the_menu_offers_every_kind_and_each_asks_for_its_own(client, transcribed):
+    from scribe.llm import tasks
+
+    region = _region(client.get(f"/media/{transcribed['media']}").text)
+
+    for kind in tasks.KINDS:
+        assert f'data-asks="{kind}"' in region, kind
+        assert f'hx-target="#ai-{kind}"' in region, kind
+
+
+def test_every_card_is_rendered_and_all_but_one_are_hidden(client, transcribed):
+    """Hidden is not absent. hx-trigger="every 2s" only fires for an element
+    in the document, so a card left out to save markup would stop polling and
+    its answer would never arrive."""
+    from scribe.llm import tasks
+
+    region = _region(client.get(f"/media/{transcribed['media']}").text)
+
+    slots = re.findall(r'<div class="ai-slot" data-slot="([^"]+)"([^>]*)>', region)
+    assert [kind for kind, _ in slots] == list(tasks.KINDS)
+    shown = [kind for kind, attrs in slots if "hidden" not in attrs]
+    assert len(shown) == 1
+
+
+def test_a_tab_per_kind_and_exactly_one_is_selected(client, transcribed):
+    from scribe.llm import tasks
+
+    region = _region(client.get(f"/media/{transcribed['media']}").text)
+
+    tabs = re.findall(r'<button type="button" role="tab"[^>]*data-tab="([^"]+)"[^>]*aria-selected="([^"]+)"', region)
+    assert [kind for kind, _ in tabs] == list(tasks.KINDS)
+    assert [k for k, sel in tabs if sel == "true"] == [tasks.KINDS[0]]
+
+
+def test_the_region_opens_on_the_job_that_is_running(client, conn, transcribed):
+    """The one somebody is waiting for, not the first in the list."""
+    media_id = transcribed["media"]
+    jobs.enqueue(conn, "llm", media_id, {"media_id": media_id, "kind": "chapters"})
+
+    region = _region(client.get(f"/media/{media_id}").text)
+
+    assert re.search(r'data-tab="chapters"[^>]*aria-selected="true"', region)
+    assert re.search(r'data-slot="chapters"(?![^>]*hidden)', region)
+
+
+def test_the_region_opens_on_the_newest_answer_when_nothing_runs(client, conn, transcribed):
+    media_id = transcribed["media"]
+    with db.LOCK:
+        for kind, created in (("summary", 10.0), ("labels", 99.0)):
+            conn.execute(
+                "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+                " content, created_at, run_id) VALUES (?,?,?,?,?,?,?,?)",
+                (media_id, kind, "ollama", "qwen3.5:4b", 1, "{}", created, transcribed["run"]),
+            )
+        conn.commit()
+
+    region = _region(client.get(f"/media/{media_id}").text)
+
+    assert re.search(r'data-tab="labels"[^>]*aria-selected="true"', region)
+
+
+def test_the_answer_panel_is_bounded_so_the_transcript_starts_in_one_place(client):
+    """`blog` allows 6000 output tokens and `cleanup` is as long as the input.
+    Without a ceiling here the transcript would start several screens down on
+    every later visit - the fault this rebuild removes, moved rather than
+    fixed."""
+    css = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.css").read_text(
+        encoding="utf-8"
+    )
+    panels = css.split(".ai-panels {")[1].split("}")[0]
+    assert "max-height" in panels
+    assert "overflow-y: auto" in panels
+
+
+def test_asking_switches_to_its_own_tab_before_the_request_leaves(client):
+    """scrollIntoView and htmx's show: are no-ops inside a hidden container,
+    so asking while another tab is open would put the answer where nobody can
+    see it - the same bug as the thirty thousand pixels, one layer up."""
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(
+        encoding="utf-8"
+    )
+    handler = js.split("function wireAiTabs()")[1]
+    assert "data-asks" in handler
+    assert "showTab(ask.getAttribute('data-asks'), true)" in handler
+    # and the tab machinery uses properties, not CSS-state selectors
+    show = js.split("function showTab(kind, open)")[1].split("\n  }")[0]
+    assert "slot.hidden" in show
+    assert ":checked" not in show and "[hidden]" not in show
+
+
+def test_pinning_private_answers_with_the_region_not_the_whole_transcript(client, transcribed):
+    """Pinning changes which providers are offered, not a single word. It used
+    to re-render every paragraph to move one badge."""
+    media_id = transcribed["media"]
+
+    resp = client.post(
+        f"/media/{media_id}/private",
+        data={"private": "1"},
+        headers={**HX, "HX-Target": "ai-region"},
+    )
+
+    assert resp.status_code == 200
+    assert 'id="ai-region"' in resp.text
+    assert 'id="transcript-panel"' not in resp.text
+    assert "🔒 Private" in resp.text
+
+
+def test_the_answer_panel_rests_closed_so_the_transcript_is_the_page(client, transcribed):
+    """Open by default costs the transcript 300px of a 800px window on every
+    visit, and Robert's rule is that the transcript is the page. The tabs stay
+    either way: which kinds hold an answer is worth seeing without opening
+    one."""
+    region = _region(client.get(f"/media/{transcribed['media']}").text)
+
+    assert 'data-open="false"' in region
+    toggle = re.search(r'<button type="button" class="ai-toggle"[^>]*>', region)
+    assert toggle and 'aria-expanded="false"' in toggle.group(0)
+    assert 'class="ai-tabs"' in region   # the strip is still there
+
+
+def test_a_job_you_are_waiting_for_opens_the_panel(client, conn, transcribed):
+    media_id = transcribed["media"]
+    jobs.enqueue(conn, "llm", media_id, {"media_id": media_id, "kind": "minutes"})
+
+    region = _region(client.get(f"/media/{media_id}").text)
+
+    assert 'data-open="true"' in region
+    assert re.search(r'class="ai-toggle"[^>]*aria-expanded="true"', region)
+
+
+def test_the_closed_panel_is_hidden_by_the_stylesheet_not_by_markup(client):
+    """Hidden is not absent: every card keeps polling while the panel is shut,
+    or an answer asked for and then collapsed would never arrive."""
+    css = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.css").read_text(
+        encoding="utf-8"
+    )
+    assert '.ai-region[data-open="false"] .ai-panels { display: none; }' in css

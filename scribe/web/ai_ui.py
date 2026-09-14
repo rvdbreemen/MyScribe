@@ -615,7 +615,7 @@ def summary_line(choices: list[dict], model: str) -> str:
 def panel_context(
     conn: sqlite3.Connection, media_id: int, *, has_transcript: bool, run_id: int | None = None
 ) -> dict:
-    """Everything `_ai_panel.html` and the six `_ai_output.html` sections need.
+    """Everything `_ai_region.html` and its nine `_ai_output.html` cards need.
 
     Merged into the transcript page's context, so the rail and the outputs are
     rendered by the same request that renders the words - and re-rendered by
@@ -627,6 +627,10 @@ def panel_context(
     active = pending_jobs(conn, media_id)
     choices = provider_choices(selected=chosen, private=private)
     model = default_model(conn, chosen)
+    panels = [
+        panel_for(conn, media_id, kind, job=active.get(kind), run_id=run_id)
+        for kind in tasks.KINDS
+    ]
     return {
         "ai": {
             "media_id": media_id,
@@ -637,14 +641,39 @@ def panel_context(
             "model": model,
             "summary_line": summary_line(choices, model),
             "models": known_models(conn, chosen),
-            "panels": [
-                panel_for(conn, media_id, kind, job=active.get(kind), run_id=run_id)
-                for kind in tasks.KINDS
-            ],
+            "panels": panels,
             "chat_job": active.get(chat_tool.CHAT_KIND),
             "poll": POLL_SECONDS,
+            "selected": _opening_tab(panels),
+            # Closed unless something is being written. The transcript is the
+            # page (Robert: "de kern is en blijft het transcript"), and an
+            # answer panel open by default costs it 300px on every visit -
+            # but a job you are waiting for is worth opening for. The browser
+            # overrides this from what was left open for this recording.
+            "open": any(p.get("job") for p in panels),
         }
     }
+
+
+def _opening_tab(panels: list[dict]) -> str:
+    """Which tab the answer panel opens on (TASK-053.04).
+
+    A job still running first - that is the one somebody is waiting for - then
+    the newest answer there is, then the first kind. Never an empty card while
+    an answered one exists: opening on "Summary · not asked yet" when this
+    recording has chapters is a page that hides its own contents.
+
+    The browser overrides this from what was open last time, per recording;
+    this is the answer for a first visit and for scripting off.
+    """
+    running = [p for p in panels if p.get("job")]
+    if running:
+        return str(running[0]["kind"])
+    answered = [p for p in panels if p.get("output")]
+    if answered:
+        newest = max(answered, key=lambda p: p["output"].get("created_at") or 0)
+        return str(newest["kind"])
+    return str(panels[0]["kind"]) if panels else ""
 
 
 # --- asking for one --------------------------------------------------------------------
@@ -813,9 +842,14 @@ def set_media_private(
     if request.headers.get("HX-Target") == "media-table":
         return library._after_change(request, conn)
     if library._is_htmx(request):
-        return render_page(
-            request, "_transcript_panel.html", **transcript.page_context(conn, media_id)
-        )
+        # The transcript page pins from the AI region, and that is all pinning
+        # changes there: which providers are offered, and the line that says
+        # whether this recording's text may leave. Answering with the whole
+        # transcript panel would re-render every word to move one badge, and
+        # since TASK-053.04 the region is not inside the panel anyway.
+        which = ("_ai_region.html" if request.headers.get("HX-Target") == "ai-region"
+                 else "_transcript_panel.html")
+        return render_page(request, which, **transcript.page_context(conn, media_id))
     return RedirectResponse(f"/media/{media_id}", status_code=303)
 
 
