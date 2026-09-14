@@ -73,6 +73,15 @@
   </ul>
   <input type="hidden" name="feed_url" value="{{ preview.feed_url }}">
   <input type="hidden" name="feed_title" value="{{ preview.feed_title }}">
+  {# What "Follow, decide later" posts instead of the listing: the newest
+     entry and how long the listing is. feeds.subscribe uses exactly those two
+     for an unanswered feed - queue that one, remember the count so the Feeds
+     page can say what "everything" would fetch - and 2970 JSON blobs have no
+     business travelling through a form to say it (TASK-044). #}
+  {% if preview.entries %}
+  <input type="hidden" name="feed_first" value="{{ preview.entries[0].value }}">
+  <input type="hidden" name="feed_total" value="{{ preview.total or preview.count }}">
+  {% endif %}
   <p class="episodes-foot">
     {# Ticked by default (ADR-008): "once you start with a feed it stays
        watched" is the wanted behaviour, and this is where a person can say
@@ -84,6 +93,12 @@
       keep following this feed
     </label>
     <button type="submit" data-episodes-submit formaction="/transcribe/url" hx-post="/transcribe/url" hx-params="not files">Import selected</button>
+    {# The other half of the ask (TASK-044): follow it, take the newest
+       episode now, and leave the question about the rest on the Feeds page.
+       hx-vals carries the flag - htmx 2.0.10 merges hx-vals before applying
+       hx-params, so "not files" keeps it, the way the patient retry above
+       relies on the same order. #}
+    <button type="submit" formaction="/transcribe/url" hx-post="/transcribe/url" hx-params="not files" hx-vals='{"follow_only": "1"}'>Follow, decide later</button>
   </p>
   {% else %}
   <p class="url-title"><strong>{{ preview.title or 'Untitled' }}</strong></p>

@@ -38,7 +38,7 @@ import traceback
 from pathlib import Path
 from typing import Callable, Sequence
 
-from scribe import applog, db, jobs
+from scribe import applog, db, doctor, jobs
 from scribe.ingest import urls
 from scribe.stages import url_stage
 
@@ -161,6 +161,7 @@ def subscribe(
     entries: Sequence[dict] = (),
     options: dict | None = None,
     answered: bool = False,
+    total: int | None = None,
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
     now: float | None = None,
 ) -> int:
@@ -182,6 +183,12 @@ def subscribe(
     `answered=True` is the dialog's path: a person who ticked episodes has
     answered the question by answering it, so the whole listing is recorded as
     seen and nothing is queued here - the ticked jobs are the route's.
+
+    `total` is how long the listing is, when the caller holds the count but not
+    the entries. The "follow, decide later" button is that caller: the dialog
+    has 2970 episodes on screen and posts back the newest one and the number,
+    rather than 2970 JSON blobs, and `backfill_offer` needs the number to say
+    what "everything" would fetch. It defaults to `len(entries)`.
 
     An existing subscription is updated rather than duplicated, and importing
     the same feed twice never reopens a question that was closed.
@@ -218,7 +225,8 @@ def subscribe(
         with db.LOCK:
             _mark_seen(conn, feed_id, first)
             conn.execute(
-                "UPDATE feed SET backfill_total=? WHERE id=?", (len(entries), feed_id)
+                "UPDATE feed SET backfill_total=? WHERE id=?",
+                (len(entries) if total is None else max(int(total), len(entries)), feed_id),
             )
             conn.commit()
         jobs.enqueue(
@@ -286,6 +294,12 @@ def backfill(
         return {"queued": [], "result": "nothing more"}
     if choice != "all" and choice not in {str(n) for n in BACKFILL_CHOICES}:
         raise ValueError(f"{choice!r} is not one of the choices on offer")
+    # The sharp case for TASK-043's floor: this marks everything it queues as
+    # seen and closes the question, both unconditionally, so a disk below the
+    # floor would turn one press of "everything" into a back catalogue that
+    # failed DISK_LOW and is never offered again. Refuse before anything is
+    # queued, marked or answered, and the question stays open for later.
+    doctor.require_disk_headroom()
 
     info = probe(feed["url"], limit=None)
     entries = newest_first(list(info.entries or []))
@@ -432,6 +446,17 @@ def poll(
         result = "asking how much of the back catalogue to fetch"
         _record(conn, feed_id, result=result, failed=False, now=stamp)
         return {"queued": [], "new": 0, "result": result}
+    # Before the probe, because an episode this poll queues is marked seen the
+    # moment it is queued and never offered again - so queueing into a disk
+    # that will refuse every download (TASK-043) does not delay the catalogue,
+    # it loses it. Checking here costs one statvfs and leaves the entries
+    # unseen for the next interval.
+    try:
+        doctor.require_disk_headroom()
+    except doctor.NotEnoughDisk as exc:
+        result = f"not checked: {exc}"
+        _record(conn, feed_id, result=result[:200], failed=True, now=stamp)
+        return {"queued": [], "new": 0, "error": result}
     try:
         info = probe(feed["url"], limit=None)
     except Exception as exc:  # noqa: BLE001 - any failure is the feed's failure

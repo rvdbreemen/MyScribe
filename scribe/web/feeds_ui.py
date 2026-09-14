@@ -35,7 +35,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 
-from scribe import applog, db
+from scribe import applog, db, doctor
 from scribe.ingest import feeds
 from scribe.web import render
 
@@ -201,5 +201,9 @@ async def backfill_feed(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except doctor.NotEnoughDisk as exc:
+        # 507, not 400: the answer was fine and the disk is not. The question
+        # is still open, so the same button works once there is room.
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
     applog.log("feeds.answered", feed=feed_id, choice=choice.strip(), queued=len(out["queued"]))
     return _after_change(request, conn)

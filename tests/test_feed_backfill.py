@@ -12,9 +12,11 @@ not asked again tomorrow.
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
-from scribe import db, jobs
+from scribe import db, doctor, jobs
 from scribe.ingest import feeds
 from scribe.stages import url_stage
 
@@ -161,3 +163,67 @@ def test_a_choice_above_the_fan_out_ceiling_is_refused_with_both_numbers(conn, m
 
     assert "11" in str(caught.value) and "3" in str(caught.value)
     assert len(_queued_urls(conn)) == 1  # nothing was queued
+
+
+def test_what_was_fetched_is_remembered_so_the_next_poll_does_not_fetch_it_again(conn):  # noqa: F811
+    """The durable half of an answer, which nothing looked at: delete the
+    `_mark_seen` from `backfill` and every feed test stayed green while the
+    next poll re-queued the whole catalogue the person just answered for."""
+    feed_id, entries = _new_feed(conn, count=5)
+
+    _answer(conn, feed_id, "all", entries)
+
+    seen = sorted(
+        row["source_id"]
+        for row in conn.execute("SELECT source_id FROM feed_seen WHERE feed_id=?", (feed_id,))
+    )
+    assert seen == sorted(e["source_id"] for e in entries)
+
+    feed = _feed(conn, feed_id)
+    out = feeds.poll(
+        conn, feed,
+        probe=lambda url, **kw: playlist(*entries),
+        known_sources=lambda c, e: [None] * len(e),
+        options={},
+    )
+    assert out["queued"] == [] and len(_queued_urls(conn)) == 5
+
+
+# --- the disk floor, where an answer is a one-shot --------------------------------
+
+
+def test_a_disk_below_the_floor_refuses_the_answer_and_leaves_the_question_open(
+    conn, monkeypatch  # noqa: F811
+):
+    """TASK-043 meets TASK-045. `backfill` marks everything it queues as seen
+    and closes the question, both unconditionally - so below the floor one
+    press of "everything" would queue 39 downloads that all fail DISK_LOW,
+    mark 39 episodes seen, and never ask again. The refusal comes first."""
+    feed_id, entries = _new_feed(conn, count=12)
+    monkeypatch.setattr(
+        shutil, "disk_usage",
+        lambda _p: shutil._ntuple_diskusage(total=1000 * 2**30, used=0, free=2**30),
+    )
+
+    with pytest.raises(doctor.NotEnoughDisk):
+        _answer(conn, feed_id, "all", entries)
+
+    assert len(_queued_urls(conn)) == 1  # only the first episode, from subscribing
+    assert feeds.is_asking(conn, feed_id) is True
+    seen = [row["source_id"] for row in
+            conn.execute("SELECT source_id FROM feed_seen WHERE feed_id=?", (feed_id,))]
+    assert seen == [entries[0]["source_id"]]
+
+
+def test_nothing_more_is_still_answerable_on_a_full_disk(conn, monkeypatch):  # noqa: F811
+    """It queues nothing, so it needs no room - and refusing it would trap a
+    person who wants the question gone precisely because the disk is full."""
+    feed_id, entries = _new_feed(conn, count=12)
+    monkeypatch.setattr(
+        shutil, "disk_usage",
+        lambda _p: shutil._ntuple_diskusage(total=1000 * 2**30, used=0, free=2**30),
+    )
+
+    out = _answer(conn, feed_id, "nothing", entries)
+
+    assert out["queued"] == [] and feeds.is_asking(conn, feed_id) is False

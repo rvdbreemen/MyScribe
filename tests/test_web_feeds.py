@@ -53,6 +53,16 @@ def client(db_path, data_dir, conn):
 
 
 def _subscribe(conn, url=FEED_URL, title="The Feed", **kw):
+    """An established feed: one whose back-catalogue question is answered.
+
+    `answered=True` is here rather than at each call site because it is not
+    what any test in this file is about - they are about the Feeds page, and a
+    feed that is still asking is a different page (it shows the question, and
+    the watcher leaves it alone). TASK-044 made asking the default for a new
+    subscription, so without this flag every test here would silently change
+    subject. The tests that *are* about the question say so, and live in
+    tests/test_feed_first_episode.py and tests/test_feed_backfill.py.
+    """
     return feeds.subscribe(conn, url, title=title, **kw, answered=True)
 
 

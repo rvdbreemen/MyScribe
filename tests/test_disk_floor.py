@@ -37,8 +37,23 @@ def _usage(free_gb: float):
     return shutil._ntuple_diskusage(total=total, used=total - free, free=free)
 
 
-def _with_free(monkeypatch, free_gb: float) -> None:
-    monkeypatch.setattr(shutil, "disk_usage", lambda _path: _usage(free_gb))
+def _with_free(monkeypatch, free_gb: float) -> list:
+    """Fake the volume, and remember what was measured.
+
+    The returned list is the point: every fake here used to be
+    `lambda _path: ...`, which throws the argument away - so no test could
+    observe *which* volume was probed, the one thing the guard exists to get
+    right, and a regression that measured the system temp drive would have
+    shipped green.
+    """
+    asked: list = []
+
+    def usage(path):
+        asked.append(path)
+        return _usage(free_gb)
+
+    monkeypatch.setattr(shutil, "disk_usage", usage)
+    return asked
 
 
 # --- the floor itself ----------------------------------------------------------
@@ -67,6 +82,31 @@ def test_the_refusal_names_the_free_space_and_the_floor(monkeypatch, data_dir): 
     message = str(caught.value)
     assert "3.2 GB" in message and str(doctor.DISK_FLOOR_GB) in message
     assert str(doctor.disk_probe_path()) in message
+
+
+def test_the_volume_measured_is_the_one_the_data_lands_on(monkeypatch, data_dir):  # noqa: F811
+    """AC1's other half. The message promises room "where the data lands", and
+    on this machine the model cache is on another drive entirely - so probing
+    anything but DATA_DIR would refuse the wrong downloads and allow the right
+    ones. `data_dir` points paths.DATA_DIR at a tmp_path, and the guard has to
+    follow it there.
+    """
+    asked = _with_free(monkeypatch, doctor.DISK_FLOOR_GB + 5)
+
+    doctor.require_disk_headroom()
+
+    assert asked == [paths.DATA_DIR]
+    assert doctor.disk_probe_path() == paths.DATA_DIR
+
+
+def test_the_floor_is_a_minimum_not_a_forbidden_number(monkeypatch, data_dir):  # noqa: F811
+    """Exactly at the floor is allowed, on both sides of the one constant.
+    Neither `<` -> `<=` in the guard nor `>=` -> `>` in the check was caught by
+    anything: the tests sat at floor-0.5 and floor+0.001 and never on it."""
+    _with_free(monkeypatch, doctor.DISK_FLOOR_GB)
+
+    doctor.require_disk_headroom()  # no raise
+    assert doctor.check_disk_space().ok is True
 
 
 def test_a_volume_that_cannot_be_measured_does_not_refuse(monkeypatch, data_dir):  # noqa: F811

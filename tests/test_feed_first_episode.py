@@ -17,12 +17,14 @@ runs at `url_stage.BULK_PRIORITY`, which is the floor the app itself uses.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import pathlib
+import shutil
 
 import pytest
 
-from scribe import db, jobs
+from scribe import db, doctor, jobs
 from scribe.ingest import feeds
 from scribe.stages import url_stage
 
@@ -136,6 +138,43 @@ def test_a_feed_that_is_still_asking_is_not_polled(conn, monkeypatch):  # noqa: 
     assert out["queued"] == []
     assert "asking" in (out.get("result") or out.get("error") or "")
     assert len(_queued(conn)) == 1  # still only the first episode
+    # And it records the check. A feed is due when checked_at is NULL, so a
+    # refused poll that writes nothing hands the same feed back on every tick
+    # for as long as the question is open, instead of going quiet for an
+    # interval. The refused poll is still a poll.
+    checked = conn.execute("SELECT checked_at FROM feed WHERE id=?", (feed_id,)).fetchone()
+    assert checked["checked_at"] is not None
+    assert [f["id"] for f in feeds.due_feeds(conn, now=checked["checked_at"] + 1)] == []
+
+
+def test_a_poll_below_the_disk_floor_queues_nothing_and_says_so(conn, monkeypatch):  # noqa: F811
+    """An episode is marked seen the moment a poll queues it, so queueing into
+    a disk that will refuse every download does not delay the catalogue - it
+    loses it, and the Feeds page would say "3 new" while all three died. The
+    probe is not even opened, and the entries stay unseen for next time."""
+    feed_id = feeds.subscribe(conn, "https://feed.test/rss", entries=[entry(0)])
+    feeds.answer(conn, feed_id)
+    feed = dict(conn.execute("SELECT * FROM feed WHERE id=?", (feed_id,)).fetchone())
+    monkeypatch.setattr(
+        shutil, "disk_usage",
+        lambda _p: shutil._ntuple_diskusage(total=1000 * 2**30, used=0, free=2**30),
+    )
+
+    def probe(url, **kw):
+        raise AssertionError("the feed was probed on a disk that cannot hold the result")
+
+    out = feeds.poll(conn, feed, probe=probe, known_sources=lambda c, e: [], options={})
+
+    assert out["queued"] == [] and str(doctor.DISK_FLOOR_GB) in out["error"]
+    assert len(_queued(conn)) == 1  # the first episode, and nothing new
+    assert _seen(conn, feed_id) == [entry(0)["source_id"]]
+    row = conn.execute(
+        "SELECT last_result, failures FROM feed WHERE id=?", (feed_id,)
+    ).fetchone()
+    assert str(doctor.DISK_FLOOR_GB) in row["last_result"], (
+        "the Feeds page must not call this a healthy check"
+    )
+    assert row["failures"] == 1  # counted as a failure, so the backoff applies
 
 
 def test_an_answered_feed_polls_as_before(conn):  # noqa: F811
@@ -180,32 +219,63 @@ def test_no_code_path_enqueues_below_the_floor(conn):  # noqa: F811
     An AST walk rather than a runtime guard, because the thing to prevent is
     someone *writing* a lower number, and a runtime guard would only catch the
     paths a test happens to exercise.
+
+    Two things the walk has to get right, and neither was free:
+
+    The root is anchored to this file rather than to the working directory. A
+    cwd-relative `Path("scribe")` yields nothing when pytest runs from
+    anywhere else, and `assert offenders == []` then passes having read no
+    code at all - a guard that goes quiet instead of red is worse than none,
+    so `read` is asserted too.
+
+    Only the priority is read, by keyword or by its own position. Scanning
+    every positional argument for a negative number reports
+    `enqueue(conn, T, -11)` - where -11 is a media id - as a violation, and a
+    false alarm sends the next reader hunting something that is not there.
     """
-    root = pathlib.Path("scribe")
-    offenders = []
-    for path in root.rglob("*.py"):
+    root = pathlib.Path(__file__).resolve().parents[1] / "scribe"
+    # jobs.enqueue(conn, type, params=..., priority=...) and
+    # jobs.enqueue_many(conn, type, params_list, priority) - the only two,
+    # and their signatures are checked below so a reorder cannot fool this.
+    slot = {"enqueue": None, "enqueue_many": 3}
+    assert [p.name for p in inspect.signature(jobs.enqueue_many).parameters.values()][3] == "priority"
+    assert "priority" in inspect.signature(jobs.enqueue).parameters
+
+    def literal(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
+                and isinstance(node.operand, ast.Constant)):
+            return -node.operand.value
+        return None
+
+    read, calls, offenders = 0, 0, []
+    for path in sorted(root.rglob("*.py")):
+        read += 1
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             name = getattr(node.func, "attr", getattr(node.func, "id", ""))
-            if name not in {"enqueue", "enqueue_many"}:
+            if name not in slot:
                 continue
-            for arg in [*node.args, *(kw.value for kw in node.keywords if kw.arg == "priority")]:
-                value = None
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, int):
-                    value = arg.value
-                elif isinstance(arg, ast.UnaryOp) and isinstance(arg.op, ast.USub) and isinstance(arg.operand, ast.Constant):
-                    value = -arg.operand.value
+            calls += 1
+            here = [kw.value for kw in node.keywords if kw.arg == "priority"]
+            index = slot[name]
+            if index is not None and len(node.args) > index:
+                here.append(node.args[index])
+            for value in (literal(arg) for arg in here):
                 if value is not None and value < url_stage.BULK_PRIORITY:
                     offenders.append(f"{path}:{node.lineno} enqueues at {value}")
+    assert read > 10 and calls > 0, f"the walk read {read} files and found {calls} calls"
     assert offenders == [], offenders
 
 
 def test_the_floor_is_named_once(conn):  # noqa: F811
     """Every feed path reads url_stage.BULK_PRIORITY rather than a copy of the
     number, so moving the constant moves all of them."""
-    for path in (pathlib.Path("scribe/ingest/feeds.py"), pathlib.Path("scribe/web/ingest_ui.py")):
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for path in (root / "scribe/ingest/feeds.py", root / "scribe/web/ingest_ui.py"):
         source = path.read_text(encoding="utf-8")
         assert "BULK_PRIORITY" in source, path
         assert "priority=-10" not in source.replace(" ", ""), path

@@ -147,6 +147,42 @@ def test_an_unknown_move_and_an_absurd_priority_are_refused_before_the_write(con
     assert (after["priority"], after["queue_seq"]) == (before["priority"], before["queue_seq"])
 
 
+def test_the_position_the_board_shows_is_the_order_the_runner_claims(conn):
+    """`queue_position` is the number a person reads, and nothing compared it
+    to the claim order: revert it to the old id ordering and every job test
+    stayed green while the board showed the job that runs first as #3.
+
+    Three at one level and a move, because the one assertion that existed
+    (`queue_position == 1` after a raise) reads 1 whether the ordering is
+    right or wrong when nothing else shares the level.
+    """
+    a = jobs.enqueue(conn, "transcribe", params={})
+    b = jobs.enqueue(conn, "transcribe", params={})
+    c = jobs.enqueue(conn, "transcribe", params={})
+
+    jobs.move_in_queue(conn, c, "front")
+
+    positions = {job_id: jobs.queue_position(conn, job_id) for job_id in (a, b, c)}
+    assert positions == {c: 1, a: 2, b: 3}
+    claimed = _claim_all(conn)
+    assert claimed == sorted(positions, key=positions.get) == [c, a, b]
+
+
+def test_a_move_leaves_a_trace_of_its_own(conn):
+    """AC5 has two halves and only one was pinned: replacing the `moved` event
+    with `pass` left all 77 job tests green, so a front or back move could
+    have shipped leaving nothing in job_event at all."""
+    first = jobs.enqueue(conn, "transcribe", params={})
+    job_id = jobs.enqueue(conn, "transcribe", params={})
+
+    jobs.move_in_queue(conn, job_id, "front")
+
+    moved = [e for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "moved"]
+    assert len(moved) == 1
+    assert moved[0]["payload"] == {"where": "front", "position": 1}
+    assert jobs.queue_position(conn, first) == 2
+
+
 def test_the_change_is_recorded_where_a_person_can_see_it(conn):
     """ADR-007: the event is observation. Nothing reads it to decide a claim -
     the order lives in the column."""

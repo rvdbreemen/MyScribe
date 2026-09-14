@@ -105,7 +105,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
-from scribe import applog, db, fsbrowse, jobs
+from scribe import applog, db, doctor, fsbrowse, jobs
 from scribe.ingest import feeds, recording, urls
 from scribe.options import parse_options
 from scribe.stages import url_stage
@@ -205,7 +205,13 @@ EPISODES_FLASH = (
 )
 
 HINT_NONE_TICKED = (
-    "tick at least one episode - All shown takes everything the filter left"
+    "tick at least one episode - All shown takes everything the filter left,"
+    " or Follow takes the newest one and asks about the rest"
+)
+
+FOLLOW_FLASH = (
+    "Following {feed}. Its newest episode is on its way; the Feeds page asks "
+    "how much of the back catalogue to fetch."
 )
 
 
@@ -263,6 +269,19 @@ def _refuse_constant(name: str):
     """`json.loads` would otherwise accept NaN and Infinity, which are not
     JSON and not numbers this app wants on a job row."""
     raise ValueError(f"{name} is not a number this app accepts")
+
+
+def _require_disk() -> None:
+    """TASK-043's floor, as an answer a person reads rather than a 500.
+
+    507 because the request was fine and the machine is not: htmx shows the
+    `detail` of any non-2xx in the flash line, so the sentence that names the
+    free space and the floor is what appears on screen.
+    """
+    try:
+        doctor.require_disk_headroom()
+    except doctor.NotEnoughDisk as exc:
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
 
 
 def parse_entry(raw: str, index: int) -> dict:
@@ -330,6 +349,8 @@ async def add_url(request: Request) -> Response:
     fields = _fields(form)
     raw_entries = [value for value in form.getlist("entry") if isinstance(value, str)]
 
+    if str(fields.get("follow_only") or "").strip() not in ("", "0", "false"):
+        return await _follow_feed(request, conn, fields)
     if raw_entries:
         return await _add_episodes(request, conn, fields, raw_entries)
     if (fields.get("feed_url") or "").strip():
@@ -371,6 +392,12 @@ async def _add_episodes(
     business on the event loop), so a bad entry queues nothing - including
     the good ones beside it.
     """
+    # Everything queued here is marked seen by the `subscribe` below, so a
+    # disk under TASK-043's floor would not delay these episodes but lose
+    # them: every job fails DISK_LOW and no later poll offers them again.
+    # Refuse before the first one is queued (the message says what to do).
+    _require_disk()
+
     cap = url_stage.MAX_FAN_OUT  # read at request time: the tests patch it
     if len(raw_entries) > cap:
         raise HTTPException(
@@ -434,6 +461,51 @@ async def _add_episodes(
         count=len(entries), s="" if len(entries) == 1 else "s", feed=feed_title or "the feed"
     )
     response = library._after_change(request, conn, flash=flash)
+    response.headers["HX-Trigger"] = "jobs-changed"
+    return response
+
+
+async def _follow_feed(request: Request, conn: sqlite3.Connection, fields: dict) -> Response:
+    """Follow a feed without ticking anything: the newest episode, then a question.
+
+    This is the route TASK-044 describes, and `_add_episodes` is not it: a
+    person who ticks episodes has said what they want, so that path subscribes
+    `answered=True`. Pressing "Follow, decide later" says the opposite - fetch
+    the newest one so I can hear whether this is any good, and ask me about
+    the rest on the Feeds page.
+
+    The dialog posts the newest entry and the length of the listing rather
+    than the listing itself: `subscribe` uses exactly those two things for an
+    unanswered feed (queue that one, record how many there are), and a feed of
+    2970 episodes has no business travelling through a form to say so.
+    """
+    _require_disk()  # it queues one episode, and marks it seen; same rule
+
+    feed_url = _web_url(fields.get("feed_url"))
+    feed_title = str(fields.get("feed_title") or "").strip()[:MAX_FEED_TITLE]
+    first = parse_entry(str(fields.get("feed_first") or ""), 1)
+    options = parse_options(fields)
+    folder_id = library._folder_id_from(conn, fields.get("folder_id"))
+    try:
+        total = int(str(fields.get("feed_total") or "1").strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="that feed's length is not a number")
+
+    feeds.subscribe(
+        conn,
+        feed_url,
+        title=feed_title,
+        folder_id=folder_id,
+        entries=[first],
+        options=options.to_params(),
+        total=max(total, 1),
+    )
+    save_defaults(conn, options)
+    applog.log("ingest.follow", feed=feed_url, title=feed_title, total=total)
+
+    response = library._after_change(request, conn, flash=FOLLOW_FLASH.format(
+        feed=feed_title or "the feed"
+    ))
     response.headers["HX-Trigger"] = "jobs-changed"
     return response
 
