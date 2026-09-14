@@ -394,12 +394,16 @@ details.options > *:last-child { margin-bottom: .8rem; }
 /* ---- tables ---- */
 
 /* max-height matters: without it the wrapper grows to fit and never scrolls,
-   which turns the sticky header below into a no-op. */
+   which turns the sticky header below into a no-op. The library opts out of
+   both - see "the library's table is the page" below. */
 .table-wrap { max-height: 78vh; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--r-lg); background: var(--bg); box-shadow: var(--shadow-sm); }
 
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { padding: .42rem .65rem; border-bottom: 1px solid var(--line-soft); text-align: left; white-space: nowrap; }
-thead th { position: sticky; top: 0; background: var(--bg-soft); font-weight: 600; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; color: var(--fg-muted); border-bottom-color: var(--line); }
+/* z-index because a sticky cell without one is painted over by the rows that
+   come after it - a hovered row's background slid across the header once the
+   library started sticking to the window rather than to its own box. */
+thead th { position: sticky; top: 0; z-index: 2; background: var(--bg-soft); font-weight: 600; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; color: var(--fg-muted); border-bottom-color: var(--line); }
 tbody tr:hover { background: var(--accent-soft); }
 tbody tr:last-child td { border-bottom: none; }
 .empty td { color: var(--fg-muted); text-align: center; padding: .8rem; }
@@ -429,6 +433,26 @@ tbody tr:last-child td { border-bottom: none; }
 .new-folder input[type="text"] { flex: 1 1 8rem; min-width: 0; }
 
 .library-main { min-width: 0; }
+
+/* The library's table is the page, so the page scrolls it (TASK-051).
+   Robert: "De tabel is nu precies 1 scherm hoog ... kan dat mogelijk anders,
+   ipv een fixed scroll tabel/lijst."
+
+   A table in a box 78vh tall gives a window two scrollbars and a list that
+   ends before the page does. Dropping the height alone is not enough:
+   `overflow: auto` makes the wrapper a scroll container whatever its height,
+   and `thead th`'s sticky then anchors to that box rather than to the window.
+   Both have to go, and the header starts sticking to the viewport instead -
+   which is the better answer anyway, because it stays put at row 40.
+
+   Narrow windows keep the sideways scroll: nine columns of nowrap cells do
+   not fit a phone, and a table that scrolls inside its box is much better
+   than a page that scrolls sideways under its own header. Sticky headers
+   stop there, which is the price of the trade and only below 900px. */
+.library-main .table-wrap { max-height: none; overflow: visible; }
+@media (max-width: 900px) {
+  .library-main .table-wrap { overflow-x: auto; }
+}
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem; margin-bottom: .6rem; }
 .toolbar h1 { margin: 0; margin-right: auto; }
 .toolbar form { display: flex; align-items: center; gap: .3rem; margin: 0; }
