@@ -490,6 +490,12 @@ async def _follow_feed(request: Request, conn: sqlite3.Connection, fields: dict)
         total = int(str(fields.get("feed_total") or "1").strip())
     except ValueError:
         raise HTTPException(status_code=400, detail="that feed's length is not a number")
+    # A stranger's number, like every other field on this form, and this one
+    # becomes the count the Feeds page shows beside "everything". Capped at
+    # what an answer could actually queue: `backfill` refuses above
+    # MAX_FAN_OUT anyway, so a larger number would only ever offer a fetch the
+    # app would then turn down.
+    total = max(1, min(total, url_stage.MAX_FAN_OUT))
 
     feeds.subscribe(
         conn,
@@ -498,7 +504,7 @@ async def _follow_feed(request: Request, conn: sqlite3.Connection, fields: dict)
         folder_id=folder_id,
         entries=[first],
         options=options.to_params(),
-        total=max(total, 1),
+        total=total,
     )
     save_defaults(conn, options)
     applog.log("ingest.follow", feed=feed_url, title=feed_title, total=total)

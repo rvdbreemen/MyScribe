@@ -170,6 +170,19 @@ def test_a_feed_length_that_is_not_a_number_is_refused(client, conn):  # noqa: F
     assert _queued(conn) == []
 
 
+def test_a_feed_length_is_capped_at_what_an_answer_could_actually_queue(client, conn):  # noqa: F811
+    """The count is a stranger's number, like every other field on this form,
+    and it becomes what the page shows beside "everything". `backfill` refuses
+    above MAX_FAN_OUT anyway, so a bigger number would only ever advertise a
+    fetch the app would then turn down - which is not "the count each choice
+    would queue" (TASK-045 AC1)."""
+    _follow(client, total=99_999)
+
+    feed = _feed(conn)
+    assert feed["backfill_total"] == url_stage.MAX_FAN_OUT
+    assert max(o["count"] for o in feeds.backfill_offer(feed)) <= url_stage.MAX_FAN_OUT
+
+
 def test_a_first_entry_that_is_not_a_readable_episode_is_refused(client, conn):  # noqa: F811
     """Same door as a ticked entry: it came back from a browser, not from us."""
     resp = _follow(client, first=json.dumps({"url": "file:///etc/passwd"}))

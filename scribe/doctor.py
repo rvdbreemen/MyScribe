@@ -83,6 +83,12 @@ def require_disk_headroom() -> None:
     not become "nothing may be imported on this machine". The gate already
     reports an unmeasurable volume as a red check, which is where that
     belongs.
+
+    The message names the volume it measured, and promises nothing about any
+    other: the model cache lives wherever Hugging Face puts it, which on this
+    machine is a different drive from the data directory (`hf_cache_dir` and
+    `disk_probe_path` genuinely disagree), and a first-run model download does
+    not pass through here at all.
     """
     try:
         free = free_disk_gb()
@@ -91,8 +97,8 @@ def require_disk_headroom() -> None:
     if free < DISK_FLOOR_GB:
         raise NotEnoughDisk(
             f"only {free:.1f} GB free at {disk_probe_path()}, and this app keeps "
-            f"{DISK_FLOOR_GB} GB clear for media and models. Free up space and "
-            "retry; nothing was downloaded."
+            f"{DISK_FLOOR_GB} GB clear on the drive your recordings land on. "
+            "Free up space and retry; nothing was downloaded."
         )
 
 
@@ -212,7 +218,10 @@ def check_disk_space(floor_gb: int | None = None) -> Check:
         name="disk-space",
         ok=ok,
         detail=f"{free_gb:.1f} GB free at {probe}",
-        fix_hint="" if ok else f"Free up space: {floor_gb} GB is the working floor for media and models.",
+        # The same promise as the guard's refusal, and no larger: this
+        # measures the drive the recordings land on, and the model cache is
+        # wherever Hugging Face put it - a different drive here.
+        fix_hint="" if ok else f"Free up space: {floor_gb} GB is the working floor at {probe}.",
     )
 
 
