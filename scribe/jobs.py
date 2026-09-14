@@ -19,6 +19,24 @@ from scribe import applog, db
 # that are not `done`. Read by the JSON API and the jobs board alike.
 RETRYABLE_STATUSES: tuple[str, ...] = ("failed", "cancelled", "interrupted")
 
+# Back of the queue: greater than every job now queued. Only queued rows are
+# ever ordered, so the counter need not outlive the queue - which is what keeps
+# this a bounded index read instead of a scan over every job ever run.
+_NEXT_SEQ = "(SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM job WHERE status='queued')"
+
+# Front of this row's own level; correlated on the outer `job` row.
+_FRONT_SEQ = (
+    "(SELECT COALESCE(MIN(q.queue_seq), 0) - 1 FROM job q"
+    " WHERE q.status='queued' AND q.priority = job.priority)"
+)
+
+MOVES: tuple[str, ...] = ("front", "back")
+
+PRIORITY_MIN, PRIORITY_MAX = -1000, 1000
+"""A band, not a vocabulary. What a person picks from is the board's ladder;
+this only stops a typo or a local client from writing a number that sorts above
+everything for good."""
+
 
 def enqueue(
     conn: sqlite3.Connection,
@@ -31,8 +49,8 @@ def enqueue(
     """Insert a queued job; returns the new job id."""
     with db.LOCK:
         cur = conn.execute(
-            "INSERT INTO job(type, media_id, params_json, priority, retry_of, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO job(type, media_id, params_json, priority, retry_of, created_at,"
+            f" queue_seq) VALUES (?, ?, ?, ?, ?, ?, {_NEXT_SEQ})",
             (type_, media_id, json.dumps(params or {}), priority, retry_of, time.time()),
         )
         conn.commit()
@@ -68,11 +86,15 @@ def enqueue_many(
     ids: list[int] = []
     with db.LOCK:
         try:
-            for params in params_list:
+            # One read for the batch, then base + i. The subquery per row would
+            # add ~84 ms to the 17 ms this function's docstring measures, and
+            # nothing can interleave: the loop runs in one write transaction.
+            base = int(conn.execute(f"SELECT {_NEXT_SEQ}").fetchone()[0])
+            for offset, params in enumerate(params_list):
                 cur = conn.execute(
-                    "INSERT INTO job(type, media_id, params_json, priority, retry_of, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (type_, None, json.dumps(params), priority, None, time.time()),
+                    "INSERT INTO job(type, media_id, params_json, priority, retry_of, created_at,"
+                    " queue_seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (type_, None, json.dumps(params), priority, None, time.time(), base + offset),
                 )
                 ids.append(cur.lastrowid)
             conn.commit()
@@ -84,7 +106,7 @@ def enqueue_many(
 
 
 def claim_next(conn: sqlite3.Connection, mode: str = "gpu") -> dict | None:
-    """Claim the next queued job (priority DESC, then FIFO).
+    """Claim the next queued job (priority DESC, then FIFO by `queue_seq`).
 
     mode="gpu" (default): atomically flips the job to running via
     BEGIN IMMEDIATE + UPDATE ... RETURNING, so exactly one claimer wins
@@ -98,7 +120,7 @@ def claim_next(conn: sqlite3.Connection, mode: str = "gpu") -> dict | None:
         with db.LOCK:
             row = conn.execute(
                 "SELECT * FROM job WHERE status='queued' AND cpu_prework_done=0"
-                " ORDER BY priority DESC, id LIMIT 1"
+                " ORDER BY priority DESC, queue_seq, id LIMIT 1"
             ).fetchone()
         return dict(row) if row is not None else None
     if mode != "gpu":
@@ -112,7 +134,7 @@ def claim_next(conn: sqlite3.Connection, mode: str = "gpu") -> dict | None:
             row = conn.execute(
                 "UPDATE job SET status='running', started_at=?, pid=NULL"
                 " WHERE id=(SELECT id FROM job WHERE status='queued'"
-                "           ORDER BY priority DESC, id LIMIT 1)"
+                "           ORDER BY priority DESC, queue_seq, id LIMIT 1)"
                 " RETURNING *",
                 (time.time(),),
             ).fetchone()
@@ -162,6 +184,66 @@ def request_cancel(conn: sqlite3.Connection, job_id: int) -> None:
         ).fetchone()
         if row is not None and row["status"] == "queued":
             finish(conn, job_id, "cancelled")
+
+
+def set_priority(conn: sqlite3.Connection, job_id: int, priority: int) -> bool:
+    """Move a queued job to another priority level, at the back of it.
+
+    At the back, deliberately (TASK-047): a job whose priority was just raised
+    must not jump ahead of the jobs already queued at that level, and the
+    oldest row in the table is exactly the case a plain id ordering gets
+    wrong. "Run this next" is priority plus `move_in_queue(…, "front")` - two
+    actions, because they answer two different questions.
+
+    Returns False for anything but a queued job. That refusal is a race as
+    much as a rule: the supervisor can claim the job between the board reading
+    the row and this statement landing, so the guard lives inside the UPDATE
+    the way `finish` does it - SQLite is the only coordination there is
+    (ADR-009).
+    """
+    if not PRIORITY_MIN <= priority <= PRIORITY_MAX:
+        raise ValueError(
+            f"priority {priority} is outside [{PRIORITY_MIN}, {PRIORITY_MAX}]"
+        )
+    with db.LOCK:
+        before = conn.execute("SELECT priority FROM job WHERE id=?", (job_id,)).fetchone()
+        row = conn.execute(
+            f"UPDATE job SET priority=?, queue_seq={_NEXT_SEQ}"
+            " WHERE id=? AND status='queued' RETURNING priority, queue_seq",
+            (priority, job_id),
+        ).fetchone()
+        conn.commit()
+    if row is None:
+        return False
+    was = int(before["priority"]) if before is not None else 0
+    emit(conn, job_id, "priority", was=was, now=priority, position=queue_position(conn, job_id))
+    applog.log("job.priority", job=job_id, was=was, now=priority)
+    return True
+
+
+def move_in_queue(conn: sqlite3.Connection, job_id: int, where: str) -> bool:
+    """Put a queued job at the front or the back of its own priority level.
+
+    Its own level, never the whole queue: a bulk import moved to the front is
+    still bulk, and a person who wants it ahead of everything says so by
+    raising its priority. Returns False for anything but a queued job, for the
+    reason `set_priority` gives.
+    """
+    if where not in MOVES:
+        raise ValueError(f"{where!r} is not one of {', '.join(MOVES)}")
+    seq = _FRONT_SEQ if where == "front" else _NEXT_SEQ
+    with db.LOCK:
+        row = conn.execute(
+            f"UPDATE job SET queue_seq={seq}"
+            " WHERE id=? AND status='queued' RETURNING queue_seq",
+            (job_id,),
+        ).fetchone()
+        conn.commit()
+    if row is None:
+        return False
+    emit(conn, job_id, "moved", where=where, position=queue_position(conn, job_id))
+    applog.log("job.moved", job=job_id, where=where)
+    return True
 
 
 def emit(conn: sqlite3.Connection, job_id: int, kind: str, **payload: Any) -> int:
@@ -281,7 +363,7 @@ def queue_position(conn: sqlite3.Connection, job_id: int) -> int | None:
     """1-based claim-order position of a queued job; None if not queued."""
     with db.LOCK:
         row = conn.execute(
-            "SELECT status, priority FROM job WHERE id=?", (job_id,)
+            "SELECT status, priority, queue_seq FROM job WHERE id=?", (job_id,)
         ).fetchone()
         if row is None or row["status"] != "queued":
             return None
@@ -291,8 +373,8 @@ def queue_position(conn: sqlite3.Connection, job_id: int) -> int | None:
         # quiet everywhere.
         ahead = conn.execute(
             "SELECT COUNT(*) FROM job WHERE status='queued'"
-            " AND (priority > :priority OR (priority = :priority AND id < :id))",
-            {"priority": row["priority"], "id": job_id},
+            " AND (priority > :priority OR (priority = :priority AND queue_seq < :seq))",
+            {"priority": row["priority"], "seq": row["queue_seq"]},
         ).fetchone()[0]
     return ahead + 1
 

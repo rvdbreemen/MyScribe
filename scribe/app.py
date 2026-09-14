@@ -44,8 +44,9 @@ import json
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 import scribe
@@ -378,6 +379,47 @@ def create_app(
             retry_of=job_id,
         )
         return _job_out(conn, _get_job(conn, new_id))
+
+    @app.post("/api/jobs/{job_id}/priority")
+    def set_job_priority(
+        job_id: int, request: Request, priority: Annotated[int, Form()]
+    ) -> dict:
+        """Move a queued job to another priority level (TASK-047).
+
+        It lands at the back of that level: raising a job says what class of
+        work it is, not that it should run next. Moving it within the level is
+        the other route, on purpose.
+        """
+        conn = request.app.state.conn
+        _get_job(conn, job_id)  # 404 before anything else
+        try:
+            moved = jobs.set_priority(conn, job_id, priority)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not moved:
+            row = _get_job(conn, job_id)
+            raise HTTPException(
+                status_code=409,
+                detail=f"job {job_id} is {row['status']}; only a queued job can be moved",
+            )
+        return _job_out(conn, _get_job(conn, job_id))
+
+    @app.post("/api/jobs/{job_id}/move")
+    def move_job(job_id: int, request: Request, where: Annotated[str, Form()]) -> dict:
+        """Put a queued job at the front or the back of its own level."""
+        conn = request.app.state.conn
+        _get_job(conn, job_id)
+        try:
+            moved = jobs.move_in_queue(conn, job_id, where.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not moved:
+            row = _get_job(conn, job_id)
+            raise HTTPException(
+                status_code=409,
+                detail=f"job {job_id} is {row['status']}; only a queued job can be moved",
+            )
+        return _job_out(conn, _get_job(conn, job_id))
 
     @app.get("/api/jobs/{job_id}/events")
     def job_events(job_id: int, request: Request, after: int = 0) -> list[dict]:

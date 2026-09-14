@@ -573,7 +573,10 @@ def test_a_feed_episode_still_reaches_transcription_with_its_hotwords_and_surviv
     registers, and the transcribe job it queues carries the dialog's options
     plus the names the listing knew (`extra_hotwords`) - and none of the
     ingest job's own vocabulary. Retrying that transcribe job asks the same."""
-    feed_id = feeds.subscribe(conn, FEED_URL, title="The Hitchhiker Lectures")
+    # A feed that is being followed, not one that was just added: a new feed
+    # queues its newest episode and then asks, and this test is about what a
+    # poll writes (TASK-044).
+    feed_id = feeds.subscribe(conn, FEED_URL, title="The Hitchhiker Lectures", answered=True)
     listing = urls.UrlInfo(
         kind="playlist",
         title="The Hitchhiker Lectures",

@@ -81,25 +81,32 @@ def _poll(conn, feed_id, info, *, raises=None, known=nothing_known, now=1000.0):
 # --- subscribing ------------------------------------------------------------------
 
 
-def test_subscribing_queues_nothing_and_remembers_what_was_there(conn):
-    """Subscribing is a promise about the future, not a request for the
-    archive. Following The Daily must not queue its 2970 back episodes."""
+def test_subscribing_fetches_the_newest_episode_and_remembers_only_that(conn):
+    """Subscribing is still not a request for the archive - following The Daily
+    must not queue its 2970 back episodes - but it is no longer silence either:
+    the newest episode arrives so a person can hear whether the feed is any
+    good, and the rest waits for the answer to the question on the Feeds page.
+
+    Before TASK-044 this recorded both entries as seen and queued nothing; the
+    old behaviour is what `answered=True` now means, and the tests below that
+    poll an established feed use it."""
     feed_id = feeds.subscribe(conn, FEED_URL, title="The Feed", entries=[entry(1), entry(2)])
 
-    assert _queued(conn) == []
+    assert len(_queued(conn)) == 1
     seen = {
         row["source_id"]
         for row in conn.execute("SELECT source_id FROM feed_seen WHERE feed_id=?", (feed_id,))
     }
-    assert seen == {"Generic:g1", "Generic:g2"}
+    assert seen == {"Generic:g1"}  # entry(2) stays unseen, so an answer can still fetch it
+    assert feeds.is_asking(conn, feed_id) is True
 
 
 def test_subscribing_twice_follows_one_feed_not_two(conn):
     """A person who imports from the same feed again meant to follow it, not
     to follow it twice - and two rows would race each other into queueing every
     new episode twice."""
-    first = feeds.subscribe(conn, FEED_URL, title="The Feed", entries=[entry(1)])
-    second = feeds.subscribe(conn, FEED_URL, title="Renamed", entries=[entry(2)])
+    first = feeds.subscribe(conn, FEED_URL, answered=True, title="The Feed", entries=[entry(1)])
+    second = feeds.subscribe(conn, FEED_URL, answered=True, title="Renamed", entries=[entry(2)])
 
     assert first == second
     assert conn.execute("SELECT COUNT(*) FROM feed").fetchone()[0] == 1
@@ -109,10 +116,10 @@ def test_subscribing_twice_follows_one_feed_not_two(conn):
 def test_subscribing_again_unpauses(conn):
     """Importing from a feed you had paused is a clear statement about wanting
     it followed."""
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     feeds.set_paused(conn, feed_id, True)
 
-    feeds.subscribe(conn, FEED_URL)
+    feeds.subscribe(conn, FEED_URL, answered=True)
 
     assert _feed(conn, feed_id)["paused"] == 0
 
@@ -123,13 +130,13 @@ def test_subscribing_again_unpauses(conn):
 def test_a_feed_nobody_has_checked_is_due(conn):
     """Which is what makes a fresh subscription and a restart behave the same:
     at boot, everything overdue is due, and never-checked is overdue."""
-    feeds.subscribe(conn, FEED_URL)
+    feeds.subscribe(conn, FEED_URL, answered=True)
 
     assert [f["url"] for f in feeds.due_feeds(conn, now=0.0)] == [FEED_URL]
 
 
 def test_a_feed_checked_within_its_interval_is_not_due(conn):
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     _poll(conn, feed_id, playlist(), now=1000.0)
 
     assert feeds.due_feeds(conn, now=1000.0 + feeds.DEFAULT_INTERVAL_SECONDS - 1) == []
@@ -139,7 +146,7 @@ def test_a_feed_checked_within_its_interval_is_not_due(conn):
 def test_a_closed_laptop_comes_back_to_an_overdue_feed(conn):
     """The reason due-ness is a date and not a countdown: nothing was awake to
     count, and a week away must not mean a week of missed episodes."""
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     _poll(conn, feed_id, playlist(), now=1000.0)
 
     a_week_later = 1000.0 + 7 * 86400
@@ -147,7 +154,7 @@ def test_a_closed_laptop_comes_back_to_an_overdue_feed(conn):
 
 
 def test_a_paused_feed_is_never_due(conn):
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     feeds.set_paused(conn, feed_id, True)
 
     assert feeds.due_feeds(conn, now=1e12) == []
@@ -157,7 +164,7 @@ def test_a_paused_feed_is_never_due(conn):
 
 
 def test_a_poll_queues_one_job_per_new_episode(conn):
-    feed_id = feeds.subscribe(conn, FEED_URL, title="The Feed", entries=[entry(1)])
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True, title="The Feed", entries=[entry(1)])
 
     report = _poll(conn, feed_id, playlist(entry(1), entry(2), entry(3)))
 
@@ -177,7 +184,7 @@ def test_a_poll_queues_one_job_per_new_episode(conn):
 def test_an_episode_already_in_the_library_is_not_queued_again(conn):
     """`known_sources` asks the media rows and the live jobs. An episode in the
     trash counts as known too: deleting it was a decision."""
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
 
     def knows_two(conn, entries):
         return [
@@ -191,7 +198,7 @@ def test_an_episode_already_in_the_library_is_not_queued_again(conn):
 
 
 def test_polling_twice_does_not_queue_the_same_episode_twice(conn):
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     _poll(conn, feed_id, playlist(entry(1)), now=1000.0)
 
     report = _poll(conn, feed_id, playlist(entry(1)), now=2000.0)
@@ -204,7 +211,7 @@ def test_a_poll_stops_at_the_cap_and_says_so(conn, monkeypatch):
     """A feed that rewrote its guids looks entirely new. Without a ceiling the
     next unattended poll starts a night of downloads and transcriptions."""
     monkeypatch.setattr(feeds, "MAX_NEW_PER_POLL", 3)
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
 
     report = _poll(conn, feed_id, playlist(*(entry(i) for i in range(10))))
 
@@ -215,7 +222,7 @@ def test_a_poll_stops_at_the_cap_and_says_so(conn, monkeypatch):
 
 def test_the_rest_come_on_the_next_poll_rather_than_being_forgotten(conn, monkeypatch):
     monkeypatch.setattr(feeds, "MAX_NEW_PER_POLL", 3)
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     entries = [entry(i) for i in range(6)]
 
     _poll(conn, feed_id, playlist(*entries), now=1000.0)
@@ -226,7 +233,7 @@ def test_the_rest_come_on_the_next_poll_rather_than_being_forgotten(conn, monkey
 
 def test_an_entry_with_no_source_id_is_skipped_rather_than_guessed_at(conn):
     """It would be queued again on every poll for ever."""
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     anonymous = {"url": "https://cdn.test/x.mp3", "title": "No id", "source_id": ""}
 
     report = _poll(conn, feed_id, playlist(anonymous, entry(1)))
@@ -236,7 +243,7 @@ def test_an_entry_with_no_source_id_is_skipped_rather_than_guessed_at(conn):
 
 
 def test_nothing_new_is_recorded_as_a_successful_check(conn):
-    feed_id = feeds.subscribe(conn, FEED_URL, entries=[entry(1)])
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True, entries=[entry(1)])
 
     _poll(conn, feed_id, playlist(entry(1)), now=1000.0)
 
@@ -252,7 +259,7 @@ def test_a_probe_that_raises_is_recorded_and_the_feed_is_not_retried_at_once(con
     """Every exit records checked_at, failures included: a host that is down
     must not be hammered, and the next attempt is one interval away like any
     other."""
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
 
     report = _poll(conn, feed_id, None, raises=urls.UrlError("no such host"), now=1000.0)
 
@@ -265,7 +272,7 @@ def test_a_probe_that_raises_is_recorded_and_the_feed_is_not_retried_at_once(con
 
 
 def test_consecutive_failures_add_up_and_a_good_check_clears_them(conn):
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     _poll(conn, feed_id, None, raises=urls.UrlError("down"), now=1000.0)
     _poll(conn, feed_id, None, raises=urls.UrlError("down"), now=2000.0)
     assert _feed(conn, feed_id)["failures"] == 2
@@ -278,7 +285,7 @@ def test_consecutive_failures_add_up_and_a_good_check_clears_them(conn):
 def test_a_url_that_answers_as_one_item_is_not_a_feed(conn):
     """Somebody pasted a single video. Saying so beats queueing it as if the
     subscription had worked."""
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     single = urls.UrlInfo(
         kind="single", title="One video", duration=1.0, uploader="", webpage_url=FEED_URL
     )
@@ -290,7 +297,7 @@ def test_a_url_that_answers_as_one_item_is_not_a_feed(conn):
 
 
 def test_unsubscribing_forgets_the_feed_and_keeps_the_jobs_it_made(conn):
-    feed_id = feeds.subscribe(conn, FEED_URL)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
     _poll(conn, feed_id, playlist(entry(1)))
 
     feeds.unsubscribe(conn, feed_id)

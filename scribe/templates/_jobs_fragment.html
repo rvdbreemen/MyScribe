@@ -62,6 +62,7 @@
             <th>File</th>
             <th>Options</th>
             <th>Queued</th>
+            <th>Priority</th>
             <th class="actions"><span class="visually-hidden">Actions</span></th>
           </tr>
         </thead>
@@ -72,10 +73,17 @@
             <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
             <td class="summary">{{ job.summary }}</td>
             <td>{{ m.when(job.created_at) }}</td>
-            <td>{{ m.cancel_form(job) }}</td>
+            <td>{{ job.priority_label }}</td>
+            <td>
+              {% if job.raise_to is not none %}{{ m.priority_form(job, job.raise_to, "▲", "Raise to " ~ job.raise_to) }}{% endif %}
+              {% if job.lower_to is not none %}{{ m.priority_form(job, job.lower_to, "▼", "Lower to " ~ job.lower_to) }}{% endif %}
+              {{ m.move_form(job, "front", "⤒", "Run first among jobs of this priority") }}
+              {{ m.move_form(job, "back", "⤓", "Run last among jobs of this priority") }}
+              {{ m.cancel_form(job) }}
+            </td>
           </tr>
           {% else %}
-          <tr class="empty"><td colspan="5">The queue is empty.</td></tr>
+          <tr class="empty"><td colspan="6">The queue is empty.</td></tr>
           {% endfor %}
         </tbody>
       </table>

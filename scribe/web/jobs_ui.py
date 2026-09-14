@@ -175,6 +175,34 @@ def _job_title(row: dict, params: dict) -> str:
     return f"{row['type']} job"
 
 
+# The rungs the board offers. Three, because a person moving a job means one of
+# three things: ahead of everything, the ordinary case, or last. The bottom is
+# url_stage.BULK_PRIORITY itself rather than a copy of -10, so a feed job the
+# app queued and a job a person sent to the back land on the same number, and
+# TASK-046 moving that constant moves this with it.
+FIRST_PRIORITY = 10
+PRIORITY_CHOICES: tuple[tuple[int, str], ...] = (
+    (FIRST_PRIORITY, "First"),
+    (0, "Normal"),
+    (url_stage.BULK_PRIORITY, "Bulk"),
+)
+PRIORITY_LABELS = dict(PRIORITY_CHOICES)
+
+def _neighbour(priority: int, *, up: bool) -> int | None:
+    """The next rung up or down from where this job sits, or None at the end.
+
+    Worked out against the ladder rather than by arithmetic, so a job on a
+    number nobody offers (a scripted priority) still moves onto the ladder
+    instead of drifting further off it.
+    """
+    rungs = sorted(PRIORITY_LABELS)
+    if up:
+        above = [p for p in rungs if p > priority]
+        return above[0] if above else None
+    below = [p for p in rungs if p < priority]
+    return below[-1] if below else None
+
+
 def job_view(conn: sqlite3.Connection, row: dict, now: float) -> dict:
     """A job row plus what the templates show: title, summary, stepper
     steps, elapsed and took, and for a running job the time left in its
@@ -193,6 +221,11 @@ def job_view(conn: sqlite3.Connection, row: dict, now: float) -> dict:
         "took": None,
         "eta_left": None,
         "retryable": row["status"] in jobs.RETRYABLE_STATUSES,
+        # The rung this job is on, and the ones either side of it, worked out
+        # here so a button carries its target and the page needs no scripting.
+        "priority_label": PRIORITY_LABELS.get(int(row["priority"] or 0), str(row["priority"])),
+        "raise_to": _neighbour(int(row["priority"] or 0), up=True),
+        "lower_to": _neighbour(int(row["priority"] or 0), up=False),
     }
     started, finished = row.get("started_at"), row.get("finished_at")
     if started and row["status"] == "running":
@@ -226,7 +259,7 @@ def board_context(conn: sqlite3.Connection) -> dict:
             f"{_JOB_SELECT} WHERE j.status='running' ORDER BY j.started_at, j.id"
         ).fetchall()
         queued = conn.execute(
-            f"{_JOB_SELECT} WHERE j.status='queued' ORDER BY j.priority DESC, j.id"
+            f"{_JOB_SELECT} WHERE j.status='queued' ORDER BY j.priority DESC, j.queue_seq, j.id"
         ).fetchall()
         history = conn.execute(
             f"{_JOB_SELECT} WHERE j.status IN ('done','failed','cancelled','interrupted')"

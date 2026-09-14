@@ -421,6 +421,10 @@ async def _add_episodes(
             title=feed_title,
             folder_id=folder_id,
             entries=entries,
+            # A person who ticked episodes has answered the question this
+            # subscription would otherwise ask (TASK-044): the ones they chose
+            # are queued above, and the whole listing counts as accounted for.
+            answered=True,
         )
 
     applog.log("ingest.episodes", feed=feed_url, title=feed_title, count=len(queued),

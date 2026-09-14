@@ -1,10 +1,11 @@
 ---
 id: TASK-043
 title: 'A download stops before it fills the disk, at the doctor''s own floor'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-13 20:59'
-updated_date: '2026-09-13 21:29'
+updated_date: '2026-09-14 00:14'
 labels:
   - ingest
   - reliability
@@ -36,4 +37,10 @@ So the guard reuses scribe.doctor.DISK_FLOOR_GB rather than naming its own numbe
 
 <!-- SECTION:NOTES:BEGIN -->
 Robert chose 2026-09-13: keep the doctor's 10 GB as the shared number. So the guard refuses a download below 10 GB free - stricter than the 4 GB first named, and deliberately so: one constant, and the stricter reading wins. If the floor ever moves, it moves for the advice and the stop together, in scribe/doctor.py.
+
+Implemented 2026-09-14. scribe/doctor.py gains the refusal (NotEnoughDisk), the probe (disk_probe_path), the measurement (free_disk_gb) and the guard (require_disk_headroom); check_disk_space is rewritten onto the same two helpers. url_stage.fetch calls the guard first, before the probe and therefore before any network, and runner maps NotEnoughDisk to the error code DISK_LOW - next to DISK_FULL, which is a write that already hit a full volume and leaves half a file behind.
+
+Red then green: tests/test_disk_floor.py, 7 tests, 6 of them failing first. One of them caught a real drift path that was not in the plan: check_disk_space bound the floor as a default argument, so it was frozen at import and moving DISK_FLOOR_GB would have moved the guard and left the advice behind - the two numbers this task exists to prevent. It resolves the floor on the call now.
+
+tests/conftest.py gains an autouse fixture that fakes a roomy disk. Without it the whole url-import suite would quietly depend on the free space of the machine TEMP volume - green here, red in the WSL copy - and the failure would read DISK_LOW, pointing at the code instead of at the disk.
 <!-- SECTION:NOTES:END -->

@@ -6,9 +6,26 @@ arrive with the tasks that need them (db, jobs, supervisor).
 
 import pytest
 
+import shutil
 import threading
 
 from scribe import applog, paths
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch):
+    """Every test runs on a volume with room, unless it says otherwise.
+
+    TASK-043 put a floor under the url stage: it refuses below
+    `doctor.DISK_FLOOR_GB` free at `paths.DATA_DIR`, and DATA_DIR is a
+    tmp_path here - so without this, the whole import suite would quietly
+    depend on the free space of the machine's TEMP volume, and fail with
+    DISK_LOW on a small disk while passing on a big one. A test about the
+    floor patches `shutil.disk_usage` itself and wins, because monkeypatch
+    applies it after this fixture.
+    """
+    plenty = shutil._ntuple_diskusage(total=1000 * 2**30, used=100 * 2**30, free=900 * 2**30)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: plenty)
 
 
 @pytest.fixture(autouse=True)

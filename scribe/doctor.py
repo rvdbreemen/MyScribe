@@ -42,6 +42,60 @@ DISK_FLOOR_GB = 10
 downloads eat gigabytes and a disk-full mid-transcription is a corrupt job."""
 
 
+class NotEnoughDisk(RuntimeError):
+    """Free space where the data lands is below `DISK_FLOOR_GB`.
+
+    A refusal, not a failure: nothing was attempted and nothing is broken.
+    Its own class, so `runner._ERROR_CODES` can give it a code the board tells
+    apart from a network error (`DOWNLOAD_FAILED`) and from a write that
+    already hit a full volume (`DISK_FULL`).
+    """
+
+
+def disk_probe_path() -> Path:
+    """Where free space is measured: the data directory, or its parent while
+    the data directory does not exist yet.
+
+    One definition, so the gate's advice and the guard's refusal can never end
+    up being about two different volumes.
+    """
+    target = paths.DATA_DIR
+    return target if target.exists() else target.parent
+
+
+def free_disk_gb() -> float:
+    """Free GiB at `disk_probe_path()`; raises OSError if it cannot measure."""
+    return shutil.disk_usage(disk_probe_path()).free / 2**30
+
+
+def require_disk_headroom() -> None:
+    """Raise `NotEnoughDisk` below the floor; return quietly above it.
+
+    Called by a stage that is about to write a lot, once per job rather than
+    once per batch: a feed that fans out into five hundred downloads has to
+    stop when the disk runs low, not when the queue empties.
+
+    It takes no floor argument on purpose. A parameter is a second number
+    waiting to drift away from the one the doctor advises about, and TASK-043
+    exists because two numbers is exactly what Robert did not want.
+
+    A volume that cannot be measured does not refuse: "we do not know" must
+    not become "nothing may be imported on this machine". The gate already
+    reports an unmeasurable volume as a red check, which is where that
+    belongs.
+    """
+    try:
+        free = free_disk_gb()
+    except OSError:
+        return
+    if free < DISK_FLOOR_GB:
+        raise NotEnoughDisk(
+            f"only {free:.1f} GB free at {disk_probe_path()}, and this app keeps "
+            f"{DISK_FLOOR_GB} GB clear for media and models. Free up space and "
+            "retry; nothing was downloaded."
+        )
+
+
 @dataclass(frozen=True)
 class Check:
     name: str
@@ -138,11 +192,14 @@ def check_data_dir_writable() -> Check:
     return Check(name="data-dir", ok=True, detail=f"{target} writable")
 
 
-def check_disk_space(floor_gb: int = DISK_FLOOR_GB) -> Check:
-    target = paths.DATA_DIR
-    probe = target if target.exists() else target.parent
+def check_disk_space(floor_gb: int | None = None) -> Check:
+    # Resolved on the call, not bound as a default: a default freezes the floor
+    # at import, so moving DISK_FLOOR_GB would move the guard and leave the
+    # advice behind - the two numbers TASK-043 exists to prevent.
+    floor_gb = DISK_FLOOR_GB if floor_gb is None else floor_gb
+    probe = disk_probe_path()
     try:
-        usage = shutil.disk_usage(probe)
+        free_gb = free_disk_gb()
     except OSError as exc:
         return Check(
             name="disk-space",
@@ -150,7 +207,6 @@ def check_disk_space(floor_gb: int = DISK_FLOOR_GB) -> Check:
             detail=str(exc),
             fix_hint=f"Could not measure free space at {probe}.",
         )
-    free_gb = usage.free / 2**30
     ok = free_gb >= floor_gb
     return Check(
         name="disk-space",

@@ -90,3 +90,22 @@
   <button type="submit">Retry</button>
 </form>
 {%- endmacro %}
+
+{# Priority and position post to the same JSON job API, with the same
+   data-refresh contract. Buttons rather than a dropdown on purpose: the
+   board's fragment swaps its own outerHTML every two seconds while the queue
+   is busy, and a <select> a person has open would be yanked away mid-choice.
+   A button has no open state to lose. #}
+{% macro priority_form(job, to, label, title, refresh='#jobs-live') -%}
+<form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/priority" data-refresh="{{ refresh }}">
+  <input type="hidden" name="priority" value="{{ to }}">
+  <button type="submit" title="{{ title }}" aria-label="{{ title }}">{{ label }}</button>
+</form>
+{%- endmacro %}
+
+{% macro move_form(job, where, label, title, refresh='#jobs-live') -%}
+<form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/move" data-refresh="{{ refresh }}">
+  <input type="hidden" name="where" value="{{ where }}">
+  <button type="submit" title="{{ title }}" aria-label="{{ title }}">{{ label }}</button>
+</form>
+{%- endmacro %}

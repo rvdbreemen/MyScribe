@@ -35,7 +35,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 
-from scribe import db
+from scribe import applog, db
 from scribe.ingest import feeds
 from scribe.web import render
 
@@ -63,6 +63,10 @@ def _feed_view(feed: dict, *, now: float) -> dict:
         "due_in": None if checked_at is None else (checked_at + interval) - now,
         "failing": failures >= feeds.MAX_FAILURES_REPORTED,
         "failures": failures,
+        # TASK-044: a feed that has not been answered yet asks on this page,
+        # every time it is rendered - a question a closed tab cannot lose.
+        "asking": feed["backfill_answered_at"] is None,
+        "backfill_offer": feeds.backfill_offer(feed),
     }
 
 
@@ -160,4 +164,42 @@ async def poll_feed(feed_id: int, request: Request) -> Response:
         known_sources=ingest_ui.known_sources,
         options=options,
     )
+    return _after_change(request, conn)
+
+
+@router.post("/feeds/{feed_id}/backfill", include_in_schema=False)
+async def backfill_feed(
+    feed_id: int,
+    request: Request,
+    choice: Annotated[str, Form()] = "nothing",
+) -> Response:
+    """Answer a new feed's question: how much of the back catalogue to fetch.
+
+    The choices are `feeds.BACKFILL_CHOICES`, "all", or "nothing" - anything
+    else is a 400 rather than a guess, and so is a choice that would queue
+    more than `url_stage.MAX_FAN_OUT` (the message names both numbers, the way
+    the episode dialog's refusal does).
+
+    Whatever the answer, the question closes and the feed is followed from
+    here like any other.
+    """
+    conn = request.app.state.conn
+    feed = _get_feed(conn, feed_id)
+
+    from scribe.web import ingest_ui, transcribe_dialog
+
+    options = transcribe_dialog.read_defaults(conn).to_params()
+    try:
+        out = await run_in_threadpool(
+            feeds.backfill,
+            conn,
+            feed,
+            choice.strip(),
+            probe=ingest_ui.urls.probe,
+            known_sources=ingest_ui.known_sources,
+            options=options,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    applog.log("feeds.answered", feed=feed_id, choice=choice.strip(), queued=len(out["queued"]))
     return _after_change(request, conn)

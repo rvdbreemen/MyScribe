@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -450,10 +450,68 @@ CREATE TABLE feed_seen(
   PRIMARY KEY(feed_id, source_id));
 """
 
+_SCHEMA_V15 = """
+-- v15 (TASK-044): a feed that is new fetches one episode and then asks.
+--
+-- NULL means the question is open: the feed was subscribed, its newest
+-- episode was queued, and nobody has said yet whether to fetch the rest. The
+-- watcher skips such a feed, because polling it would queue the back
+-- catalogue the question is about.
+--
+-- Every feed that exists today was subscribed under the old rule, which
+-- recorded the whole listing as seen - their question genuinely is answered,
+-- so they are stamped with their own created_at rather than left asking.
+-- Without that backfill, upgrading would stop every feed in the library.
+ALTER TABLE feed ADD COLUMN backfill_answered_at REAL;
+UPDATE feed SET backfill_answered_at = created_at;
+
+-- How many episodes the feed listed when it was subscribed, so the question
+-- can say what each choice would cost ("the last 3" of 47) without probing
+-- the feed again every time the page renders. Zero for the feeds above: they
+-- are answered, so nothing asks.
+ALTER TABLE feed ADD COLUMN backfill_total INTEGER NOT NULL DEFAULT 0;
+"""
+
+
+_SCHEMA_V16 = """
+-- v16 (TASK-047): the queue gets an order key of its own.
+--
+-- Until now `id` was the FIFO key: claim_next ordered by priority DESC, id.
+-- That is right for a queue nobody touches and wrong the moment a person can
+-- move a job, because id cannot change - it is the rowid, the target of
+-- job_event.job_id and job.retry_of, the /jobs/{id} URL, and the runner
+-- child's argv.
+--
+-- queue_seq is allocated at enqueue (greater than every queued row) and
+-- rewritten when a person moves a job. Three properties, stated here because
+-- a reader who does not know them will file the second one as a bug:
+--   * enqueue puts a job behind everything queued - FIFO, as before;
+--   * a priority change puts a job at the BACK of its new level, so raising
+--     the oldest row in the table does not put it in front of jobs queued
+--     before it at that level;
+--   * front/back within a level is a separate, deliberate action. "Run this
+--     next" is therefore two clicks: priority says what class of work this
+--     is, position says this one job jumps its own queue.
+--
+-- The backfill is queue_seq = id, so an existing queue keeps exactly the
+-- order it had; nothing is reordered by upgrading. The counter only has to
+-- outrank the rows that are queued, so it may be reused once the queue
+-- drains - which is what keeps its allocation an index read rather than a
+-- scan over every job ever run.
+--
+-- Not unique, and it must never be made unique: a front-move deliberately
+-- hands out a number a row at another priority level already holds. Ordering
+-- is within a level; the two never compare.
+ALTER TABLE job ADD COLUMN queue_seq INTEGER NOT NULL DEFAULT 0;
+UPDATE job SET queue_seq = id;
+DROP INDEX IF EXISTS idx_job_claim;
+CREATE INDEX idx_job_claim ON job(status, priority DESC, queue_seq) WHERE status='queued';
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
-    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13, _SCHEMA_V14,
+    _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13, _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16,
 ]
 
 

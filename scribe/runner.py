@@ -71,6 +71,10 @@ _ERROR_CODES: dict[type[BaseException], str] = {
     FileNotFoundError: "FILE_MISSING",
     PermissionError: "FILE_LOCKED",
     doctor.CheckFailed: "CHECK_FAILED",
+    # Refused before a byte was written, because free space is under the
+    # doctor's own floor. Not DISK_FULL: that one means a write already hit a
+    # full volume and there is half a file to clean up (TASK-043).
+    doctor.NotEnoughDisk: "DISK_LOW",
     # An llm job that asked a provider for something it would not give: no key,
     # a model id that does not exist, a prompt that did not fit, an answer that
     # was not the shape it promised. One code because one thing has to change -

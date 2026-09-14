@@ -61,6 +61,97 @@ again" and starts saying the feed is not answering. It keeps polling: a podcast
 host that is down for a week is not a reason to forget the podcast."""
 
 
+def newest_first(entries: Sequence[dict]) -> list[dict]:
+    """The listing in the order a person should be offered it: newest first.
+
+    Deliberately not a sort. `urls._entries` keeps yt-dlp's document order, and
+    a feed puts its newest episode at the top; `timestamp` is optional and a
+    flat YouTube listing has none at all, so sorting on it would reorder half
+    the sources this app accepts and pick an episode other than the one at the
+    top of the list the person just looked at.
+
+    The one case this gets wrong is a feed published oldest-first, and this
+    function is the single place to fix it if one ever turns up.
+    """
+    return list(entries)
+
+
+def _entry_params(
+    entry: dict,
+    *,
+    feed_id: int,
+    feed_url: str,
+    feed_title: str,
+    folder_id: int | None,
+    options: dict,
+) -> dict:
+    """The params one episode's `ingest_url` job runs with.
+
+    Three callers build this now - a new feed's first episode, an answer to
+    the question, and a poll - so a key added for one arrives for all three.
+    """
+    return {
+        "url": entry["url"],
+        "folder_id": folder_id,
+        url_stage.OPTIONS_KEY: options,
+        "from_playlist": True,
+        url_stage.ENTRY_KEY: {
+            "title": entry.get("name") or entry.get("title") or "",
+            "source_id": entry.get("source_id") or "",
+        },
+        url_stage.SOURCE_KEY: {"url": feed_url, "title": feed_title},
+        url_stage.FEED_KEY: feed_id,
+    }
+
+
+def _mark_seen(conn: sqlite3.Connection, feed_id: int, entries: Sequence[dict]) -> None:
+    for entry in entries:
+        source_id = str(entry.get("source_id") or "").strip()
+        if source_id:
+            conn.execute(
+                "INSERT OR IGNORE INTO feed_seen(feed_id, source_id) VALUES (?, ?)",
+                (feed_id, source_id),
+            )
+
+
+def is_asking(conn: sqlite3.Connection, feed_id: int) -> bool:
+    """Is this feed still waiting for an answer about its back catalogue?"""
+    row = conn.execute(
+        "SELECT backfill_answered_at FROM feed WHERE id=?", (feed_id,)
+    ).fetchone()
+    return row is not None and row["backfill_answered_at"] is None
+
+
+def asking(conn: sqlite3.Connection) -> list[dict]:
+    """Every feed with the question still open, oldest first.
+
+    The Feeds page reads this on every GET, which is what makes the question
+    survive a closed tab: it is a row on a page, not a flash somebody missed.
+    """
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM feed WHERE backfill_answered_at IS NULL ORDER BY created_at, id"
+        )
+    ]
+
+
+def answer(conn: sqlite3.Connection, feed_id: int, *, now: float | None = None) -> None:
+    """Close the question: from here the feed is followed like any other.
+
+    Queues nothing by itself - what to fetch is the caller's decision (the
+    Feeds page offers one episode, the last 3, 5 or 10, or all) and this only
+    records that the decision was made. Idempotent, and it never reopens.
+    """
+    stamp = time.time() if now is None else now
+    with db.LOCK:
+        conn.execute(
+            "UPDATE feed SET backfill_answered_at=COALESCE(backfill_answered_at, ?) WHERE id=?",
+            (stamp, feed_id),
+        )
+        conn.commit()
+
+
 def subscribe(
     conn: sqlite3.Connection,
     url: str,
@@ -68,16 +159,32 @@ def subscribe(
     title: str = "",
     folder_id: int | None = None,
     entries: Sequence[dict] = (),
+    options: dict | None = None,
+    answered: bool = False,
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
     now: float | None = None,
 ) -> int:
-    """Start watching a feed, and queue nothing.
+    """Start watching a feed; fetch its newest episode and ask about the rest.
 
-    The episodes it holds today are recorded as seen. Subscribing is a promise
-    about the future, not a request for the archive - and an existing
-    subscription is updated rather than duplicated, because a person who
-    imports from the same feed twice meant to follow it, not to follow it
-    twice.
+    A feed nobody has heard is a promise, not a request for the archive - but
+    the old rule (record everything as seen, queue nothing) meant the person
+    who just added it heard nothing at all until tomorrow, and the dialog's
+    "tick everything" meant five hundred downloads. So a new feed queues
+    exactly one episode, `newest_first(entries)[0]`, marks only that one seen,
+    and leaves `backfill_answered_at` NULL: the Feeds page asks how to go on,
+    and until it is answered nothing else is fetched and nothing else is
+    marked, so answering "everything" later still gets the rest (TASK-044).
+
+    That first episode queues at the default priority, deliberately: somebody
+    is standing there waiting to hear whether this feed is any good. Every
+    other thing a feed queues runs at `url_stage.BULK_PRIORITY` (TASK-046).
+
+    `answered=True` is the dialog's path: a person who ticked episodes has
+    answered the question by answering it, so the whole listing is recorded as
+    seen and nothing is queued here - the ticked jobs are the route's.
+
+    An existing subscription is updated rather than duplicated, and importing
+    the same feed twice never reopens a question that was closed.
     """
     stamp = time.time() if now is None else now
     with db.LOCK:
@@ -97,15 +204,122 @@ def subscribe(
                 " folder_id=COALESCE(?, folder_id), paused=0 WHERE id=?",
                 (title[:200], folder_id, feed_id),
             )
-        for entry in entries:
-            source_id = str(entry.get("source_id") or "").strip()
-            if source_id:
-                conn.execute(
-                    "INSERT OR IGNORE INTO feed_seen(feed_id, source_id) VALUES (?, ?)",
-                    (feed_id, source_id),
-                )
+        if answered:
+            _mark_seen(conn, feed_id, entries)
+            conn.execute(
+                "UPDATE feed SET backfill_answered_at=COALESCE(backfill_answered_at, ?)"
+                " WHERE id=?",
+                (stamp, feed_id),
+            )
         conn.commit()
+
+    first = newest_first(entries)[:1] if (not answered and row is None) else []
+    if first:
+        with db.LOCK:
+            _mark_seen(conn, feed_id, first)
+            conn.execute(
+                "UPDATE feed SET backfill_total=? WHERE id=?", (len(entries), feed_id)
+            )
+            conn.commit()
+        jobs.enqueue(
+            conn,
+            url_stage.JOB_TYPE,
+            params=_entry_params(
+                first[0],
+                feed_id=feed_id,
+                feed_url=url,
+                feed_title=title or url,
+                folder_id=folder_id,
+                options=options or {},
+            ),
+        )
     return feed_id
+
+
+BACKFILL_CHOICES: tuple[int, ...] = (3, 5, 10)
+"""How many of the newest episodes an answer may ask for, besides "everything"
+and "nothing more". Three fixed numbers rather than a box to type in: the
+questions a person actually has are "just that one", "the last few" and "all
+of it", and a free number invites the two hundred TASK-044 exists to prevent.
+"""
+
+
+def backfill_offer(feed: dict) -> list[dict]:
+    """What the question offers, with what each choice would fetch.
+
+    Counted against the listing recorded when the feed was subscribed, minus
+    the one episode that already came: the point of showing a number before
+    the click is that "everything" on a 2970-episode archive should look like
+    what it is.
+    """
+    total = int(feed["backfill_total"] or 0)
+    rest = max(total - 1, 0)
+    offer = [{"choice": str(n), "label": f"the last {n}", "count": max(min(n, total) - 1, 0)}
+             for n in BACKFILL_CHOICES]
+    offer.append({"choice": "all", "label": "everything", "count": rest})
+    return [item for item in offer if item["count"] > 0]
+
+
+def backfill(
+    conn: sqlite3.Connection,
+    feed: dict,
+    choice: str,
+    *,
+    probe: Callable[..., urls.UrlInfo],
+    known_sources: Callable[[sqlite3.Connection, list[dict]], Sequence[str | None]],
+    options: dict,
+    now: float | None = None,
+) -> dict:
+    """Answer the question: fetch the newest `choice` episodes, then follow.
+
+    "nothing" closes the question and queues nothing; a number takes that many
+    from the top of the listing; "all" takes the listing. Whatever the answer,
+    the question closes - a person who said "just that one" is not asked again
+    every day.
+
+    Everything queued here is bulk (`url_stage.BULK_PRIORITY`): the person is
+    not waiting for it the way they waited for the first episode.
+    """
+    feed_id = int(feed["id"])
+    if choice == "nothing":
+        answer(conn, feed_id, now=now)
+        return {"queued": [], "result": "nothing more"}
+    if choice != "all" and choice not in {str(n) for n in BACKFILL_CHOICES}:
+        raise ValueError(f"{choice!r} is not one of the choices on offer")
+
+    info = probe(feed["url"], limit=None)
+    entries = newest_first(list(info.entries or []))
+    wanted = entries if choice == "all" else entries[: int(choice)]
+    states = known_sources(conn, list(wanted))
+    fresh = new_entries(conn, feed_id, wanted, states)
+    if len(fresh) > url_stage.MAX_FAN_OUT:
+        raise ValueError(
+            f"that would queue {len(fresh)} downloads, and this app queues at most "
+            f"{url_stage.MAX_FAN_OUT} from one link. Choose fewer."
+        )
+
+    params_list = [
+        _entry_params(
+            entry,
+            feed_id=feed_id,
+            feed_url=feed["url"],
+            feed_title=info.title or feed["title"],
+            folder_id=feed["folder_id"],
+            options=options,
+        )
+        for entry in fresh
+    ]
+    queued = (
+        jobs.enqueue_many(conn, url_stage.JOB_TYPE, params_list, priority=url_stage.BULK_PRIORITY)
+        if params_list
+        else []
+    )
+    with db.LOCK:
+        _mark_seen(conn, feed_id, fresh)
+        conn.commit()
+    answer(conn, feed_id, now=now)
+    applog.log("feed.backfill", feed=feed_id, choice=choice, queued=len(queued))
+    return {"queued": queued, "result": f"queued {len(queued)}"}
 
 
 def unsubscribe(conn: sqlite3.Connection, feed_id: int) -> None:
@@ -209,6 +423,15 @@ def poll(
     """
     stamp = time.time() if now is None else now
     feed_id = int(feed["id"])
+    # A feed whose question is still open is left alone, and the gate is here
+    # rather than in `due_feeds`: the watcher reaches a new feed within one
+    # poll interval (its checked_at is NULL, so it is due at once), and the
+    # Feeds page's "check now" button bypasses due_feeds entirely. One gate
+    # covers the thread and the button (TASK-044).
+    if is_asking(conn, feed_id):
+        result = "asking how much of the back catalogue to fetch"
+        _record(conn, feed_id, result=result, failed=False, now=stamp)
+        return {"queued": [], "new": 0, "result": result}
     try:
         info = probe(feed["url"], limit=None)
     except Exception as exc:  # noqa: BLE001 - any failure is the feed's failure
@@ -231,18 +454,14 @@ def poll(
     capped = fresh[:MAX_NEW_PER_POLL]
 
     params_list = [
-        {
-            "url": entry["url"],
-            "folder_id": feed["folder_id"],
-            url_stage.OPTIONS_KEY: options,
-            "from_playlist": True,
-            url_stage.ENTRY_KEY: {
-                "title": entry.get("name") or entry.get("title") or "",
-                "source_id": entry.get("source_id") or "",
-            },
-            url_stage.SOURCE_KEY: {"url": feed["url"], "title": info.title or feed["title"]},
-            url_stage.FEED_KEY: feed_id,
-        }
+        _entry_params(
+            entry,
+            feed_id=feed_id,
+            feed_url=feed["url"],
+            feed_title=info.title or feed["title"],
+            folder_id=feed["folder_id"],
+            options=options,
+        )
         for entry in capped
     ]
     # Below the default, like every other bulk import: the watcher queues

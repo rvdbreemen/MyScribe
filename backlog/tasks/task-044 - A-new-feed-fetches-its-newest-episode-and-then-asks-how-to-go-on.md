@@ -1,9 +1,11 @@
 ---
 id: TASK-044
 title: A new feed fetches its newest episode and then asks how to go on
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-13 20:59'
+updated_date: '2026-09-14 00:14'
 labels:
   - feeds
   - ux
@@ -30,3 +32,15 @@ The rule: a feed that is new fetches one episode - the newest - and then asks. N
 - [ ] #4 A feed that was already answered does not ask again; the watcher keeps following it as it does today
 - [ ] #5 Red then green: a test that subscribing queues one job and leaves the rest unseen, and one that the answer queues what it promised
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented 2026-09-14. Schema v15 adds feed.backfill_answered_at (NULL = still asking) and feed.backfill_total (what the listing held, so the question can price each choice without probing again). The migration stamps every existing feed as answered with its own created_at: they were subscribed under the old rule, which recorded the whole listing as seen, so their question genuinely is closed - without that, upgrading would stop every feed in the library.
+
+feeds.subscribe now queues exactly newest_first(entries)[0] at the default priority, marks only that one seen, and leaves the question open; feeds.is_asking / asking / answer read and close it. newest_first is deliberately not a sort: urls._entries keeps the document order, timestamp is optional and a flat YouTube listing has none, so sorting would reorder half the sources this app accepts. The gate against polling sits in poll() rather than due_feeds(), because the Feeds page check-now button bypasses due_feeds entirely and a new feed is due the instant it exists.
+
+The dialog path passes answered=True: a person who ticked episodes has answered the question.
+
+Red then green: tests/test_feed_first_episode.py (12 tests, 10 red first). One golden moved with its reason written into the test: test_subscribing_queues_nothing_and_remembers_what_was_there is now test_subscribing_fetches_the_newest_episode_and_remembers_only_that. Twenty tests in test_feeds.py and one in test_web_feeds.py and one in test_params_door.py now say answered=True, because they poll an established feed - which is exactly what that flag means.
+<!-- SECTION:NOTES:END -->

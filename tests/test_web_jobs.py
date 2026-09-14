@@ -755,3 +755,50 @@ def test_an_episode_title_that_is_markup_is_escaped_on_the_board(client, conn):
     body = client.get("/jobs").text
 
     assert "&lt;b&gt;Zaphod&lt;/b&gt;" in body and "<b>Zaphod</b>" not in body
+
+
+# --- moving a job from the board (TASK-047) -----------------------------------
+
+
+def test_a_queued_row_shows_its_priority_and_the_controls_to_change_it(client, conn, board):
+    """AC1 and AC5: visible, and operable without scripting - the forms post
+    to the same JSON job API that Cancel and Retry use."""
+    queued = _section(client.get("/jobs").text, "queued")
+
+    assert "Normal" in queued
+    assert re.search(r'action="/api/jobs/\d+/priority"', queued)
+    assert re.search(r'action="/api/jobs/\d+/move"', queued)
+    assert 'data-refresh="#jobs-live"' in queued
+
+
+def test_raising_a_job_from_the_board_answers_with_its_new_place(client, conn, board):
+    job_id = jobs.enqueue(conn, "transcribe", params={})
+
+    response = client.post(f"/api/jobs/{job_id}/priority", data={"priority": 10})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["priority"] == 10
+    assert body["queue_position"] == 1  # nothing else is queued above it
+
+
+def test_the_board_refuses_to_move_a_running_job(client, conn, board):
+    job_id = jobs.enqueue(conn, "transcribe", params={}, priority=99)  # claimed first
+    claimed = jobs.claim_next(conn)
+    assert claimed["id"] == job_id
+
+    response = client.post(f"/api/jobs/{job_id}/priority", data={"priority": 10})
+
+    assert response.status_code == 409
+    assert "queued" in response.json()["detail"]
+
+
+def test_an_unknown_move_is_a_400_not_a_guess(client, conn, board):
+    job_id = jobs.enqueue(conn, "transcribe", params={})
+
+    assert client.post(f"/api/jobs/{job_id}/move", data={"where": "sideways"}).status_code == 400
+    assert client.post(f"/api/jobs/{job_id}/move", data={"where": "front"}).status_code == 200
+
+
+def test_moving_an_unknown_job_is_a_404(client, conn, board):
+    assert client.post("/api/jobs/9999/priority", data={"priority": 0}).status_code == 404

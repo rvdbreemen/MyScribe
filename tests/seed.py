@@ -224,9 +224,14 @@ def seed_job(
     terminal = status in ("done", "failed", "cancelled", "interrupted")
     with db.LOCK:
         cur = conn.execute(
+            # queue_seq allocated the way jobs.enqueue does it (TASK-047):
+            # without it a seeded queued job sits at 0 and jumps ahead of
+            # anything the real enqueue queued, and board tests start lying.
             "INSERT INTO job(type, media_id, status, stage, stage_progress,"
-            " params_json, error_code, error_detail, created_at, started_at, finished_at)"
-            " VALUES ('transcribe', ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)",
+            " params_json, error_code, error_detail, created_at, started_at, finished_at,"
+            " queue_seq)"
+            " VALUES ('transcribe', ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?,"
+            " (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM job WHERE status='queued'))",
             (
                 media_id,
                 status,

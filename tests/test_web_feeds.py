@@ -53,7 +53,7 @@ def client(db_path, data_dir, conn):
 
 
 def _subscribe(conn, url=FEED_URL, title="The Feed", **kw):
-    return feeds.subscribe(conn, url, title=title, **kw)
+    return feeds.subscribe(conn, url, title=title, **kw, answered=True)
 
 
 def _row(conn, feed_id):
@@ -245,3 +245,69 @@ def test_a_plain_post_redirects_the_way_every_other_action_page_does(client, con
 
     assert resp.status_code == 303
     assert resp.headers["location"] == "/feeds"
+
+
+# --- the question a new feed leaves on this page (TASK-044, TASK-045) --------------
+
+
+def test_a_new_feed_asks_on_the_page_with_a_count_per_choice(client, conn):
+    """The question has to survive a closed tab, so it is a row on the page
+    rather than a flash. Each choice says what it would fetch."""
+    entries = [
+        {"url": f"https://cdn.test/ep{n}.mp3", "title": f"Episode {n}", "source_id": f"Generic:g{n}"}
+        for n in range(12)
+    ]
+    feeds.subscribe(conn, FEED_URL, title="The Feed", entries=entries)
+
+    body = client.get("/feeds").text
+
+    assert "How much of the rest" in body
+    assert "the last 3 (+2)" in body
+    assert "everything (+11)" in body
+    assert "nothing more" in body
+
+
+def test_an_answered_feed_does_not_ask(client, conn):
+    _subscribe(conn, entries=[{"url": "https://cdn.test/e.mp3", "source_id": "Generic:g0"}])
+
+    assert "How much of the rest" not in client.get("/feeds").text
+
+
+def test_answering_on_the_page_queues_what_was_chosen_and_closes_the_question(
+    client, conn, monkeypatch
+):
+    entries = [
+        {"url": f"https://cdn.test/ep{n}.mp3", "title": f"Episode {n}", "source_id": f"Generic:g{n}"}
+        for n in range(12)
+    ]
+    feed_id = feeds.subscribe(conn, FEED_URL, title="The Feed", entries=entries)
+    monkeypatch.setattr(
+        urls,
+        "probe",
+        lambda url, **kw: urls.UrlInfo(
+            kind="playlist", title="The Feed", duration=None, uploader="",
+            webpage_url=FEED_URL, entries=list(entries),
+        ),
+    )
+
+    response = client.post(f"/feeds/{feed_id}/backfill", data={"choice": "3"}, headers=HX)
+
+    assert response.status_code == 200
+    assert feeds.is_asking(conn, feed_id) is False
+    queued = conn.execute(
+        "SELECT COUNT(*) AS n FROM job WHERE type=?", (url_stage.JOB_TYPE,)
+    ).fetchone()["n"]
+    assert queued == 3  # the first episode, plus the two the answer asked for
+    assert "How much of the rest" not in response.text
+
+
+def test_a_choice_that_is_not_on_offer_is_a_400_and_leaves_the_question_open(
+    client, conn, monkeypatch
+):
+    entries = [{"url": "https://cdn.test/e0.mp3", "source_id": "Generic:g0"}, {"url": "https://cdn.test/e1.mp3", "source_id": "Generic:g1"}]
+    feed_id = feeds.subscribe(conn, FEED_URL, title="The Feed", entries=entries)
+
+    response = client.post(f"/feeds/{feed_id}/backfill", data={"choice": "42"}, headers=HX)
+
+    assert response.status_code == 400
+    assert feeds.is_asking(conn, feed_id) is True

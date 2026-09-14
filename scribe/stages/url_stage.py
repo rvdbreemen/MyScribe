@@ -43,7 +43,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, Sequence
 from urllib.parse import urldefrag
 
-from scribe import jobs, media, paths
+from scribe import doctor, jobs, media, paths
 from scribe.ingest import urls
 from scribe.stages import transcribe
 
@@ -151,6 +151,12 @@ def _url(ctx: "RunnerContext") -> str:
 def fetch(ctx: "RunnerContext") -> None:
     """Find out what the URL is, then fetch it - unless it is a playlist."""
     url = _url(ctx)
+    # The floor before the network (TASK-043). At the top rather than beside
+    # the download below, because a playlist that fans out on a full disk
+    # would queue 500 children that each fail the same way; one refused row
+    # says it for the price of one. After `_url`, so a job with no url still
+    # gets its own ValueError - that is a bug in the caller, not a full disk.
+    doctor.require_disk_headroom()
     cookies_file = ctx.params.get("cookies_file") or None
 
     info = urls.probe(url, cookies_file=cookies_file)

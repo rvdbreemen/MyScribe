@@ -51,7 +51,32 @@
           {{ m.when(feed.checked_at) }}
           {% endif %}
         </td>
-        <td>{{ feed.last_result or "-" }}</td>
+        <td>
+          {{ feed.last_result or "-" }}
+          {% if feed.asking %}
+          {# The question a new feed leaves open (TASK-044). It lives here
+             rather than in a flash because a flash is gone with the tab, and
+             this has to still be here tomorrow. Each choice says what it
+             would fetch before it is clicked (TASK-045). #}
+          <div class="feed-question">
+            <p>Its newest episode is on the way. How much of the rest do you want?</p>
+            {% for option in feed.backfill_offer %}
+            <form method="post" action="/feeds/{{ feed.id }}/backfill"
+                  hx-post="/feeds/{{ feed.id }}/backfill" hx-target="#feeds-live"
+                  hx-swap="outerHTML" hx-disabled-elt="find button" class="inline-form">
+              <input type="hidden" name="choice" value="{{ option.choice }}">
+              <button type="submit">{{ option.label }} (+{{ option.count }})</button>
+            </form>
+            {% endfor %}
+            <form method="post" action="/feeds/{{ feed.id }}/backfill"
+                  hx-post="/feeds/{{ feed.id }}/backfill" hx-target="#feeds-live"
+                  hx-swap="outerHTML" hx-disabled-elt="find button" class="inline-form">
+              <input type="hidden" name="choice" value="nothing">
+              <button type="submit">nothing more</button>
+            </form>
+          </div>
+          {% endif %}
+        </td>
         <td class="feed-actions">
           <form method="post" action="/feeds/{{ feed.id }}/poll"
                 hx-post="/feeds/{{ feed.id }}/poll" hx-target="#feeds-live" hx-swap="outerHTML"
