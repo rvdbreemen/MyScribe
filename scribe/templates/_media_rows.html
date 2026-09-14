@@ -30,6 +30,13 @@
       <tr>
         <th class="check"><input type="checkbox" data-select-all aria-label="Select all rows"></th>
         <th{% if state.sort == 'title' %} aria-sort="ascending"{% endif %}><a href="{{ sort_links.title }}" hx-get="{{ sort_links.title }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'title' %} aria-current="true"{% endif %}>Title</a></th>
+        {# Where the file lives and what it is about, as columns of their own.
+           The sidebar is the filter; this is the row saying what it is, so a
+           person reading down the table never has to click to find out
+           (TASK-048). Both cells still link to the sidebar's own filtered
+           view - information that happens to be a shortcut. #}
+        <th class="folder">Category</th>
+        <th class="labels">Labels</th>
         <th{% if state.sort == 'created_at' %} aria-sort="descending"{% endif %}><a href="{{ sort_links.created_at }}" hx-get="{{ sort_links.created_at }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'created_at' %} aria-current="true"{% endif %}>Uploaded</a></th>
         <th class="num"{% if state.sort == 'duration' %} aria-sort="descending"{% endif %}><a href="{{ sort_links.duration }}" hx-get="{{ sort_links.duration }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'duration' %} aria-current="true"{% endif %}>Duration</a></th>
         <th title="Model tier of the current transcript">Mode</th>
@@ -48,6 +55,30 @@
              wears that badge in the sidebar rather than every row repeating
              it. #}
           {% if row.private %}<span class="badge private" title="Pinned private: its text never leaves this machine">🔒</span>{% endif %}
+        </td>
+        <td class="folder">
+          {% if row.folder_id is not none %}
+          <a href="/?folder={{ row.folder_id }}">{{ row.folder_name }}</a>
+          {% else %}
+          <a href="/?view=uncategorized" class="muted">Uncategorized</a>
+          {% endif %}
+        </td>
+        <td class="labels">
+          {# Up to library.LABELS_PER_ROW, alphabetical. What is over the cap
+             is counted rather than dropped: a recording carrying eight must
+             not read like one carrying three. The rest are in the title
+             attribute, which a hover reaches without a second request.
+
+             The inner div is load-bearing: a max-width on a <td> does nothing
+             in a table that sizes itself, so three nowrap chips simply pushed
+             the next column off the row. A flex box inside the cell is what
+             actually bounds and wraps them. #}
+          {% if row.labels %}
+          <div class="chips">
+            {% for name in row.labels %}<a class="badge label" href="/?label={{ name | urlencode }}">{{ name }}</a>{% endfor %}
+            {% if row.label_overflow %}<span class="more" title="{{ row.label_rest | join(', ') }}">+{{ row.label_overflow }}</span>{% endif %}
+          </div>
+          {% endif %}
         </td>
         <td>{{ m.when(row.created_at) }}</td>
         <td class="num">{{ m.ts(row.duration) }}</td>
@@ -112,7 +143,7 @@
       </tr>
       {% else %}
       <tr class="empty">
-        <td colspan="7">{% if state.q %}No titles match “{{ state.q }}”.{% elif state.view == 'trash' %}The trash is empty.{% else %}Nothing here yet.{% endif %}</td>
+        <td colspan="9">{% if state.q %}No titles match “{{ state.q }}”.{% elif state.view == 'trash' %}The trash is empty.{% else %}Nothing here yet.{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

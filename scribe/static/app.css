@@ -452,6 +452,39 @@ table.media th[aria-sort="descending"] a::after { content: " ▾"; color: var(--
 table.media th[aria-sort="ascending"] a::after { content: " ▴"; color: var(--fg-muted); }
 table.media .badge { text-decoration: none; }
 
+/* Category and Labels (TASK-048): what a file is, beside the file, so the
+   sidebar can go on being the filter rather than the only place that knows.
+   Both columns are content-sized - the title keeps the room it had, and a
+   long folder name is cut rather than allowed to squeeze the title out. */
+table.media td.folder {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+table.media td.folder a { color: var(--fg-muted); text-decoration: none; }
+table.media td.folder a:hover { color: var(--fg); text-decoration: underline; }
+/* The flex box, not the cell, is what bounds this column: a max-width on a
+   <td> is ignored by a table that sizes itself to its content, so three
+   nowrap chips pushed Uploaded off the row until this went in. Wrapping
+   rather than clipping - three chips on a narrow window become two lines,
+   which is worse than one line and much better than a hidden label. */
+table.media td.labels .chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px .25rem;
+  max-width: 20rem;
+}
+table.media td.labels .badge.label {
+  color: var(--fg-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+table.media td.labels .badge.label:hover { color: var(--accent); border-color: var(--accent); }
+table.media td.labels .more { color: var(--fg-muted); font-size: 11px; white-space: nowrap; }
+
 /* The ⋯ menu floats over the page. It used to expand in place and push the
    row taller, because .table-wrap scrolls and would clip anything positioned
    over its edge - and it would: an absolutely positioned child is clipped by

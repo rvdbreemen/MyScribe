@@ -266,8 +266,71 @@ def _where(state: State) -> tuple[str, list]:
     return " AND ".join(clauses), args
 
 
+LABELS_PER_ROW = 3
+"""How many of a recording's labels the table shows before it counts the rest.
+
+Robert's number (TASK-048). A row is a glance, and four chips wrap the column
+on a laptop; what is over the cap is reported rather than dropped, so a
+recording carrying eight never looks like one carrying three.
+"""
+
+_LABEL_CHUNK = 900
+"""How many media ids one `IN (...)` may carry.
+
+SQLite 3.45 allows 32766 host parameters, but the ceiling is a compile-time
+option and this is the one place the row count reaches a query, so it is
+chunked rather than trusted. A library would need 900 rows on one screen to
+cost a second statement.
+"""
+
+
+def _attach_labels(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    """Give every row its labels, in one query for the whole page.
+
+    The obvious version asks per row, which is invisible on the three rows a
+    test seeds and a query storm on a real library - so the ids already on
+    screen go into one grouped statement instead (TASK-048 AC5, which is
+    pinned by counting statements).
+
+    Alphabetical, COLLATE NOCASE: a row ordered by how popular a label is
+    across the library would reshuffle whenever an unrelated recording was
+    labelled, and the three names under a title should be the same three
+    tomorrow.
+    """
+    for row in rows:
+        row["labels"] = []
+        row["label_rest"] = []
+        row["label_overflow"] = 0
+    found: dict[int, list[str]] = {}
+    ids = [int(row["id"]) for row in rows]
+    with db.LOCK:
+        for start in range(0, len(ids), _LABEL_CHUNK):
+            chunk = ids[start : start + _LABEL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for row in conn.execute(
+                "SELECT ml.media_id AS media_id, l.name AS name"
+                "  FROM media_label ml"
+                "  JOIN label l ON l.id = ml.label_id"
+                f" WHERE ml.media_id IN ({placeholders})"
+                " ORDER BY ml.media_id, l.name COLLATE NOCASE",
+                chunk,
+            ):
+                found.setdefault(int(row["media_id"]), []).append(str(row["name"]))
+    for row in rows:
+        names = found.get(int(row["id"]), [])
+        row["labels"] = names[:LABELS_PER_ROW]
+        row["label_rest"] = names[LABELS_PER_ROW:]
+        row["label_overflow"] = len(row["label_rest"])
+
+
 def media_rows(conn: sqlite3.Connection, state: State) -> list[dict]:
-    """The table's rows for ``state``: media plus its current model and latest job."""
+    """The table's rows for ``state``: media plus its current model and latest job.
+
+    Also what the row says about itself under the title (TASK-048): the name
+    of the folder it lives in, and up to `LABELS_PER_ROW` of its labels. The
+    folder rides along on a join; the labels cost one more statement for the
+    whole page, never one per row.
+    """
     where, args = _where(state)
     order = "m.created_at DESC, m.id DESC" if state.view == "recent" else SORTS[state.sort]
     limit = f" LIMIT {RECENT_LIMIT:d}" if state.view == "recent" else ""
@@ -276,10 +339,12 @@ def media_rows(conn: sqlite3.Connection, state: State) -> list[dict]:
             f"""
             SELECT m.id, m.title, m.orig_name, m.folder_id, m.duration, m.size_bytes,
                    m.created_at, m.trashed_at, m.private,
+                   f.name AS folder_name,
                    (SELECT r.model FROM run r WHERE r.media_id = m.id AND r.is_current = 1
                      ORDER BY r.id DESC LIMIT 1) AS run_model,
                    j.id AS job_id, j.status AS job_status
               FROM media m
+              LEFT JOIN folder f ON f.id = m.folder_id
               LEFT JOIN job j ON j.id = (SELECT id FROM job WHERE media_id = m.id
                                           ORDER BY id DESC LIMIT 1)
              WHERE {where}
@@ -287,7 +352,9 @@ def media_rows(conn: sqlite3.Connection, state: State) -> list[dict]:
             """,
             args,
         ).fetchall()
-    return [dict(row) for row in rows]
+    out = [dict(row) for row in rows]
+    _attach_labels(conn, out)
+    return out
 
 
 def _heading(state: State, folders: list[dict]) -> str:
