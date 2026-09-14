@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import unicodedata
 
 import pytest
 
@@ -313,19 +314,47 @@ def test_a_file_without_a_transcript_is_skipped_and_said_so(conn, client):  # no
 
 
 def test_the_old_sea_mammals_are_gone_from_every_surface():
-    """TASK-049. The dolphin and the whale came from the app this one was
-    modelled on and said nothing about a transcription model. They appeared as
-    literals in five places, which is exactly how half a rename ships: the
-    table swapped and the settings page still showing the old pair.
+    """TASK-049, and the guard is name-based for a reason (TASK-052).
+
+    The first version of this listed the two codepoints it expected to find,
+    and one of them was wrong: the templates carried U+1F40B WHALE and the
+    test looked for U+1F433 SPOUTING WHALE. The whale survived in four files,
+    the settings page kept showing it, and this test stayed green through all
+    of it - the exact half-done rename it exists to catch, defeated by a
+    number I typed from memory.
+
+    So it asks Unicode what each character *is* rather than trusting a
+    constant. There is no codepoint to get wrong.
     """
     root = pathlib.Path(__file__).resolve().parents[1]
     offenders = []
-    for path in list((root / "scribe").rglob("*.html")) + list((root / "scribe").rglob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        for old in ("\U0001F42C", "\U0001F433"):
-            if old in text:
-                offenders.append(f"{path.relative_to(root)} still has {old}")
+    for path in sorted((root / "scribe").rglob("*.html")) + sorted((root / "scribe").rglob("*.py")):
+        for char in set(path.read_text(encoding="utf-8")):
+            if ord(char) < 0x1F000:
+                continue
+            name = unicodedata.name(char, "")
+            if "WHALE" in name or "DOLPHIN" in name:
+                offenders.append(f"{path.relative_to(root)} still has U+{ord(char):04X} {name}")
     assert offenders == [], offenders
+
+
+def test_the_two_tier_icons_are_named_once(conn, client):  # noqa: F811
+    """They were five literals across three templates and a Python module,
+    which is how one of them got missed. One definition, and both the pages
+    and the jobs summary read it."""
+    from scribe.web import TIER_ICONS
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for rel in ("scribe/templates/_settings_watch.html",
+                "scribe/templates/_settings_defaults.html",
+                "scribe/templates/_transcribe_options.html",
+                "scribe/web/jobs_ui.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        for icon in TIER_ICONS.values():
+            assert icon not in text, f"{rel} spells the icon out instead of reading TIER_ICONS"
+
+    body = client.get("/settings").text
+    assert TIER_ICONS["turbo"] in body and TIER_ICONS["max"] in body
 
 
 def test_both_tiers_render_their_own_icon_with_a_label_a_screen_reader_can_read(conn, client):  # noqa: F811

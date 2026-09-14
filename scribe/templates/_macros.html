@@ -39,7 +39,7 @@
 {% if model %}
 {%- set turbo = 'turbo' in model|lower -%}
 {%- set tier = 'Turbo' if turbo else 'Maximaal' -%}
-<span class="mode" role="img" aria-label="{{ tier }} model, {{ model }}" title="{{ tier }} ({{ model }})">{{ '⚡' if turbo else '🎯' }}</span>
+<span class="mode" role="img" aria-label="{{ tier }} model, {{ model }}" title="{{ tier }} ({{ model }})">{{ TIER_ICONS.turbo if turbo else TIER_ICONS.max }}</span>
 {%- endif %}
 {%- endmacro %}
 

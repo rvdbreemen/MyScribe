@@ -57,6 +57,19 @@ NAV: tuple[tuple[str, str], ...] = (
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
+TIER_ICONS = {"turbo": "⚡", "max": "\U0001F3AF"}
+"""The two model tiers, as one bolt and one target (ADR-004 names them).
+
+Speed against accuracy is the trade the tiers actually make, and the bolt is
+the settled UI convention for fast. They are defined once because they were
+not: the pair was spelled out in three templates and a Python module, and
+when the old dolphin and whale were replaced the whale was missed in four of
+those places and shipped to the settings page (TASK-052).
+
+An environment global rather than render() context, so a fragment reaches
+them whatever path rendered it.
+"""
+
 templates = Jinja2Templates(
     env=jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(TEMPLATES_DIR)),
@@ -65,6 +78,7 @@ templates = Jinja2Templates(
         lstrip_blocks=True,
     )
 )
+templates.env.globals["TIER_ICONS"] = TIER_ICONS
 
 
 def asset_url(name: str) -> str:

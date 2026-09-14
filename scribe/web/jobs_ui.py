@@ -49,7 +49,7 @@ from starlette.responses import Response, StreamingResponse
 from scribe import db, jobs, runner
 from scribe.render import format_ts
 from scribe.stages import transcribe, url_stage
-from scribe.web import library, render
+from scribe.web import TIER_ICONS, library, render
 
 router = APIRouter()
 
@@ -131,7 +131,7 @@ def params_summary(params: dict) -> str:
     """The job's options in one line: tier, language, translate, speakers."""
     model = str(params.get("model") or transcribe.DEFAULT_MODEL)
     turbo = "turbo" in model.lower()
-    parts = ["⚡ Turbo" if turbo else "🐋 Maximaal"]
+    parts = [f"{TIER_ICONS['turbo']} Turbo" if turbo else f"{TIER_ICONS['max']} Maximaal"]
     parts.append(str(params.get("language") or "auto-detect language"))
     if params.get("task") == "translate":
         parts.append("translate to English")
