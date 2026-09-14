@@ -25,7 +25,7 @@ import re
 
 import pytest
 
-from scribe import db
+from scribe import db, jobs
 from scribe.web import library as web_library
 from scribe.web.library import State
 
@@ -76,8 +76,13 @@ def _tr(body: str, title: str) -> str:
 
 
 def _cell(body: str, title: str, klass: str) -> str:
-    """One <td class="..."> out of that row - the column under test."""
-    match = re.search(rf'<td class="{klass}">(.*?)</td>', _tr(body, title), re.S)
+    """One <td class="..."> out of that row - the column under test.
+
+    The class may be followed by other attributes (the folder and label cells
+    carry an id so the status poll can swap them by it), so the pattern stops
+    at the tag's own `>` rather than assuming the class closes it.
+    """
+    match = re.search(rf'<td class="{klass}"[^>]*>(.*?)</td>', _tr(body, title), re.S)
     assert match, f"no {klass} cell in the row for {title!r}"
     return match.group(1)
 
@@ -343,3 +348,80 @@ def test_both_tiers_render_their_own_icon_with_a_label_a_screen_reader_can_read(
     assert "\u26A1" in quick and 'aria-label="Turbo model, large-v3-turbo"' in quick
     assert "\U0001F3AF" in careful and 'aria-label="Maximaal model, large-v3"' in careful
     assert 'role="img"' in quick and 'role="img"' in careful
+
+
+# --- keeping the row current (TASK-050) ------------------------------------------
+
+
+def _poll(client, media_id):
+    resp = client.get(f"/media/{media_id}/status", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    return resp.text
+
+
+def test_the_table_renders_the_cells_without_out_of_band_markers(conn, client):  # noqa: F811
+    """The same fragment serves the table and the poll; only the poll's copy
+    is marked for an out-of-band swap, or the first page load would try to
+    swap cells into a table it is still building."""
+    seed_media(conn, title="Plain")
+
+    body = client.get("/").text
+
+    assert 'id="labels-' in body and 'id="folder-' in body
+    assert "hx-swap-oob" not in _tr(body, "Plain")
+
+
+def test_a_running_jobs_poll_carries_the_folder_and_the_labels(conn, client):  # noqa: F811
+    media_id = seed_media(conn, title="Being labelled")
+    jobs.enqueue(conn, "llm", media_id, {"media_id": media_id, "kind": "labels"})
+
+    text = _poll(client, media_id)
+
+    assert f'id="labels-{media_id}"' in text and 'hx-swap-oob="true"' in text
+    assert f'id="folder-{media_id}"' in text
+    assert "every 2s" in text  # still watching
+
+
+def test_labels_written_while_the_job_runs_reach_the_next_poll(conn, client):  # noqa: F811
+    """The whole point. The labels pass writes labels from a runner child;
+    nothing on the page clicked, so without this the row went on showing what
+    was true when it loaded."""
+    media_id = seed_media(conn, title="Being labelled")
+    jobs.enqueue(conn, "llm", media_id, {"media_id": media_id, "kind": "labels"})
+    assert "badge label" not in _poll(client, media_id)
+
+    _label(conn, media_id, "lockpicking", "hardware")
+
+    text = _poll(client, media_id)
+    assert ">lockpicking</a>" in text and ">hardware</a>" in text
+
+
+def test_the_last_poll_carries_the_result_and_then_stops(conn, client):  # noqa: F811
+    """runner.main calls jobs.finish("done") after every stage has run, so the
+    labels are committed before the status the poll reads turns terminal - the
+    answer that switches the polling off is the one carrying the result."""
+    media_id = seed_media(conn, title="Nearly there")
+    job_id = jobs.enqueue(conn, "llm", media_id, {"media_id": media_id, "kind": "labels"})
+    _label(conn, media_id, "cryptography")
+    jobs.finish(conn, job_id, "done")
+
+    text = _poll(client, media_id)
+
+    assert ">cryptography</a>" in text
+    assert "every 2s" not in text  # nothing left to watch
+
+
+def test_a_move_reaches_the_row_the_same_way(conn, client):  # noqa: F811
+    """A category changes without a click too - an import drops a file in a
+    folder while the job that fetched it is still on the board."""
+    folder = _folder(conn, "Hacker History")
+    media_id = seed_media(conn, title="Just arrived")
+    jobs.enqueue(conn, "llm", media_id, {"media_id": media_id, "kind": "labels"})
+    assert "Uncategorized" in _poll(client, media_id)
+
+    with db.LOCK:
+        conn.execute("UPDATE media SET folder_id=? WHERE id=?", (folder, media_id))
+        conn.commit()
+
+    text = _poll(client, media_id)
+    assert f'href="/?folder={folder}"' in text and "Hacker History" in text

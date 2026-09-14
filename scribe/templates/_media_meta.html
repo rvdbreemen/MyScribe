@@ -1,0 +1,33 @@
+{#
+  What a row says about itself: the folder it lives in, and its labels.
+
+  Two cells rather than one, because they are two columns (TASK-048). They
+  live in their own fragment because a background job can change either of
+  them - the labels pass writes labels, an import drops a file in a folder -
+  and the page has to be able to fetch just these two back.
+
+  `oob` marks them for an out-of-band swap, which is how the status cell's
+  own poll carries them along: the poll already runs for exactly as long as
+  the job that writes them, so nothing new has to be scheduled and the table
+  is never swapped under an open row menu (TASK-050).
+
+  Context: `row` (id, folder_id, folder_name, labels), and `oob`.
+#}
+<td class="folder" id="folder-{{ row.id }}"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% if row.folder_id is not none %}
+  <a href="/?folder={{ row.folder_id }}">{{ row.folder_name }}</a>
+  {% else %}
+  <a href="/?view=uncategorized" class="muted">Uncategorized</a>
+  {% endif %}
+</td>
+<td class="labels" id="labels-{{ row.id }}"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {# All of them, alphabetical (TASK-049). The inner div is load-bearing: a
+     max-width on a <td> does nothing in a table that sizes itself, so nowrap
+     chips simply pushed the next column off the row. A flex box inside the
+     cell is what actually bounds and wraps them. #}
+  {% if row.labels %}
+  <div class="chips">
+    {% for name in row.labels %}<a class="badge label" href="/?label={{ name | urlencode }}">{{ name }}</a>{% endfor %}
+  </div>
+  {% endif %}
+</td>

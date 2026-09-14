@@ -1,0 +1,24 @@
+{#
+  What the status cell's own poll answers with (TASK-050).
+
+  The cell it replaces, and beside it the folder and the labels as out-of-band
+  swaps. A background job can change either - the labels pass writes labels,
+  an import drops a file in a folder - and the row used to go on showing what
+  was true when the page loaded until something else made it re-render.
+
+  This rides the poll that already exists rather than adding a timer: the
+  status cell asks for itself every two seconds for exactly as long as the job
+  is queued or running, which is exactly as long as there is something new to
+  show. When the job reaches a terminal status the fragment comes back without
+  polling attributes and everything stops on its own, the final labels having
+  arrived with that last answer.
+
+  Two cells travel instead of the table for the reason _media_status.html
+  gives: swapping #media-table would close an open row menu and throw away a
+  half-typed rename, and a run is exactly when someone is tidying the rest of
+  the library.
+
+  Context: `row` (id, job_id, job_status, folder_id, folder_name, labels).
+#}
+{% include "_media_status.html" %}
+{% with oob = true %}{% include "_media_meta.html" %}{% endwith %}

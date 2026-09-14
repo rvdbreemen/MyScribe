@@ -761,21 +761,33 @@ def media_status(media_id: int, request: Request) -> Response:
     re-render. Reloading the whole table on a timer would have cost an open
     row menu and any half-typed rename, so the cell is what refreshes, and
     only while there is something to watch - the fragment stops asking as soon
-    as the status is terminal."""
+    as the status is terminal.
+
+    It carries the folder and the labels back with it (TASK-050). Those change
+    without anybody clicking - the labels pass writes labels, an import drops
+    a file in a folder - and the row went on showing what was true when the
+    page loaded. They ride this poll rather than a timer of their own, because
+    it already runs for exactly as long as the job that changes them, and the
+    last answer before the polling stops is the one carrying the result.
+    """
     conn = request.app.state.conn
     _get_media(conn, media_id)
     with db.LOCK:
         row = conn.execute(
             """
-            SELECT m.id, j.id AS job_id, j.status AS job_status
+            SELECT m.id, m.folder_id, f.name AS folder_name,
+                   j.id AS job_id, j.status AS job_status
               FROM media m
+              LEFT JOIN folder f ON f.id = m.folder_id
               LEFT JOIN job j ON j.id = (SELECT id FROM job WHERE media_id = m.id
                                           ORDER BY id DESC LIMIT 1)
              WHERE m.id = ?
             """,
             (media_id,),
         ).fetchone()
-    return render(request, "_media_status.html", row=dict(row))
+    out = dict(row)
+    _attach_labels(conn, [out])
+    return render(request, "_media_status_poll.html", row=out)
 
 
 @router.post("/media/{media_id}/trash", include_in_schema=False)

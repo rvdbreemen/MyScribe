@@ -56,28 +56,9 @@
              it. #}
           {% if row.private %}<span class="badge private" title="Pinned private: its text never leaves this machine">🔒</span>{% endif %}
         </td>
-        <td class="folder">
-          {% if row.folder_id is not none %}
-          <a href="/?folder={{ row.folder_id }}">{{ row.folder_name }}</a>
-          {% else %}
-          <a href="/?view=uncategorized" class="muted">Uncategorized</a>
-          {% endif %}
-        </td>
-        <td class="labels">
-          {# All of them, alphabetical (TASK-049). They were capped at three
-             with a +N and Robert asked for the lot once he had seen it: the
-             box wraps, so a recording carrying eight shows eight.
-
-             The inner div is load-bearing: a max-width on a <td> does nothing
-             in a table that sizes itself, so nowrap chips simply pushed the
-             next column off the row. A flex box inside the cell is what
-             actually bounds and wraps them. #}
-          {% if row.labels %}
-          <div class="chips">
-            {% for name in row.labels %}<a class="badge label" href="/?label={{ name | urlencode }}">{{ name }}</a>{% endfor %}
-          </div>
-          {% endif %}
-        </td>
+        {# Their own fragment, because the status cell's poll swaps them back
+           out of band when a job has changed either (TASK-050). #}
+        {% include "_media_meta.html" %}
         <td>{{ m.when(row.created_at) }}</td>
         <td class="num">{{ m.ts(row.duration) }}</td>
         <td class="mode">{{ m.mode_icon(row.run_model) }}</td>
