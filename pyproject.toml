@@ -31,6 +31,15 @@ dependencies = [
     # needs CUDA 12 (TASK-028); on Windows torch and torchaudio come from the
     # cu128 index (see [tool.uv.sources]). The engine is pinned alongside the
     # dormant wrapper (ADR-012).
+    #
+    # Do not bump to torch 2.13 for GHSA-rrmf-rvhw-rf47: GitHub names 2.13.0 as
+    # the patched version and it is not one. The fix, pytorch/pytorch b90c949,
+    # first ships in 2.14.0 (`gh api compare v2.13.0...b90c949` -> diverged,
+    # 33 behind; v2.14.0 -> contained), so 2.13 would close the alert by version
+    # range and keep the bug. 2.14 exists for Windows only on the cu130/cu132
+    # indexes, and ctranslate2.dll imports cublas64_12 - CUDA 12 - so taking it
+    # would break the transcription engine. Revisit when torch >= 2.14 reaches a
+    # CUDA 12 index, or CTranslate2 ships a CUDA 13 build.
     "ctranslate2==4.8.2",
     "faster-whisper==1.2.1",
     "pyannote-audio==4.0.7",
