@@ -1062,3 +1062,56 @@ def test_the_search_looks_at_whichever_reading_is_on_screen(client):
     assert "searchBlocks()" in run_search
     assert "querySelectorAll" not in run_search
     assert "#clean-reading mark.find" in js   # clearing covers both readings
+
+
+# --- step 2: the highlight is sampled finer than the words (TASK-053.02) -------------
+
+
+def _app_js() -> str:
+    return (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_playback_drives_the_highlight_from_animation_frames(client):
+    """timeupdate fires about four times a second and wordAt returns the last
+    word started by t, so words that begin between two events were never lit.
+
+    Asserted in the source because nothing here runs app.js; the count of
+    words actually lit is measured in a browser.
+    """
+    js = _app_js()
+    assert "function followFrame()" in js
+    assert "requestAnimationFrame(followFrame)" in js
+    for event in ("'play'", "'playing'"):
+        assert f"addEventListener({event}, startFollowing)" in js
+    for event in ("'pause'", "'ended'"):
+        assert f"addEventListener({event}, stopFollowing)" in js
+
+
+def test_timeupdate_stays_wired_as_the_fallback(client):
+    """A backgrounded tab gets no animation frames while the audio plays on,
+    and the resume position is saved from here. Both paths call the same
+    function and highlight returns early when the word has not changed, so
+    they cannot fight."""
+    js = _app_js()
+    handler = js.split("audio.addEventListener('timeupdate', function () {")[1].split("});")[0]
+    assert "highlight(audio.currentTime, true)" in handler
+    assert "writeStore(resumeKey" in handler
+
+
+def test_the_page_only_scrolls_when_the_word_would_leave_the_band(client):
+    """At four samples a second, re-centring on every move was fine. At sixty
+    the highlight moves once per word - ten times a second in fast speech -
+    and a smooth scroll restarted ten times a second never arrives."""
+    js = _app_js()
+    assert "function offScreen(el)" in js
+    assert "offScreen(words[i])" in js
+    assert "FOLLOW_BAND_TOP" in js and "FOLLOW_BAND_BOTTOM" in js
+
+
+def test_only_one_follow_loop_can_run(client):
+    """Two loops would double every highlight call and never stop on pause."""
+    js = _app_js()
+    start = js.split("function startFollowing()")[1].split("}")[0]
+    assert "if (!following)" in start

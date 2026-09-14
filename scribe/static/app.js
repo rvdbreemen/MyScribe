@@ -941,6 +941,12 @@
   var PROGRAMMATIC_SCROLL_MS = 1000;
   var RESUME_REWIND_SECONDS = 2;
   var SAVE_POSITION_EVERY_MS = 2000;
+  /* The band the followed word is allowed to sit in before the page scrolls,
+     as a fraction of the viewport. Wide on purpose: the text should stay
+     still while the highlight travels down it, and only move when the word
+     would otherwise leave. */
+  var FOLLOW_BAND_TOP = 0.20;
+  var FOLLOW_BAND_BOTTOM = 0.80;
   var SEARCH_DEBOUNCE_MS = 150;
   var SEARCH_MIN_CHARS = 2;
   var SEARCH_HIGHLIGHT = 'transcript-search';
@@ -1047,10 +1053,25 @@
       current = i;
       if (i < 0) { return; }
       words[i].classList.add('current');
-      if (follow && Date.now() >= suspendedUntil) {
+      if (follow && Date.now() >= suspendedUntil && offScreen(words[i])) {
         programmaticUntil = Date.now() + PROGRAMMATIC_SCROLL_MS;
         words[i].scrollIntoView({ block: 'center', behavior: 'smooth' });
       }
+    }
+
+    /* Is this word outside the band the reader is looking at?
+
+       The check is new because the sampling rate is. At four samples a second
+       the highlight only moved a few times a second and re-centring on every
+       move was fine; at sixty it moves once per word - ten times a second in
+       fast speech - and a smooth scroll restarted ten times a second never
+       arrives anywhere. So the page only scrolls when the word has actually
+       left the comfortable middle, which is also what a reader wants: the
+       text stays put while the highlight travels down it. */
+    function offScreen(el) {
+      var box = el.getBoundingClientRect();
+      var height = window.innerHeight || document.documentElement.clientHeight;
+      return box.top < height * FOLLOW_BAND_TOP || box.bottom > height * FOLLOW_BAND_BOTTOM;
     }
 
     /* Only a scroll that is not ours counts as the reader taking over. */
@@ -1088,6 +1109,47 @@
       var t = hashTime();
       if (isFinite(t)) { seek(t, true); }
     });
+
+    /* ---- following along ----
+
+       `timeupdate` fires about four times a second - the HTML spec allows
+       anywhere from 15ms to 250ms and browsers pick the slow end - and
+       `wordAt` returns the LAST word started by t. So when several words
+       begin between two events the highlight jumps over the ones between and
+       they are never lit at all.
+
+       That is most of a recording, not an edge case. Measured on media 20
+       (run 146, 12,108 words): the median gap between word starts is 0.240s,
+       and 52.4% of words begin within 250ms of the one before.
+
+       So while the audio is playing the highlight is driven by
+       requestAnimationFrame instead - sixty samples a second, which is finer
+       than any word. `timeupdate` stays wired for two reasons: it keeps the
+       resume position saved, and a backgrounded tab gets no animation frames
+       while the audio plays on, so it is also the fallback that keeps the
+       highlight roughly right until the tab comes back. Both call the same
+       function, and `highlight` returns early when the word has not changed,
+       so the pair cannot fight. */
+    var following = 0;
+
+    function followFrame() {
+      following = window.requestAnimationFrame(followFrame);
+      highlight(audio.currentTime, true);
+    }
+
+    function startFollowing() {
+      if (!following) { followFrame(); }
+    }
+
+    function stopFollowing() {
+      if (following) { window.cancelAnimationFrame(following); following = 0; }
+    }
+
+    audio.addEventListener('play', startFollowing);
+    audio.addEventListener('playing', startFollowing);
+    audio.addEventListener('pause', stopFollowing);
+    audio.addEventListener('ended', stopFollowing);
+    if (!audio.paused) { startFollowing(); }
 
     audio.addEventListener('timeupdate', function () {
       highlight(audio.currentTime, true);
