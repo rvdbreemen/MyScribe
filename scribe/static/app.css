@@ -1044,7 +1044,22 @@ mark.find { background: var(--warn-bg); color: inherit; padding: 0; }
 .not-transcribed { padding: .8rem 1rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); }
 
 /* The right rail: one action per row, the run's facts under them. */
-.rail { position: sticky; top: .5rem; display: flex; flex-direction: column; gap: .5rem; font-size: 13px; }
+/* Bounded, because a `top`-only sticky element taller than the viewport can
+   never scroll its own bottom into view - and this one grows: the Speakers
+   card renders a field and a button per speaker, so a recording with eight
+   of them can put "This transcript" permanently out of reach (TASK-053.03).
+   The column scrolls inside itself once it outgrows the window. */
+.rail {
+  position: sticky;
+  top: .5rem;
+  max-height: calc(100dvh - 1rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  font-size: 13px;
+}
 /* Four subjects, four cards. The rail used to be one column under a single
    "Actions" heading: the headings inside it had no surface of their own, so
    an AI provider select and a rename box read as more of the same list, and

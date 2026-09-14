@@ -71,14 +71,21 @@
     {# The ninth needs a question, and the provider and model need saying only
        when they are wrong - so they collapse behind a line that says what they
        currently are. Collapsed is honest here: closed means answered. #}
-    <details class="options">
+    {# hx-preserve so a rename, a move or a word correction does not throw
+       away what is half typed here. Eleven unrelated actions refresh this
+       panel, and panel_context rebuilds it from settings - so the question,
+       the provider and whether this is even open were all lost silently,
+       and a typed question is the most expensive thing on this page to
+       produce (TASK-053.03). Each needs a stable id; htmx keys on it. #}
+    <details class="options" id="ai-options" hx-preserve="true">
       <summary>
         <span class="summary-title">Ask &amp; provider</span>
         <span class="summary-line">{{ ai.summary_line }}</span>
       </summary>
 
       <label class="field">Question <span class="muted">(for “{{ ai.panels[-1].label }}”)</span>
-        <textarea name="prompt" rows="2" maxlength="2000" placeholder="What did they decide about the budget?"></textarea>
+        <textarea id="ai-prompt" name="prompt" rows="2" maxlength="2000"
+                  placeholder="What did they decide about the budget?"></textarea>
       </label>
       <button type="submit" class="ai-action"
               formaction="/media/{{ ai.media_id }}/ai/{{ ai.panels[-1].kind }}"
@@ -86,7 +93,7 @@
               hx-target="#ai-{{ ai.panels[-1].kind }}" hx-swap="outerHTML">{{ ai.panels[-1].label }}</button>
 
       <label class="field">Provider
-        <select name="provider">
+        <select id="ai-provider" name="provider">
           {% for p in ai.providers %}
           <option value="{{ p.name }}"{% if p.selected %} selected{% endif %}{% if p.disabled %} disabled{% endif %}>{{ p.label }}{% if not p.local %} · leaves your machine{% endif %}</option>
           {% endfor %}
@@ -94,7 +101,7 @@
       </label>
 
       <label class="field">Model
-        <input type="text" name="model" value="{{ ai.model }}" list="ai-models" autocomplete="off" spellcheck="false">
+        <input type="text" id="ai-model" name="model" value="{{ ai.model }}" list="ai-models" autocomplete="off" spellcheck="false">
       </label>
       <datalist id="ai-models">
         {% for name in ai.models %}<option value="{{ name }}"></option>{% endfor %}

@@ -986,13 +986,25 @@ def test_no_switch_at_all_when_nothing_was_published(client, transcribed):
 # --- step 1 of the rebuild: four faults that were bugs (TASK-053.01) ------------------
 
 
-def test_the_answer_section_is_the_live_region_not_the_working_hint(client, transcribed):
+def test_the_answer_section_is_the_live_region_not_the_working_hint(client, conn, transcribed):
     """The hint is REMOVED when the answer lands, so a live region attached to
     it is gone by the time there is something to announce - and the arrival of
     the answer is the only announcement worth making. On the section it
     survives every poll, because each poll swaps this element's outerHTML and
     the replacement carries the attribute too.
+
+    An answer has to exist for there to be a section at all: since
+    TASK-053.03 a kind nobody asked about renders nothing.
     """
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+            " content, created_at, run_id) VALUES (?,?,?,?,?,?,?,?)",
+            (transcribed["media"], "summary", "ollama", "qwen3.5:4b", 1,
+             '{"text": "A summary."}', 0.0, transcribed["run"]),
+        )
+        conn.commit()
+
     body = client.get(f"/media/{transcribed['media']}").text
 
     section = re.search(r'<section id="ai-summary"[^>]*>', body)
@@ -1115,3 +1127,86 @@ def test_only_one_follow_loop_can_run(client):
     js = _app_js()
     start = js.split("function startFollowing()")[1].split("}")[0]
     assert "if (!following)" in start
+
+
+# --- step 3: delete what nobody asked for, and cap the rail (TASK-053.03) ------------
+
+
+def test_every_kind_gets_a_card_asked_or_not(client, transcribed):
+    """TASK-053.03 gated the unasked cards away as clutter; Robert put them
+    back - "de 9 antwoordkaarten zijn nog altijd nuttige kaarten". An unasked
+    card says what this recording could be asked and holds the place its
+    answer will land in. The complaint this rebuild came from was the distance
+    to the answer, never the menu."""
+    from scribe.llm import tasks
+
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    assert body.count('class="ai-output"') == len(tasks.KINDS)
+    for kind in tasks.KINDS:
+        assert f'id="ai-{kind}"' in body, kind
+    assert "Not asked yet" in body
+
+
+def test_an_answer_that_exists_replaces_its_empty_card(client, conn, transcribed):
+    media_id = transcribed["media"]
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+            " content, created_at, run_id) VALUES (?,?,?,?,?,?,?,?)",
+            (media_id, "summary", "ollama", "qwen3.5:4b", 1,
+             '{"text": "They talked about libraries."}', 0.0, transcribed["run"]),
+        )
+        conn.commit()
+
+    summary = re.search(r'<section id="ai-summary".*?</section>',
+                        client.get(f"/media/{media_id}").text, re.DOTALL).group(0)
+
+    # What the card shows is _ai_output.html's business and varies by kind;
+    # what this test is about is that an answered kind stops offering itself
+    # and starts saying where its answer came from.
+    assert "Not asked yet" not in summary
+    assert "qwen3.5:4b" in summary and "ollama" in summary
+
+
+def test_the_ask_box_still_belongs_to_the_last_kind(client, transcribed):
+    """The trap the gate had to avoid. The rail builds its buttons from
+    ai.panels[:-1] and its ask box from ai.panels[-1], which holds only
+    because `custom` is last in KINDS. Filtering the list upstream would make
+    one button disappear and the ask box relabel itself - and a test that
+    counted answer sections would pass either way."""
+    from scribe.llm import tasks
+
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    last = tasks.KINDS[-1]
+    assert last == "custom"
+    assert f'hx-target="#ai-{last}"' in body
+    # every other kind still has a button of its own
+    for kind in tasks.KINDS[:-1]:
+        assert f'hx-target="#ai-{kind}"' in body, kind
+
+
+def test_the_rail_cannot_put_its_own_bottom_out_of_reach(client):
+    """A `top`-only sticky element taller than the viewport can never scroll
+    its own bottom into view, and the rail grows a field per speaker."""
+    css = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.css").read_text(
+        encoding="utf-8"
+    )
+    rail = css.split(".rail {")[1].split("}")[0]
+    assert "position: sticky" in rail
+    assert "max-height" in rail
+    assert "overflow-y: auto" in rail
+
+
+def test_the_typed_question_survives_a_panel_refresh(client, transcribed):
+    """Eleven unrelated actions refresh this panel and panel_context rebuilds
+    it from settings, so the question, the provider and whether the details
+    were open were all lost without warning."""
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    details = re.search(r'<details class="options"[^>]*>', body)
+    assert details and 'hx-preserve="true"' in details.group(0)
+    assert 'id="ai-options"' in details.group(0)
+    for control in ('id="ai-prompt"', 'id="ai-provider"', 'id="ai-model"'):
+        assert control in body, control

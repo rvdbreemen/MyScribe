@@ -34,6 +34,11 @@
 {% include "_transcript_panel.html" %}
 
 {% if ai.has_transcript %}
+{# Every kind gets a card, asked or not. TASK-053.03 gated the empty ones
+   away as clutter and Robert put them back: "de 9 antwoordkaarten zijn nog
+   altijd nuttige kaarten" - an unasked card says what this recording could
+   be asked, and holds the place its answer will land in. The complaint this
+   rebuild came from was the distance to the answer, never the menu. #}
 <section id="ai-outputs" class="ai-outputs" aria-label="AI answers">
   {% for panel in ai.panels %}{% include "_ai_output.html" %}{% endfor %}
 </section>
