@@ -1391,3 +1391,55 @@ def test_the_closed_panel_is_hidden_by_the_stylesheet_not_by_markup(client):
         encoding="utf-8"
     )
     assert '.ai-region[data-open="false"] .ai-panels { display: none; }' in css
+
+
+# --- step 6: the correction offer follows the word (TASK-053.06) ---------------------
+
+
+def test_the_correction_offer_names_the_word_it_is_about(client, conn, transcribed):
+    """Without the index there is nothing to move it to, and the offer stays
+    at the top of the main column - up to 25,000px from the word on a
+    64-minute recording, reported to a screen nobody is looking at."""
+    media_id = transcribed["media"]
+    # Word 2 is " the", which the seeded transcript says seven times, so
+    # correcting it leaves six others saying the same.
+    resp = client.post(
+        f"/media/{media_id}/words/2/correct",
+        data={"scope": "one", "text": "lockpicking"},
+        headers=HX,
+    )
+
+    offer = re.search(r'<form class="word-offer"[^>]*>', resp.text)
+    assert offer, "no offer after correcting a word others share"
+    assert 'data-word-offer="2"' in offer.group(0)
+
+
+def test_the_offer_is_rendered_where_it_works_without_scripting(client, conn, transcribed):
+    """It is moved beside the word by app.js; the server still puts it in the
+    main column, so with scripting off it is visible and reachable - just
+    further from the word than it could be."""
+    media_id = transcribed["media"]
+    resp = client.post(
+        f"/media/{media_id}/words/2/correct",
+        data={"scope": "one", "text": "lockpicking"},
+        headers=HX,
+    )
+
+    body = resp.text
+    assert body.index('class="word-offer"') < body.index('id="transcript"')
+    assert "Replace" in body
+
+
+def test_the_offer_is_moved_by_index_rather_than_by_measuring(client):
+    """content-visibility: auto on .para makes off-screen boxes unreliable, so
+    anything that positioned this by geometry would work on screen and fail
+    for the paragraph you actually corrected."""
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(
+        encoding="utf-8"
+    )
+    place = js.split("function placeWordOffer()")[1].split("\n    }")[0]
+    assert "data-word-offer" in place
+    assert "insertAdjacentElement('afterend'" in place
+    assert "getBoundingClientRect" not in place
+    # the swap drops focus to <body>; the next thing a reader wants is the button
+    assert "focus(" in place

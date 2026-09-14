@@ -1174,6 +1174,23 @@ table.presets td.actions form { margin: 0; }
 /* The pin, wherever it shows: a lock is the whole word, so it stays legible
    next to a title and inside a table cell. */
 .badge.private { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+/* The correction offer, once app.js has moved it next to its word: inline so
+   it sits in the run of text rather than breaking the paragraph in two, and
+   bounded so a long word does not push the line about (TASK-053.06). */
+.word-offer[data-word-offer] {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .3rem;
+  margin: 0 .25rem;
+  padding: .1rem .4rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  font-size: 12px;
+  vertical-align: baseline;
+}
+
 .ai-region .privacy { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; padding: .4rem .6rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-soft); }
 .ai-region .privacy.on { border-color: var(--warn); background: var(--warn-bg); }
 .ai-region .privacy-state { margin: 0; font-size: .85rem; }

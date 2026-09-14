@@ -1593,6 +1593,29 @@
       runSearch(box ? box.value : '');
     });
 
+    /* Put the correction offer beside the word it is about.
+
+       The server renders it at the top of the main column, which is where it
+       works with scripting off. On a 64-minute recording that can be 25,000px
+       from the word just corrected, so the person who triggered it never saw
+       the offer to fix the same mistake everywhere - the feature's whole
+       payoff, reported to an empty screen (TASK-053.06).
+
+       The offer names its word's index, so this is one move and no geometry:
+       nothing here measures anything, which matters because
+       `content-visibility: auto` on .para makes off-screen boxes unreliable.
+       Focus follows it, because the swap dropped focus to <body> and the next
+       thing a reader wants is the button. */
+    function placeWordOffer() {
+      var offer = document.querySelector('[data-word-offer]');
+      if (!offer) { return; }
+      var word = document.querySelector('#transcript .w[data-i="' + offer.getAttribute('data-word-offer') + '"]');
+      if (!word || !word.parentNode) { return; }
+      word.insertAdjacentElement('afterend', offer);
+      var button = offer.querySelector('button[type="submit"]');
+      if (button) { button.focus({ preventScroll: true }); }
+    }
+
     /* ---- the panel re-fetches itself; the words are new nodes ---- */
 
     document.body.addEventListener('htmx:afterSwap', function () {
@@ -1601,10 +1624,12 @@
       anchor = -1;  /* the new panel's words carry no selection */
       index();
       restoreTimestamps();
+      placeWordOffer();
     });
 
     index();
     restoreTimestamps();
+    placeWordOffer();
     seekFromUrlOrResume();
   }
 

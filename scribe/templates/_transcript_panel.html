@@ -126,8 +126,17 @@
         </form>
       </template>
 
+      {# The offer names the word it is about, so app.js can put it beside that
+         word rather than here at the top of the page. Correcting something at
+         58 minutes used to report the result up to 25,000px away, where the
+         person who triggered it could not see it - and the offer to fix the
+         same mistake everywhere is the feature's whole payoff (TASK-053.06).
+
+         It is rendered here anyway, because that is where it works with
+         scripting off: visible, reachable, just further from the word. #}
       {% if word_offer is defined and word_offer %}
       <form class="word-offer" method="post" action="{{ word_offer.url }}"
+            data-word-offer="{{ word_offer.idx }}"
             hx-post="{{ word_offer.url }}" hx-target="#transcript-panel" hx-swap="outerHTML" role="status">
         <input type="hidden" name="scope" value="all">
         <input type="hidden" name="text" value="{{ word_offer.text }}">
