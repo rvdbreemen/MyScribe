@@ -26,6 +26,7 @@ v9 comment). The flag that means a person retyped a word is
 """
 
 import logging
+import pathlib
 import re
 import threading
 
@@ -33,7 +34,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from scribe import db, paths, render
+from scribe import db, jobs, paths, render
 from scribe.app import create_app
 from scribe.web import transcript
 from seed import default_words, seed_job, seed_media, seed_run
@@ -980,3 +981,84 @@ def test_no_switch_at_all_when_nothing_was_published(client, transcribed):
 
     assert "data-reading-toggle" not in body
     assert 'id="clean-reading"' not in body
+
+
+# --- step 1 of the rebuild: four faults that were bugs (TASK-053.01) ------------------
+
+
+def test_the_answer_section_is_the_live_region_not_the_working_hint(client, transcribed):
+    """The hint is REMOVED when the answer lands, so a live region attached to
+    it is gone by the time there is something to announce - and the arrival of
+    the answer is the only announcement worth making. On the section it
+    survives every poll, because each poll swaps this element's outerHTML and
+    the replacement carries the attribute too.
+    """
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    section = re.search(r'<section id="ai-summary"[^>]*>', body)
+    assert section, "no summary answer section"
+    assert 'aria-live="polite"' in section.group(0)
+    assert 'aria-busy="false"' in section.group(0)   # nothing running
+
+    hint = re.search(r'<p class="hint working"[^>]*>', body)
+    assert hint is None or "aria-live" not in hint.group(0)
+
+
+def test_a_running_answer_says_it_is_busy(client, conn, transcribed):
+    """aria-busy is what stops a screen reader announcing a half-written
+    answer on every two-second poll."""
+    media_id = transcribed["media"]
+    jobs.enqueue(conn, "llm", media_id, {"media_id": media_id, "kind": "summary"})
+
+    body = client.get(f"/media/{media_id}").text
+
+    section = re.search(r'<section id="ai-summary"[^>]*>', body)
+    assert section and 'aria-busy="true"' in section.group(0)
+
+
+def test_the_comments_do_not_claim_six_questions(client):
+    """KINDS has been nine for a while; three comments still said six, which
+    is how a reader learns to distrust the comments in a file that otherwise
+    earns being trusted."""
+    from scribe.llm import tasks
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    assert len(tasks.KINDS) == 9
+    for rel in ("scribe/templates/_ai_panel.html", "scribe/templates/transcript.html"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "six" not in text.lower().replace("sixth", ""), rel
+
+
+def test_the_speed_buttons_read_the_rate_rather_than_remembering_it(client):
+    """The player's own overflow menu is browser chrome this app cannot
+    remove, and a rate chosen there used to leave 1x reading aria-pressed=true
+    while the audio ran at 2x. The only fix is to listen to the element.
+
+    Asserted in the source because this repository has no harness that runs
+    app.js - the behaviour itself is checked in a browser.
+    """
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "addEventListener('ratechange'" in js
+    assert "function showSpeed()" in js
+    # setSpeed must not write the buttons itself, or the two paths can disagree
+    body = js.split("function setSpeed(")[1].split("}")[0]
+    assert "aria-pressed" not in body
+
+
+def test_the_search_looks_at_whichever_reading_is_on_screen(client):
+    """With the cleaned reading showing, search used to count matches in the
+    hidden words, highlight them where nobody could see and scroll to them."""
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "function searchBlocks()" in js
+    # runSearch asks searchBlocks() rather than querying the words directly.
+    # Scoped to that function's body: the comment above it names the old
+    # selector on purpose, and a file-wide assertion would fail on the
+    # explanation rather than on the code.
+    run_search = js.split("function runSearch(")[1].split("\n    }")[0]
+    assert "searchBlocks()" in run_search
+    assert "querySelectorAll" not in run_search
+    assert "#clean-reading mark.find" in js   # clearing covers both readings

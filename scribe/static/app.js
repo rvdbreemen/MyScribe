@@ -994,6 +994,12 @@
           ? 'Showing the cleaned reading. The transcript is unchanged.'
           : 'Showing the transcript as it was heard.';
       }
+
+      /* The search lives in wireTranscript's scope and searches whichever
+         reading is on screen, so it has to be told the screen changed. An
+         event rather than a shared variable: these two are wired separately
+         and a page without a player has no search to re-run. */
+      document.body.dispatchEvent(new CustomEvent('reading-changed'));
     });
   }
 
@@ -1102,14 +1108,26 @@
 
     if ('preservesPitch' in audio) { audio.preservesPitch = true; }
 
-    function setSpeed(rate) {
-      if (!isFinite(rate) || rate <= 0) { return; }
-      audio.playbackRate = rate;
+    /* Which button is lit is read from the audio element, never remembered:
+       these buttons are not the only way to change the rate. The player's own
+       overflow menu is browser chrome this app cannot remove, and a rate
+       chosen there used to leave 1x reading aria-pressed="true" while the
+       audio ran at 2x - a control lying about the thing it controls. */
+    function showSpeed() {
+      var rate = audio.playbackRate;
       document.querySelectorAll('[data-speed]').forEach(function (button) {
         var mine = Number(button.getAttribute('data-speed')) === rate;
         button.setAttribute('aria-pressed', mine ? 'true' : 'false');
       });
     }
+
+    function setSpeed(rate) {
+      if (!isFinite(rate) || rate <= 0) { return; }
+      audio.playbackRate = rate;   /* fires ratechange, which calls showSpeed */
+    }
+
+    audio.addEventListener('ratechange', showSpeed);
+    showSpeed();   /* and once now, in case the element opens at a rate we did not set */
 
     /* ---- the timestamp toggle ---- */
 
@@ -1357,18 +1375,41 @@
     var matchIndex = -1;
     var searchTimer = null;
 
-    function piecesOf(paragraph) {
+    /* The blocks the search may look in: whichever reading is on screen.
+       Search used to walk `#transcript .para` unconditionally, so with the
+       cleaned reading showing it counted matches in hidden words, highlighted
+       them where nobody could see, and scrolled to them - lying in exactly
+       the mode a reader picks when they want to read rather than verify. */
+    function searchBlocks() {
+      var clean = document.getElementById('clean-reading');
+      if (clean && !clean.hidden) {
+        var pre = clean.querySelector('.clean-text');
+        return pre ? [pre] : [];
+      }
+      return Array.prototype.slice.call(document.querySelectorAll('#transcript .para'));
+    }
+
+    /* One block's text nodes, and the offset each starts at in the joined
+       string. The words reading puts one node per `.w`; the cleaned reading
+       is a <pre> whose text is its own child, so a block with no `.w`
+       contributes its own nodes instead. */
+    function piecesOf(block) {
       var pieces = [];
       var text = '';
-      paragraph.querySelectorAll('.w').forEach(function (w) {
-        var node = w.firstChild;
+      function take(node) {
         if (!node || node.nodeType !== 3) { return; }
         var lower = node.nodeValue.toLowerCase();
         /* A few characters change length when lower-cased; keep the offsets
            honest for those words at the price of case-sensitivity there. */
         pieces.push({ node: node, base: text.length });
         text += lower.length === node.nodeValue.length ? lower : node.nodeValue;
-      });
+      }
+      var words = block.querySelectorAll('.w');
+      if (words.length) {
+        words.forEach(function (w) { take(w.firstChild); });
+      } else {
+        Array.prototype.forEach.call(block.childNodes, take);
+      }
       return { pieces: pieces, text: text };
     }
 
@@ -1395,7 +1436,9 @@
       matches = [];
       matchIndex = -1;
       if (useHighlightAPI) { window.CSS.highlights.delete(SEARCH_HIGHLIGHT); return; }
-      document.querySelectorAll('#transcript mark.find').forEach(function (mark) {
+      /* Both readings: a mark left behind in the one that is off screen comes
+         back the moment the reader switches. */
+      document.querySelectorAll('#transcript mark.find, #clean-reading mark.find').forEach(function (mark) {
         var parent = mark.parentNode;
         parent.replaceChild(document.createTextNode(mark.textContent), mark);
         parent.normalize();
@@ -1433,7 +1476,7 @@
       clearSearch();
       var needle = query.trim().toLowerCase();
       if (needle.length < SEARCH_MIN_CHARS) { sayCount(); return; }
-      document.querySelectorAll('#transcript .para').forEach(function (paragraph) {
+      searchBlocks().forEach(function (paragraph) {
         var joined = piecesOf(paragraph);
         var at = joined.text.indexOf(needle);
         while (at !== -1) {
@@ -1479,6 +1522,13 @@
         box.value = '';
         runSearch('');
       }
+    });
+
+    /* Switching reading re-runs the search against what is now on screen,
+       so the count and the highlights describe the text the reader can see. */
+    document.body.addEventListener('reading-changed', function () {
+      var box = document.querySelector('[data-transcript-search]');
+      runSearch(box ? box.value : '');
     });
 
     /* ---- the panel re-fetches itself; the words are new nodes ---- */

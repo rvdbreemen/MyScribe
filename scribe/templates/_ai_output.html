@@ -34,7 +34,14 @@
   environment.
 #}
 {% import "_macros.html" as m %}
+{# aria-live sits on the section, not on the "Working…" line inside it. The
+   hint is what gets REMOVED when the answer lands, so a live region attached
+   to it is gone by the time there is something to announce - the arrival of
+   the answer, which is the only announcement worth making. On the section it
+   survives every poll, because each poll swaps this element's outerHTML and
+   the replacement carries the attribute too. #}
 <section id="ai-{{ panel.kind }}" class="ai-output" data-kind="{{ panel.kind }}"
+         aria-live="polite" aria-busy="{{ 'true' if panel.job else 'false' }}"
          {% if panel.job %}hx-get="/media/{{ panel.media_id }}/ai/{{ panel.kind }}" hx-trigger="every {{ panel.poll }}s" hx-swap="outerHTML"{% elif panel.kind == 'speakers' %}hx-get="/media/{{ panel.media_id }}/ai/{{ panel.kind }}" hx-trigger="speakers-applied from:body" hx-swap="outerHTML"{% endif %}>
   <header class="ai-output-head">
     <h3>{{ panel.label }}</h3>
@@ -49,7 +56,7 @@
   </header>
 
   {% if panel.job %}
-  <p class="hint working" aria-live="polite">
+  <p class="hint working">
     Working… <a href="/jobs/{{ panel.job.id }}">job {{ panel.job.id }}</a>
     {% if panel.job.stage %}<span class="mono">{{ panel.job.stage }}</span>{% endif %}
   </p>
