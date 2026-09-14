@@ -22,12 +22,25 @@
 {%- endmacro %}
 
 
-{# The model tier a run used, as the spec's two icons: Turbo (the default
-   model) is the dolphin, Maximaal (large-v3) the whale. Any checkpoint whose
-   name says turbo counts as turbo - the same rule transcribe.resolve_model
-   uses. No current run, no icon. #}
+{# The model tier a run used. Turbo (the default model) is the lightning
+   bolt, Maximaal (large-v3) the target: speed against accuracy, which is what
+   the two tiers actually trade. They were a dolphin and a whale, carried over
+   from the app this one was modelled on, and a sea mammal says nothing about
+   a transcription model - a bolt is the settled UI convention for "fast", and
+   a target reads as "the accurate one" beside it. The names are ADR-004's and
+   do not move.
+
+   role="img" with aria-label, because these carry meaning on their own: a
+   screen reader would otherwise announce "high voltage" in a table column.
+
+   Any checkpoint whose name says turbo counts as turbo - the same rule
+   transcribe.resolve_model uses. No current run, no icon. #}
 {% macro mode_icon(model) -%}
-{% if model %}<span class="mode" title="{{ 'Turbo' if 'turbo' in model|lower else 'Maximaal' }} ({{ model }})">{{ '🐬' if 'turbo' in model|lower else '🐋' }}</span>{% endif %}
+{% if model %}
+{%- set turbo = 'turbo' in model|lower -%}
+{%- set tier = 'Turbo' if turbo else 'Maximaal' -%}
+<span class="mode" role="img" aria-label="{{ tier }} model, {{ model }}" title="{{ tier }} ({{ model }})">{{ '⚡' if turbo else '🎯' }}</span>
+{%- endif %}
 {%- endmacro %}
 
 

@@ -79,6 +79,13 @@
         <option value="move">Move to the folder →</option>
         <option value="trash">Move to trash</option>
         <option value="retranscribe">Transcribe again</option>
+        {# library.BULK_ACTIONS has carried "label" since the labels pass
+           existed; this select never offered it, so the only way to label a
+           library was one file at a time on its own page. One llm job per
+           selected file, and bulk() reports what it skipped - a private
+           recording when the provider is not local, and anything without a
+           transcript to read. #}
+        <option value="label">Label with the AI</option>
         {% endif %}
       </select>
       {% if state.view != 'trash' %}

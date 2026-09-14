@@ -220,7 +220,7 @@ def test_rail_offers_the_file_actions_and_the_run_info(client, conn, transcribed
     assert entry and "Export…" in entry.group(1)
     assert not re.search(r"<button[^>]*disabled[^>]*>Export</button>", body)
     # Run info: model with its tier icon, language, xRT, when it was made.
-    assert "large-v3-turbo" in body and "🐬" in body
+    assert "large-v3-turbo" in body and "⚡" in body
     assert ">en<" in body
     assert "14.5" in body
     assert 'href="/jobs/' in body  # the latest job

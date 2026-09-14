@@ -64,19 +64,17 @@
           {% endif %}
         </td>
         <td class="labels">
-          {# Up to library.LABELS_PER_ROW, alphabetical. What is over the cap
-             is counted rather than dropped: a recording carrying eight must
-             not read like one carrying three. The rest are in the title
-             attribute, which a hover reaches without a second request.
+          {# All of them, alphabetical (TASK-049). They were capped at three
+             with a +N and Robert asked for the lot once he had seen it: the
+             box wraps, so a recording carrying eight shows eight.
 
              The inner div is load-bearing: a max-width on a <td> does nothing
-             in a table that sizes itself, so three nowrap chips simply pushed
-             the next column off the row. A flex box inside the cell is what
+             in a table that sizes itself, so nowrap chips simply pushed the
+             next column off the row. A flex box inside the cell is what
              actually bounds and wraps them. #}
           {% if row.labels %}
           <div class="chips">
             {% for name in row.labels %}<a class="badge label" href="/?label={{ name | urlencode }}">{{ name }}</a>{% endfor %}
-            {% if row.label_overflow %}<span class="more" title="{{ row.label_rest | join(', ') }}">+{{ row.label_overflow }}</span>{% endif %}
           </div>
           {% endif %}
         </td>

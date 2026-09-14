@@ -323,18 +323,18 @@ def test_a_doctor_job_shows_its_own_stage_and_no_transcribe_summary(client, conn
     assert f'href="/jobs/{job_id}"' in running and ">doctor job<" in running
     assert 'class="step active" data-stage="gpu-checks"' in running
     assert 'data-stage="probe"' not in running and 'data-stage="transcribe"' not in running
-    assert "🐬 Turbo" not in running and "auto-detect language" not in running
+    assert "⚡ Turbo" not in running and "auto-detect language" not in running
 
     detail = client.get(f"/jobs/{job_id}").text
     assert 'class="step active" data-stage="gpu-checks"' in detail
     assert 'data-stage="transcribe"' not in detail
-    assert "🐬 Turbo" not in detail and "auto-detect language" not in detail
+    assert "⚡ Turbo" not in detail and "auto-detect language" not in detail
 
     # A transcribe job keeps its six steps and its summary.
     media_id = seed_media(conn, title="Delta")
     seed_job(conn, media_id, status="queued")
     queued = _section(client.get("/jobs").text, "queued")
-    assert "🐬 Turbo" in queued and "auto-detect language" in queued
+    assert "⚡ Turbo" in queued and "auto-detect language" in queued
 
 
 def test_titles_are_escaped_on_the_board(client, conn):

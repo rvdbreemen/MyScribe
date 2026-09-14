@@ -1,5 +1,6 @@
 """Task 6: FastAPI shell and JSON job API (supervisor off in tests)."""
 
+import pathlib
 import subprocess
 import sys
 
@@ -269,3 +270,20 @@ def test_eta_for_a_default_job_uses_the_model_the_runner_files_under(client, con
 
     assert row["eta_seconds"] is not None
     assert row["eta_seconds"] > 0
+
+
+def test_the_version_is_the_same_number_in_both_places():
+    """`scribe.__version__` is what the page and /health report; pyproject's
+    is what the wheel and the lockfile carry. Nothing tied them together, so
+    bumping one and forgetting the other was a silent drift - and the one a
+    person sees in the header would be the one that went stale.
+    """
+    import re
+    import tomllib
+
+    import scribe
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    declared = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert declared["project"]["version"] == scribe.__version__
+    assert re.fullmatch(r"\d+\.\d+\.\d+", scribe.__version__), scribe.__version__

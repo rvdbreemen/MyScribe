@@ -266,14 +266,6 @@ def _where(state: State) -> tuple[str, list]:
     return " AND ".join(clauses), args
 
 
-LABELS_PER_ROW = 3
-"""How many of a recording's labels the table shows before it counts the rest.
-
-Robert's number (TASK-048). A row is a glance, and four chips wrap the column
-on a laptop; what is over the cap is reported rather than dropped, so a
-recording carrying eight never looks like one carrying three.
-"""
-
 _LABEL_CHUNK = 900
 """How many media ids one `IN (...)` may carry.
 
@@ -294,13 +286,14 @@ def _attach_labels(conn: sqlite3.Connection, rows: list[dict]) -> None:
 
     Alphabetical, COLLATE NOCASE: a row ordered by how popular a label is
     across the library would reshuffle whenever an unrelated recording was
-    labelled, and the three names under a title should be the same three
-    tomorrow.
+    labelled, and the names beside a title should be the same ones tomorrow.
+
+    All of them, not the first few. TASK-048 capped this at three with a +N
+    for the rest; having seen it, Robert asked for the lot (TASK-049). The
+    cell wraps, so a recording carrying eight shows eight.
     """
     for row in rows:
         row["labels"] = []
-        row["label_rest"] = []
-        row["label_overflow"] = 0
     found: dict[int, list[str]] = {}
     ids = [int(row["id"]) for row in rows]
     with db.LOCK:
@@ -317,10 +310,7 @@ def _attach_labels(conn: sqlite3.Connection, rows: list[dict]) -> None:
             ):
                 found.setdefault(int(row["media_id"]), []).append(str(row["name"]))
     for row in rows:
-        names = found.get(int(row["id"]), [])
-        row["labels"] = names[:LABELS_PER_ROW]
-        row["label_rest"] = names[LABELS_PER_ROW:]
-        row["label_overflow"] = len(row["label_rest"])
+        row["labels"] = found.get(int(row["id"]), [])
 
 
 def media_rows(conn: sqlite3.Connection, state: State) -> list[dict]:

@@ -8,8 +8,9 @@ navigation is the filter system, and the information belongs in the table.
 They still link to the same filtered views, so the row and the sidebar cannot
 disagree about what a click means.
 
-The cap is three, and a file with more says how many more - hiding the rest
-silently would make the column a lie about a recording with eight labels.
+Every label the recording carries, not the first few: TASK-048 capped this
+at three with a +N, and Robert asked for the lot once he had seen it
+(TASK-049). The cell wraps, so a recording holding eight shows eight.
 
 The query count is pinned here too, and that is the assertion that matters
 most: the obvious implementation asks the database once per row, which is
@@ -18,6 +19,8 @@ invisible on a seeded table of three and a storm on a real library.
 
 from __future__ import annotations
 
+import json
+import pathlib
 import re
 
 import pytest
@@ -32,7 +35,7 @@ from tests.test_web_library import (  # noqa: F401  (fixtures)
     data_dir,
     db_path,
 )
-from seed import seed_media
+from seed import seed_media, seed_run
 
 
 def _folder(conn, name, parent_id=None):
@@ -130,7 +133,6 @@ def test_a_rows_labels_come_back_with_it(conn):  # noqa: F811
     row = _row(web_library.media_rows(conn, State()), "Lockpicking")
 
     assert row["labels"] == ["cryptography", "hacker history"]
-    assert row["label_overflow"] == 0
 
 
 def test_a_file_with_no_labels_says_nothing_rather_than_empty_furniture(conn, client):  # noqa: F811
@@ -140,31 +142,23 @@ def test_a_file_with_no_labels_says_nothing_rather_than_empty_furniture(conn, cl
     assert row["labels"] == []
 
     cell = _cell(client.get("/").text, "Bare", "labels")
-    assert "badge" not in cell and "+" not in cell  # an empty cell, not furniture
+    assert "badge" not in cell and "chips" not in cell  # an empty cell, not furniture
 
 
-def test_at_most_three_labels_are_shown(conn):  # noqa: F811
+def test_every_label_is_shown_not_the_first_few(conn, client):  # noqa: F811
+    """TASK-049. Five labels means five chips - no cap, and no "+2" standing
+    in for names a person cannot read."""
     media_id = seed_media(conn, title="Busy")
     _label(conn, media_id, "alpha", "bravo", "charlie", "delta", "echo")
 
     row = _row(web_library.media_rows(conn, State()), "Busy")
-
-    assert row["labels"] == ["alpha", "bravo", "charlie"]
-
-
-def test_a_file_with_more_than_three_says_how_many_more_and_names_them(conn, client):  # noqa: F811
-    """AC3: the cap must not quietly misrepresent a recording that carries
-    eight. The count is on screen and the rest are in the title attribute,
-    which is where a hover can reach them without a second request."""
-    media_id = seed_media(conn, title="Busy")
-    _label(conn, media_id, "alpha", "bravo", "charlie", "delta", "echo")
-
-    row = _row(web_library.media_rows(conn, State()), "Busy")
-    assert row["label_overflow"] == 2
+    assert row["labels"] == ["alpha", "bravo", "charlie", "delta", "echo"]
 
     cell = _cell(client.get("/").text, "Busy", "labels")
-    assert "+2" in cell
-    assert "delta" in cell and "echo" in cell
+    assert cell.count('class="badge label"') == 5
+    for name in ("alpha", "bravo", "charlie", "delta", "echo"):
+        assert f">{name}</a>" in cell
+    assert "+2" not in cell
 
 
 def test_the_chips_sit_in_a_box_that_can_bound_them(conn, client):  # noqa: F811
@@ -183,7 +177,7 @@ def test_the_chips_sit_in_a_box_that_can_bound_them(conn, client):  # noqa: F811
 
     assert '<div class="chips">' in cell
     box = re.search(r'<div class="chips">(.*?)</div>', cell, re.S).group(1)
-    assert box.count('class="badge label"') == 3 and "+1" in box
+    assert box.count('class="badge label"') == 4  # every chip inside the box
 
 
 def test_the_order_does_not_shift_when_another_file_changes(conn):  # noqa: F811
@@ -260,3 +254,92 @@ def test_the_row_query_does_not_grow_with_the_number_of_rows(conn):  # noqa: F81
 
     assert (rows_two, rows_twenty) == (2, 20)
     assert cost_two == cost_twenty, f"{cost_two} statements for 2 rows, {cost_twenty} for 20"
+
+
+# --- labelling a whole selection -------------------------------------------------
+
+
+def test_the_bulk_bar_offers_labelling(client):  # noqa: F811
+    """TASK-049. library.BULK_ACTIONS has carried "label" since the labels
+    pass existed and this select never offered it, so the only way to label a
+    library was one file at a time on its own page."""
+    body = client.get("/").text
+
+    assert "label" in web_library.BULK_ACTIONS
+    assert '<option value="label">' in body
+
+
+def test_labelling_a_selection_queues_one_job_per_file(conn, client):  # noqa: F811
+    ids = []
+    for n in range(3):
+        media_id = seed_media(conn, title=f"Talk {n}")
+        seed_run(conn, media_id, words=[{"start": 0.0, "end": 1.0, "text": "hello"}])
+        ids.append(media_id)
+
+    resp = client.post("/media/bulk", data={"action": "label", "ids": ids}, headers={"HX-Request": "true"})
+
+    assert resp.status_code == 200
+    queued = [
+        json.loads(row["params_json"])
+        for row in conn.execute("SELECT params_json FROM job WHERE type='llm' ORDER BY id")
+    ]
+    assert [p["media_id"] for p in queued] == ids
+    assert {p["kind"] for p in queued} == {"labels"}
+
+
+def test_a_file_without_a_transcript_is_skipped_and_said_so(conn, client):  # noqa: F811
+    """AC3: there is nothing for the pass to read, and a person who ticked
+    forty rows should not have to count the jobs to find that out."""
+    with_words = seed_media(conn, title="Has words")
+    seed_run(conn, with_words, words=[{"start": 0.0, "end": 1.0, "text": "hello"}])
+    seed_media(conn, title="Silent so far")
+
+    resp = client.post(
+        "/media/bulk", data={"action": "label", "ids": [with_words, with_words + 1]},
+        headers={"HX-Request": "true"},
+    )
+
+    assert conn.execute("SELECT COUNT(*) c FROM job WHERE type='llm'").fetchone()["c"] == 1
+    notice = json.loads(resp.headers["HX-Trigger"])["scribe-notice"]
+    assert "without a transcript" in notice
+
+
+# --- the tier icons --------------------------------------------------------------
+
+
+def test_the_old_sea_mammals_are_gone_from_every_surface():
+    """TASK-049. The dolphin and the whale came from the app this one was
+    modelled on and said nothing about a transcription model. They appeared as
+    literals in five places, which is exactly how half a rename ships: the
+    table swapped and the settings page still showing the old pair.
+    """
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in list((root / "scribe").rglob("*.html")) + list((root / "scribe").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for old in ("\U0001F42C", "\U0001F433"):
+            if old in text:
+                offenders.append(f"{path.relative_to(root)} still has {old}")
+    assert offenders == [], offenders
+
+
+def test_both_tiers_render_their_own_icon_with_a_label_a_screen_reader_can_read(conn, client):  # noqa: F811
+    """An emoji carrying meaning on its own needs a text alternative, or the
+    Mode column announces "high voltage" and "direct hit"."""
+    def with_model(title, model):
+        media_id = seed_media(conn, title=title)
+        run_id = seed_run(conn, media_id, words=[{"start": 0.0, "end": 1.0, "text": "hi"}])
+        with db.LOCK:  # seed_run pins DEFAULT_MODEL; the tier is the subject here
+            conn.execute("UPDATE run SET model=? WHERE id=?", (model, run_id))
+            conn.commit()
+
+    with_model("Quick one", "large-v3-turbo")
+    with_model("Careful one", "large-v3")
+
+    body = client.get("/").text
+
+    quick = _cell(body, "Quick one", "mode")
+    careful = _cell(body, "Careful one", "mode")
+    assert "\u26A1" in quick and 'aria-label="Turbo model, large-v3-turbo"' in quick
+    assert "\U0001F3AF" in careful and 'aria-label="Maximaal model, large-v3"' in careful
+    assert 'role="img"' in quick and 'role="img"' in careful

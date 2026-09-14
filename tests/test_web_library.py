@@ -226,7 +226,7 @@ def test_row_shows_mode_icon_and_latest_job_status(client, conn, library):
 
     body = client.get("/").text
 
-    assert "🐬" in body  # large-v3-turbo is the default seed model
+    assert "⚡" in body  # large-v3-turbo is the default seed model
     assert "s-done" in body
     assert "s-failed" in body
     assert "1:05" in body  # Alpha's 65 s duration
