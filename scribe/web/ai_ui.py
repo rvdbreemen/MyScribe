@@ -81,6 +81,12 @@ key: a form field is part of the page's contract with a browser and the row
 name is part of the database's, and spelling them the same is how one silently
 becomes the other."""
 
+CUSTOM_MODEL_FIELD_PREFIX = "custom_model_"
+"""The settings form's box for a model id the fetched list does not have
+(TASK-054); a typed id wins over the dropdown. A second field name rather than
+a second control named `model_<p>`: `_fields` keeps the last value, so an empty
+box sharing the dropdown's name would drop the row the dropdown just chose."""
+
 PRIVATE_DEFAULT_FIELD = "private_default"
 """The settings form's name for the private-mode default. Spelled the same as
 the setting row this time, because `media.PRIVATE_DEFAULT_SETTING` is the
@@ -159,6 +165,24 @@ def remember_models(conn: sqlite3.Connection, provider_name: str, models: Iterab
     setting_put(
         conn, MODELS_SETTING_PREFIX + provider_name, json.dumps(sorted(set(models)))
     )
+
+
+def model_groups(ids: Iterable[str]) -> list[tuple[str, list[str]]] | None:
+    """The ids by vendor for the dropdown's optgroups, or None to list them flat.
+
+    Grouped only when every id names its vendor before a slash - OpenRouter's
+    `anthropic/claude-...`, hundreds of them - which is a fact about the ids
+    rather than a check on the provider's name. A single id without a vendor
+    keeps the list flat: an optgroup around one stray id names a vendor nobody
+    has. Order is the order given, which `remember_models` sorts.
+    """
+    ids = list(ids)
+    if not ids or not all("/" in model for model in ids):
+        return None
+    groups: dict[str, list[str]] = {}
+    for model in ids:
+        groups.setdefault(model.split("/", 1)[0], []).append(model)
+    return list(groups.items())
 
 
 # --- providers as the UI sees them ----------------------------------------------------
@@ -1105,8 +1129,13 @@ def provider_rows(conn: sqlite3.Connection) -> list[dict]:
                 "local": bool(cls.is_local),
                 "ready": ready,
                 "why": why,
-                "model": default_model(conn, name),
+                # What is stored, not what would be used: the dropdown pins
+                # this as its selected option, and an empty one is the blank
+                # "its own default" option (TASK-054).
+                "model_saved": (setting_get(conn, MODEL_SETTING_PREFIX + name) or "").strip(),
+                "model_default": cls.default_model,
                 "models": known_models(conn, name),
+                "model_groups": model_groups(known_models(conn, name)),
                 "needs_key": bool(cls.key_env_vars),
                 "key_source": key.source,
                 "key_mask": KEY_MASK if key.found else "",

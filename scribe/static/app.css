@@ -1373,6 +1373,13 @@ table.presets td.actions form { margin: 0; }
 .chat-ask textarea { width: 100%; }
 .chat-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .5rem; }
 
+/* A provider's model (TASK-054): the pick from its list and the box for an id
+   the list lacks, side by side where there is room, stacked where there is
+   not. The select fills its half; OpenRouter's ids are long. */
+.llm .model-pick { display: flex; flex-wrap: wrap; align-items: end; gap: .2rem 1rem; }
+.llm .model-pick label.field { flex: 1 1 16rem; }
+.llm .model-pick label.field select { max-width: none; }
+
 /* The provider table: the reason a row is not ready is the useful column, so
    it wraps instead of being cut off. */
 table.providers td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }

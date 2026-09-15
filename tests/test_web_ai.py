@@ -994,6 +994,136 @@ def test_an_unreachable_provider_leaves_the_model_field_as_free_text(client, con
     assert "Ollama is not running" in resp.text
 
 
+# --- picking a model from the fetched list (TASK-054) ---------------------------------
+#
+# Robert asked for a dropdown filled from what each provider returned. The trap,
+# measured on 2026-09-14: the stored OpenAI model was gpt-5.6, which is not among
+# the 134 ids OpenAI listed (its first is babbage-002). A plain <select> shows
+# the first option for a value it lacks, and the one form posts every provider's
+# model on each Save - so ticking "New recordings start private" would have made
+# babbage-002 the OpenAI model.
+
+
+def browser_post(body: str, action: str) -> dict[str, list[str]]:
+    """What a browser posts from the form with `action` when nobody touches a
+    field: each select's selected option (its first when none is marked), each
+    text or hidden input's value, and a checkbox only while it is checked."""
+    form = re.search(rf'<form[^>]*action="{re.escape(action)}"[^>]*>(.*?)</form>', body, re.S)
+    assert form, f"no form posting to {action}"
+    fields: dict[str, list[str]] = {}
+    for tag in re.finditer(r'<select[^>]*name="([^"]+)"[^>]*>(.*?)</select>|<input([^>]*)>', form.group(1), re.S):
+        if tag.group(1):
+            options = re.findall(r'<option value="([^"]*)"([^>]*)>', tag.group(2))
+            chosen = [value for value, attrs in options if re.search(r"\bselected\b", attrs)]
+            fields.setdefault(tag.group(1), []).append(chosen[0] if chosen else (options[0][0] if options else ""))
+            continue
+        attrs = tag.group(3)
+        name = re.search(r'name="([^"]*)"', attrs)
+        kind = re.search(r'type="([^"]*)"', attrs)
+        kind = kind.group(1) if kind else "text"
+        if not name or kind in ("submit", "button") or (kind == "checkbox" and not re.search(r"\bchecked\b", attrs)):
+            continue
+        value = re.search(r'value="([^"]*)"', attrs)
+        fields.setdefault(name.group(1), []).append(value.group(1) if value else "")
+    return fields
+
+
+def model_rows(conn) -> dict[str, str]:
+    """Every provider-model row. Filtered here, not with LIKE: `_` is LIKE's
+    one-character wildcard, and `llm_model_%` also matches `llm_models_openai`."""
+    with db.LOCK:
+        rows = conn.execute("SELECT key, value FROM setting").fetchall()
+    return {row["key"]: row["value"] for row in rows if row["key"].startswith(ai_ui.MODEL_SETTING_PREFIX)}
+
+
+def test_settings_offers_each_providers_fetched_ids_as_a_select(client, conn, no_ollama):
+    ai_ui.remember_models(conn, "ollama", ["gemma4:12b", "qwen3.5:4b"])
+
+    body = client.get("/settings").text
+
+    assert "gemma4:12b" in option_of(body, "model_ollama", "gemma4:12b")
+    assert "qwen3.5:4b" in option_of(body, "model_ollama", "qwen3.5:4b")
+
+
+def test_the_blank_option_is_selected_when_no_model_is_stored(client, conn, no_ollama):
+    body = client.get("/settings").text
+
+    blank = option_of(body, "model_openai", "")
+    assert "selected" in blank
+    assert "Its own default" in blank and "gpt-4o-mini" in blank
+
+
+def test_a_saved_model_the_list_never_heard_of_is_still_the_selected_option(client, conn, no_ollama):
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "openai", "gpt-5.6")
+    ai_ui.remember_models(conn, "openai", ["babbage-002", "gpt-4o-mini", "gpt-5.6-luna"])
+
+    body = client.get("/settings").text
+
+    kept = option_of(body, "model_openai", "gpt-5.6")
+    assert "selected" in kept and "not in the fetched list" in kept
+    assert "selected" not in option_of(body, "model_openai", "babbage-002")
+
+
+def test_saving_the_form_untouched_changes_no_model(client, conn, no_ollama):
+    """The Save a person makes after ticking only "New recordings start
+    private", posted the way a browser posts the page it was given. The stored
+    gpt-5.6 survives, and a provider nobody set gets no row: before TASK-054
+    the box carried each provider's shipped default, so this Save froze it
+    into a row for every provider."""
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "openai", "gpt-5.6")
+    ai_ui.remember_models(conn, "openai", ["babbage-002", "gpt-4o-mini", "gpt-5.6-luna"])
+    fields = browser_post(client.get("/settings").text, "/settings/llm")
+    fields["private_default"] = ["0", "1"]
+
+    resp = client.post("/settings/llm", data=fields, headers=HX)
+
+    assert resp.status_code == 200
+    assert model_rows(conn) == {"llm_model_openai": "gpt-5.6"}
+
+
+def test_a_typed_model_id_wins_over_the_dropdowns_pick(client, conn, no_ollama):
+    client.post("/settings/llm", data={"model_openai": "gpt-4o-mini", "custom_model_openai": "gpt-5.7"}, headers=HX)
+
+    assert ai_ui.default_model(conn, "openai") == "gpt-5.7"
+
+
+def test_a_provider_without_a_fetched_list_still_takes_a_typed_model(client, conn, no_ollama):
+    body = client.get("/settings").text
+    assert re.search(r'<input[^>]*name="custom_model_ollama"', body)
+
+    client.post("/settings/llm", data={"model_ollama": "", "custom_model_ollama": "llama9:70b"}, headers=HX)
+
+    assert ai_ui.default_model(conn, "ollama") == "llama9:70b"
+
+
+def test_the_blank_option_drops_the_row_back_to_the_providers_own_default(client, conn, no_ollama):
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "openai", "gpt-5.6")
+
+    client.post("/settings/llm", data={"model_openai": "", "custom_model_openai": ""}, headers=HX)
+
+    assert ai_ui.setting_get(conn, ai_ui.MODEL_SETTING_PREFIX + "openai") is None
+
+
+def test_openrouter_ids_are_grouped_by_vendor_and_flat_ids_are_not():
+    assert ai_ui.model_groups(["anthropic/claude-x", "openai/gpt-y", "openai/gpt-z"]) == [
+        ("anthropic", ["anthropic/claude-x"]),
+        ("openai", ["openai/gpt-y", "openai/gpt-z"]),
+    ]
+    assert ai_ui.model_groups(["babbage-002", "gpt-4o-mini"]) is None
+    assert ai_ui.model_groups(["gpt-4o", "openrouter/auto"]) is None  # one id without a vendor: flat
+    assert ai_ui.model_groups([]) is None
+
+
+def test_grouped_ids_render_in_optgroups_with_the_whole_id_as_the_label(client, conn, no_ollama):
+    ai_ui.remember_models(conn, "openrouter", ["anthropic/claude-x", "openai/gpt-y"])
+
+    body = client.get("/settings").text
+
+    select = re.search(r'<select[^>]*name="model_openrouter"[^>]*>(.*?)</select>', body, re.S).group(1)
+    assert '<optgroup label="anthropic">' in select
+    assert ">anthropic/claude-x</option>" in option_of(body, "model_openrouter", "anthropic/claude-x")
+
+
 # --- testing a provider, and what a new recording starts as ---------------------------
 
 

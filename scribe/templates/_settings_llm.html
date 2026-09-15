@@ -3,9 +3,11 @@
 
   Context (from scribe.web.ai_ui.settings_context):
 
-      llm_providers  [{name, label, local, ready, why, model, models,
-                      needs_key, key_source, key_mask, env_names, test,
-                      test_job}] one per registered provider, in name order.
+      llm_providers  [{name, label, local, ready, why, model_saved,
+                      model_default, models, model_groups, needs_key,
+                      key_source, key_mask, env_names, test, test_job}] one
+                      per registered provider, in name order. `model_saved`
+                      is the stored row or '' (the provider's own default).
                       `test` is the last provider test (ok, model, detail,
                       at, seconds) or none; `test_job` is one still running.
       llm_provider   the default provider a new request opens with
@@ -44,13 +46,39 @@
     </label>
 
     {% for p in llm_providers %}
-    <label class="field">Model for {{ p.label }}
-      <input type="text" name="model_{{ p.name }}" value="{{ p.model }}" list="models-{{ p.name }}"
-             autocomplete="off" spellcheck="false">
-    </label>
-    <datalist id="models-{{ p.name }}">
-      {% for name in p.models %}<option value="{{ name }}"></option>{% endfor %}
-    </datalist>
+    {# One provider's model (TASK-054): a pick from the list it last returned,
+       or an id typed into the box, which wins. The stored id is always an
+       option and always the selected one. A select shows its first option for
+       a value it lacks, and this form posts every provider's model on each
+       Save - so without the pinned option an unlisted model (gpt-5.6,
+       2026-09-14) would silently become the list's first id. The blank option
+       leaves the provider on its own default without writing a row. #}
+    <div class="model-pick" data-model-pick>
+      <label class="field">Model for {{ p.label }}
+        <select name="model_{{ p.name }}" data-model-select autocomplete="off">
+          <option value=""{% if not p.model_saved %} selected{% endif %}>Its own default · {{ p.model_default }}</option>
+          {% if p.model_saved and p.model_saved not in p.models %}
+          <option value="{{ p.model_saved }}" selected>{{ p.model_saved }} · {% if p.models %}not in the fetched list{% else %}no list fetched yet{% endif %}</option>
+          {% endif %}
+          {% if p.model_groups %}
+          {% for vendor, ids in p.model_groups %}
+          <optgroup label="{{ vendor }}">
+            {% for id in ids %}<option value="{{ id }}"{% if id == p.model_saved %} selected{% endif %}>{{ id }}</option>{% endfor %}
+          </optgroup>
+          {% endfor %}
+          {% else %}
+          {% for id in p.models %}<option value="{{ id }}"{% if id == p.model_saved %} selected{% endif %}>{{ id }}</option>{% endfor %}
+          {% endif %}
+        </select>
+      </label>
+      <label class="field">or type a model id
+        <input type="text" name="custom_model_{{ p.name }}" value="" list="models-{{ p.name }}" data-model-custom
+               autocomplete="off" spellcheck="false" placeholder="a model the list does not have">
+      </label>
+      <datalist id="models-{{ p.name }}">
+        {% for name in p.models %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
+    </div>
     {% endfor %}
 
     {# The hidden 0 ahead of the checkbox is this app's convention for every
@@ -105,7 +133,7 @@
                   hx-post="/settings/llm/{{ p.name }}/models" hx-target="#llm-providers" hx-swap="outerHTML">
               <button type="submit">Fetch list</button>
             </form>
-            <span class="muted under">{% if p.models %}{{ p.models|length }} known; the model field suggests them{% else %}no list yet; any model name works in the field above{% endif %}</span>
+            <span class="muted under">{% if p.models %}{{ p.models|length }} known; pick one above{% else %}no list yet; type any model id above{% endif %}</span>
           </td>
           <td class="provider-test">
             <form method="post" action="/settings/llm/{{ p.name }}/test"

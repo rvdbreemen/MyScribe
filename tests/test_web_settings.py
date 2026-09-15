@@ -712,3 +712,57 @@ def test_a_refused_save_marks_the_pressed_button_red_and_not_saved(tmp_path):
     )
 
     assert result == {"text": "Not saved \u2717", "notSaved": True, "saved": False, "live": "assertive"}
+
+
+# --- the model picker (TASK-054) --------------------------------------------------------
+
+
+MODEL_PICK_FIXTURE = r"""
+    /* One provider's picker as _settings_llm.html builds it: the select of
+       fetched ids and the box for an id the list does not have. */
+    const pick = body.append(el('div', { 'data-model-pick': '' }));
+    const select = pick.append(el('select', { name: 'model_openai', 'data-model-select': '' }));
+    const typed = pick.append(el('input', { type: 'text', name: 'custom_model_openai', 'data-model-custom': '' }));
+    typed.value = 'gpt-5.7';
+"""
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="needs node")
+def test_picking_from_the_model_dropdown_clears_the_typed_box(tmp_path):
+    """A typed id wins on the server. Without this, a person who typed an id
+    and then picked one from the list would save the typed one - the pick they
+    made last would be the one ignored."""
+    from test_web_url_dialog import run_dom
+
+    result = run_dom(
+        tmp_path,
+        MODEL_PICK_FIXTURE
+        + r"""
+    load(APP);
+    select.value = 'gpt-4o-mini';
+    /* `input`, which a select fires on every pick. The stub cannot dispatch
+       `change` here: app.js's dropzone listener asks every change target a
+       descendant selector the stub refuses to guess at. */
+    fire(document, 'input', event({ target: select }));
+    done({ typed: typed.value });
+""",
+    )
+
+    assert result == {"typed": ""}
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="needs node")
+def test_leaving_the_typed_box_does_not_clear_it(tmp_path):
+    from test_web_url_dialog import run_dom
+
+    result = run_dom(
+        tmp_path,
+        MODEL_PICK_FIXTURE
+        + r"""
+    load(APP);
+    fire(document, 'input', event({ target: typed }));
+    done({ typed: typed.value });
+""",
+    )
+
+    assert result == {"typed": "gpt-5.7"}

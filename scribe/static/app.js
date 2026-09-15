@@ -379,6 +379,22 @@
   });
 
   /*
+    The model picker (TASK-054): a pick from a provider's list clears the box
+    for a typed id. The server lets a typed id win, so without this a person
+    who typed an id and then picked one would save the id they typed - the
+    choice made last would be the one ignored. `input`, which a select fires
+    on every pick. Without scripts the page still works: the typed id wins,
+    and the box is empty unless somebody typed in it.
+  */
+  document.addEventListener('input', function (event) {
+    var select = event.target;
+    if (!select || typeof select.matches !== 'function' || !select.matches('[data-model-select]')) { return; }
+    var pick = select.closest('[data-model-pick]');
+    var typed = pick ? pick.querySelector('[data-model-custom]') : null;
+    if (typed) { typed.value = ''; }
+  });
+
+  /*
     "Saved" on the button that saved. A settings form posts, and htmx replaces
     the whole card - so the button a person pressed no longer exists by the
     time the answer arrives, and a class put on it would vanish with it. The

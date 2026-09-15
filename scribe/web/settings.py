@@ -812,9 +812,13 @@ async def save_llm_defaults(request: Request) -> Response:
 
     for name in ai_ui.llm.PROVIDERS:
         field = f"{ai_ui.MODEL_FIELD_PREFIX}{name}"
-        if field not in fields:
+        custom = f"{ai_ui.CUSTOM_MODEL_FIELD_PREFIX}{name}"
+        if field not in fields and custom not in fields:
             continue
-        model = (fields[field] or "").strip()
+        # A typed id wins over the dropdown's pick: the box is for the model
+        # the fetched list does not have (TASK-054). No check against the
+        # list either way - a day-old list must not forbid a model that exists.
+        model = (fields.get(custom) or "").strip() or (fields.get(field) or "").strip()
         key = ai_ui.MODEL_SETTING_PREFIX + name
         if model:
             ai_ui.setting_put(conn, key, model)
