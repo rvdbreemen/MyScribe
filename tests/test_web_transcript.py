@@ -28,13 +28,15 @@ v9 comment). The flag that means a person retyped a word is
 import logging
 import pathlib
 import re
+import subprocess
 import threading
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from scribe import db, jobs, paths, render
+from mp3_headers import mp3
+from scribe import db, jobs, paths, playback, render
 from scribe.app import create_app
 from scribe.web import transcript
 from seed import default_words, seed_job, seed_media, seed_run
@@ -327,8 +329,8 @@ def test_audio_transcodes_an_unplayable_container_once_and_reuses_the_proxy(
         calls.append((src, dst))
         dst.write_bytes(b"aac in an mp4 box")
 
-    monkeypatch.setattr(transcript, "transcode", fake_transcode)
-    monkeypatch.setattr(transcript, "probe_duration", lambda path: 20.0)
+    monkeypatch.setattr(playback, "transcode", fake_transcode)
+    monkeypatch.setattr(playback, "probe_duration", lambda path: 20.0)
 
     first = client.get(f"/media/{media_id}/audio")
     assert first.status_code == 200
@@ -354,8 +356,8 @@ def test_audio_proxy_supports_range_requests(client, conn, data_dir, transcribed
     _make_mkv(conn, media_id)
     _store(conn, data_dir, media_id, b"matroska bytes")
     payload = bytes(range(256))
-    monkeypatch.setattr(transcript, "transcode", lambda src, dst: dst.write_bytes(payload))
-    monkeypatch.setattr(transcript, "probe_duration", lambda path: 20.0)
+    monkeypatch.setattr(playback, "transcode", lambda src, dst: dst.write_bytes(payload))
+    monkeypatch.setattr(playback, "probe_duration", lambda path: 20.0)
 
     part = client.get(f"/media/{media_id}/audio", headers={"Range": "bytes=10-19"})
 
@@ -369,10 +371,10 @@ def test_audio_serves_the_original_when_the_proxy_duration_drifts(
     media_id = transcribed["media"]
     _make_mkv(conn, media_id)
     original = _store(conn, data_dir, media_id, b"matroska bytes")
-    monkeypatch.setattr(transcript, "transcode", lambda src, dst: dst.write_bytes(b"drifted"))
+    monkeypatch.setattr(playback, "transcode", lambda src, dst: dst.write_bytes(b"drifted"))
     # The proxy comes out 200 ms longer than the file the timestamps came from.
     monkeypatch.setattr(
-        transcript, "probe_duration", lambda path: 20.0 if path == original else 20.2
+        playback, "probe_duration", lambda path: 20.0 if path == original else 20.2
     )
 
     with caplog.at_level(logging.WARNING):
@@ -393,9 +395,9 @@ def test_audio_serves_the_original_when_the_transcode_fails(
     _store(conn, data_dir, media_id, b"matroska bytes")
 
     def broken(src, dst):
-        raise transcript.ProxyError("ffmpeg could not convert clip.mkv: no such codec")
+        raise playback.ProxyError("ffmpeg could not convert clip.mkv: no such codec")
 
-    monkeypatch.setattr(transcript, "transcode", broken)
+    monkeypatch.setattr(playback, "transcode", broken)
 
     with caplog.at_level(logging.WARNING):
         resp = client.get(f"/media/{media_id}/audio")
@@ -423,14 +425,14 @@ def test_ensure_proxy_transcodes_once_when_two_requests_race(tmp_path, monkeypat
         assert release.wait(5), "the test never released the transcode"
         dst.write_bytes(b"aac")
 
-    monkeypatch.setattr(transcript, "transcode", slow_transcode)
-    monkeypatch.setattr(transcript, "probe_duration", lambda path: 20.0)
+    monkeypatch.setattr(playback, "transcode", slow_transcode)
+    monkeypatch.setattr(playback, "probe_duration", lambda path: 20.0)
 
     errors: list = []
 
     def request():
         try:
-            transcript.ensure_proxy(original, proxy)
+            playback.ensure_proxy(original, proxy)
         except Exception as exc:  # pragma: no cover - reported below
             errors.append(exc)
 
@@ -450,12 +452,120 @@ def test_ensure_proxy_transcodes_once_when_two_requests_race(tmp_path, monkeypat
     assert not list(proxy.parent.glob("*.part"))
 
 
+def _make_mp3(conn, media_id):
+    """Turn a seeded media row into one whose original is an MP3."""
+    row = _media(conn, media_id)
+    store_path = row["store_path"].rsplit(".", 1)[0] + ".mp3"
+    with db.LOCK:
+        conn.execute(
+            "UPDATE media SET store_path=?, orig_name='clip.mp3' WHERE id=?",
+            (store_path, media_id),
+        )
+        conn.commit()
+
+
+def _put_proxy(conn, data_dir, media_id, payload=b"aac in an mp4 box"):
+    """A proxy already on disk, where the pipeline or the backfill left it."""
+    proxy = data_dir / "media" / "proxy" / f"{_media(conn, media_id)['sha256']}.m4a"
+    proxy.parent.mkdir(parents=True, exist_ok=True)
+    proxy.write_bytes(payload)
+    return proxy
+
+
+def _no_subprocess(monkeypatch):
+    """A request that shells out from here on fails the test: the transcode
+    of a VBR MP3 takes 80 s for 39 minutes, and no request waits on that."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"the request ran a subprocess: {args[:1]}")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+
+
+def test_audio_plays_a_vbr_mp3_from_its_exact_seeking_proxy(client, conn, data_dir, transcribed):
+    """TASK-057: a VBR MP3 seeks through a coarse table of contents, and
+    Firefox played 3.7 s away from currentTime after a seek; the AAC proxy
+    seeks exactly (-14..+13 ms measured)."""
+    media_id = transcribed["media"]
+    _make_mp3(conn, media_id)
+    original = mp3(b"Xing")
+    _store(conn, data_dir, media_id, original)
+    _put_proxy(conn, data_dir, media_id)
+
+    resp = client.get(f"/media/{media_id}/audio")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("audio/mp4")
+    assert resp.content == b"aac in an mp4 box"
+    part = client.get(f"/media/{media_id}/audio", headers={"Range": "bytes=0-2"})
+    assert part.status_code == 206
+    assert part.content == b"aac"
+    assert client.get(f"/media/{media_id}/download").content == original
+
+
+def test_audio_serves_a_cbr_mp3_as_itself(client, conn, data_dir, transcribed, monkeypatch):
+    media_id = transcribed["media"]
+    _make_mp3(conn, media_id)
+    payload = mp3(b"Info")
+    _store(conn, data_dir, media_id, payload)
+    _no_subprocess(monkeypatch)
+
+    resp = client.get(f"/media/{media_id}/audio")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("audio/mpeg")
+    assert resp.content == payload
+
+
+def test_audio_of_a_vbr_mp3_without_its_proxy_plays_the_original_at_once(
+    client, conn, data_dir, transcribed, monkeypatch
+):
+    media_id = transcribed["media"]
+    _make_mp3(conn, media_id)
+    payload = mp3(b"Xing")
+    _store(conn, data_dir, media_id, payload)
+    _no_subprocess(monkeypatch)
+
+    resp = client.get(f"/media/{media_id}/audio")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("audio/mpeg")
+    assert resp.content == payload
+    assert not (data_dir / "media" / "proxy").exists()
+
+
+def test_the_page_says_under_the_player_when_a_jump_can_run_the_highlight_late(
+    client, conn, data_dir, transcribed
+):
+    media_id = transcribed["media"]
+    _make_mp3(conn, media_id)
+    _store(conn, data_dir, media_id, mp3(b"Xing"))
+
+    body = client.get(f"/media/{media_id}").text
+
+    note = re.search(r"<p[^>]*data-audio-inexact[^>]*>(.*?)</p>", body, re.S)
+    assert note, "no note under the player"
+    assert body.index('id="player"') < note.start()
+    assert "python -m scribe.proxies" in note.group(1)
+
+
+@pytest.mark.parametrize("tag, proxy", [(b"Info", False), (b"Xing", True)], ids=["cbr", "vbr with its proxy"])
+def test_the_page_says_nothing_when_the_audio_seeks_exactly(client, conn, data_dir, transcribed, tag, proxy):
+    media_id = transcribed["media"]
+    _make_mp3(conn, media_id)
+    _store(conn, data_dir, media_id, mp3(tag))
+    if proxy:
+        _put_proxy(conn, data_dir, media_id)
+
+    assert "data-audio-inexact" not in client.get(f"/media/{media_id}").text
+
+
 def test_within_tolerance_is_fifty_milliseconds():
-    assert transcript.durations_agree(20.0, 20.04)
-    assert transcript.durations_agree(20.0, 19.96)
-    assert not transcript.durations_agree(20.0, 20.06)
-    assert not transcript.durations_agree(None, 20.0)
-    assert not transcript.durations_agree(20.0, None)
+    assert playback.durations_agree(20.0, 20.04)
+    assert playback.durations_agree(20.0, 19.96)
+    assert not playback.durations_agree(20.0, 20.06)
+    assert not playback.durations_agree(None, 20.0)
+    assert not playback.durations_agree(20.0, None)
 
 
 # --- speaker rename and word reassignment ------------------------------------------------

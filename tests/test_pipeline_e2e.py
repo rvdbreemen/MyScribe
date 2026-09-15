@@ -40,7 +40,7 @@ from fastapi.testclient import TestClient
 from scribe import db, fsbrowse, jobs, media, paths, runner
 from scribe.app import create_app
 from scribe.stages import (
-    attribute, correct, diarize, finalize, prepare, probe, transcribe,
+    attribute, correct, diarize, finalize, prepare, probe, proxy, transcribe,
 )
 from scribe.stages.attribute import Turn
 
@@ -65,8 +65,10 @@ STUB_VECTORS = {"SPEAKER_00": [0.5, -0.25, 0.125], "SPEAKER_01": [-1.0, 0.0, 2.0
 # after attribution and before finalize, so a run becomes the current one with
 # its corrections already in place. It changes nothing about the words
 # themselves (ADR-003), which is why the assertions below it still hold.
+# `proxy` joined after prepare in TASK-057: it makes the copy a browser seeks
+# exactly when the original is a VBR MP3, and for this wav it does nothing.
 EXPECTED_STAGES = [
-    "probe", "prepare", "transcribe", "diarize", "attribute", "correct", "finalize",
+    "probe", "prepare", "proxy", "transcribe", "diarize", "attribute", "correct", "finalize",
 ]
 
 
@@ -379,6 +381,7 @@ def test_the_transcribe_registry_is_the_whole_pipeline_in_order():
     assert [fn for _, fn in runner.STAGES["transcribe"]] == [
         probe.run,
         prepare.run,
+        proxy.run,
         transcribe.run,
         diarize.run,
         attribute.run,

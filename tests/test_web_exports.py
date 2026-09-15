@@ -27,11 +27,12 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from scribe import db, fsbrowse, paths
+from mp3_headers import mp3
+from scribe import db, fsbrowse, paths, playback
 from scribe.app import create_app
 from scribe.exports import cues, doc as export_doc, html_bundle, srt, txt
 from scribe.exports.options import PRESETS, ExportOptions, filename_for
-from scribe.web import exports_ui, transcript
+from scribe.web import exports_ui
 from seed import default_words, seed_media, seed_run
 
 
@@ -587,7 +588,7 @@ def mkv(conn, data_dir, transcribed):
 
 @pytest.fixture
 def proxy_calls(monkeypatch):
-    """`transcript.ensure_proxy` replaced by a counter that drops a stub proxy
+    """`playback.ensure_proxy` replaced by a counter that drops a stub proxy
     in place (no ffmpeg here); the list of calls made."""
     calls = []
 
@@ -596,7 +597,7 @@ def proxy_calls(monkeypatch):
         proxy.parent.mkdir(parents=True, exist_ok=True)
         proxy.write_bytes(b"proxy")
 
-    monkeypatch.setattr(transcript, "ensure_proxy", fake)
+    monkeypatch.setattr(playback, "ensure_proxy", fake)
     return calls
 
 
@@ -613,6 +614,56 @@ def test_a_subtitle_export_of_an_unplayable_container_never_transcodes_it(client
     )
     assert bulk.status_code == 200
     assert proxy_calls == []
+
+
+@pytest.fixture
+def as_mp3(conn, data_dir, transcribed):
+    """The seed media stored as an MP3 with the given first-frame tag: b"Info"
+    for a constant bitrate, b"Xing" for a variable one (tests/mp3_headers.py)."""
+
+    def store(tag: bytes) -> int:
+        media_id = transcribed["media"]
+        store_path = _media(conn, media_id)["store_path"][:-4] + ".mp3"
+        with db.LOCK:
+            conn.execute(
+                "UPDATE media SET store_path=?, orig_name='Guide.mp3' WHERE id=?", (store_path, media_id)
+            )
+            conn.commit()
+        _store(conn, data_dir, media_id, mp3(tag))
+        return media_id
+
+    return store
+
+
+def test_an_html_export_of_a_vbr_mp3_carries_its_proxy_like_the_player(client, conn, data_dir, as_mp3):
+    """TASK-057: the bundle's player seeks the same way the app's does, so it
+    gets the same file - the proxy, not the VBR original."""
+    media_id = as_mp3(b"Xing")
+    proxy = data_dir / "media" / "proxy" / f"{_media(conn, media_id)['sha256']}.m4a"
+    proxy.parent.mkdir(parents=True)
+    proxy.write_bytes(b"aac in an mp4 box")
+
+    resp = _export(client, media_id, formats=["srt", "html"])
+
+    assert resp.status_code == 200
+    page = _zip(resp.content).read("Guide.html")
+    assert b"data:audio/mp4;base64,YWFjIGluIGFuIG1wNCBib3g=" in page
+
+
+def test_an_html_export_of_a_vbr_mp3_without_a_proxy_makes_one(client, as_mp3, proxy_calls):
+    resp = _export(client, as_mp3(b"Xing"), formats=["srt", "html"])
+
+    assert resp.status_code == 200
+    assert len(proxy_calls) == 1
+    assert b"data:audio/mp4;base64," in _zip(resp.content).read("Guide.html")
+
+
+def test_an_html_export_of_a_cbr_mp3_carries_the_original(client, as_mp3, proxy_calls):
+    resp = _export(client, as_mp3(b"Info"), formats=["srt", "html"])
+
+    assert resp.status_code == 200
+    assert proxy_calls == []
+    assert b"data:audio/mpeg;base64," in _zip(resp.content).read("Guide.html")
 
 
 def test_an_html_export_of_an_unplayable_container_makes_the_proxy_once(client, mkv, proxy_calls):

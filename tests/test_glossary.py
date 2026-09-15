@@ -605,7 +605,7 @@ def test_the_correct_stage_is_the_last_thing_before_finalize():
     names = [name for name, _fn in TRANSCRIBE_STAGES]
 
     assert names == [
-        "probe", "prepare", "transcribe", "diarize", "attribute", "correct", "finalize",
+        "probe", "prepare", "proxy", "transcribe", "diarize", "attribute", "correct", "finalize",
     ]
 
 

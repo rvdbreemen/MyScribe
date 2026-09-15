@@ -23,10 +23,9 @@ from pathlib import Path
 
 import pytest
 
-from scribe import db, exports, paths
+from scribe import db, exports, paths, playback
 from scribe.exports import cli, cues, doc as export_doc, html_bundle, srt, txt, vtt
 from scribe.exports.options import PRESETS, ExportOptions
-from scribe.web import transcript
 from seed import seed_media, seed_run
 
 REPO = Path(__file__).resolve().parent.parent
@@ -463,7 +462,7 @@ def test_a_subtitle_export_of_an_unplayable_container_never_transcodes_it(conn, 
         proxy.parent.mkdir(parents=True, exist_ok=True)
         proxy.write_bytes(b"proxy")
 
-    monkeypatch.setattr(transcript, "ensure_proxy", fake)
+    monkeypatch.setattr(playback, "ensure_proxy", fake)
 
     assert cli.main(["--all", "--format", "srt", "--out", str(out_dir)]) == 0
     assert calls == []

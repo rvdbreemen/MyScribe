@@ -899,8 +899,8 @@ def test_a_second_opinion_is_on_the_record_of_the_run(conn, data_dir, monkeypatc
 
 def test_transcribe_follows_prepare_in_the_registry():
     names = [name for name, _ in runner.STAGES["transcribe"]]
-    assert names[:3] == ["probe", "prepare", "transcribe"]
-    assert runner.STAGES["transcribe"][2][1] is transcribe.run
+    assert names[:4] == ["probe", "prepare", "proxy", "transcribe"]
+    assert runner.STAGES["transcribe"][3][1] is transcribe.run
 
 
 def test_a_cancelled_transcription_is_a_cancelled_job_not_a_failed_one(conn, monkeypatch):

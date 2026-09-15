@@ -46,10 +46,11 @@ The HTML bundle is the one format that takes more than the words: its
 player wants the audio. Up to `EMBED_CAP_BYTES` the recording goes into the
 file as a ``data:`` URL; above that a sidecar is written next to the HTML
 (or zipped with it) under the name the bundle expects, `html_bundle.
-sidecar_name`. The audio is the original when a browser plays that container
-and the transcript view's AAC proxy otherwise, made here if it is not there
-yet - the same `transcript.ensure_proxy`, the same fallback to the original
-when ffmpeg cannot. The recording is looked up only when ``html`` is among
+sidecar_name`. The audio is chosen by the player's rule: the original when a
+seek in it is exact, and the AAC proxy otherwise (a VBR MP3, a container a
+browser cannot open), made here if it is not there yet - the same
+`playback.ensure_proxy`, the same fallback to the original when ffmpeg
+cannot. The recording is looked up only when ``html`` is among
 the formats (`audio_for`): every other export is the words alone, and an
 SRT of a video library must not transcode the library.
 
@@ -88,7 +89,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
-from scribe import db, exports, fsbrowse, paths, render
+from scribe import db, exports, fsbrowse, paths, playback, render
 from scribe.exports import common, cues, html_bundle, srt
 from scribe.exports import doc as export_doc
 from scribe.exports.doc import TranscriptDoc
@@ -417,27 +418,31 @@ class Audio:
 
 
 def audio_source(media: Mapping[str, Any]) -> Audio | None:
-    """The playable audio of a media row: the original when a browser plays
-    its container, else the transcript view's AAC proxy (made now if it is
-    missing, or the original after all when ffmpeg cannot). None when the
-    stored file is gone."""
+    """The playable audio of a media row, chosen by the player's rule
+    (`playback.seeks_exactly`): the original when a seek in it is exact,
+    else the AAC proxy - made now if it is missing, or the original after
+    all when ffmpeg cannot. None when the stored file is gone."""
     original = paths.DATA_DIR / str(media["store_path"])
     if not original.is_file():
         return None
     suffix = original.suffix.lower()
-    if suffix in transcript.PLAYABLE:
-        return Audio(original, transcript.PLAYABLE[suffix], original.stat().st_size)
+    if playback.seeks_exactly(original):
+        return Audio(original, playback.PLAYABLE[suffix], original.stat().st_size)
     proxy = proxy_path_for(str(media["sha256"]))
     try:
-        transcript.ensure_proxy(original, proxy)
-    except transcript.ProxyError as exc:
+        playback.ensure_proxy(original, proxy)
+    except playback.ProxyError as exc:
         log.warning(
             "no proxy for media %s (%s); the HTML export carries the original: %s",
             media.get("id"), media.get("orig_name"), exc,
         )
-        mime = mimetypes.guess_type(str(media.get("orig_name") or ""))[0] or "application/octet-stream"
+        mime = (
+            playback.PLAYABLE.get(suffix)
+            or mimetypes.guess_type(str(media.get("orig_name") or ""))[0]
+            or "application/octet-stream"
+        )
         return Audio(original, mime, original.stat().st_size)
-    return Audio(proxy, transcript.PROXY_MEDIA_TYPE, proxy.stat().st_size)
+    return Audio(proxy, playback.PROXY_MEDIA_TYPE, proxy.stat().st_size)
 
 
 def audio_for(media: Mapping[str, Any], options: ExportOptions) -> Audio | None:

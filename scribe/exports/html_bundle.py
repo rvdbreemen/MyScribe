@@ -55,7 +55,7 @@ TEMPLATE = "export_bundle.html"
 DEFAULT_AUDIO_MIME = "audio/mp4"
 
 # The file extension a sidecar gets for its media type: the containers the
-# app serves (`scribe.web.transcript.PLAYABLE`, inverted) and the proxy's
+# app serves (`scribe.playback.PLAYABLE`, inverted) and the proxy's
 # own. Anything else takes its subtype as the extension.
 AUDIO_EXTENSIONS: dict[str, str] = {
     "audio/mp4": "m4a",

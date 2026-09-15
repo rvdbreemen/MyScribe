@@ -8,8 +8,10 @@
   Context (from scribe.web.transcript.page_context): see _transcript_panel.html,
   plus
 
-      audio_url   /media/{id}/audio - the original when a browser can play
-                  it, an AAC proxy of the same audio otherwise
+      audio_url   /media/{id}/audio - the original when a browser seeks it
+                  exactly, an AAC proxy of the same audio otherwise
+      audio_inexact  true while the player gets an original it seeks only
+                  approximately (a VBR MP3 without its proxy)
       speeds      the playback rates the bar offers, as strings
       resume_key  the localStorage key app.js keeps the position under
 
@@ -91,5 +93,16 @@
     <button type="button" class="speed" data-speed="{{ speed }}" aria-pressed="{{ 'true' if speed == '1' else 'false' }}">{{ speed }}×</button>
     {% endfor %}
   </div>
+  {# TASK-057: a VBR MP3 seeks by estimate, and the player plays seconds away
+     from where its clock says. Said here rather than left for the reader to
+     notice, until the copy that seeks exactly exists. #}
+  {% if audio_inexact %}
+  <p class="hint" data-audio-inexact>
+    This recording plays from its original file, which a browser seeks only
+    approximately: after a jump the highlight can run behind the sound, by
+    seconds in Firefox. <code>python -m scribe.proxies</code> makes the copy
+    that seeks exactly.
+  </p>
+  {% endif %}
 </div>
 {% endblock %}

@@ -37,26 +37,27 @@ is one statement:
 Both answer an htmx post with the re-rendered panel and a plain post with a
 redirect to the page, the way the library's actions do.
 
-The audio route serves the bytes a browser can play:
+The audio route serves the bytes a browser can play, chosen by
+`scribe.playback`'s rule, which the HTML export and the pipeline share: a
+player can only follow the words as well as its clock follows the sound, and
+a VBR MP3 seeks by estimate (TASK-057).
 
-* **A playable container is served as it is.** mp3, wav, m4a, aac, ogg, opus,
-  flac, webm and mp4 go out as a `FileResponse`, which streams from disk and
-  honours `Range` (206) - what a player needs to seek and what a four-hour
-  file needs to never be read into memory.
-* **Anything else gets a one-time AAC proxy.** A Matroska or AVI original is
-  transcoded once with ffmpeg (`-vn -c:a aac -b:a 96k -movflags +faststart`)
-  to `MEDIA_DIR/proxy/<sha256>.m4a`, keyed by the content hash like the store
-  itself, and served from there ever after. The proxy is written to a `.part`
-  name and renamed into place, so a request that arrives mid-transcode never
-  finds a half-written file wearing the proxy's name - and it waits on a
-  per-proxy lock for that transcode instead of starting a second one, which
-  is what a browser's two requests for one `<audio>` would otherwise do.
-* **The proxy must be the same audio.** Timestamps came from the original;
-  a proxy whose ffprobe duration is not within 50 ms of the original's would
-  put every highlight late or early, so it is refused - the route logs why
-  and serves the original anyway, which the browser may or may not manage.
-  A refused proxy never reaches its final name, so a later request tries
-  again rather than trusting a file that already failed once.
+* **An original that seeks exactly is served as it is** - wav, m4a, ogg,
+  opus, flac, webm, mp4, and an MP3 whose first frame says its bitrate is
+  constant - as a `FileResponse`, which streams from disk and honours `Range`
+  (206): what a player needs to seek and what a four-hour file needs to never
+  be read into memory.
+* **Otherwise the AAC proxy is, once it exists** (`MEDIA_DIR/proxy/<sha256>.m4a`,
+  made by the pipeline's proxy stage or `python -m scribe.proxies`).
+* **A playable original without its proxy plays at once.** A VBR MP3 or raw
+  AAC goes out as it is rather than after a transcode of 80 s for 39
+  minutes; the page says under the player that a jump can run the highlight
+  late (`audio_inexact`).
+* **A container a browser cannot play gets its proxy made here**, in the
+  request, with `playback.ensure_proxy`'s rules (one transcode per proxy,
+  renamed into place, refused unless its duration is within 50 ms of the
+  original's). A refused proxy is logged and the original is served anyway,
+  which the browser may or may not manage.
 
 The file actions in the right rail (rename, move, trash, restore) are the
 library's own routes, posted through app.js's delegated forms with
@@ -71,51 +72,19 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-import os
 import re
 import sqlite3
-import subprocess
-import threading
-import uuid
-from pathlib import Path
 from typing import Any, Annotated, Iterable
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from starlette.responses import FileResponse, RedirectResponse, Response
 
-from scribe import db, glossary, paths, render
+from scribe import db, glossary, paths, playback, render
 from scribe.media import proxy_path_for
-from scribe.stages import probe
 from scribe.web import library, render as render_page
 
 router = APIRouter()
 log = logging.getLogger(__name__)
-
-# Containers a browser's <audio> element plays from the original file, with
-# the type it is served under. Anything else is transcoded to the proxy.
-PLAYABLE: dict[str, str] = {
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wav",
-    ".m4a": "audio/mp4",
-    ".aac": "audio/aac",
-    ".ogg": "audio/ogg",
-    ".opus": "audio/ogg",
-    ".flac": "audio/flac",
-    ".webm": "video/webm",
-    ".mp4": "video/mp4",
-}
-
-# The proxy: AAC in an MP4 box. Where it lives is the store's business
-# (`media.proxy_path_for`), so the purge knows to remove it with the row.
-PROXY_MEDIA_TYPE = "audio/mp4"
-PROXY_BITRATE = "96k"
-
-# How far the proxy's duration may sit from the original's before the
-# timestamps would visibly drift: the spec's 50 ms.
-PROXY_TOLERANCE_SECONDS = 0.05
-
-# How much of ffmpeg's complaint travels with the exception.
-STDERR_TAIL = 800
 
 # The speeds the player bar offers, in order. 1 is the one marked at load.
 SPEEDS: tuple[str, ...] = ("0.75", "1", "1.25", "1.5", "2")
@@ -136,10 +105,6 @@ NEW_SPEAKER = "new"
 
 # A speaker colour as a form sends it: #rrggbb. Stored lower-cased.
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
-
-
-class ProxyError(Exception):
-    """The proxy could not be made, or was not the same audio as the original."""
 
 
 # --- reading the transcript ------------------------------------------------------------
@@ -295,6 +260,7 @@ def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
         "quick_exports": QUICK_EXPORTS,
         "audio_size": transcribe_dialog.human_size(media["size_bytes"]) if media.get("size_bytes") else "",
         "audio_url": f"/media/{media_id}/audio",
+        "audio_inexact": audio_inexact(media),
         "speeds": SPEEDS,
         "resume_key": f"{RESUME_KEY_PREFIX}{media_id}",
         "hide_ts_key": HIDE_TS_KEY,
@@ -675,92 +641,16 @@ def reassign_words(
 # --- the audio --------------------------------------------------------------------------
 
 
-def transcode(src: Path, dst: Path) -> None:
-    """Write ``src``'s audio as AAC in a faststart MP4 at ``dst``.
-
-    ``-f mp4`` is spelled out because ``dst`` is a ``.part`` name ffmpeg
-    cannot infer a container from. CREATE_NO_WINDOW keeps a console from
-    flashing up on Windows; there is no timeout, because any constant would
-    be a lie about somebody else's ten-hour recording.
-    """
-    proc = subprocess.run(
-        [
-            "ffmpeg", "-nostdin", "-v", "error", "-y",
-            "-i", str(src),
-            "-vn", "-sn", "-dn",
-            "-c:a", "aac", "-b:a", PROXY_BITRATE,
-            "-movflags", "+faststart",
-            "-f", "mp4",
-            str(dst),
-        ],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", "replace").strip()[-STDERR_TAIL:]
-        raise ProxyError(f"ffmpeg could not convert {src.name}: {detail}")
-
-
-def probe_duration(path: Path) -> float | None:
-    """The file's duration as ffprobe reports it; None when it cannot say."""
-    try:
-        return probe.probe_media(path)["duration"]
-    except (probe.NotMediaError, OSError, subprocess.SubprocessError):
-        return None
-
-
-def durations_agree(original: float | None, proxy: float | None) -> bool:
-    """Whether the proxy is the same length as the original, to the tolerance.
-    An unknown duration on either side is a disagreement: the timestamps
-    cannot be trusted to a file nobody could measure."""
-    if original is None or proxy is None:
+def audio_inexact(media: dict) -> bool:
+    """Whether the player will get an original that a seek lands in only
+    approximately - a VBR MP3 whose proxy nobody has made yet - which is
+    what the note under the player is for. False for a missing file, and
+    for a container a browser cannot play: the route makes that proxy."""
+    original = paths.DATA_DIR / media["store_path"]
+    if not original.is_file():
         return False
-    return abs(float(original) - float(proxy)) <= PROXY_TOLERANCE_SECONDS
-
-
-# One lock per proxy path. A browser asks for the audio twice (`preload=
-# "metadata"`, then playback), and the second request lands while the first
-# is still transcoding, before the proxy exists; it has to wait for that
-# transcode rather than start its own. The dict is never pruned: one lock per
-# recording ever proxied by this process, which is bytes.
-_proxy_locks: dict[str, threading.Lock] = {}
-_proxy_locks_guard = threading.Lock()
-
-
-def _proxy_lock(proxy: Path) -> threading.Lock:
-    key = os.path.normcase(str(proxy))
-    with _proxy_locks_guard:
-        return _proxy_locks.setdefault(key, threading.Lock())
-
-
-def ensure_proxy(original: Path, proxy: Path) -> None:
-    """Make the proxy for ``original`` at ``proxy`` unless it is already there.
-
-    The transcode lands on a temporary name and is renamed into place only
-    once its duration has been checked against the original's, so the proxy
-    path never names a file that is not known to be the same audio. One
-    transcode per proxy at a time: a request that arrives during one waits
-    for it and finds the result.
-    """
-    if proxy.is_file():
-        return
-    with _proxy_lock(proxy):
-        if proxy.is_file():  # the request ahead of this one made it
-            return
-        proxy.parent.mkdir(parents=True, exist_ok=True)
-        tmp = proxy.with_name(f"{proxy.name}.{uuid.uuid4().hex[:8]}.part")
-        try:
-            transcode(original, tmp)
-            wanted, got = probe_duration(original), probe_duration(tmp)
-            if not durations_agree(wanted, got):
-                raise ProxyError(
-                    f"the proxy of {original.name} lasts {got} s where the original"
-                    f" lasts {wanted} s, more than {PROXY_TOLERANCE_SECONDS * 1000:.0f} ms apart"
-                )
-            os.replace(tmp, proxy)
-        finally:
-            tmp.unlink(missing_ok=True)  # a no-op once it has been renamed away
+    source = playback.source(original, media["sha256"])
+    return source is not None and not source.exact
 
 
 @router.get("/media/{media_id}/audio", include_in_schema=False)
@@ -778,15 +668,16 @@ def audio(media_id: int, request: Request) -> Response:
             status_code=404, detail=f"the stored file for media {media_id} is missing"
         )
 
-    suffix = original.suffix.lower()
-    if suffix in PLAYABLE:
-        return FileResponse(original, media_type=PLAYABLE[suffix])
+    source = playback.source(original, row["sha256"])
+    if source is not None:
+        return FileResponse(source.path, media_type=source.media_type)
 
+    # A container a browser cannot play, and nobody has made its proxy yet.
     proxy = proxy_path_for(row["sha256"])
     try:
-        ensure_proxy(original, proxy)
-    except ProxyError as exc:
+        playback.ensure_proxy(original, proxy)
+    except playback.ProxyError as exc:
         log.warning("no proxy for media %s (%s); serving the original: %s", media_id, row["orig_name"], exc)
         media_type = mimetypes.guess_type(row["orig_name"])[0] or "application/octet-stream"
         return FileResponse(original, media_type=media_type)
-    return FileResponse(proxy, media_type=PROXY_MEDIA_TYPE)
+    return FileResponse(proxy, media_type=playback.PROXY_MEDIA_TYPE)
