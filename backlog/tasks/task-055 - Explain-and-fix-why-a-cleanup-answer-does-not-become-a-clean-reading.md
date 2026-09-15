@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-15 17:13'
-updated_date: '2026-09-15 20:32'
+updated_date: '2026-09-15 20:49'
 labels:
   - llm
   - transcript
@@ -46,6 +46,8 @@ Fix (AC3): apply_cleanup keeps its verdict as params_json.gate on the answer row
 Red before the fix: KeyError 'gate' x2, no cleanup_status, and the page said nothing for a refused and for a never-checked answer. Guards green before and after: answer about an earlier transcript, a part alone, a published reading beside a later refusal, no answer at all.
 Green: test_llm_cleaning_gate 23, test_web_transcript 94, test_llm_tasks 120, test_web_ai 97, test_llm_chunking 29, test_exports_rich 45.
 On the copy (app on 4299): /media/7 shows 'A cleanup answer from 2026-09-10 17:48 (openrouter/auto) was made before cleaned readings were checked, so it was never checked and never shown. Ask Clean transcript again for a checked reading.'; /media/12 shows no line. Screenshot scratch task055_media7.png. No paid cleanup run (TASK-026 AC12 stays open).
+
+Two shapes of 'an answer about another transcript': the test pins run_id NULL (the ON DELETE SET NULL shape); the library holds the other one, row 14 naming superseded run 20 while media 12's current run is 82. Both miss cleanup_status's WHERE run_id=<current run>, and media 12 showed no line on the copy.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
