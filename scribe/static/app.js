@@ -1135,6 +1135,7 @@
     function followFrame() {
       following = window.requestAnimationFrame(followFrame);
       highlight(audio.currentTime, true);
+      movePlayhead();
     }
 
     function startFollowing() {
@@ -1153,6 +1154,7 @@
 
     audio.addEventListener('timeupdate', function () {
       highlight(audio.currentTime, true);
+      movePlayhead();
       var now = Date.now();
       if (resumeKey && now - lastSave >= SAVE_POSITION_EVERY_MS) {
         lastSave = now;
@@ -1186,6 +1188,32 @@
     function setSpeed(rate) {
       if (!isFinite(rate) || rate <= 0) { return; }
       audio.playbackRate = rate;   /* fires ratechange, which calls showSpeed */
+    }
+
+    /* ---- the structure ribbon (TASK-053.07) ----
+
+       A band per paragraph, placed by the server. This only moves the
+       playhead and turns a click into a seek: every position is a percentage
+       of the duration, so nothing here measures a box - which matters because
+       `content-visibility: auto` makes off-screen paragraphs unreliable to
+       measure, and the ones you want to jump to are always off screen. */
+    var ribbon = document.querySelector('[data-ribbon]');
+    var playhead = ribbon ? ribbon.querySelector('[data-playhead]') : null;
+
+    function movePlayhead() {
+      if (!playhead) { return; }
+      var span = Number(ribbon.getAttribute('data-duration')) || audio.duration || 0;
+      if (!span) { return; }
+      playhead.style.left = Math.min(100, Math.max(0, audio.currentTime / span * 100)) + '%';
+    }
+
+    if (ribbon) {
+      ribbon.addEventListener('click', function (event) {
+        var band = event.target.closest ? event.target.closest('.band') : null;
+        if (!band) { return; }
+        seek(Number(band.getAttribute('data-at')), true);
+      });
+      movePlayhead();
     }
 
     audio.addEventListener('ratechange', showSpeed);

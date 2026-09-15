@@ -1443,3 +1443,95 @@ def test_the_offer_is_moved_by_index_rather_than_by_measuring(client):
     assert "getBoundingClientRect" not in place
     # the swap drops focus to <body>; the next thing a reader wants is the button
     assert "focus(" in place
+
+
+# --- step 7: the player gets a structure ribbon (TASK-053.07) ------------------------
+
+
+def test_the_ribbon_is_a_band_per_paragraph_placed_by_time(client, conn, transcribed):
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    ribbon = re.search(r'<div class="ribbon"[^>]*>(.*?)</div>', body, re.DOTALL)
+    assert ribbon, "no ribbon"
+    bands = re.findall(r'<button type="button" class="band[^"]*"\s+data-at="([^"]+)"\s+style="left: ([^%]+)%; width: ([^%]+)%"', ribbon.group(1))
+    assert len(bands) == body.count('class="para"')
+    # placed in order, inside the track, and none of zero width
+    lefts = [float(left) for _, left, _ in bands]
+    assert lefts == sorted(lefts)
+    assert all(0.0 <= left <= 100.0 for left in lefts)
+    assert all(float(width) > 0 for _, _, width in bands)
+
+
+def test_a_recording_without_a_duration_gets_no_ribbon(client, conn):
+    """A band whose width is a guess is worse than no ribbon: it looks
+    authoritative."""
+    media_id = seed_media(conn, title="No duration", duration=None)
+    seed_run(conn, media_id)
+
+    body = client.get(f"/media/{media_id}").text
+
+    assert 'class="ribbon"' not in body
+
+
+def test_a_band_says_where_it_goes_and_who_is_speaking(client, transcribed):
+    """A ribbon of unlabelled blocks is decoration. Each band carries the
+    second it seeks to and a name a screen reader can read."""
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    ribbon = re.search(r'<div class="ribbon".*?</div>\s*\n\s*<audio', body, re.DOTALL).group(0)
+    assert 'data-at="0"' in ribbon
+    assert "Arthur" in ribbon
+    assert "visually-hidden" in ribbon
+
+
+def test_the_ribbon_moves_the_playhead_by_time_never_by_measuring(client):
+    """content-visibility: auto makes off-screen paragraphs unreliable to
+    measure, and the ones worth jumping to are always off screen."""
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(
+        encoding="utf-8"
+    )
+    move = js.split("function movePlayhead()")[1].split("\n    }")[0]
+    assert "getBoundingClientRect" not in move
+    assert "data-duration" in move
+    assert "currentTime" in move
+
+
+def test_the_page_promises_no_waveform(client):
+    """Nothing stores peaks and decoding a 64-minute file in the browser costs
+    minutes of CPU, so a waveform would be a promise this app cannot keep.
+    Asserted because it is the obvious thing for a later hand to add."""
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(
+        encoding="utf-8"
+    )
+    for absent in ("AudioContext", "decodeAudioData", "getChannelData"):
+        assert absent not in js, absent
+
+
+def test_speaker_bands_are_clipped_to_the_recording(client, conn):
+    """A run whose last word runs past the stored duration would otherwise
+    place a band off the end of the track."""
+    from scribe.web.transcript import speaker_bands
+    from scribe import render
+
+    words = [
+        {"idx": 0, "start": 0.0, "end": 5.0, "text": " One.", "speaker": "S0", "probability": 0.9},
+        {"idx": 1, "start": 90.0, "end": 200.0, "text": " Two.", "speaker": "S1", "probability": 0.9},
+    ]
+    bands = speaker_bands(render.paragraphs(words), duration=100.0)
+
+    assert bands and all(band["left"] + band["width"] <= 100.001 for band in bands), bands
+
+
+def test_no_template_comment_leaks_into_the_page(client, conn, transcribed):
+    """Found by looking: editing inside a {# … #} block left an unbalanced
+    closer, and half a comment rendered as visible text above the player -
+    "would be a promise this app cannot keep. #}". Every template test passed.
+
+    One assertion over the whole page, because the next one will be in a
+    different file.
+    """
+    media_id = transcribed["media"]
+    for path in (f"/media/{media_id}", "/", "/jobs", "/feeds", "/settings"):
+        body = client.get(path).text
+        assert "#}" not in body, path
+        assert "{#" not in body, path

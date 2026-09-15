@@ -1138,6 +1138,56 @@ mark.find { background: var(--warn-bg); color: inherit; padding: 0; }
 /* The player: the page's last child, stuck to the bottom of the viewport
    while the transcript scrolls past it. The negative margins run it out to
    the page's edges over .page's padding. */
+/* The structure ribbon (TASK-053.07): one band per paragraph, placed by time.
+   Every position comes from the server as a percentage; nothing here measures
+   anything, because content-visibility makes off-screen boxes unreliable. */
+.ribbon {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  margin: 0 0 .35rem;
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  overflow: hidden;
+  flex-basis: 100%;
+}
+.ribbon .band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 1px;
+  background: var(--accent-line);
+  cursor: pointer;
+}
+/* The speaker's own colour when they have one, the same one the transcript
+   gives their headings, so the ribbon answers "who is talking here" with no
+   legend to learn. Diarization does not always assign colours, so a tone per
+   speaker stands in - which is what makes a two-person interview read as two
+   alternating stretches rather than a picket fence. */
+.ribbon .band { background: var(--band-color, var(--accent-line)); }
+.ribbon .band.tone-0 { --band-fallback: var(--accent); }
+.ribbon .band.tone-1 { --band-fallback: var(--ok); }
+.ribbon .band.tone-2 { --band-fallback: var(--warn); }
+.ribbon .band.tone-3 { --band-fallback: var(--accent-strong); }
+.ribbon .band.tone-4 { --band-fallback: var(--line-control); }
+/* Quiet on purpose: this is a map of the hour, not a chart of it. Full
+   strength on hover and focus, where it is being aimed at. */
+.ribbon .band { background: var(--band-color, var(--band-fallback, var(--accent-line))); opacity: .55; }
+.ribbon .band:hover, .ribbon .band:focus-visible { opacity: 1; }
+.ribbon .band:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; z-index: 2; }
+.ribbon .playhead {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  background: var(--fg);
+  pointer-events: none;
+  transform: translateX(-1px);
+}
+
 .player-bar { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: 1rem -1rem -1rem; padding: .5rem 1rem; background: var(--bg-soft); border-top: 1px solid var(--line); }
 .player-bar audio { flex: 1 1 20rem; min-width: 0; height: 2.2rem; }
 .speeds { display: flex; gap: .25rem; }

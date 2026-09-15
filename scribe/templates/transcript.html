@@ -48,6 +48,38 @@
 <dialog id="export-dialog" class="dialog export-dialog" aria-label="Export" data-stay-open></dialog>
 
 <div class="player-bar" data-player-bar>
+  {# The shape of the recording, above the controls (TASK-053.07). One band
+     per speaker TURN, placed by time and coloured like that speaker's
+     headings, so an hour of transcript stops being a wall of text with no way
+     to see who talks when. Click to go there.
+
+     Per turn and not per paragraph, which is the difference between a ribbon
+     and a picket fence: a silence of a few seconds starts a new paragraph even
+     when nobody else has spoken, so this recording has 208 of them and 143
+     turns. The first attempt drew all 208 and read as noise.
+
+     Every position is a percentage computed on the server from the word
+     timings. Nothing here measures a box: `content-visibility: auto` on a
+     paragraph makes its geometry unreliable until it has been rendered, so a
+     ribbon built from measurements would place the paragraphs on screen and
+     misplace every other one.
+
+     Deliberately NOT a waveform. Nothing stores peaks, and decoding a
+     64-minute file in the browser costs minutes of CPU - so a waveform here
+     would be a promise this app cannot keep. #}
+  {% if ribbon %}
+  <div class="ribbon" data-ribbon data-duration="{{ media.duration }}"
+       role="group" aria-label="Jump through the recording">
+    {% for band in ribbon %}
+    <button type="button" class="band tone-{{ band.tone }}" data-at="{{ '%g' % band.at }}"
+            style="left: {{ '%.4f' % band.left }}%; width: {{ '%.4f' % band.width }}%{% if band.color %}; --band-color: {{ band.color }}{% endif %}"
+            title="{{ band.name or 'Speaker' }} · {{ band.at | clock }}">
+      <span class="visually-hidden">{{ band.name or 'Speaker' }} at {{ band.at | clock }}</span>
+    </button>
+    {% endfor %}
+    <span class="playhead" data-playhead aria-hidden="true"></span>
+  </div>
+  {% endif %}
   <audio id="player" controls preload="metadata" src="{{ audio_url }}"
          data-media-id="{{ media.id }}" data-resume-key="{{ resume_key }}"
          {% if media.duration %}data-duration="{{ media.duration }}"{% endif %}>

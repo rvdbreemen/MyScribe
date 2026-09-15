@@ -281,6 +281,11 @@ def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
         "media": media,
         "run": run,
         "paragraphs": paragraphs,
+        "ribbon": speaker_bands(
+            paragraphs,
+            media.get("duration"),
+            {s["cluster"]: s["color"] for s in speakers if s["color"]},
+        ),
         "clean_reading": reading,
         "speakers": speakers,
         "colors": {s["cluster"]: s["color"] for s in speakers if s["color"]},
@@ -469,6 +474,81 @@ def correct_word(
             "url": f"/media/{media_id}/words/{idx}/correct",
         }
     return _after_edit(request, conn, media_id, word_offer=offer)
+
+
+def speaker_bands(
+    paragraphs: list[render.Paragraph],
+    duration: float | None,
+    colors: dict[str, str] | None = None,
+) -> list[dict]:
+    """The recording's shape, as one band per speaker turn (TASK-053.07).
+
+    An hour of transcript is a wall of text with no way to see who talks when.
+    A band per turn, placed by time and coloured by speaker, turns that into
+    something a person can read at a glance and click into.
+
+    Per TURN, not per paragraph, and that is the whole difference between a
+    ribbon and a picket fence: a 64-minute conversation has some five hundred
+    paragraphs, because a silence of a few seconds starts a new one even when
+    nobody else has spoken. Five hundred bands is noise. Merging the
+    consecutive ones that share a speaker gives the shape of the conversation,
+    which is what somebody looking at this wants to know.
+
+    Percentages, computed here from `start` and `end`, never measured in the
+    browser: `content-visibility: auto` on a paragraph makes its box unreliable
+    until it has been rendered, so anything positioned by geometry would place
+    the paragraphs you are looking at and misplace every other one.
+
+    No bands at all without a duration - a band whose width is a guess is worse
+    than no ribbon, because it looks authoritative.
+    """
+    if not paragraphs or not duration or duration <= 0:
+        return []
+    colors = colors or {}
+    turns: list[dict] = []
+    for para in paragraphs:
+        start = max(0.0, float(para.start))
+        end = min(float(duration), float(para.end))
+        if end <= start:
+            continue
+        if turns and turns[-1]["speaker"] == para.speaker:
+            turns[-1]["end"] = max(turns[-1]["end"], end)
+            continue
+        turns.append(
+            {
+                "speaker": para.speaker,
+                "name": para.display_name,
+                "start": start,
+                "end": end,
+            }
+        )
+    # A tone per SPEAKER, numbered by first appearance - not per band. A
+    # speaker with a colour of their own uses it, so the ribbon matches their
+    # headings; the rest get one of a few tones, which is what makes a
+    # two-person interview read as two alternating stretches rather than a
+    # picket fence. Diarization does not always assign colours, and on this
+    # machine's recordings it usually has not.
+    tones: dict[str | None, int] = {}
+    for turn in turns:
+        tones.setdefault(turn["speaker"], len(tones))
+    return [
+        {
+            "speaker": turn["speaker"],
+            "name": turn["name"],
+            "at": turn["start"],
+            "color": colors.get(turn["speaker"] or ""),
+            "tone": tones[turn["speaker"]] % RIBBON_TONES,
+            "left": turn["start"] / duration * 100.0,
+            "width": max((turn["end"] - turn["start"]) / duration * 100.0, 0.2),
+        }
+        for turn in turns
+    ]
+
+
+RIBBON_TONES = 5
+"""How many tones the ribbon cycles through for speakers with no colour of
+their own. Five because a conversation with more than five voices is a panel,
+and a panel's ribbon is about density rather than telling Bob from Alice."""
 
 
 MAX_WORD_LENGTH = 100
