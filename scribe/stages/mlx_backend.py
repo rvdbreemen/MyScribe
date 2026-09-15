@@ -109,7 +109,7 @@ class MlxWhisperModel:
             language=result.get("language") or language,
             language_probability=None,
             duration=duration,
-            duration_after_vad=duration,
+            duration_after_vad=None,  # no VAD ran, so there is no speech count (TASK-056)
         )
         return iter(segments), info
 

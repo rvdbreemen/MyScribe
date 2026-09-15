@@ -133,3 +133,27 @@ def test_the_floor_holds_whatever_the_look_ahead_says(amplitude):
     both = FE(np.concatenate([window, loudness.scale_lookahead(FE, window, lookahead)]))
     keep = _frames_inside(len(window))
     assert np.array_equal(FE(window)[:, :keep], both[:, :keep])
+
+
+# --- one VAD pass, two uses (TASK-056) --------------------------------------------------
+
+
+def test_speech_measured_once_gives_the_same_look_ahead():
+    """The transcribe stage counts a window's speech from the chunks it hands
+    in here, so the scaling must not come out different for having been handed
+    them rather than finding them itself."""
+    window, lookahead = _window(0.05, 18), _noise(3.0, 0.5, 19)
+
+    chunks = loudness.speech_chunks(window)
+
+    assert np.array_equal(
+        loudness.scale_lookahead(FE, window, lookahead, chunks=chunks),
+        loudness.scale_lookahead(FE, window, lookahead),
+    )
+
+
+def test_speech_seconds_add_up_the_chunks_and_nothing_else():
+    chunks = [{"start": 0, "end": RATE}, {"start": 2 * RATE, "end": 2 * RATE + RATE // 2}]
+
+    assert loudness.speech_seconds(chunks) == 1.5
+    assert loudness.speech_seconds([]) == 0.0

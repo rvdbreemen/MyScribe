@@ -413,6 +413,103 @@ def test_a_model_without_a_feature_extractor_gets_the_look_ahead_as_it_is(monkey
     )
 
 
+# --- how much of the recording is speech (TASK-056) -------------------------------
+#
+# Run 146 (media 20, 3866.6 s long) recorded duration_after_vad 4030.9 s. Every
+# decode is handed its window plus the look-ahead, faster-whisper reports the
+# speech in all of it, and the stage added those reports up: the speech in each
+# look-ahead was counted in two windows (178.7 s over six cuts).
+
+
+def _all_speech(audio):
+    return [{"start": 0, "end": len(audio)}]
+
+
+def _no_speech(audio):
+    return []
+
+
+def _speech_run(monkeypatch, tmp_path, speech, *, lookahead_seconds=3.0, extractor=True, report=None):
+    """transcribe_audio over the dipped 25 s file with faster-whisper's VAD
+    patched to answer `speech(audio)`, and a fake model that reports what
+    faster-whisper does - the seconds of speech in everything it was handed -
+    unless `report` says otherwise. Returns (info, lengths of the audio the
+    stage itself asked the VAD about)."""
+    import faster_whisper.vad as vad
+    from faster_whisper.feature_extractor import FeatureExtractor
+
+    asked: list[int] = []
+
+    def timestamps(audio, *args, **kwargs):
+        asked.append(len(audio))
+        return speech(audio)
+
+    monkeypatch.setattr(vad, "get_speech_timestamps", timestamps)
+
+    class Model:
+        def transcribe(self, audio, **options):
+            heard = sum(c["end"] - c["start"] for c in speech(audio)) / SR
+            info = type("Info", (), dict(
+                language="en", language_probability=0.9, duration=len(audio) / SR,
+                duration_after_vad=heard if report is None else report(audio),
+            ))()
+            return iter([]), info
+
+    if extractor:
+        Model.feature_extractor = FeatureExtractor(feature_size=128)
+    monkeypatch.setattr(transcribe, "load_model", lambda name, **kw: (Model(), "cpu", "int8"))
+    info, _segments, _words = transcribe.transcribe_audio(
+        _dipped_25s(tmp_path), language="en", on_progress=lambda p: None,
+        window_seconds=10.0, search_seconds=2.0, lookahead_seconds=lookahead_seconds,
+    )
+    return info, asked
+
+
+def test_speech_seconds_are_the_recordings_not_what_each_decode_heard_past_its_cut(monkeypatch, tmp_path):
+    info, _asked = _speech_run(monkeypatch, tmp_path, _all_speech)
+
+    assert info["duration_after_vad"] == pytest.approx(25.0)
+    assert info["duration_after_vad"] <= info["duration"] + 1e-9
+    no_lookahead, _ = _speech_run(monkeypatch, tmp_path, _all_speech, lookahead_seconds=0.0)
+    assert info["duration_after_vad"] == pytest.approx(no_lookahead["duration_after_vad"])
+
+
+def test_a_recording_without_speech_counts_nothing(monkeypatch, tmp_path):
+    """Counted from the VAD's chunks, never from the audio `_speech` hands back
+    for a window without any: that is the whole window, not zero seconds."""
+    info, _asked = _speech_run(monkeypatch, tmp_path, _no_speech)
+
+    assert info["duration_after_vad"] == 0.0
+
+
+def test_the_speech_count_costs_no_extra_vad_pass(monkeypatch, tmp_path):
+    """The look-ahead scaling already runs the VAD over each window that has a
+    look-ahead (TASK-036); the count reuses that pass, and the last window's
+    number comes from faster-whisper, which heard exactly that window."""
+    _info, asked = _speech_run(monkeypatch, tmp_path, _all_speech)
+
+    windows = list(transcribe.iter_windows(
+        _dipped_25s(tmp_path), window_seconds=10.0, search_seconds=2.0, lookahead_seconds=3.0,
+    ))
+    assert asked == [len(w.samples) for w in windows if len(w.lookahead)]
+
+
+def test_a_backend_without_vad_records_no_speech_count(monkeypatch, tmp_path):
+    """mlx-whisper runs no VAD: a number there would mean something else."""
+    info, _asked = _speech_run(monkeypatch, tmp_path, _all_speech, extractor=False, report=lambda audio: None)
+
+    assert info["duration_after_vad"] is None
+
+
+def test_a_look_ahead_the_stage_cannot_measure_is_not_counted_twice(monkeypatch, tmp_path):
+    """A decoder that hears past the cut and reports its own speech seconds,
+    without an extractor for the stage to measure the window with, gets no
+    count rather than one with the look-ahead in it twice."""
+    info, _asked = _speech_run(monkeypatch, tmp_path, _all_speech, extractor=False)
+
+    assert info["duration_after_vad"] is None
+
+
 def _seam_run(monkeypatch, tmp_path, left, right):
     """Window 0 answering `left` and window 1 `right`, times relative to the
     first cut; window 2 says " fine". Returns (segments, words, the first cut)."""

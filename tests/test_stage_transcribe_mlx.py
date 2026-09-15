@@ -131,6 +131,7 @@ def test_the_mlx_model_answers_in_faster_whispers_shape(on_a_mac):
 
     assert info.language == "en" and info.language_probability is None
     assert info.duration == 2.4
+    assert info.duration_after_vad is None  # no VAD ran, so no speech count (TASK-056)
     assert [s.text for s in segments] == [" Don't panic.", " Bring a towel."]
     assert (segments[0].start, segments[0].end, segments[0].avg_logprob) == (0.0, 1.2, -0.2)
     assert [w.word for w in segments[1].words] == [" Bring", " a", " towel."]
@@ -198,6 +199,8 @@ def test_transcribe_audio_runs_the_whole_loop_on_mlx(on_a_mac, tmp_path):
 
     assert info["device"] == "mlx" and info["compute_type"] == "float16"
     assert info["language"] == "en" and info["language_probability"] is None
+    # mlx-whisper runs no VAD, so there is no speech count to record (TASK-056).
+    assert info["duration_after_vad"] is None
     assert [s["idx"] for s in segments] == [0, 1]
     assert [w["text"] for w in words] == [" Don't", " panic.", " Bring", " a", " towel."]
     assert words[2]["segment_idx"] == 1 if "segment_idx" in words[2] else True

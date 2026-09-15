@@ -635,7 +635,10 @@ def transcribe_audio(
     words: list[dict] = []
     detected_language = language
     language_probability: float | None = None
-    duration_after_vad = 0.0
+    # Seconds of speech in the recording by faster-whisper's VAD, each window
+    # counted on its own audio (TASK-056; `_count_speech`). None once a window
+    # cannot be counted that way.
+    duration_after_vad: float | None = 0.0
     stream = None
     cuts: list[int] = []  # where each window after the first begins in `words`
     try:
@@ -645,6 +648,13 @@ def transcribe_audio(
             search_seconds=search_seconds,
             lookahead_seconds=lookahead_seconds,
         ):
+            # One VAD pass over the window, two uses: the look-ahead's loudness
+            # below and the speech count after the decode.
+            chunks = (
+                loudness.speech_chunks(window.samples)
+                if len(window.lookahead) and extractor is not None
+                else None
+            )
             heard = (
                 np.concatenate(
                     [
@@ -654,7 +664,7 @@ def transcribe_audio(
                         # Silicon there is no faster-whisper extractor to ask,
                         # and mlx-whisper floors its own features elsewhere, so
                         # the look-ahead goes as it is.
-                        loudness.scale_lookahead(extractor, window.samples, window.lookahead)
+                        loudness.scale_lookahead(extractor, window.samples, window.lookahead, chunks=chunks)
                         if extractor is not None
                         else window.lookahead,
                     ]
@@ -670,9 +680,20 @@ def transcribe_audio(
                 detected_language = raw.language
             if language_probability is None:
                 language_probability = _as_float(raw.language_probability)
-            # Speech Whisper was handed, look-ahead included: up to
-            # LOOKAHEAD_SECONDS per cut is counted in two windows.
-            duration_after_vad += _as_float(getattr(raw, "duration_after_vad", None)) or 0.0
+            # faster-whisper's own number covers everything it was handed, so
+            # it is this window's speech only when nothing was appended; added
+            # up across look-aheads it counted each look-ahead's speech twice
+            # (run 146: 4030.9 s of speech in 3866.6 s). A window with a
+            # look-ahead is counted from its own chunks, or not at all -
+            # mlx-whisper runs no VAD and reports None.
+            reported = _as_float(getattr(raw, "duration_after_vad", None))
+            if duration_after_vad is not None:
+                if chunks is not None:
+                    duration_after_vad += loudness.speech_seconds(chunks)
+                elif reported is not None and not len(window.lookahead):
+                    duration_after_vad += reported
+                else:
+                    duration_after_vad = None
             new_segments, new_words = collect_segments(
                 stream,
                 duration,

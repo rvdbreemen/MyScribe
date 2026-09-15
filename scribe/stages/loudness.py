@@ -39,6 +39,9 @@ from __future__ import annotations
 
 import numpy as np
 
+SAMPLE_RATE = 16000
+"""What prepare writes and the VAD counts its chunks in."""
+
 MARGIN = 1e-5
 """Subtracted from the exponent, so the scaled maximum lands just under the
 window's rather than on it: the log-mel maximum of the scaled audio is computed
@@ -57,37 +60,60 @@ def log_mel_max(extractor, audio: np.ndarray) -> float:
     return 4.0 * float(extractor(audio).max()) - 4.0
 
 
-def _speech(audio: np.ndarray) -> np.ndarray:
-    """The audio faster-whisper's VAD would keep, concatenated as it does it.
-
-    A window with no speech at all keeps everything: it has no maximum of its
-    own to protect, and an empty array has no maximum to take.
+def speech_chunks(audio: np.ndarray) -> list[dict]:
+    """faster-whisper's VAD speech chunks for `audio`, in samples, with the
+    default options its `transcribe` uses when the stage asks for `vad_filter`
+    and passes no `vad_parameters`.
 
     faster-whisper is imported here rather than at the top, because importing
     it is what loads CTranslate2, and ADR-006 has `cuda_setup.ensure_cuda_libs`
     run before that happens. The web process, which imports this package to
     reach the stages' names, must not pull a model runtime in at all.
     """
-    from faster_whisper.vad import VadOptions, collect_chunks, get_speech_timestamps
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-    chunks = get_speech_timestamps(audio, VadOptions())
+    return get_speech_timestamps(audio, VadOptions())
+
+
+def speech_seconds(chunks: list[dict]) -> float:
+    """How long the speech in `chunks` lasts - the number faster-whisper
+    reports as `duration_after_vad` for the audio the chunks came from."""
+    return sum(chunk["end"] - chunk["start"] for chunk in chunks) / SAMPLE_RATE
+
+
+def _speech(audio: np.ndarray, chunks: list[dict] | None = None) -> np.ndarray:
+    """The audio faster-whisper's VAD would keep, concatenated as it does it.
+
+    `chunks` are `speech_chunks(audio)` when the caller already has them, so
+    one VAD pass serves the loudness and the transcribe stage's speech count.
+
+    A window with no speech at all keeps everything: it has no maximum of its
+    own to protect, and an empty array has no maximum to take.
+    """
+    from faster_whisper.vad import collect_chunks
+
+    if chunks is None:
+        chunks = speech_chunks(audio)
     if not chunks:
         return audio
     kept, _metadata = collect_chunks(audio, chunks)
     return np.concatenate(kept, axis=0) if kept else audio
 
 
-def scale_lookahead(extractor, window: np.ndarray, lookahead: np.ndarray) -> np.ndarray:
+def scale_lookahead(
+    extractor, window: np.ndarray, lookahead: np.ndarray, chunks: list[dict] | None = None
+) -> np.ndarray:
     """The look-ahead to hand the decoder after `window`.
 
     The same array when it cannot raise the window's floor - which is the usual
     case, 149 of 156 windows measured - and otherwise a float32 copy, quiet
     enough that the combined input's loudest bin is the window's own.
+    `chunks` are the window's `speech_chunks`, when the caller has them.
     """
     if len(lookahead) == 0 or len(window) == 0:
         return lookahead
     ahead = log_mel_max(extractor, lookahead)
-    here = log_mel_max(extractor, _speech(window))
+    here = log_mel_max(extractor, _speech(window, chunks))
     if ahead <= here:
         return lookahead
     return lookahead * np.float32(10.0 ** ((here - ahead) / 2.0 - MARGIN))
