@@ -658,7 +658,11 @@ def test_the_pressed_save_button_turns_green_and_says_saved_after_the_swap(tmp_p
       form.append(el('button', { type: 'submit', class: 'primary' })).textContent = label;
       return { wrap: wrap, form: form, button: form.querySelector('button') };
     }
-    const first = body.append(card('Save'));
+    /* Append the card's node, not the {wrap, form, button} bag: a bag in
+       body.children is not a node, and the first document.querySelector that
+       walks the page (the AI region's afterSwap listener does) falls over it. */
+    const first = card('Save');
+    body.append(first.wrap);
     fire(document, 'click', event({ target: first.button }));
 
     /* The POST answered and htmx swapped the card for a fresh copy. */
