@@ -164,6 +164,21 @@
           {{ clean_reading.words_out }}. The transcript above is unchanged.</p>
         <pre class="clean-text">{{ clean_reading.text }}</pre>
       </div>
+      {% elif cleanup_status and not (cleanup_status.gate and cleanup_status.gate.published) %}
+      {# A cleaning that is not shown says why (TASK-055). The live library had
+         cleanup answers and no reading, and the page said nothing, which left
+         the reader to guess. The verdict is the one the gate reached when the
+         answer came in, kept on the answer row; it is never recomputed here. #}
+      <p class="hint" data-cleanup-status>
+        {% if cleanup_status.gate %}
+        A cleaned reading was made on {{ m.when(cleanup_status.created_at) }} ({{ cleanup_status.model }})
+        and not shown: {{ cleanup_status.gate.reasons | join('; ') }}. The transcript below is exactly as it was heard.
+        {% else %}
+        A cleanup answer from {{ m.when(cleanup_status.created_at) }} ({{ cleanup_status.model }}) was made
+        before cleaned readings were checked, so it was never checked and never shown. Ask
+        “Clean transcript” again for a checked reading.
+        {% endif %}
+      </p>
       {% endif %}
 
       <div id="transcript" class="transcript" data-reading="words" data-run-id="{{ run.id }}" data-correct-url="/media/{{ media.id }}/words/">

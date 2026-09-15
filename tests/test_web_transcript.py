@@ -25,6 +25,7 @@ v9 comment). The flag that means a person retyped a word is
 `word.text_edited_by_user`, and nothing here writes it.
 """
 
+import json
 import logging
 import pathlib
 import re
@@ -1088,12 +1089,97 @@ def test_the_cleaned_block_starts_hidden_so_the_words_are_what_loads(
 
 
 def test_no_switch_at_all_when_nothing_was_published(client, transcribed):
-    """A cleaning that the gate refused leaves no trace on the page: the
-    recording reads exactly as it did before."""
+    """Nobody asked for a cleaning: no switch, no cleaned block, and no line
+    about one either."""
     body = client.get(f"/media/{transcribed['media']}").text
 
     assert "data-reading-toggle" not in body
     assert 'id="clean-reading"' not in body
+    assert "data-cleanup-status" not in body
+
+
+# --- a cleaning that is not shown says why (TASK-055) ---------------------------------
+#
+# Found on 2026-09-14: the live library had cleanup answers and no reading, and
+# the page said nothing. The answers predated the gate; had it run, it would
+# have refused media 7's (3418% of the words). Either way the reader was left
+# to guess why the "cleaned reading" never appeared.
+
+
+def _cleanup_answer(conn, media_id, run_id, params, kind="cleanup", model="qwen3.5:4b"):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+            " content, created_at, run_id, params_json) VALUES (?,?,?,?,?,?,?,?,?)",
+            (media_id, kind, "ollama", model, 1, "la la la", 1757518680.0, run_id,
+             json.dumps(params)),
+        )
+        conn.commit()
+
+
+def _status_line(body):
+    found = re.search(r"<p[^>]*data-cleanup-status[^>]*>(.*?)</p>", body, re.S)
+    return None if found is None else " ".join(found.group(1).split())
+
+
+def test_a_refused_cleaning_says_why_instead_of_saying_nothing(client, conn, transcribed):
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _cleanup_answer(conn, media_id, run_id, {
+        "finish_reason": "stop",
+        "gate": {"published": False, "reasons": ["part 1 kept 8% of its words"], "words_in": 48, "words_out": 4},
+    })
+
+    body = client.get(f"/media/{media_id}").text
+
+    line = _status_line(body)
+    assert line is not None, "the page says nothing about the refused cleaning"
+    assert "not shown" in line
+    assert "part 1 kept 8% of its words" in line
+    assert "qwen3.5:4b" in line
+    assert "data-reading-toggle" not in body
+
+
+def test_a_cleanup_answer_from_before_the_gate_says_it_was_never_checked(client, conn, transcribed):
+    """Row 15 in the live library: made on 2026-09-10 before cleanings were
+    checked at all, so it carries no verdict. That is not a refusal, and the
+    page does not pretend it is one."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _cleanup_answer(conn, media_id, run_id, {"finish_reason": "length"})
+
+    line = _status_line(client.get(f"/media/{media_id}").text)
+
+    assert line is not None
+    assert "never checked" in line
+    assert "Clean transcript" in line
+
+
+def test_a_cleanup_answer_about_an_earlier_transcript_adds_no_line(client, conn, transcribed):
+    """Its transcript is gone (run_id set null), so it says nothing about the
+    words on this page."""
+    _cleanup_answer(conn, transcribed["media"], None, {"gate": {"published": False, "reasons": ["x"]}})
+
+    assert "data-cleanup-status" not in client.get(f"/media/{transcribed['media']}").text
+
+
+def test_a_cleanup_part_alone_adds_no_line(client, conn, transcribed):
+    """Media 12's shape: part 0 of a chunked cleaning that never finished. A
+    part is not an answer, and nothing was ever there to show."""
+    _cleanup_answer(conn, transcribed["media"], transcribed["run"], {}, kind="cleanup:chunk:0")
+
+    assert "data-cleanup-status" not in client.get(f"/media/{transcribed['media']}").text
+
+
+def test_a_published_reading_is_shown_even_beside_a_later_refusal(client, conn, transcribed):
+    """A newer cleaning that was refused leaves the published one in place, so
+    the page offers that reading and has nothing to apologise for."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _publish_reading(conn, run_id, "The cleaned words.")
+    _cleanup_answer(conn, media_id, run_id, {"gate": {"published": False, "reasons": ["x"]}})
+
+    body = client.get(f"/media/{media_id}").text
+
+    assert "data-reading-toggle" in body
+    assert "data-cleanup-status" not in body
 
 
 # --- step 1 of the rebuild: four faults that were bugs (TASK-053.01) ------------------

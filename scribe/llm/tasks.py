@@ -2293,6 +2293,10 @@ def apply_cleanup(
     """
     parts = cleaned_parts(conn, plan, payload, output_id)
     verdict = check_cleaning([chunk.text for chunk in plan.chunks], parts)
+    _keep_verdict(conn, output_id, {
+        "published": bool(verdict["ok"]),
+        **{key: verdict[key] for key in ("words_in", "words_out", "reasons") if key in verdict},
+    })
 
     if not verdict["ok"]:
         return {"published": False, **verdict}
@@ -2317,6 +2321,25 @@ def apply_cleanup(
     return {"published": True, **verdict}
 
 
+def _keep_verdict(conn: sqlite3.Connection, output_id: int, gate: dict) -> None:
+    """Write the gate's verdict into the answer row's `params_json` as `gate`
+    (TASK-055), next to what `store_output` put there. The transcript page
+    says why a cleaning is not shown from this, because the job's events are
+    pruned and an answer made by `run_task` has no job at all. An id without
+    a row - a caller checking a verdict by hand - writes nothing."""
+    with db.LOCK:
+        row = conn.execute("SELECT params_json FROM llm_output WHERE id=?", (output_id,)).fetchone()
+        if row is None:
+            return
+        try:
+            params = json.loads(row["params_json"] or "{}")
+        except (TypeError, ValueError):
+            params = {}
+        params["gate"] = gate
+        conn.execute("UPDATE llm_output SET params_json=? WHERE id=?", (json.dumps(params), output_id))
+        conn.commit()
+
+
 def clean_reading(conn: sqlite3.Connection, run_id: int) -> dict | None:
     """The cleaned reading for a run, when one was published."""
     with db.LOCK:
@@ -2324,6 +2347,41 @@ def clean_reading(conn: sqlite3.Connection, run_id: int) -> dict | None:
             "SELECT * FROM clean_reading WHERE run_id=?", (run_id,)
         ).fetchone()
     return None if row is None else dict(row)
+
+
+def cleanup_status(conn: sqlite3.Connection, media_id: int, run_id: int | None) -> dict | None:
+    """The newest finished cleanup answer about this run, and what the gate
+    said about it: ``{output_id, created_at, provider, model, gate}``.
+
+    ``gate`` is None for an answer made before verdicts were kept - the two in
+    the library were written on 2026-09-10, before the gate existed - which
+    was never checked, not refused. A part (``cleanup:chunk:<i>``) is not an
+    answer, and an answer whose transcript is gone (run_id null) is not about
+    the words on the page; neither counts. The gate is never recomputed here:
+    chunk boundaries have moved since, and an answer judged against parts it
+    was not made from would be judged wrongly.
+    """
+    if run_id is None:
+        return None
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT id, created_at, provider, model, params_json FROM llm_output"
+            " WHERE media_id=? AND run_id=? AND kind='cleanup' ORDER BY id DESC LIMIT 1",
+            (media_id, run_id),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        gate = json.loads(row["params_json"] or "{}").get("gate")
+    except (TypeError, ValueError, AttributeError):
+        gate = None
+    return {
+        "output_id": row["id"],
+        "created_at": row["created_at"],
+        "provider": row["provider"],
+        "model": row["model"],
+        "gate": gate if isinstance(gate, dict) else None,
+    }
 
 
 TASKS["cleanup"] = replace(TASKS["cleanup"], apply=apply_cleanup)

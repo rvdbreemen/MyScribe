@@ -8,6 +8,8 @@ replaced - refusing it means not publishing it.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from scribe import db
@@ -393,3 +395,62 @@ def test_a_refusal_is_reported_with_the_numbers_it_rested_on(conn, media, monkey
     assert verdict["published"] is False
     assert verdict["words_out"] == 3
     assert verdict["reasons"] and "%" in verdict["reasons"][0]
+
+
+# --- the verdict stays with the answer (TASK-055) ------------------------------------
+#
+# The transcript page says why a cleaning is not shown, and it reads that from
+# the answer row: a job's events are pruned, and an answer made by run_task has
+# no job at all.
+
+
+def _params(conn, output_id) -> dict:
+    row = conn.execute("SELECT params_json FROM llm_output WHERE id=?", (output_id,)).fetchone()
+    return json.loads(row["params_json"])
+
+
+def _current_run(conn, media_id) -> int:
+    return conn.execute(
+        "SELECT id FROM run WHERE media_id=? AND is_current=1", (media_id,)
+    ).fetchone()["id"]
+
+
+def test_a_refused_cleaning_keeps_its_verdict_on_the_answer_row(conn, media, monkeypatch):
+    provider, _ = fake_provider(["Two people talked."])
+    register(monkeypatch, provider)
+
+    output_id = tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+
+    params = _params(conn, output_id)
+    assert params["gate"]["published"] is False
+    assert params["gate"]["words_out"] == 3
+    assert params["gate"]["reasons"] and "%" in params["gate"]["reasons"][0]
+    assert "finish_reason" in params  # what store_output wrote is still there
+
+
+def test_a_published_cleaning_keeps_its_verdict_too(conn, media, monkeypatch):
+    doc = docs.load(conn, media)
+    provider, _ = fake_provider([" ".join(seg["text"] for seg in doc.segments)])
+    register(monkeypatch, provider)
+
+    output_id = tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+
+    gate = _params(conn, output_id)["gate"]
+    assert gate["published"] is True
+    assert gate["words_out"] == _source_words(conn, media)
+
+
+def test_the_cleanup_status_of_a_run_is_its_newest_answer_with_its_verdict(conn, media, monkeypatch):
+    run_id = _current_run(conn, media)
+    assert tasks.cleanup_status(conn, media, run_id) is None
+
+    provider, _ = fake_provider(["Two people talked.", "Nobody talked."])
+    register(monkeypatch, provider)
+    tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+    newest = tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-2")
+
+    status = tasks.cleanup_status(conn, media, run_id)
+    assert status["output_id"] == newest
+    assert status["model"] == "fake-2"
+    assert status["gate"]["published"] is False
+    assert status["created_at"] > 0

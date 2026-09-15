@@ -242,6 +242,9 @@ def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
         # words, never instead of them: the page offers both and says which it
         # is showing, and the transcript is what it falls back to.
         reading = tasks.clean_reading(conn, run["id"])
+    # Without a reading, the page says why when a cleaning was asked for: refused
+    # by the gate, or made before cleanings were checked (TASK-055).
+    cleanup = tasks.cleanup_status(conn, media_id, run["id"]) if run is not None and reading is None else None
     return {
         "media": media,
         "run": run,
@@ -252,6 +255,7 @@ def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
             {s["cluster"]: s["color"] for s in speakers if s["color"]},
         ),
         "clean_reading": reading,
+        "cleanup_status": cleanup,
         "speakers": speakers,
         "colors": {s["cluster"]: s["color"] for s in speakers if s["color"]},
         "new_speaker": NEW_SPEAKER,
