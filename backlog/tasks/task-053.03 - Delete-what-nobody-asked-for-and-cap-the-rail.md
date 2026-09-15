@@ -1,10 +1,10 @@
 ---
 id: TASK-053.03
 title: 'Delete what nobody asked for, and cap the rail'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-14 21:08'
-updated_date: '2026-09-14 22:36'
+updated_date: '2026-09-15 05:32'
 labels:
   - ui
 dependencies: []
@@ -37,3 +37,9 @@ The rail is capped at the viewport with its own scroll. It measured 1,506px befo
 
 And absolute positions on this page are NOT comparable between sessions. Yesterday the transcript measured 29,765px; today, with nothing about it changed, 30,266px - and that 501px is exactly the shift I first read as the answers moving. The cause is contain-intrinsic-size: auto on .para (app.css:1006): the 'auto' keyword makes the browser remember each paragraph's last rendered height, so the page's measured height depends on what that session happened to lay out. Card counts and element heights are sound; y-positions across sessions are not. Worth knowing before step 5 leans on one.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Kept all nine answer cards (Robert: 'nog altijd nuttige kaarten'); capped the rail at the viewport with its own scroll (1,506px -> 785px in an 801px window); the AI options survive a panel refresh via hx-preserve. Red then green in tests/test_web_transcript.py, committed as 1ac63cb.
+<!-- SECTION:FINAL_SUMMARY:END -->
