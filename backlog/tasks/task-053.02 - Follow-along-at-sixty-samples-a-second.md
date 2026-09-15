@@ -4,7 +4,7 @@ title: Follow-along at sixty samples a second
 status: Done
 assignee: []
 created_date: '2026-09-14 21:08'
-updated_date: '2026-09-14 22:16'
+updated_date: '2026-09-15 06:04'
 labels:
   - ui
 dependencies: []
@@ -25,7 +25,7 @@ Step 2 of TASK-053. Highlighting hangs on timeupdate, which fires about four tim
 - [x] #3 The arithmetic is measured on real word times: how many words 4 Hz lights against 60 Hz
 - [x] #4 The page scrolls only when the followed word would leave the viewport's middle band
 - [x] #5 Only one follow loop can run
-- [ ] #6 Watched in a foreground browser: a word is lit for every word spoken
+- [x] #6 Watched in a foreground browser: a word is lit for every word spoken
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -40,6 +40,8 @@ NOT verified, and I could not: that the requestAnimationFrame loop actually runs
 A second change came with it, and it is not cosmetic. At four samples a second, re-centring the page on every highlight move was fine. At sixty the highlight moves once per word - ten times a second in fast speech - and a smooth scroll restarted ten times a second never arrives anywhere. So the page now scrolls only when the followed word would leave the middle band of the viewport (FOLLOW_BAND_TOP/BOTTOM, 20%-80%), which also reads better: the text stays still while the highlight travels down it.
 
 timeupdate stays wired on purpose. It saves the resume position, and a backgrounded tab plays on without animation frames, so it is the fallback that keeps the highlight roughly right until the tab comes back. Both paths call highlight, which returns early when the word has not changed, so they cannot fight.
+
+AC6, 2026-09-15: measured in Chrome 152 over CDP (headless=new, own profile, muted, document.visibilityState 'visible', rAF at ~157 fps) against the app on 4242, media 20. A MutationObserver recorded every word that received .current during playback and compared them with the words whose start fell inside the played span. 1x from 600s for 20s: 60 of 60 lit, lag median 3 ms / p95 7 / max 10. 2x from 1800s: 91 of 91 (2 words share a start with the next word and cannot be lit alone, by design of wordAt), median 5 / p95 11 / max 23. 0.75x from 3000s: 32 of 32, median 5 / p95 12 / max 20. Lag = currentTime minus the word's start, in wall-clock ms, at the moment the class changed. Longtasks during the three runs: 3, one of 265 ms. Headless is not a person watching a tab; it is a visible document with animation frames, which is what this AC needed and the background extension tab could not give. Script: scratchpad/follow_cdp.js.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
