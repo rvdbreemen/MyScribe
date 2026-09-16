@@ -158,6 +158,11 @@ def fetch(ctx: "RunnerContext") -> None:
     # gets its own ValueError - that is a bug in the caller, not a full disk.
     doctor.require_disk_headroom()
     cookies_file = ctx.params.get("cookies_file") or None
+    if ctx.params.get("from_playlist"):
+        # This address is the feed's or the listing's, not the person's, and
+        # a followed feed is fetched unattended: it may not point at this
+        # machine or the network behind it (TASK-072). Before yt-dlp sees it.
+        urls.ensure_public_http_url(url)
 
     info = urls.probe(url, cookies_file=cookies_file)
 

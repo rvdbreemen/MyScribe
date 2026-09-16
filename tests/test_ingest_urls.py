@@ -248,6 +248,64 @@ def test_a_non_http_url_never_reaches_yt_dlp():
     assert fake.calls == []
 
 
+@pytest.mark.parametrize(
+    "home",
+    [
+        "http://127.0.0.1:11434/api/tags",
+        "http://localhost/episode.mp3",
+        "http://ollama.localhost/api/tags",
+        "http://192.168.1.1/admin",
+        "http://10.0.0.5/episode.mp3",
+        "http://172.16.4.4/",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]/episode.mp3",
+        "http://0.0.0.0/",
+        "http://printer.local/",
+    ],
+)
+def test_an_address_a_feed_wrote_down_may_not_point_home(home):
+    """TASK-072: a followed feed is polled unattended, and its author could
+    publish an enclosure at this machine or its network and have the app
+    fetch it on their behalf. The written address is judged, not resolved."""
+    with pytest.raises(urls.UnsupportedUrl) as exc:
+        urls.ensure_public_http_url(home)
+
+    assert "this machine or the local network" in str(exc.value)
+
+
+@pytest.mark.parametrize("public", ["https://cdn.example/episode.mp3", "http://8.8.8.8/x.mp3"])
+def test_a_public_address_from_a_feed_passes(public):
+    assert urls.ensure_public_http_url(public) == public
+
+
+def test_an_address_a_person_pasted_may_point_home():
+    """The app listens on 127.0.0.1 only, and a person who pastes their NAS's
+    address chose it: the plain guard stays a scheme check."""
+    assert urls.ensure_http_url("http://192.168.1.10/podcast.mp3") == "http://192.168.1.10/podcast.mp3"
+    assert urls.ensure_http_url("http://127.0.0.1:8000/x.mp3") == "http://127.0.0.1:8000/x.mp3"
+
+
+def test_a_feed_entry_pointing_home_is_refused_before_yt_dlp_is_asked(conn, monkeypatch):
+    fake = FakeYdl(single_info())
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(conn, "http://127.0.0.1:11434/api/tags", from_playlist=True)
+
+    with pytest.raises(urls.UnsupportedUrl):
+        url_stage.fetch(make_ctx(conn, job_id))
+
+    assert fake.calls == []
+
+
+def test_the_same_address_pasted_by_a_person_is_probed(conn, monkeypatch):
+    fake = FakeYdl(single_info())
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    job_id = url_job(conn, "http://127.0.0.1:11434/api/tags")
+
+    url_stage.fetch(make_ctx(conn, job_id))
+
+    assert fake.calls != []
+
+
 # --- downloading ---------------------------------------------------------------
 
 

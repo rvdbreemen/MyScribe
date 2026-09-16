@@ -64,6 +64,11 @@ Each fix shipped with the test that failed before it and passed after.
   was made from; when they no longer match, the page says the words were
   edited after the reading was made and how to refresh it. The reading
   itself stays: it is a paid answer, not a cache (schema v17).
+- A followed feed is polled unattended, and its author could publish an
+  enclosure at `127.0.0.1:11434` or `192.168.1.1/admin` and have the app
+  fetch it from inside the network. An address a feed or playlist wrote down
+  may no longer point at this machine or the local network; an address a
+  person pastes is still theirs to choose.
 
 ### Added
 

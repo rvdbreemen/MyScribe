@@ -35,6 +35,7 @@ needs.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from dataclasses import dataclass, field
@@ -413,6 +414,49 @@ def ensure_http_url(url: str) -> str:
         raise UnsupportedUrl(
             f"{text or 'an empty string'} is not a web address; "
             "paste an http:// or https:// link"
+        )
+    return text
+
+
+def is_local_host(host: str | None) -> bool:
+    """Does this host, as written, point at this machine or its network?
+
+    A literal address is judged by `ipaddress`: anything not globally
+    routable - loopback, private, link-local, unspecified, multicast,
+    reserved - is local. A name is local when it is `localhost`, ends in
+    `.localhost`, or ends in `.local` (mDNS: printers, NAS boxes). No host at
+    all is local too: there is nothing public to fetch. Names are not
+    resolved, on purpose: a lookup inside a guard is a network call the guard
+    exists to prevent, and a name that resolves to a private address only
+    at fetch time is out of this guard's reach. It stops the author who
+    writes the address down, which is the case there is (TASK-072).
+    """
+    name = (host or "").strip().lower()
+    if not name:
+        return True
+    if name == "localhost" or name.endswith(".localhost") or name.endswith(".local"):
+        return True
+    try:
+        return not ipaddress.ip_address(name).is_global
+    except ValueError:
+        return False
+
+
+def ensure_public_http_url(url: str) -> str:
+    """`ensure_http_url`, and the host must not be this machine or its network.
+
+    For an address a feed or playlist author wrote down, never for one a
+    person pasted (TASK-072). A followed feed is polled unattended on its own
+    timer, and its author could publish an enclosure at 127.0.0.1:11434 or
+    192.168.1.1/admin and have this app fetch it on their behalf, from inside
+    the network. A person who pastes their NAS's address chose it, and the
+    app listens on 127.0.0.1 only, so `ensure_http_url` stays a scheme check.
+    """
+    text = ensure_http_url(url)
+    if is_local_host(urlparse(text).hostname):
+        raise UnsupportedUrl(
+            f"{text} points at this machine or the local network; "
+            "a feed or playlist cannot ask for that"
         )
     return text
 
