@@ -57,8 +57,17 @@
           {% if row.private %}<span class="badge private" title="Pinned private: its text never leaves this machine">🔒</span>{% endif %}
         </td>
         {# Their own fragment, because the status cell's poll swaps them back
-           out of band when a job has changed either (TASK-050). #}
-        {% include "_media_meta.html" %}
+           out of band when a job has changed either (TASK-050).
+
+           Explicitly oob=false: this table is swapped outright, so these cells
+           belong in it. Inheriting the page-level `oob` (which a mutation sets
+           for the sidebar and the flash below) would make htmx lift every one
+           of them out of the response and place it by id, leaving each row two
+           cells short - the upload date under Category, the duration under
+           Labels - and consuming the ids the status poll aims at (TASK-058).
+           The poll's own answer sets the flag itself in
+           _media_status_poll.html. #}
+        {% with oob = false %}{% include "_media_meta.html" %}{% endwith %}
         <td>{{ m.when(row.created_at) }}</td>
         <td class="num">{{ m.ts(row.duration) }}</td>
         <td class="mode">{{ m.mode_icon(row.run_model) }}</td>

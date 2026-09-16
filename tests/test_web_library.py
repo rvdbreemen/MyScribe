@@ -363,6 +363,39 @@ def test_rename_changes_the_title_and_not_the_store_path(client, conn, library):
     assert "Alpha renamed" in resp.text
 
 
+def test_a_mutation_answers_with_a_table_whose_cells_are_not_out_of_band(
+    client, conn, library
+):
+    """TASK-058: the two meta cells belong in the table this response replaces.
+
+    `hx-swap-oob` on a cell inside a full-table swap makes htmx lift it out and
+    place it by id instead, so the table that lands is two cells short per row:
+    the upload date slides into the Category column and the duration into
+    Labels. The ids go with them, which is what the status cell's poll aims at.
+    The flash is out of band on purpose and stays that way.
+    """
+    resp = client.post(
+        f"/media/{library['alpha']}/rename", data={"title": "Alpha renamed"}, headers=HX
+    )
+
+    assert resp.status_code == 200
+    cells = re.findall(r'<td class="(?:folder|labels)"[^>]*>', resp.text)
+    assert cells, "the answer should still carry the two meta cells"
+    assert not [cell for cell in cells if "hx-swap-oob" in cell]
+    assert f'id="folder-{library["alpha"]}"' in resp.text
+    assert f'id="labels-{library["alpha"]}"' in resp.text
+
+
+def test_the_status_poll_still_carries_the_meta_cells_out_of_band(client, library):
+    """The other half of TASK-058: the poll is where the flag belongs."""
+    resp = client.get(f"/media/{library['alpha']}/status")
+
+    assert resp.status_code == 200
+    cells = re.findall(r'<td class="(?:folder|labels)"[^>]*>', resp.text)
+    assert len(cells) == 2
+    assert all("hx-swap-oob" in cell for cell in cells)
+
+
 def test_rename_refuses_an_empty_title(client, conn, library):
     resp = client.post(f"/media/{library['alpha']}/rename", data={"title": "  "})
 

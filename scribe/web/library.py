@@ -470,6 +470,11 @@ def _after_change(
         if _is_htmx(request):
             return Response(status_code=200, headers={"HX-Redirect": state.url()})
     if _is_htmx(request):
+        # oob=True is for the sidebar and the flash appended below the table:
+        # the counts on the sidebar just changed, and the flash has nowhere
+        # else to go. It is *not* for the cells inside the table, which this
+        # response replaces outright - _media_rows.html includes them with
+        # oob=false for that reason (TASK-058).
         return render(
             request, "_media_rows.html", oob=True, flash=flash, **library_context(conn, state)
         )
