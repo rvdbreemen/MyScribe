@@ -167,6 +167,78 @@ def test_reconcile_flips_a_job_whose_pid_belongs_to_a_younger_process(conn):
     assert _row(conn, job_id)["status"] == "interrupted"
 
 
+# --- one runner at a time, across lives and instances --------------------------------
+
+
+def _left_running_by_a_previous_life(conn, job_id, pid):
+    """A row a stopped app left behind: running, with the pid it had."""
+    with db.LOCK:
+        conn.execute(
+            "UPDATE job SET status='running', started_at=?, pid=? WHERE id=?",
+            (time.time(), pid, job_id),
+        )
+        conn.commit()
+
+
+def test_a_dead_orphan_from_a_previous_life_does_not_hold_the_queue(
+    conn, db_path, ok_runner_cmd
+):
+    """TASK-070, the half that must not starve: a claim is refused while a
+    row says running, so a runner that died after the startup reconcile ran
+    would block the queue until the next restart. The loop reconciles when it
+    finds nothing to claim, flips the dead one, and claims."""
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    orphan = jobs.enqueue(conn, "fake")
+    _left_running_by_a_previous_life(conn, orphan, dead.pid)
+    job_id = jobs.enqueue(conn, "fake")
+
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=ok_runner_cmd)
+    sup.start()
+    try:
+        assert _wait_for(lambda: _row(conn, job_id)["status"] == "done"), (
+            "a dead orphan held the queue"
+        )
+    finally:
+        sup.stop()
+
+    assert _row(conn, orphan)["status"] == "interrupted"
+
+
+def test_a_live_orphan_from_a_previous_life_holds_the_queue_until_it_ends(
+    conn, db_path, ok_runner_cmd
+):
+    """TASK-070, the half the finding is about: stop() leaves a running child
+    alone, the next life's reconcile keeps its row because the pid is alive,
+    and the new supervisor claimed the next job beside it - two runners on one
+    card. Now the claim waits for the row to leave running."""
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        orphan = jobs.enqueue(conn, "fake")
+        _left_running_by_a_previous_life(conn, orphan, live.pid)
+        job_id = jobs.enqueue(conn, "fake")
+
+        sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=ok_runner_cmd)
+        sup.start()
+        try:
+            time.sleep(0.5)  # ten polls: plenty for the old behaviour to claim
+            assert _row(conn, job_id)["status"] == "queued", "claimed beside a live runner"
+            assert _row(conn, orphan)["status"] == "running"
+
+            live.kill()
+            live.wait()
+            assert _wait_for(lambda: _row(conn, job_id)["status"] == "done"), (
+                "the queue never moved after the orphan ended"
+            )
+        finally:
+            sup.stop()
+    finally:
+        if live.poll() is None:
+            live.kill()
+
+    assert _row(conn, orphan)["status"] == "interrupted"
+
+
 # --- cancel + kill grace ------------------------------------------------------
 
 

@@ -50,38 +50,80 @@ def test_claim_next_flips_status_and_orders_by_priority_then_id(conn):
     assert first["id"] == high
     assert first["status"] == "running"
     assert first["started_at"] is not None
+    jobs.finish(conn, high, "done")
 
     assert jobs.claim_next(conn)["id"] == low
+    jobs.finish(conn, low, "done")
     assert jobs.claim_next(conn)["id"] == low2
+    jobs.finish(conn, low2, "done")
     assert jobs.claim_next(conn) is None
 
     statuses = {
         row["id"]: row["status"] for row in conn.execute("SELECT id, status FROM job")
     }
-    assert statuses == {low: "running", high: "running", low2: "running"}
+    assert statuses == {low: "done", high: "done", low2: "done"}
+
+
+def test_claim_next_refuses_while_a_job_is_running(conn):
+    """One runner at a time is SQLite's rule, not the supervisor's habit.
+
+    ADR-001 promises at most one GPU runner and delivered it per supervisor
+    only, by running its loop in sequence; a second app instance on the same
+    data, or a runner that outlived a stopped app, claimed beside it and two
+    children loaded Whisper on one card (TASK-070). The claim is now refused
+    inside the same statement while any job is running, so it cannot race.
+    """
+    first = jobs.enqueue(conn, "fake")
+    second = jobs.enqueue(conn, "fake")
+
+    assert jobs.claim_next(conn)["id"] == first
+    assert jobs.claim_next(conn) is None  # not "nothing queued": something is running
+    assert _row(conn, second)["status"] == "queued"
+
+    jobs.finish(conn, first, "done")
+    assert jobs.claim_next(conn)["id"] == second
+
+
+def _row(conn, job_id):
+    return conn.execute("SELECT * FROM job WHERE id=?", (job_id,)).fetchone()
 
 
 def test_claim_race_exactly_one_winner_per_job(conn):
+    """Eight claimers released through one barrier onto the queue: one wins
+    and seven get None, because the claim is one statement under BEGIN
+    IMMEDIATE and is refused while a job runs. Finish the winner and the next
+    round has one winner again, until every row has been claimed exactly once
+    and nothing is claimed twice."""
     queued = [jobs.enqueue(conn, "fake") for _ in range(4)]
     claimed: list[int] = []
     lock = threading.Lock()
-    barrier = threading.Barrier(8)
 
-    def worker():
-        barrier.wait()
-        row = jobs.claim_next(conn)
-        if row is not None:
-            with lock:
-                claimed.append(row["id"])
+    def round_of_claims() -> list[int]:
+        wins: list[int] = []
+        barrier = threading.Barrier(8)
 
-    threads = [threading.Thread(target=worker) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+        def worker():
+            barrier.wait()
+            row = jobs.claim_next(conn)
+            if row is not None:
+                with lock:
+                    wins.append(row["id"])
 
-    assert sorted(claimed) == sorted(queued)  # 4 wins, no duplicates
-    assert len(set(claimed)) == 4
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return wins
+
+    for _ in queued:
+        wins = round_of_claims()
+        assert len(wins) == 1, wins  # one runner at a time, however many ask
+        claimed.extend(wins)
+        jobs.finish(conn, wins[0], "done")
+
+    assert sorted(claimed) == sorted(queued)  # every row once, no duplicates
+    assert round_of_claims() == []
 
 
 def test_claim_cpu_prework_returns_row_without_flipping_status(conn):

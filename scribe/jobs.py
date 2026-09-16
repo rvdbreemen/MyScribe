@@ -110,7 +110,17 @@ def claim_next(conn: sqlite3.Connection, mode: str = "gpu") -> dict | None:
 
     mode="gpu" (default): atomically flips the job to running via
     BEGIN IMMEDIATE + UPDATE ... RETURNING, so exactly one claimer wins
-    even across processes.
+    even across processes - and nobody wins while any job is running.
+    That second clause is ADR-001's "at most one GPU runner at a time" made
+    SQLite's rule rather than one supervisor's habit (TASK-070): a second app
+    instance on the same data, or a runner that outlived a stopped app, used
+    to claim beside the running job and put two children on one card. It is
+    inside the same statement so it cannot race, and it is why the supervisor
+    reconciles when a claim comes back empty - a running row whose runner is
+    dead would otherwise hold the queue until the next restart.
+
+    Returns None both when nothing is queued and when something is running;
+    the caller cannot tell the two apart and has no reason to.
 
     mode="cpu-prework": returns the next queued job whose CPU prework
     is still pending WITHOUT touching its status; the caller reports
@@ -135,6 +145,7 @@ def claim_next(conn: sqlite3.Connection, mode: str = "gpu") -> dict | None:
                 "UPDATE job SET status='running', started_at=?, pid=NULL"
                 " WHERE id=(SELECT id FROM job WHERE status='queued'"
                 "           ORDER BY priority DESC, queue_seq, id LIMIT 1)"
+                "   AND NOT EXISTS (SELECT 1 FROM job WHERE status='running')"
                 " RETURNING *",
                 (time.time(),),
             ).fetchone()

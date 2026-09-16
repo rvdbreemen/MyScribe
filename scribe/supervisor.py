@@ -12,7 +12,12 @@ row, and watches it. The runner normally delivers its own verdict
 
 reconcile() runs at startup: any job still marked running whose pid is
 dead or absent belongs to a previous app life and becomes interrupted
-(one-click retry later, in the UI phase).
+(one-click retry later, in the UI phase). It runs again whenever the loop
+finds nothing to claim, because a claim is refused while any row says
+running (jobs.claim_next, TASK-070): a runner that died after startup, or
+one that outlived a stopped app and then died, would otherwise hold the
+queue until the next restart. A live orphan holds it, on purpose - that is
+the one runner at a time.
 """
 
 import os
@@ -311,6 +316,12 @@ class Supervisor:
                 try:
                     job = jobs.claim_next(conn)
                     if job is None:
+                        # Nothing queued, or something running. If that
+                        # something is a row whose runner is gone, the claim
+                        # would stay refused for ever; reconcile flips it.
+                        flipped = reconcile(conn)
+                        if flipped:
+                            applog.log("supervisor.reconciled", level="warn", flipped=flipped)
                         self._stop_event.wait(self.poll_interval)
                         continue
                     self._run_one(conn, job)

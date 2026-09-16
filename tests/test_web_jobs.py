@@ -783,9 +783,9 @@ def test_raising_a_job_from_the_board_answers_with_its_new_place(client, conn, b
 
 
 def test_the_board_refuses_to_move_a_running_job(client, conn, board):
-    job_id = jobs.enqueue(conn, "transcribe", params={}, priority=99)  # claimed first
-    claimed = jobs.claim_next(conn)
-    assert claimed["id"] == job_id
+    # The board's own running job. Claiming a second one beside it is refused
+    # now (TASK-070), which is the rule this test used to sidestep.
+    job_id = board["running"]
 
     response = client.post(f"/api/jobs/{job_id}/priority", data={"priority": 10})
 

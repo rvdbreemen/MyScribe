@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-16 15:20'
-updated_date: '2026-09-16 15:22'
+updated_date: '2026-09-16 16:45'
 labels:
   - review-2026-09-16
   - web
@@ -45,6 +45,8 @@ Fix in scribe/web/transcript.py: except (playback.ProxyError, OSError), dezelfde
 
 Rood: PermissionError ontsnapte uit GET /media/{id}/audio.
 Groen: tests/test_web_transcript.py 95 passed.
+
+Also closes the review finding at tests/test_web_transcript.py:391 (mock-shaped-test: the proxy fallback tests injected only ProxyError). test_audio_serves_the_original_when_the_transcode_hits_a_disk_error injects an OSError on the route, and TASK-062's test does the same on the proxy stage.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

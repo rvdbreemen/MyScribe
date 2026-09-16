@@ -47,6 +47,18 @@ Each fix shipped with the test that failed before it and passed after.
   left the job's scratch behind. The runner now gets its own process group,
   the cancel ends the whole tree, and the supervisor removes the scratch the
   runner can no longer remove itself.
+- Every line a model read was Whisper's segment row, which nothing rewrites;
+  the glossary's corrections and a reader's retypes live on the words, and
+  the view and every export print words. A name the correct stage fixed was
+  right everywhere the reader looked and wrong in every summary, cleaning
+  and speaker pass. The model now reads the words inside each segment's
+  boundaries, corrections included (ADR-003 as written).
+- One runner at a time was the supervisor's habit, not SQLite's rule: a
+  second app instance on the same data, or a runner that outlived a stopped
+  app, claimed the next job beside the running one and put two children on
+  one card. The claim is now refused inside the same statement while any job
+  is running, and the loop reconciles when it finds nothing to claim, so a
+  runner that died does not hold the queue until the next restart.
 
 ### Added
 
