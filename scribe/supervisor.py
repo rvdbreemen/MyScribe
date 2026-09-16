@@ -300,11 +300,32 @@ class Supervisor:
 
     def stop(self, timeout: float = 10.0) -> None:
         """Ask the loop to exit and join it. A still-running child is left
-        alone; the next startup's reconcile() marks its job interrupted."""
+        alone; the next startup's reconcile() marks its job interrupted.
+
+        A join that runs out of time is said on stderr and the thread is
+        *kept*, the way `watching.Watcher.stop` keeps its own (TASK-073).
+        The loop cannot see the stop event while `_watch` is inside a kill -
+        terminate, then up to two waits of `_KILL_WAIT_SECONDS` - so a
+        shutdown that lands mid-cancel comes back here with the loop still
+        running. Dropping the handle either way made that indistinguishable
+        from a clean stop, and `start()` would then begin a second loop
+        beside the first in the same process.
+        """
         self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
-            self._thread = None
+        thread = self._thread
+        if thread is None:
+            return
+        thread.join(timeout)
+        if thread.is_alive():
+            print(
+                f"scribe: the supervisor thread is still running {timeout:g}s after"
+                " being asked to stop; it is most likely ending a cancelled runner"
+                " and will finish on its own.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        self._thread = None
 
     # --- internals ------------------------------------------------------------
 

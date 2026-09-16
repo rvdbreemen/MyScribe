@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -165,6 +166,45 @@ def test_reconcile_flips_a_job_whose_pid_belongs_to_a_younger_process(conn):
     supervisor.reconcile(conn)
 
     assert _row(conn, job_id)["status"] == "interrupted"
+
+
+# --- stopping ---------------------------------------------------------------------
+
+
+def test_a_stop_that_could_not_join_says_so_and_keeps_the_thread(db_path, capsys):
+    """TASK-073: the loop cannot see the stop event while _watch is inside a
+    kill - terminate, then up to two waits of _KILL_WAIT_SECONDS - so a
+    shutdown that lands mid-cancel returns from stop() with the loop still
+    running. Dropping the handle either way made that indistinguishable from
+    a clean stop, and start() would begin a second loop beside the first.
+    Same rule as watching.Watcher.stop(): say so, keep it."""
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05)
+    stuck = threading.Thread(target=lambda: time.sleep(30), daemon=True)
+    stuck.start()
+    sup._thread = stuck
+
+    sup.stop(timeout=0.05)
+
+    assert sup._thread is stuck, "a thread that never stopped was forgotten"
+    assert "still running" in capsys.readouterr().err
+    sup.start()
+    assert sup._thread is stuck, "a second loop was started beside the first"
+
+
+def test_a_stop_that_joins_in_time_drops_the_handle_and_start_runs_a_fresh_loop(db_path):
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05)
+    sup.start()
+    first = sup._thread
+
+    sup.stop(timeout=5.0)
+
+    assert sup._thread is None
+    assert not first.is_alive()
+    sup.start()
+    try:
+        assert sup._thread is not first and sup._thread.is_alive()
+    finally:
+        sup.stop()
 
 
 # --- one runner at a time, across lives and instances --------------------------------

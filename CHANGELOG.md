@@ -69,6 +69,10 @@ Each fix shipped with the test that failed before it and passed after.
   fetch it from inside the network. An address a feed or playlist wrote down
   may no longer point at this machine or the local network; an address a
   person pastes is still theirs to choose.
+- A shutdown that landed while the supervisor was ending a cancelled runner
+  forgot the loop that was still running, and a later start would have
+  begun a second one beside it. Like the watch-folder thread, it now says
+  so and keeps the handle.
 
 ### Added
 
