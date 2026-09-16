@@ -1,6 +1,6 @@
 [project]
 name = "myscribe"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local transcription with speakers, corrections, exports and an AI panel."
 requires-python = "==3.12.*"
 # The direct dependencies, each pinned; uv.lock pins everything they pull in,
