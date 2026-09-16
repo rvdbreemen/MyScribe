@@ -162,6 +162,14 @@
       <div id="clean-reading" class="transcript clean-reading" data-reading="clean" hidden>
         <p class="hint">Cleaned for reading: {{ clean_reading.words_in }} words became
           {{ clean_reading.words_out }}. The transcript above is unchanged.</p>
+        {% if clean_reading.stale %}
+        {# The words moved under it - a glossary pass, a retype - and the reading
+           did not (TASK-071). Shown all the same: it is a paid answer, not a
+           cache. The reader is told, and told how to get a current one. #}
+        <p class="hint" data-reading-stale>The words were edited after this reading was made, so it
+          may not say what the transcript says now. Ask “Clean transcript” again for a reading of
+          the words as they are.</p>
+        {% endif %}
         <pre class="clean-text">{{ clean_reading.text }}</pre>
       </div>
       {% elif cleanup_status and not (cleanup_status.gate and cleanup_status.gate.published) %}

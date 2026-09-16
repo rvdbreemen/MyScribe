@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from scribe import db
+from scribe import db, glossary
 from scribe.exports import doc as docs
 from scribe.llm import tasks
 from tests.seed import seed_media, seed_run
@@ -274,6 +274,46 @@ def test_cleaning_again_replaces_the_reading_rather_than_adding_one(
 
     assert conn.execute("SELECT COUNT(*) FROM clean_reading").fetchone()[0] == 1
     assert _reading(conn, media)["text"].endswith("again")
+
+
+def test_a_reading_says_when_the_words_changed_after_it_was_made(conn, media, monkeypatch):
+    """TASK-071: the reading is keyed by run and the words under it can move -
+    a glossary pass, a retype - so the pane showed a cleaning of words the
+    reader no longer sees, and said nothing. Not recomputed: a reading is a
+    paid answer with a receipt, so it stays and says the words changed."""
+    run_id = conn.execute(
+        "SELECT id FROM run WHERE media_id=? AND is_current=1", (media,)
+    ).fetchone()["id"]
+    doc = docs.load(conn, media)
+    source = " ".join(seg["text"] for seg in doc.segments)
+    provider, _ = fake_provider([source, source.replace("Marvin", "Marvyn")])
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+    assert _reading(conn, media)["stale"] is False
+
+    glossary.store(conn, run_id, [glossary.Correction(20, " Marvin", " Marvyn", "fuzzy", 0.9)])
+    assert _reading(conn, media)["stale"] is True
+
+    tasks.run_task(conn, media_id=media, kind="cleanup", provider_name="fake", model="fake-1")
+    assert _reading(conn, media)["stale"] is False  # made from the words as they are now
+
+
+def test_a_reading_from_before_fingerprints_is_not_called_stale(conn, media):
+    """The two readings in the library predate the column. Not knowing what
+    they were made from is not evidence that the words moved."""
+    run_id = conn.execute(
+        "SELECT id FROM run WHERE media_id=? AND is_current=1", (media,)
+    ).fetchone()["id"]
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
+            " VALUES (?, 'old reading', 40, 38, 0.0)",
+            (run_id,),
+        )
+        conn.commit()
+
+    assert tasks.clean_reading(conn, run_id)["stale"] is False
 
 
 def test_publishing_a_reading_touches_no_word(conn, media, monkeypatch):

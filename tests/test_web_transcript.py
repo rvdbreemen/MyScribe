@@ -1070,14 +1070,34 @@ def test_the_panel_can_say_where_a_speakers_name_came_from(client, conn, transcr
 # --- the two readings (TASK-026) ---------------------------------------------------
 
 
-def _publish_reading(conn, run_id, cleaned, words_in=100, words_out=90):
+def _publish_reading(conn, run_id, cleaned, words_in=100, words_out=90, words_hash=None):
     with db.LOCK:
         conn.execute(
-            "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at)"
-            " VALUES (?, ?, ?, ?, 0.0)",
-            (run_id, cleaned, words_in, words_out),
+            "INSERT INTO clean_reading(run_id, text, words_in, words_out, created_at, words_hash)"
+            " VALUES (?, ?, ?, ?, 0.0, ?)",
+            (run_id, cleaned, words_in, words_out, words_hash),
         )
         conn.commit()
+
+
+def test_the_page_says_when_the_words_were_edited_after_the_reading(client, conn, transcribed):
+    """TASK-071: a reading made from words that have since been corrected is
+    still shown - it is a paid answer - but the page says so, and says how to
+    get one of the words as they are now. A reading from before fingerprints
+    (no hash) is not flagged: not knowing is not evidence."""
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _publish_reading(conn, run_id, "The cleaned words.", words_hash="made-from-other-words")
+
+    body = client.get(f"/media/{media_id}").text
+
+    assert "The cleaned words." in body
+    assert "data-reading-stale" in body
+    assert "edited after this reading was made" in body
+
+    with db.LOCK:
+        conn.execute("UPDATE clean_reading SET words_hash=NULL WHERE run_id=?", (run_id,))
+        conn.commit()
+    assert "data-reading-stale" not in client.get(f"/media/{media_id}").text
 
 
 def test_a_published_cleaning_puts_both_readings_on_the_page(client, conn, transcribed):

@@ -583,6 +583,15 @@ def test_schema_v13_puts_a_cleaned_reading_beside_the_words_not_over_them(conn):
     )
 
 
+def test_schema_v17_lets_a_reading_say_which_words_it_read(conn):
+    """TASK-071. A reading keyed by run alone cannot tell that the words under
+    it moved; the fingerprint of the corrected words it was made from can."""
+    db.migrate(conn)
+
+    assert db.SCHEMA_VERSION >= 17
+    assert "words_hash" in _columns(conn, "clean_reading")
+
+
 def test_a_run_has_at_most_one_cleaned_reading(conn):
     """Re-cleaning is a correction, not a second opinion to keep beside the
     first: the reading is derived and regenerable, unlike the analysis it came

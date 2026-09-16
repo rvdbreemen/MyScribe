@@ -61,7 +61,7 @@ from typing import Annotated, Any, Callable, Sequence
 import jinja2
 from pydantic import BaseModel, BeforeValidator, ValidationError
 
-from scribe import db, llm, render
+from scribe import db, glossary, llm, render
 from scribe.exports import doc as docs
 from scribe.llm import base, chunking, ollama, openai_like, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
@@ -913,6 +913,10 @@ class TaskPlan:
     budget_tokens: int
     max_output_tokens: int
     custom_prompt: str | None = None
+    words_hash: str = ""
+    """`words_fingerprint` of the words the chunks were cut from, taken when
+    the document was loaded - so a cleaning records what it read even if a
+    correction lands while the model is answering (TASK-071)."""
     known_labels: tuple[str, ...] = ()
     """The vocabulary the library already uses, for the kinds whose prompt
     offers it. Read once when the plan is made rather than at each call, so
@@ -1054,6 +1058,7 @@ def plan_task(
     return TaskPlan(
         media_id=media_id,
         run_id=int(doc.run["id"]),
+        words_hash=words_fingerprint(doc.words),
         spec=spec,
         provider_name=provider_name,
         model=chosen_model,
@@ -2304,10 +2309,11 @@ def apply_cleanup(
     with db.LOCK:
         conn.execute(
             "INSERT INTO clean_reading(run_id, text, llm_output_id, words_in, words_out,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            " created_at, words_hash) VALUES (?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(run_id) DO UPDATE SET text=excluded.text,"
             " llm_output_id=excluded.llm_output_id, words_in=excluded.words_in,"
-            " words_out=excluded.words_out, created_at=excluded.created_at",
+            " words_out=excluded.words_out, created_at=excluded.created_at,"
+            " words_hash=excluded.words_hash",
             (
                 plan.run_id,
                 "\n\n".join(parts),
@@ -2315,6 +2321,7 @@ def apply_cleanup(
                 verdict["words_in"],
                 verdict["words_out"],
                 time.time(),
+                plan.words_hash or None,
             ),
         )
         conn.commit()
@@ -2340,13 +2347,53 @@ def _keep_verdict(conn: sqlite3.Connection, output_id: int, gate: dict) -> None:
         conn.commit()
 
 
+def words_fingerprint(words: Sequence[Any]) -> str:
+    """What a reading was made from, as one hash: the text of every word in
+    order, through the correction layer when the words came from `docs.load`.
+
+    The separator cannot occur inside a word, a folded word's empty text still
+    holds its place, and whitespace inside a word counts because it is the
+    word's - so the same words give the same print and any edit to any word
+    gives a different one (TASK-071).
+    """
+    joined = "\x1f".join(str(word["text"] or "") for word in words)
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+
+
+def run_words_fingerprint(conn: sqlite3.Connection, run_id: int) -> str:
+    """The run's words as they read now: the same join the transcript view and
+    the exports use, so a glossary pass and a retype both move it and a
+    rename does not."""
+    with db.LOCK:
+        rows = conn.execute(
+            f"SELECT {glossary.CORRECTED_TEXT} AS text FROM word w {glossary.CORRECTION_JOIN}"
+            " WHERE w.run_id=? ORDER BY w.idx",
+            (run_id,),
+        ).fetchall()
+    return words_fingerprint(rows)
+
+
 def clean_reading(conn: sqlite3.Connection, run_id: int) -> dict | None:
-    """The cleaned reading for a run, when one was published."""
+    """The cleaned reading for a run, when one was published, with `stale`:
+    the words it was made from are no longer the words the run reads.
+
+    Keyed by run, the row cannot know that the words under it moved; the
+    fingerprint it carries can (TASK-071). It is not recomputed and not
+    dropped - a reading is a paid answer with a receipt, not a cache - so the
+    page shows it and says so. A reading without a fingerprint was made before
+    the column existed, and not knowing what it read is not evidence that the
+    words moved: never stale.
+    """
     with db.LOCK:
         row = conn.execute(
             "SELECT * FROM clean_reading WHERE run_id=?", (run_id,)
         ).fetchone()
-    return None if row is None else dict(row)
+    if row is None:
+        return None
+    reading = dict(row)
+    made_from = reading.get("words_hash")
+    reading["stale"] = bool(made_from) and made_from != run_words_fingerprint(conn, run_id)
+    return reading
 
 
 def cleanup_status(conn: sqlite3.Connection, media_id: int, run_id: int | None) -> dict | None:

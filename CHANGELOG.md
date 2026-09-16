@@ -59,6 +59,11 @@ Each fix shipped with the test that failed before it and passed after.
   one card. The claim is now refused inside the same statement while any job
   is running, and the loop reconciles when it finds nothing to claim, so a
   runner that died does not hold the queue until the next restart.
+- A cleaned reading kept showing text cleaned from words that had since been
+  corrected, and said nothing. It now records a fingerprint of the words it
+  was made from; when they no longer match, the page says the words were
+  edited after the reading was made and how to refresh it. The reading
+  itself stays: it is a paid answer, not a cache (schema v17).
 
 ### Added
 

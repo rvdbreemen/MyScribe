@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -508,10 +508,26 @@ DROP INDEX IF EXISTS idx_job_claim;
 CREATE INDEX idx_job_claim ON job(status, priority DESC, queue_seq) WHERE status='queued';
 """
 
+_SCHEMA_V17 = """
+-- v17 (TASK-071): a reading says which words it read.
+--
+-- clean_reading is keyed by run, and the words under a run move - the
+-- glossary pass writes corrections, a reader retypes a word - while the
+-- reading stays what it was, and the page said nothing. It is not recomputed:
+-- a reading is a paid answer with a receipt, and ADR-003's cache exception is
+-- for derivations that cost nothing to make again. So it carries a
+-- fingerprint of the corrected words it was made from, and the page compares
+-- that with the words as they read now. NULL for the readings from before
+-- this column: not knowing what they read is not evidence that the words
+-- moved, so they are never called stale.
+ALTER TABLE clean_reading ADD COLUMN words_hash TEXT;
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
     _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13, _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16,
+    _SCHEMA_V17,
 ]
 
 
