@@ -1218,6 +1218,16 @@ def test_adding_a_watch_folder_stores_it_enabled_with_its_options(client, conn, 
     assert row["options"].diarize is False
 
 
+def test_a_plain_add_lands_on_the_watch_card(client, conn, inbox):
+    """TASK-077: the 303 went to /settings#watch-folders, a fragment inside a
+    card the radio had not opened, so the person who pressed 'Watch this
+    folder' saw the Defaults form and no sign of their folder."""
+    resp = client.post("/settings/watch", data={"path": str(inbox)}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/settings?section=watch#watch-folders"
+
+
 def test_a_folder_outside_the_allowed_roots_is_refused(client, conn, tmp_path):
     allowed = tmp_path / "allowed"
     allowed.mkdir()

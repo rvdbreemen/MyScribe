@@ -338,6 +338,34 @@ def test_search_says_it_matches_what_was_heard_when_corrections_exist(
     assert "as it was heard" in client.get("/search?q=Vogon").text
 
 
+def test_a_plain_rail_post_goes_back_to_the_recording_page(client, library):
+    """TASK-078: the transcript rail's rename, move, trash and restore post to
+    the library's routes, whose plain answer is a 303 to the library view -
+    from /media/12 that was the library root. The Referer says where the
+    person was, as it already does for the library's own view state."""
+    media_id = library["alpha"]
+    came_from = {"Referer": f"http://testserver/media/{media_id}"}
+
+    renamed = client.post(
+        f"/media/{media_id}/rename", data={"title": "Alpha again"}, headers=came_from, follow_redirects=False
+    )
+    trashed = client.post(f"/media/{media_id}/trash", headers=came_from, follow_redirects=False)
+
+    assert (renamed.status_code, renamed.headers["location"]) == (303, f"/media/{media_id}")
+    assert (trashed.status_code, trashed.headers["location"]) == (303, f"/media/{media_id}")
+
+
+def test_a_referer_that_is_not_a_recording_page_keeps_the_library_redirect(client, library):
+    resp = client.post(
+        f"/media/{library['alpha']}/rename",
+        data={"title": "Alpha"},
+        headers={"Referer": "http://testserver/media/not-a-number"},
+        follow_redirects=False,
+    )
+
+    assert (resp.status_code, resp.headers["location"]) == (303, "/")
+
+
 def test_search_with_an_empty_query_redirects_to_the_library(client, library):
     resp = client.get("/search?q=", follow_redirects=False)
 

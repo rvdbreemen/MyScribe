@@ -327,12 +327,34 @@ def test_saving_auto_detect_stores_an_empty_language(client, conn, fake_checks):
     assert "selected" not in re.search(r'<option value="nl"[^>]*>', client.get("/settings").text).group(0)
 
 
-def test_a_plain_save_redirects_back_to_the_settings_page(client, conn, fake_checks):
+def test_a_plain_save_redirects_back_to_the_card_it_saved(client, conn, fake_checks):
+    """TASK-077: the page shows one category at a time, chosen by a radio the
+    server checks from ?section=. A bare /settings, or a fragment alone,
+    opened Defaults with the saved card display:none behind it."""
     resp = client.post("/settings", data={"language": "de", "tier": "turbo"}, follow_redirects=False)
 
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/settings"
+    assert resp.headers["location"] == "/settings?section=defaults#settings-defaults"
     assert _setting(conn, "default_language") == "de"
+
+
+@pytest.mark.parametrize(
+    "path, data, location",
+    [
+        ("/settings/glossary", {"term": "Zaphod"}, "/settings?section=glossary#glossary"),
+        ("/settings/llm/openai/key", {"key": "sk-test"}, "/settings?section=llm#llm-providers"),
+        (
+            "/settings/presets",
+            {"name": "Plain", "options": '{"formats": ["md"], "front_matter": true, "timestamps": "sentence"}'},
+            "/settings?section=presets#settings-presets",
+        ),
+    ],
+)
+def test_every_plain_form_save_lands_on_its_own_card(client, conn, path, data, location):
+    resp = client.post(path, data=data, follow_redirects=False)
+
+    assert resp.status_code == 303, resp.text
+    assert resp.headers["location"] == location
 
 
 def test_saving_bad_defaults_is_a_400_and_stores_nothing(client, conn, fake_checks):
@@ -395,11 +417,11 @@ def test_doctor_post_returns_the_cpu_table(client, fake_checks):
     assert "winget install Gyan.FFmpeg" in body
 
 
-def test_a_plain_doctor_post_redirects_to_the_settings_page(client, fake_checks):
+def test_a_plain_doctor_post_redirects_to_the_machine_card(client, fake_checks):
     resp = client.post("/settings/doctor", follow_redirects=False)
 
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/settings"
+    assert resp.headers["location"] == "/settings?section=machine"
 
 
 def test_doctor_post_with_gpu_queues_one_doctor_job(client, conn, fake_checks):

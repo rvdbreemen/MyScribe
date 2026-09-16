@@ -1032,7 +1032,7 @@ def test_saving_a_preset_as_options_json(client, conn):
     )
 
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/settings"
+    assert resp.headers["location"] == "/settings?section=presets#settings-presets"  # its own card (TASK-077)
     (row,) = _presets(conn)
     stored = ExportOptions.model_validate_json(row["options_json"])
     assert stored.formats == ["md"] and stored.front_matter is True and stored.timestamps == "sentence"

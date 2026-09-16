@@ -437,6 +437,24 @@ def _origin_state(request: Request) -> State:
     return _state_from_url(request.headers.get("Referer"))
 
 
+_RECORDING_PAGE = re.compile(r"^/media/\d+$")
+
+
+def _page_from_referer(request: Request) -> str | None:
+    """The recording page a plain post came from, or None.
+
+    The transcript rail's rename, move, trash and restore post to this
+    module's routes, and their plain answer - scripting off - was the
+    library view: from `/media/12` that is the library root, and the person
+    who renamed a recording from its own page had to find their way back
+    (TASK-078). The Referer already says where the library's own plain posts
+    came from (`_origin_state`); here only its path counts, and only exactly
+    `/media/<id>` - never the host, never a query, never anything else.
+    """
+    parts = urlsplit(request.headers.get("Referer") or "")
+    return parts.path if _RECORDING_PAGE.match(parts.path) else None
+
+
 def _library_page(request: Request, conn: sqlite3.Connection, state: State) -> Response:
     """The page, or on an htmx request the table alone."""
     ctx = library_context(conn, state)
@@ -464,6 +482,10 @@ def _after_change(
     """
     if not _is_htmx(request) and not _wants_html(request):
         return Response(status_code=204)
+    if not _is_htmx(request):
+        page = _page_from_referer(request)
+        if page is not None:
+            return RedirectResponse(page, status_code=303)
     state = _origin_state(request)
     if state.folder is not None and not _folder_exists(conn, state.folder):
         state = State(sort=state.sort, q=state.q)

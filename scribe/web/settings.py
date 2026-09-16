@@ -413,6 +413,22 @@ def opening_section(request: Request) -> str:
     return asked if asked in {key for key, _, _ in SECTIONS} else DEFAULT_SECTION
 
 
+def _back_to(section: str, anchor: str | None = None) -> Response:
+    """The plain-form answer: a 303 to the card that was just saved.
+
+    `?section=` is what opens a category - the radio the page checks from it
+    - and a fragment alone cannot: the card it names is `display:none` behind
+    Defaults, so `/settings#watch-folders` showed the Defaults form and no
+    sign that a folder had been added (TASK-077). The anchor rides along for
+    the scroll, once the card is open.
+    """
+    assert section in {key for key, _, _ in SECTIONS}, section
+    where = f"/settings?section={section}"
+    if anchor:
+        where += f"#{anchor}"
+    return RedirectResponse(where, status_code=303)
+
+
 @router.get("/settings", include_in_schema=False)
 def settings_page(request: Request) -> Response:
     conn = request.app.state.conn
@@ -444,7 +460,7 @@ async def save_settings(request: Request) -> Response:
         return render(
             request, "_settings_defaults.html", oob=True, **defaults_context(conn, flash=FLASH_SAVED)
         )
-    return RedirectResponse("/settings", status_code=303)
+    return _back_to("defaults", "settings-defaults")
 
 
 @router.post("/settings/doctor", include_in_schema=False)
@@ -471,7 +487,7 @@ async def run_doctor(request: Request) -> Response:
         )
 
     if not library._is_htmx(request):
-        return RedirectResponse("/settings", status_code=303)
+        return _back_to("machine")
 
     results = await run_in_threadpool(doctor.checks, include_gpu=False)
     response = render(
@@ -498,7 +514,7 @@ async def run_doctor(request: Request) -> Response:
 def _watch_answer(request: Request, conn: sqlite3.Connection, *, flash: str) -> Response:
     """The section re-rendered for htmx; a 303 back to the page otherwise."""
     if not library._is_htmx(request):
-        return RedirectResponse("/settings#watch-folders", status_code=303)
+        return _back_to("watch", "watch-folders")
     return render(
         request,
         "_settings_watch.html",
@@ -621,7 +637,7 @@ def delete_watch_folder(folder_id: int, request: Request) -> Response:
 def _glossary_answer(request: Request, conn: sqlite3.Connection, *, flash: str) -> Response:
     """The section re-rendered for htmx; a 303 back to the page otherwise."""
     if not library._is_htmx(request):
-        return RedirectResponse("/settings#glossary", status_code=303)
+        return _back_to("glossary", "glossary")
     return render(request, "_glossary.html", oob=True, **glossary_context(conn, flash=flash))
 
 
@@ -745,7 +761,7 @@ def _presets_answer(
     export dialog's save button, its preset select with ``selected``
     chosen; a 303 back to the page for a plain post."""
     if not library._is_htmx(request):
-        return RedirectResponse("/settings", status_code=303)
+        return _back_to("presets", "settings-presets")
     if request.headers.get("HX-Target") == exports_ui.PRESET_SELECT_ID:
         return render(
             request,
@@ -789,7 +805,7 @@ def delete_preset(preset_id: int, request: Request) -> Response:
 def _llm_answer(request: Request, conn: sqlite3.Connection, *, flash: str) -> Response:
     """The section re-rendered for htmx; a 303 back to the page otherwise."""
     if not library._is_htmx(request):
-        return RedirectResponse("/settings#llm-providers", status_code=303)
+        return _back_to("llm", "llm-providers")
     return render(request, "_settings_llm.html", oob=True, **ai_ui.settings_context(conn, flash=flash))
 
 
