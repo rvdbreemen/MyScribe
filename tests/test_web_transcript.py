@@ -38,7 +38,7 @@ from markupsafe import escape
 
 from mp3_headers import mp3
 from test_web_url_dialog import needs_node, run_dom
-from scribe import db, jobs, paths, playback, render
+from scribe import db, jobs, media, paths, playback, render
 from scribe.app import create_app
 from scribe.web import transcript
 from seed import default_words, seed_job, seed_media, seed_run
@@ -386,7 +386,36 @@ def test_audio_serves_the_original_when_the_proxy_duration_drifts(
     assert resp.content == b"matroska bytes"
     assert "serving the original" in caplog.text
     proxy_dir = data_dir / "media" / "proxy"
-    assert not proxy_dir.exists() or not list(proxy_dir.iterdir())  # nothing bad is kept
+    kept = [p.name for p in proxy_dir.rglob("*") if p.is_file()] if proxy_dir.exists() else []
+    assert not any(name.endswith(media.PROXY_SUFFIX) for name in kept), kept  # nothing bad is kept
+    assert any(name.endswith(".refused") for name in kept), kept  # the refusal is (TASK-075)
+
+
+def test_a_refused_proxy_is_not_made_again_on_the_next_play(
+    client, conn, data_dir, transcribed, monkeypatch
+):
+    """TASK-075: guard.py lets every GET through because reading changes
+    nothing, and this one ran ffmpeg. Once per recording is the bound the
+    fallback is allowed; a refused proxy used to cost the whole transcode on
+    every page load, every seek that re-requests the source, and every
+    cross-site page that embedded the address."""
+    media_id = transcribed["media"]
+    _make_mkv(conn, media_id)
+    original = _store(conn, data_dir, media_id, b"matroska bytes")
+    calls = []
+
+    def drifting(src, dst):
+        calls.append(src)
+        dst.write_bytes(b"drifted")
+
+    monkeypatch.setattr(playback, "transcode", drifting)
+    monkeypatch.setattr(playback, "probe_duration", lambda path: 20.0 if path == original else 20.2)
+
+    first = client.get(f"/media/{media_id}/audio")
+    second = client.get(f"/media/{media_id}/audio")
+
+    assert first.content == second.content == b"matroska bytes"
+    assert len(calls) == 1
 
 
 def test_audio_serves_the_original_when_the_transcode_fails(

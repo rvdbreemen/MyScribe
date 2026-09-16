@@ -663,6 +663,11 @@ def audio(media_id: int, request: Request) -> Response:
 
     Inline, not an attachment: this is the player's source. The download
     route is the one that hands out the original under its own name.
+
+    The one GET in this app that does work (see `scribe.guard`): for a
+    container the browser cannot open whose proxy the pipeline never made,
+    the proxy is made here, once - `ensure_proxy` keeps it, and keeps a note
+    of a refusal, so a second play never runs ffmpeg again (TASK-075).
     """
     conn = request.app.state.conn
     row = library._get_media(conn, media_id)

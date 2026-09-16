@@ -181,6 +181,55 @@ def test_an_unplayable_container_without_a_proxy_has_no_source_yet(data_dir):
     assert playback.source(_original(data_dir, b"\x1aE\xdf\xa3", ".mkv"), "abc") is None
 
 
+# --- a refusal is remembered -------------------------------------------------------------
+
+
+def test_a_refused_proxy_is_remembered_and_not_transcoded_again(data_dir, monkeypatch):
+    """TASK-075: a proxy the duration check refused was unlinked and forgotten,
+    so the next caller - every play of an unplayable container - ran the whole
+    transcode again. The original is content-addressed and never changes, so
+    the refusal is a fact about the file and this ffmpeg: it is kept beside the
+    proxy it would have been, and read instead of repeated."""
+    original = _original(data_dir, b"\x1aE\xdf\xa3", ".mkv")
+    proxy = media.proxy_path_for("abc")
+    calls = []
+
+    def drifting(src, dst):
+        calls.append(src)
+        dst.write_bytes(b"drifted")
+
+    monkeypatch.setattr(playback, "transcode", drifting)
+    monkeypatch.setattr(playback, "probe_duration", lambda path: 20.0 if path == original else 20.2)
+
+    with pytest.raises(playback.ProxyError) as first:
+        playback.ensure_proxy(original, proxy)
+    with pytest.raises(playback.ProxyError) as second:
+        playback.ensure_proxy(original, proxy)
+
+    assert len(calls) == 1
+    assert str(second.value) == str(first.value)
+    assert not proxy.exists()
+
+
+def test_a_transcode_that_broke_is_not_remembered_as_a_refusal(data_dir, monkeypatch):
+    """ffmpeg missing, a full disk: not facts about the file. Tried again."""
+    original = _original(data_dir, b"\x1aE\xdf\xa3", ".mkv")
+    proxy = media.proxy_path_for("abc")
+    calls = []
+
+    def broken(src, dst):
+        calls.append(src)
+        raise playback.ProxyError("ffmpeg could not convert abc.mkv: no such codec")
+
+    monkeypatch.setattr(playback, "transcode", broken)
+
+    for _ in range(2):
+        with pytest.raises(playback.ProxyError):
+            playback.ensure_proxy(original, proxy)
+
+    assert len(calls) == 2
+
+
 # --- new media: the pipeline makes the proxy ---------------------------------------------
 
 
@@ -278,6 +327,31 @@ def test_the_backfill_makes_each_missing_proxy_once(conn, data_dir, tmp_path, mo
     assert playback.main([]) == 0
     assert len(calls) == 1
     assert "Talk.mp3" not in capsys.readouterr().out
+
+
+def test_the_backfill_is_the_retry_for_a_remembered_refusal(conn, data_dir, tmp_path, monkeypatch, capsys):
+    """The page says `python -m scribe.proxies` tries again, so it must: a
+    refusal is forgotten there, and a newer ffmpeg gets its chance."""
+    talk = _ingest(conn, tmp_path, mp3(b"Xing"), "Talk.mp3")
+    original = paths.DATA_DIR / talk["store_path"]
+    proxy = media.proxy_path_for(talk["sha256"])
+    calls = []
+
+    def fake(src, dst):
+        calls.append(src)
+        dst.write_bytes(b"aac")
+
+    monkeypatch.setattr(playback, "transcode", fake)
+    monkeypatch.setattr(playback, "probe_duration", lambda path: 20.0 if path == original else 20.2)
+    with pytest.raises(playback.ProxyError):
+        playback.ensure_proxy(original, proxy)
+    assert len(calls) == 1
+
+    monkeypatch.setattr(playback, "probe_duration", lambda path: 20.0)  # a better ffmpeg
+    assert playback.main([]) == 0
+
+    assert len(calls) == 2
+    assert proxy.is_file()
 
 
 def test_a_backfill_with_a_failed_proxy_exits_1_and_says_why(conn, data_dir, tmp_path, monkeypatch, capsys):

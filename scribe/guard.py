@@ -27,7 +27,12 @@ login and no token:
   the user at the keyboard, and passes.
 
 GETs are not guarded: a link from anywhere is how a shared `/media/3#t=42`
-arrives, and reading changes nothing. What a cross-site page cannot do with
+arrives, and reading changes nothing. One GET does work, and is bounded:
+`/media/{id}/audio` makes the browser-playable copy of a container the
+browser cannot open when the pipeline has not, once, kept under
+`MEDIA_DIR/proxy`, and remembers a copy it had to refuse
+(`playback.ensure_proxy`, TASK-075) - so an address a page embeds costs at
+most one transcode, not one per visit. What a cross-site page cannot do with
 a GET is see the answer, which the Host guard and the browser's same-origin
 policy already take care of between them.
 """

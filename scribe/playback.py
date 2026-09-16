@@ -281,6 +281,12 @@ def _proxy_lock(proxy: Path) -> threading.Lock:
         return _proxy_locks.setdefault(key, threading.Lock())
 
 
+def refusal_path_for(proxy: Path) -> Path:
+    """Where a refused proxy's reason is kept: beside the proxy it would have
+    been, so the two are found and forgotten together."""
+    return proxy.with_name(f"{proxy.name}.refused")
+
+
 def ensure_proxy(original: Path, proxy: Path) -> None:
     """Make the proxy for ``original`` at ``proxy`` unless it is already there.
 
@@ -289,22 +295,35 @@ def ensure_proxy(original: Path, proxy: Path) -> None:
     path never names a file that is not known to be the same audio. One
     transcode per proxy at a time in this process: a caller that arrives
     during one waits for it and finds the result.
+
+    A proxy the duration check refuses is remembered (TASK-075). The original
+    is content-addressed and never changes, so that refusal is a fact about
+    the file and this ffmpeg, and the next caller - the audio route on every
+    play of a container the browser cannot open - reads it instead of running
+    the transcode again. Only the duration refusal is kept: ffmpeg missing or
+    a full disk are not facts about the file and are tried again. The
+    backfill command is the retry; it forgets the refusal first.
     """
     if proxy.is_file():
         return
+    refused = refusal_path_for(proxy)
     with _proxy_lock(proxy):
         if proxy.is_file():  # the caller ahead of this one made it
             return
+        if refused.is_file():  # or found out it cannot be made
+            raise ProxyError(refused.read_text(encoding="utf-8", errors="replace"))
         proxy.parent.mkdir(parents=True, exist_ok=True)
         tmp = proxy.with_name(f"{proxy.name}.{uuid.uuid4().hex[:8]}.part")
         try:
             transcode(original, tmp)
             wanted, got = probe_duration(original), probe_duration(tmp)
             if not durations_agree(wanted, got):
-                raise ProxyError(
+                reason = (
                     f"the proxy of {original.name} lasts {got} s where the original"
                     f" lasts {wanted} s, more than {PROXY_TOLERANCE_SECONDS * 1000:.0f} ms apart"
                 )
+                refused.write_text(reason, encoding="utf-8")
+                raise ProxyError(reason)
             os.replace(tmp, proxy)
         finally:
             tmp.unlink(missing_ok=True)  # a no-op once it has been renamed away
@@ -367,8 +386,13 @@ def main(argv: list[str] | None = None) -> int:
             print()
             continue
         started = time.monotonic()
+        proxy = proxy_path_for(row["sha256"])
+        # This command is the retry the page promises: a refusal remembered
+        # from an earlier attempt is forgotten here, and only here, so a newer
+        # ffmpeg gets its chance while the audio route keeps reading the note.
+        refusal_path_for(proxy).unlink(missing_ok=True)
         try:
-            ensure_proxy(paths.DATA_DIR / row["store_path"], proxy_path_for(row["sha256"]))
+            ensure_proxy(paths.DATA_DIR / row["store_path"], proxy)
         except ProxyError as exc:
             failed += 1
             print(f"  FAILED: {exc}", flush=True)

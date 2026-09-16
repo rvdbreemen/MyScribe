@@ -76,6 +76,10 @@ Each fix shipped with the test that failed before it and passed after.
 - "Test now" on an AI provider said "Saved ✓" beside a card saying the test
   was queued; it queues a job and saves nothing. A settings form that saves
   nothing now says so, and gets neither mark.
+- A playable copy the duration check refused was forgotten, so every play
+  of that recording ran the whole transcode again - 80 s for 39 minutes,
+  on every page load. The refusal is now kept beside the proxy and read
+  instead; `python -m scribe.proxies` is the retry and forgets it first.
 
 ### Added
 
