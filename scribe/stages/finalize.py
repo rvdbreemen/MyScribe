@@ -123,15 +123,31 @@ def run(ctx: "RunnerContext") -> None:
         work_dir_removed=removed,
     )
 
-    inherit_speaker_names(ctx.conn, run_id, speakers, previous=previous)
-    # Asked even when every name carried over: a new transcript gets a new
-    # speaker analysis (Robert, 2026-09-11). The inherited names stand until
-    # it answers, and it never writes over one a person typed.
-    speaker_job = queue_speaker_pass(
-        ctx.conn, ctx.job["media_id"], run_id, speakers, even_if_named=True
-    )
-    if speaker_job is not None:
-        jobs.emit(ctx.conn, ctx.job["id"], "speakers-queued", job_id_queued=speaker_job)
+    # Everything below this line is work *about* a transcript that is already
+    # committed, current and complete. Letting it raise would leave the stage,
+    # and the runner turns any exception into a failed verdict (runner.py:278)
+    # - a finished transcript under a job that says it failed, offering a Retry
+    #   that spends a second GPU pass to supersede a good run (TASK-060).
+    # So it is caught, recorded where failures are recorded, and not re-raised.
+    try:
+        inherit_speaker_names(ctx.conn, run_id, speakers, previous=previous)
+        # Asked even when every name carried over: a new transcript gets a new
+        # speaker analysis (Robert, 2026-09-11). The inherited names stand until
+        # it answers, and it never writes over one a person typed.
+        speaker_job = queue_speaker_pass(
+            ctx.conn, ctx.job["media_id"], run_id, speakers, even_if_named=True
+        )
+        if speaker_job is not None:
+            jobs.emit(ctx.conn, ctx.job["id"], "speakers-queued", job_id_queued=speaker_job)
+    except Exception as exc:  # noqa: BLE001 - recorded below, never swallowed silently
+        applog.log(
+            "finalize.after_commit_failed",
+            level="warn",
+            job=ctx.job["id"],
+            run=run_id,
+            error=str(exc),
+        )
+        jobs.emit(ctx.conn, ctx.job["id"], "speakers-queue-failed", error=str(exc))
 
     ctx.report(1.0)
 

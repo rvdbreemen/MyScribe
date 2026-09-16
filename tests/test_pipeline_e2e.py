@@ -30,6 +30,7 @@ right, and running the pipeline twice is the only way to see the flip happen.
 
 import json
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -534,6 +535,46 @@ def test_finalize_refuses_to_guess_which_run_it_is_finishing(conn, data_dir):
         finalize.run(ctx)
 
 
+def test_a_failure_after_the_commit_does_not_undo_a_finished_transcript(
+    conn, data_dir, monkeypatch
+):
+    """TASK-060: the words are committed before the speaker pass is queued.
+
+    Anything raising after `_commit` leaves the stage, and the runner turns any
+    exception into a failed verdict - for a transcript that is on disk, current
+    and complete. The user then sees a finished transcript under a job that
+    says it failed, and a Retry that spends a second GPU pass to replace a good
+    run with another one.
+    """
+    job_id, run_id, _ = a_finished_run(conn, words=3)
+
+    def refuse(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(finalize, "queue_speaker_pass", refuse)
+
+    words = [
+        {"idx": 0, "speaker": "SPEAKER_00"},
+        {"idx": 1, "speaker": "SPEAKER_01"},
+        {"idx": 2, "speaker": None},
+    ]
+
+    finalize.run(finalize_ctx(conn, job_id, run_id, words=words))
+
+    row = conn.execute("SELECT is_current FROM run WHERE id=?", (run_id,)).fetchone()
+    assert row["is_current"] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM word WHERE run_id=?", (run_id,)
+    ).fetchone()["n"] == 3
+    # Caught is not swallowed: the job's own stream says the pass was not queued.
+    kinds = [
+        r["kind"]
+        for r in conn.execute("SELECT kind FROM job_event WHERE job_id=?", (job_id,))
+    ]
+    assert "speakers-queue-failed" in kinds
+    assert "speakers-queued" not in kinds
+
+
 def test_finalize_writes_the_speakers_attribute_worked_out(conn, data_dir):
     job_id, run_id, _ = a_finished_run(conn, words=3)
     words = [
@@ -854,6 +895,33 @@ def test_posting_a_directory_is_refused_rather_than_ingested(client, tmp_path):
     response = client.post("/api/media", json={"path": str(tmp_path)})
 
     assert response.status_code == 400
+
+
+def test_posting_a_path_that_is_not_media_is_refused_before_it_is_read(client, tmp_path):
+    """TASK-059: the door reads what it is handed, so it must want media.
+
+    The roots say where the app may look, not what it may take. A caller that
+    can reach 127.0.0.1 but not the file itself - another account, a sandboxed
+    process - otherwise has the web process read it with the user's rights and
+    hand the bytes back through the library's download route.
+    """
+    secret = tmp_path / "id_rsa"
+    secret.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n", encoding="utf-8")
+
+    response = client.post("/api/media", json={"path": str(secret)})
+
+    assert response.status_code == 415
+    assert "id_rsa" in response.json()["detail"]
+    conn = sqlite3.connect(paths.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        taken = conn.execute(
+            "SELECT COUNT(*) AS n FROM media WHERE orig_name=?", ("id_rsa",)
+        ).fetchone()["n"]
+    finally:
+        conn.close()
+    assert taken == 0
+    assert not list(paths.MEDIA_DIR.rglob("*")), "nothing may reach the store"
 
 
 def test_posting_no_path_at_all_says_so(client):

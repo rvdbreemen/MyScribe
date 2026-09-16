@@ -53,7 +53,7 @@ import scribe
 from scribe import applog, db, fsbrowse, guard, jobs, media, paths, supervisor, web
 from scribe.ingest import feeds, recording, watching
 from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options, replayable
-from scribe.stages import finalize, transcribe, url_stage
+from scribe.stages import finalize, probe, transcribe, url_stage
 
 # The form field carrying the upload, and the job type ingest queues.
 _UPLOAD_FIELD = "file"
@@ -179,6 +179,17 @@ async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> tupl
         raise HTTPException(
             status_code=403,
             detail=f"{src} is outside the folders this app may read from; widen them under Settings",
+        )
+    # The roots say where this app may look; they do not say what it may take.
+    # Without this the door reads any file under them with the user's rights
+    # and the library hands the bytes back through its download route - a
+    # confused deputy for a caller that can reach 127.0.0.1 but not the file
+    # (TASK-059). A directory is left to the ingest below, which already
+    # answers 400 for it, so that message does not change.
+    if not src.is_dir() and src.suffix.lower() not in probe.MEDIA_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"{src.name} is not an audio or video file this app can transcribe",
         )
     title, folder_id, params = _ingest_options(body)
     try:
