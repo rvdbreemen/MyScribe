@@ -136,7 +136,9 @@
             <span class="muted under">{% if p.models %}{{ p.models|length }} known; pick one above{% else %}no list yet; type any model id above{% endif %}</span>
           </td>
           <td class="provider-test">
-            <form method="post" action="/settings/llm/{{ p.name }}/test"
+            {# data-saves-nothing: a test queues a job and stores nothing, so
+               app.js must not say "Saved" on this button (TASK-074). #}
+            <form method="post" action="/settings/llm/{{ p.name }}/test" data-saves-nothing
                   hx-post="/settings/llm/{{ p.name }}/test" hx-target="#llm-providers" hx-swap="outerHTML">
               <button type="submit">Test now</button>
             </form>

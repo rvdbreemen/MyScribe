@@ -1160,6 +1160,17 @@ def row_of(body: str, provider: str) -> str:
     return found.group(0)
 
 
+def test_the_test_form_says_it_saves_nothing(client, conn, no_ollama):
+    """TASK-074: app.js marks the pressed button 'Saved' after any successful
+    settings POST, and a provider test queues a job and saves nothing. The
+    form says so, and app.js leaves a form that says so alone."""
+    body = client.post("/settings/llm/ollama/test", headers=HX).text
+
+    assert re.search(
+        r'<form[^>]*action="/settings/llm/ollama/test"[^>]*data-saves-nothing', body
+    ), "the test form does not say it saves nothing"
+
+
 def test_pressing_test_on_a_provider_queues_a_job_about_no_recording(client, conn, no_ollama):
     """The button's whole job. ADR-001: the web process writes a row and the
     runner child makes the call, exactly as a rail action does."""

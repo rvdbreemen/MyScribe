@@ -403,14 +403,21 @@
     that turns green and says "Saved" for SAVED_FOR_MS. Only after a
     successful POST from inside a settings card; a refused save leaves the
     dialog's own error where it lands and no button pretends otherwise.
+    A form marked data-saves-nothing - "Test now" on a provider queues a job
+    and stores nothing - is left alone either way: a button that says Saved
+    beside a card saying the test is queued is wrong twice (TASK-074).
   */
   var SAVED_FOR_MS = 5000;
   var lastPress = null;
 
+  function savesNothing(form) {
+    return !!(form && form.hasAttribute && form.hasAttribute('data-saves-nothing'));
+  }
+
   document.addEventListener('click', function (event) {
     var button = event.target.closest ? event.target.closest('button[type="submit"]') : null;
     var form = button ? button.closest('form') : null;
-    if (!form || !form.closest('.settings-section')) { return; }
+    if (!form || !form.closest('.settings-section') || savesNothing(form)) { return; }
     lastPress = { action: form.getAttribute('action') || '', label: button.textContent.trim(), button: button };
   });
 
@@ -437,7 +444,7 @@
     var detail = event.detail || {};
     var verb = detail.requestConfig ? String(detail.requestConfig.verb).toLowerCase() : '';
     var form = detail.elt && detail.elt.closest ? detail.elt.closest('form') : null;
-    if (verb !== 'post' || !form || !form.closest('.settings-section')) { return; }
+    if (verb !== 'post' || !form || !form.closest('.settings-section') || savesNothing(form)) { return; }
     var press = lastPress;
     lastPress = null;
     var button = press && press.button && press.button.isConnected && press.button.closest('form') === form

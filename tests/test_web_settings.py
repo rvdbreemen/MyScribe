@@ -714,6 +714,49 @@ def test_a_refused_save_marks_the_pressed_button_red_and_not_saved(tmp_path):
     assert result == {"text": "Not saved \u2717", "notSaved": True, "saved": False, "live": "assertive"}
 
 
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="needs node")
+def test_a_form_that_saves_nothing_gets_neither_mark(tmp_path):
+    """TASK-074: 'Test now' on a provider queues a job and saves nothing, and
+    its button said 'Saved \u2713' beside a card saying the test was queued. A
+    form marked data-saves-nothing is left alone, on success and on error."""
+    from test_web_url_dialog import run_dom
+
+    result = run_dom(
+        tmp_path,
+        r"""
+    load(APP);
+    function card() {
+      const wrap = el('div', { class: 'settings-section' });
+      const section = wrap.append(el('section', { id: 'llm-providers' }));
+      const form = section.append(el('form', { method: 'post', action: '/settings/llm/ollama/test', 'data-saves-nothing': '' }));
+      form.append(el('button', { type: 'submit' })).textContent = 'Test now';
+      return { wrap: wrap, form: form, button: form.querySelector('button') };
+    }
+    const first = card();
+    body.append(first.wrap);
+    fire(document, 'click', event({ target: first.button }));
+    const fresh = card();
+    first.wrap.remove();
+    body.append(fresh.wrap);
+    fire(document.body, 'htmx:afterSwap', event({
+      detail: { target: fresh.wrap.querySelector('section'), requestConfig: { verb: 'post' }, xhr: { status: 200 } }
+    }));
+    const afterSuccess = { text: fresh.button.textContent, saved: fresh.button.classList.contains('saved') };
+
+    const other = card();
+    body.append(other.wrap);
+    fire(document, 'click', event({ target: other.button }));
+    fire(document.body, 'htmx:responseError', event({
+      detail: { elt: other.form, requestConfig: { verb: 'post' }, xhr: { status: 500 } }
+    }));
+    done({ afterSuccess: afterSuccess, afterError: { text: other.button.textContent, notSaved: other.button.classList.contains('not-saved') } });
+""",
+    )
+
+    assert result["afterSuccess"] == {"text": "Test now", "saved": False}
+    assert result["afterError"] == {"text": "Test now", "notSaved": False}
+
+
 # --- the model picker (TASK-054) --------------------------------------------------------
 
 

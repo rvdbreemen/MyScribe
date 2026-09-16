@@ -73,6 +73,9 @@ Each fix shipped with the test that failed before it and passed after.
   forgot the loop that was still running, and a later start would have
   begun a second one beside it. Like the watch-folder thread, it now says
   so and keeps the handle.
+- "Test now" on an AI provider said "Saved ✓" beside a card saying the test
+  was queued; it queues a job and saves nothing. A settings form that saves
+  nothing now says so, and gets neither mark.
 
 ### Added
 
