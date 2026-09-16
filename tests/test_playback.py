@@ -98,6 +98,25 @@ def test_a_tag_at_another_shapes_offset_is_not_read_as_one(tmp_path):
     assert not playback.seeks_exactly(_file(tmp_path, bytes(data) + frame(mono=True) * 3))
 
 
+def test_a_crc_protected_cbr_mp3_seeks_exactly(tmp_path):
+    """TASK-079: with the protection bit clear a 16-bit CRC sits between the
+    header and the side information, and the tag two bytes further on. LAME
+    -p and some podcast encoders write it. The rule's CRC term was never
+    exercised: drop it and the suite stayed green, while such a file would
+    have gone through a proxy it does not need."""
+    assert playback.seeks_exactly(_file(tmp_path, mp3(b"Info", crc=True)))
+    assert not playback.seeks_exactly(_file(tmp_path, mp3(b"Xing", crc=True)))
+
+
+def test_a_tag_at_the_crc_less_offset_of_a_crc_protected_frame_is_not_read_as_one(tmp_path):
+    """The other half of the same term: "Info" at 36 in a frame whose CRC
+    puts the side information at 6 is the CRC's neighbour, not a header."""
+    data = bytearray(frame(crc=True))
+    data[36:40] = b"Info"
+
+    assert not playback.seeks_exactly(_file(tmp_path, bytes(data) + frame(crc=True) * 3))
+
+
 def test_the_first_frame_is_found_behind_an_id3_tag_the_size_of_a_cover_picture(tmp_path):
     """Podcasts carry their artwork in the ID3 tag, often hundreds of
     kilobytes of it, so the frame is looked for after the tag, not in the

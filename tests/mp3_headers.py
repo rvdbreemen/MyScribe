@@ -9,6 +9,7 @@ reads it does not need an encoder, and the layout is spelled out where a
 reader can check it against the spec:
 
     frame header  4 bytes   FF FB|F3 <bitrate,rate> <channel mode>
+    CRC-16        2 bytes, only when the header's protection bit is 0
     side info     17 or 32 bytes (MPEG-1), 9 or 17 (MPEG-2); mono is the smaller
     Xing / Info   right after the side info
     VBRI          always 32 bytes after the header, at offset 36
@@ -30,14 +31,26 @@ def id3(body_size: int) -> bytes:
     return b"ID3\x04\x00\x00" + size + bytes(body_size)
 
 
-def frame(tag: bytes | None = None, *, mpeg2: bool = False, mono: bool = False, vbri: bool = False) -> bytes:
+def frame(
+    tag: bytes | None = None,
+    *,
+    mpeg2: bool = False,
+    mono: bool = False,
+    vbri: bool = False,
+    crc: bool = False,
+) -> bytes:
     """One frame, carrying ``tag`` (b"Xing" or b"Info") where a decoder
-    looks for it, or a VBRI header when ``vbri``."""
+    looks for it, or a VBRI header when ``vbri``. ``crc`` clears the
+    protection bit and puts the two CRC bytes between the header and the
+    side information, which moves the tag two bytes on (LAME ``-p``)."""
     head, length = MPEG2 if mpeg2 else MPEG1
+    if crc:
+        head = bytes([head[0], head[1] & ~1, head[2]])  # protection bit 0: a CRC follows
     data = bytearray(head + bytes([MONO if mono else JOINT_STEREO]) + bytes(length - 4))
     side = (9 if mono else 17) if mpeg2 else (17 if mono else 32)
+    tag_at = 4 + (2 if crc else 0) + side
     if tag is not None:
-        data[4 + side:8 + side] = tag
+        data[tag_at:tag_at + 4] = tag
     if vbri:
         data[36:40] = b"VBRI"
     return bytes(data)
@@ -47,5 +60,7 @@ def mp3(tag: bytes | None = None, *, id3_size: int = 0, frames: int = 4, **shape
     """A whole file: an optional ID3 tag, the tagged first frame, then plain
     frames of the same shape."""
     prefix = id3(id3_size) if id3_size else b""
-    plain = frame(mpeg2=shape.get("mpeg2", False), mono=shape.get("mono", False))
+    plain = frame(
+        mpeg2=shape.get("mpeg2", False), mono=shape.get("mono", False), crc=shape.get("crc", False)
+    )
     return prefix + frame(tag, **shape) + plain * (frames - 1)

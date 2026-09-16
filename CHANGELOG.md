@@ -105,6 +105,8 @@ Each fix shipped with the test that failed before it and passed after.
 - The DOM test harness understands descendant selectors, tag names with a
   digit and `classList.toggle`, which is what it takes to drive the
   transcript half of `app.js` rather than read its source text.
+- The MP3 header helper writes CRC-protected frames, so the seek rule's
+  CRC term is covered: dropping it now fails two tests instead of none.
 
 ### Changed
 
