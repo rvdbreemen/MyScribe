@@ -554,11 +554,16 @@ const vm = require('vm');
 
 /* ---- selectors ---------------------------------------------------------- */
 
-/* The selector language these two scripts actually use: a comma-separated
-   list of simple selectors, each an optional tag name followed by any number
-   of #id, .class, [attr] and [attr="value"] parts. A descendant combinator or
-   a pseudo-class throws: see this module's note on why a stub must not
-   silently answer "no". */
+/* The selector language these scripts actually use: a comma-separated list,
+   each entry one or more simple selectors separated by whitespace (the
+   descendant combinator). A simple selector is an optional tag name followed
+   by any number of #id, .class, [attr] and [attr="value"] parts.
+
+   The descendant form is here because the transcript half of app.js is built
+   on it - `#transcript .para`, `#transcript .w.sel` - and without it that code
+   could only be tested by reading its source text, which is no test at all.
+   Anything else, a pseudo-class or a child combinator, still throws: see this
+   module's note on why a stub must not silently answer "no". */
 const SIMPLE = /^([a-z]+)?((?:[#.][A-Za-z0-9_-]+|\[[a-z-]+(?:="[^"]*")?\])*)$/;
 const PART = /[#.][A-Za-z0-9_-]+|\[[a-z-]+(?:="[^"]*")?\]/g;
 
@@ -579,8 +584,23 @@ function matchesOne(node, selector) {
   });
 }
 
+/* One comma-separated entry, which may be several simple selectors separated
+   by whitespace. The last one has to match this node; each one before it has
+   to match some ancestor, in order - which is what "descendant" means. */
+function matchesChain(node, entry) {
+  const steps = entry.trim().split(/\s+/);
+  if (!matchesOne(node, steps[steps.length - 1])) { return false; }
+  let at = node.parentNode;
+  for (let i = steps.length - 2; i >= 0; i -= 1) {
+    while (at && !matchesOne(at, steps[i])) { at = at.parentNode; }
+    if (!at) { return false; }
+    at = at.parentNode;
+  }
+  return true;
+}
+
 function matches(node, selector) {
-  return String(selector).split(',').some(function (one) { return matchesOne(node, one); });
+  return String(selector).split(',').some(function (one) { return matchesChain(node, one); });
 }
 
 /* ---- elements ------------------------------------------------------------ */
