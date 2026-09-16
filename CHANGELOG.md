@@ -112,6 +112,8 @@ Each fix shipped with the test that failed before it and passed after.
   transcript half of `app.js` rather than read its source text.
 - The MP3 header helper writes CRC-protected frames, so the seek rule's
   CRC term is covered: dropping it now fails two tests instead of none.
+- A golden run under `SCRIBE_UPDATE_GOLDENS=1` is red for every golden that
+  moved, with its diff; a green run always means the goldens matched.
 
 ### Changed
 

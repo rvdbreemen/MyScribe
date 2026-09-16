@@ -13,8 +13,10 @@ that document with default options and compared byte for byte; the targeted
 tests around them check the things a golden cannot explain: the separator an
 SRT timestamp uses, what a voice tag looks like, what a layout leaves out,
 which encodings carry a BOM. To regenerate the goldens after a deliberate
-change, run the suite with `SCRIBE_UPDATE_GOLDENS=1` and commit the result
-with the reason in the message.
+change, run the suite once with `SCRIBE_UPDATE_GOLDENS=1`: it rewrites the
+goldens that moved and is red for each of them, with the diff; run it again
+without the variable to see them match, and commit the result with the
+reason in the message. A green run always means the goldens matched.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import difflib
 import io
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -121,24 +124,76 @@ def text_of(data: bytes, encoding: str = "utf-8") -> str:
     return data.decode(encoding)
 
 
+def _golden_diff(name: str, expected: bytes, data: bytes) -> str:
+    return "\n".join(
+        difflib.unified_diff(
+            expected.decode("utf-8", "replace").splitlines(),
+            data.decode("utf-8", "replace").splitlines(),
+            fromfile=f"golden/{name}",
+            tofile="written",
+            lineterm="",
+        )
+    )
+
+
 def check_golden(name: str, data: bytes) -> None:
+    """``data`` is what the golden says, or the test fails with the diff.
+
+    Under SCRIBE_UPDATE_GOLDENS=1 a golden that moved is rewritten *and* the
+    test fails, showing the diff: an update run is red exactly where the
+    goldens changed, and the plain run afterwards is the proof that they now
+    match. Writing first and comparing after made an update run green
+    whatever the writer produced, so a developer with the variable exported
+    in their shell had a suite that blessed every change silently (TASK-081).
+    """
     path = GOLDEN_DIR / name
-    if UPDATE_GOLDENS:
+    expected = path.read_bytes() if path.is_file() else None
+    if UPDATE_GOLDENS and data != expected:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    assert path.is_file(), f"no golden at {path}; run with SCRIBE_UPDATE_GOLDENS=1 to write it"
-    expected = path.read_bytes()
-    if data != expected:
-        diff = "\n".join(
-            difflib.unified_diff(
-                expected.decode("utf-8", "replace").splitlines(),
-                data.decode("utf-8", "replace").splitlines(),
-                fromfile=f"golden/{name}",
-                tofile="written",
-                lineterm="",
-            )
+        pytest.fail(
+            f"{name} rewritten under SCRIBE_UPDATE_GOLDENS=1:\n"
+            f"{_golden_diff(name, expected or b'', data)}\n"
+            "Read the diff, then run again without the variable to see it match."
         )
-        pytest.fail(f"{name} differs from its golden:\n{diff}")
+    assert expected is not None, f"no golden at {path}; run with SCRIBE_UPDATE_GOLDENS=1 to write it"
+    if data != expected:
+        pytest.fail(f"{name} differs from its golden:\n{_golden_diff(name, expected, data)}")
+
+
+# --- the golden check itself -----------------------------------------------------
+
+
+def test_an_update_run_is_red_where_a_golden_moved(tmp_path, monkeypatch):
+    """TASK-081: with SCRIBE_UPDATE_GOLDENS=1 the golden was written first and
+    compared after, so an update run was green whatever the writer produced -
+    and a developer with the variable exported in their shell had a suite
+    that blessed every change silently. A golden that moves is still written,
+    and the test fails with the diff; the plain run afterwards is the proof."""
+    me = sys.modules[__name__]
+    monkeypatch.setattr(me, "GOLDEN_DIR", tmp_path)
+    monkeypatch.setattr(me, "UPDATE_GOLDENS", True)
+    (tmp_path / "x.txt").write_bytes(b"old\n")
+
+    with pytest.raises(pytest.fail.Exception) as moved:
+        check_golden("x.txt", b"new\n")
+
+    assert (tmp_path / "x.txt").read_bytes() == b"new\n"
+    assert "-old" in str(moved.value) and "+new" in str(moved.value)
+    check_golden("x.txt", b"new\n")  # written; the next run matches and passes
+
+
+def test_a_plain_run_fails_a_mismatch_with_the_diff_and_writes_nothing(tmp_path, monkeypatch):
+    me = sys.modules[__name__]
+    monkeypatch.setattr(me, "GOLDEN_DIR", tmp_path)
+    monkeypatch.setattr(me, "UPDATE_GOLDENS", False)
+    (tmp_path / "x.txt").write_bytes(b"old\n")
+
+    with pytest.raises(pytest.fail.Exception) as differs:
+        check_golden("x.txt", b"new\n")
+
+    assert "-old" in str(differs.value) and "+new" in str(differs.value)
+    assert (tmp_path / "x.txt").read_bytes() == b"old\n"
 
 
 # --- the registry --------------------------------------------------------------
