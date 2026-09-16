@@ -55,7 +55,7 @@ from scribe import db, llm, render
 from scribe.exports import doc as docs
 from scribe.llm import base, chunking, privacy, tasks
 from scribe.llm.base import ChatRequest, ChatResponse
-from scribe.llm.chunking import estimate_tokens, timestamped_line, transcript_text
+from scribe.llm.chunking import estimate_tokens, transcript_lines, transcript_text
 
 CHAT_KIND = "chat"
 """The `llm` job kind this module answers. Deliberately not in `tasks.KINDS`:
@@ -251,7 +251,7 @@ def retrieve(
         return []
 
     positions = {int(segment["idx"]): i for i, segment in enumerate(doc.segments)}
-    costs = [estimate_tokens(timestamped_line(s)) + MARKER_TOKENS for s in doc.segments]
+    costs = [estimate_tokens(line) + MARKER_TOKENS for line in transcript_lines(doc)]
     count = len(doc.segments)
 
     chosen: set[int] = set()
@@ -283,6 +283,7 @@ def render_context(doc: docs.TranscriptDoc, segment_idxs: Sequence[int]) -> str:
     if not wanted:
         return ""
 
+    every = transcript_lines(doc)  # the words' text, by segment position
     lines: list[str] = []
     previous: int | None = None
     for position in wanted:
@@ -291,7 +292,7 @@ def render_context(doc: docs.TranscriptDoc, segment_idxs: Sequence[int]) -> str:
                 lines.append(GAP_MARKER)
         elif position != previous + 1:
             lines.append(GAP_MARKER)
-        lines.append(timestamped_line(doc.segments[position]))
+        lines.append(every[position])
         previous = position
     if wanted[-1] < len(doc.segments) - 1:
         lines.append(GAP_MARKER)

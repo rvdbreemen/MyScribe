@@ -30,7 +30,7 @@ import dataclasses
 
 import pytest
 
-from scribe import db, render
+from scribe import db, glossary, render
 from scribe.exports import doc as docs
 from scribe.llm import chunking
 from tests.seed import seed_media, seed_run
@@ -359,3 +359,57 @@ def test_a_plan_over_a_stored_run_uses_the_segments_the_database_holds(conn):
     for chunk in split:
         assert chunk.tokens <= 50
         assert chunk.text.startswith(f"[{render.format_ts(chunk.start)}] ")
+
+
+# --- the words, not the segment row ---------------------------------------------------------
+
+
+def test_a_line_says_what_the_corrected_words_say_not_what_whisper_wrote(conn):
+    """The glossary writes its result to the word rows, and the transcript view,
+    the DOCX and the SRT all print words - so a name the correct stage fixed has
+    to reach the model too, or every summary is asked about a person who does
+    not exist. The segment row keeps Whisper's spelling (ADR-003); the line the
+    model reads is the words inside that segment's boundaries."""
+    media_id = seed_media(conn, title="Guide")
+    run_id = seed_run(conn, media_id)
+    assert "Marvin" in chunking.transcript_text(docs.load(conn, media_id))
+
+    # Word 20 is " Marvin", the first word of the third sentence.
+    glossary.store(conn, run_id, [glossary.Correction(20, " Marvin", " Marvyn", "fuzzy", 0.9)])
+    doc = docs.load(conn, media_id)
+
+    text = chunking.transcript_text(doc)
+    assert "Marvyn" in text
+    assert "Marvin" not in text
+    assert doc.segments[2]["text"].startswith("Marvin")  # the row Whisper wrote is untouched
+    for chunk in chunking.plan(doc, budget_tokens=50):
+        assert chunk.tokens == chunking.estimate_tokens(chunk.text)  # the estimate is of what is sent
+
+
+def test_every_word_reaches_exactly_one_line_even_outside_every_segment(conn):
+    """A word in the silence between two segments goes to the one that follows,
+    a word after the last segment's end goes to the last: nothing a correction
+    changed is dropped on a boundary, and nothing is sent twice."""
+    words = [
+        {"start": 0.0, "end": 0.4, "text": " one"},
+        {"start": 0.5, "end": 0.9, "text": " two"},
+        {"start": 1.2, "end": 1.6, "text": " gap"},
+        {"start": 2.0, "end": 2.4, "text": " three"},
+        {"start": 3.0, "end": 3.4, "text": " late"},
+    ]
+    segments = [
+        {"start": 0.0, "end": 0.9, "text": "one two"},
+        {"start": 2.0, "end": 2.4, "text": "three"},
+    ]
+    media_id = seed_media(conn)
+    seed_run(conn, media_id, words=words, segments=segments)
+
+    lines = chunking.transcript_lines(docs.load(conn, media_id))
+
+    assert lines == ["[0:00] one two", "[0:02] gap three late"]
+
+
+def test_a_document_without_word_rows_falls_back_to_the_segment_text():
+    """The documents these tests build by hand carry no words; a run that has
+    none is read the only way it can be."""
+    assert chunking.transcript_lines(make_doc([2])) == [f"[0:00] {WORD} {WORD}"]
