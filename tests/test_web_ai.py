@@ -1064,6 +1064,30 @@ def test_a_saved_model_the_list_never_heard_of_is_still_the_selected_option(clie
     assert "selected" not in option_of(body, "model_openai", "babbage-002")
 
 
+def test_a_model_from_the_fetched_list_is_the_selected_option_after_a_save(
+    client, conn, no_ollama
+):
+    """TASK-067: the in-list `selected` marker was never pinned.
+
+    Its sibling above covers the model the list has never heard of, which is
+    rendered as an extra pinned option. The ordinary case - a model the user
+    picked out of the fetched list - had no test at all, so dropping the
+    marker from the loop in _settings_llm.html would pass the suite. A select
+    shows its first option for a value it lacks a marker for, and this form
+    posts every provider's model on every save: the next Save would then store
+    `babbage-002` for a person who chose `gpt-4o-mini`.
+    """
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "openai", "gpt-4o-mini")
+    ai_ui.remember_models(conn, "openai", ["babbage-002", "gpt-4o-mini", "gpt-5.6-luna"])
+
+    body = client.get("/settings").text
+
+    assert "selected" in option_of(body, "model_openai", "gpt-4o-mini")
+    assert "selected" not in option_of(body, "model_openai", "babbage-002")
+    # And what the browser would post next is that same model, not the first.
+    assert browser_post(body, "/settings/llm")["model_openai"] == ["gpt-4o-mini"]
+
+
 def test_saving_the_form_untouched_changes_no_model(client, conn, no_ollama):
     """The Save a person makes after ticking only "New recordings start
     private", posted the way a browser posts the page it was given. The stored

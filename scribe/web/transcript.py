@@ -680,7 +680,13 @@ def audio(media_id: int, request: Request) -> Response:
     proxy = proxy_path_for(row["sha256"])
     try:
         playback.ensure_proxy(original, proxy)
-    except playback.ProxyError as exc:
+    except (playback.ProxyError, OSError) as exc:
+        # OSError as well (TASK-066), for the reason the fallback exists at
+        # all: a player must play something. A full disk, a proxy directory
+        # that cannot be written, or Windows refusing to replace a file
+        # another process holds open leave the original exactly as playable as
+        # a codec ffmpeg does not have. Catching only ProxyError turned those
+        # into a 500 and a player with nothing in it.
         log.warning("no proxy for media %s (%s); serving the original: %s", media_id, row["orig_name"], exc)
         media_type = mimetypes.guess_type(row["orig_name"])[0] or "application/octet-stream"
         return FileResponse(original, media_type=media_type)

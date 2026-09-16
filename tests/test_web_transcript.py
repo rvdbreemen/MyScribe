@@ -408,6 +408,35 @@ def test_audio_serves_the_original_when_the_transcode_fails(
     assert "no such codec" in caplog.text
 
 
+def test_audio_serves_the_original_when_the_transcode_hits_a_disk_error(
+    client, conn, data_dir, transcribed, monkeypatch, caplog
+):
+    """TASK-066: the route caught ProxyError only.
+
+    The fallback exists because a player must play something. A disk that is
+    full, a proxy directory that cannot be written, or Windows refusing to
+    replace a file another process holds open are the same situation as a
+    codec ffmpeg does not have - the original is still there and still
+    playable. Catching only ProxyError turned those into a 500 and a player
+    that plays nothing at all.
+    """
+    media_id = transcribed["media"]
+    _make_mkv(conn, media_id)
+    _store(conn, data_dir, media_id, b"matroska bytes")
+
+    def denied(src, dst):
+        raise PermissionError("[WinError 5] Access is denied: proxy/ab.m4a.part")
+
+    monkeypatch.setattr(playback, "transcode", denied)
+
+    with caplog.at_level(logging.WARNING):
+        resp = client.get(f"/media/{media_id}/audio")
+
+    assert resp.status_code == 200
+    assert resp.content == b"matroska bytes"
+    assert "Access is denied" in caplog.text
+
+
 def test_ensure_proxy_transcodes_once_when_two_requests_race(tmp_path, monkeypatch):
     """A browser's <audio preload="metadata"> asks for the audio twice, and
     the second request lands while the first is still transcoding - before
