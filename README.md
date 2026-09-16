@@ -11,6 +11,31 @@ two-speaker file transcribed on MLX and diarized on MPS through the app. An
 Intel Mac has not been tried. Wherever something fails, the doctor's output
 is the bug report.
 
+## What it does
+
+- **Transcribes** a file, a pasted link, a podcast feed, a YouTube channel or
+  playlist, a watched folder, or a recording made in the browser. Whisper on
+  the GPU, in windows that each hear 30 s past their cut so a cut is never an
+  ending; a second opinion where the decode failed by its own measure.
+- **Says who is speaking.** Diarization on the GPU, then an AI pass that
+  names the clusters from what they say and never writes over a name a
+  person typed. Names follow their voice across a re-transcription.
+- **Corrects itself.** A glossary of your names and terms is applied as a
+  stage, and a word you retype becomes a rule for next time.
+- **Keeps a library**: folders, labels by hand or by an AI pass, full-text
+  search, bulk actions, a row that updates itself while a job runs, and a
+  private pin that keeps a recording's text on this machine.
+- **Plays back exactly.** A VBR MP3 seeks by estimate in every browser, so
+  the app makes an AAC copy at ingest and the highlight lands where the clock
+  says. `python -m scribe.proxies` makes them for a library that predates it.
+- **Exports** to TXT, Markdown, SRT, VTT, DOCX, CSV, JSON and a standalone
+  HTML bundle, with presets, and from the command line.
+- **Answers questions** about a recording in an AI panel - summary, action
+  points, a cleaned reading, a chat - through Ollama on the machine or a
+  cloud provider you pick a model for from its own list.
+
+What changed, and when, is in `CHANGELOG.md`.
+
 ## What you need
 
 | | Windows | Linux | macOS |
@@ -107,10 +132,15 @@ see `pytest.ini`); run the two halves named in `CLAUDE.md` when it does.
 
 ## Where things are decided
 
-`docs/adr/` holds the architecture decisions: one web process and a runner
-child per job (ADR-001), SQLite as the only coordination (ADR-002), words as
-the canonical transcript (ADR-003), the default model (ADR-004), the
-preloaded waveform for diarization (ADR-005), the CUDA pins (ADR-006), the
-application log as observation only (ADR-007), and the feed import - listed
-by yt-dlp in the web process, chosen in the browser, fetched one episode per
-job (ADR-008, proposed).
+`docs/adr/` holds the architecture decisions. Accepted: one web process, a
+supervisor thread and a runner child per job (ADR-001); words as the
+canonical transcript, every grouping derived at render time (ADR-003); the
+default model and what translate substitutes (ADR-004); the preloaded
+waveform for diarization (ADR-005); the application log as observation only,
+nothing reads it to decide (ADR-007); SQLite in WAL mode as the only
+coordination between web, supervisor and runner, with the import rules that
+enforce it (ADR-009, which supersedes ADR-002); and one uv lockfile with a
+per-platform torch source (ADR-012, which supersedes ADR-006). Proposed: the
+feed import as a polled subscription (ADR-008), reasoning as a per-kind hint
+(ADR-010), and a per-OS launcher that installs the locked environment on
+first run (ADR-011).
