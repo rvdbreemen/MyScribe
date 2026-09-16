@@ -391,6 +391,38 @@ def test_the_transcribe_registry_is_the_whole_pipeline_in_order():
     ]
 
 
+def test_the_proxy_stage_keeps_its_promise_for_a_filesystem_error_too(
+    conn, data_dir, monkeypatch, tmp_path
+):
+    """TASK-062: "its failure is not the job's" - for every failure.
+
+    The stage catches ProxyError and lets the job go on, which is what its
+    docstring promises. An OSError from the same call - a full disk, a denied
+    directory, Windows refusing to replace a file another process has open -
+    walked out of the stage instead, and the runner turns that into a failed
+    transcription. The words do not depend on the proxy either way.
+    """
+    media_row = media.ingest_path(conn, CLIP)
+    job_id = jobs.enqueue(conn, "transcribe", media_id=media_row["id"])
+    job = dict(conn.execute("SELECT * FROM job WHERE id=?", (job_id,)).fetchone())
+    ctx = runner.RunnerContext(
+        conn=conn,
+        job=job,
+        params={},
+        report=lambda p: None,
+        cancelled=lambda: False,
+        media_path=tmp_path / "talk.mkv",  # a container that never seeks exactly
+    )
+    (tmp_path / "talk.mkv").write_bytes(b"not really a matroska file")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("[WinError 5] Access is denied: proxy/ab.m4a.part")
+
+    monkeypatch.setattr(proxy.playback, "ensure_proxy", refuse)
+
+    proxy.run(ctx)  # must not raise: the job keeps its words
+
+
 def test_enhance_is_reserved_and_not_yet_registered():
     assert "enhance" not in [name for name, _ in runner.STAGES["transcribe"]]
 

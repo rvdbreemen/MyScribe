@@ -250,6 +250,29 @@ class Word:
         self.start, self.end, self.word, self.probability = start, end, word, 0.9
 
 
+def test_a_wordless_segment_is_trimmed_at_the_cut_like_any_other():
+    """TASK-061: both trims are gated on the segment having words.
+
+    faster-whisper yields a segment whose word list is empty but whose text is
+    not - its own yield filter drops only an empty text or a zero-length span.
+    Such a segment passed straight through: `if words and not kept` is dead on
+    an empty list, and `len(kept) < len(words)` is `0 < 0`. It kept the end and
+    the text the decoder gave it, both running into the look-ahead that the
+    next window decodes again - so the same speech landed in two segment rows,
+    which is what search, the chat tool and the JSON export read.
+    """
+    segs = [
+        Seg(0.0, 4.0, "a", [Word(0.0, 1.0, " a")]),
+        Seg(8.0, 14.0, "into the look-ahead"),  # no words at all
+    ]
+
+    rows, _words = transcribe.collect_segments(
+        segs, 100.0, on_progress=lambda fraction: None, limit=10.0
+    )
+
+    assert rows[-1]["end"] <= 10.0, "a segment may not end past the cut"
+
+
 def test_collect_segments_offsets_times_and_continues_indices():
     seen = []
     segs = [Seg(0.0, 2.0, "a", [Word(0.0, 1.0, " a")]), Seg(2.0, 4.0, "b", [Word(2.0, 3.0, " b")])]

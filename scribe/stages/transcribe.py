@@ -455,6 +455,17 @@ def collect_segments(
                 words = kept
                 end = float(kept[-1].end)
                 text = "".join(word.word for word in kept).strip()
+            elif not words and end > limit:
+                # A segment with no words at all, running past the cut into the
+                # look-ahead the next window decodes again (TASK-062 review).
+                # Both trims above are about words, so this one slipped through
+                # keeping the decoder's end and text - and the same speech then
+                # sat in two segment rows, which search, the chat tool and the
+                # JSON export read. There is no word list to rebuild the text
+                # from, and inventing a shorter one would describe a span
+                # nobody transcribed, so the segment is dropped instead: the
+                # next window decodes this audio properly, with its words.
+                break
         idx = idx0 + len(segment_rows)
         segment_rows.append(
             {

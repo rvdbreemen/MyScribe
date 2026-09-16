@@ -47,6 +47,12 @@ def run(ctx: "RunnerContext") -> None:
         row = ctx.conn.execute("SELECT sha256 FROM media WHERE id=?", (media_id,)).fetchone()
     try:
         playback.ensure_proxy(ctx.media_path, proxy_path_for(row["sha256"]))
-    except playback.ProxyError as exc:
+    except (playback.ProxyError, OSError) as exc:
+        # OSError as well as ProxyError (TASK-062). The promise above is that
+        # this stage's failure is not the job's, and a full disk, a directory
+        # it may not write, or Windows refusing to replace a file another
+        # process holds open are failures of exactly the same kind: the words
+        # do not depend on the proxy. Letting one of those walk out would fail
+        # a transcription over a copy made for the player's convenience.
         log.warning("no proxy for media %s; it plays from the original: %s", media_id, exc)
         applog.log("proxy.failed", level="warn", job=ctx.job["id"], media=media_id, error=str(exc))
