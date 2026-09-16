@@ -1,15 +1,15 @@
 ---
 id: "ADR-013"
 title: "SQLite in WAL mode is the only coordination between web, supervisor and runner, with one runner at a time in the claim and anchors that match the code"
-status: "Proposed"
+status: "Accepted"
 date: "2026-09-16"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
-supersedes: []
+supersedes:
+  - "ADR-009"
 superseded_by: null
-format: "madr"
 topics:
   - "storage"
   - "job-orchestration"
@@ -31,6 +31,7 @@ symbols:
   - "db.LOCK"
   - "reconcile"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -39,7 +40,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-09-16.
+Accepted, 2026-09-16.
 
 ## Status History
 
@@ -50,11 +51,21 @@ status_history:
     changed_by: Claude Fable 5.1 (agent)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-09-16
+    status: Proposed
+    changed_by: "User: Robert van den Breemen"
+    reason: Superseded by ADR-013 on Robert's instruction, 2026-09-16
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-16
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: Accepted by Robert van den Breemen in the session of 2026-09-16 (explicit command)
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
 
-Three parties touch job state, all of them through SQL against one SQLite
+Three parties touch job state, all of them through SQL (structured query language) against one SQLite
 file in WAL (write-ahead log) mode: the web process (enqueue, cancel, read),
 the supervisor thread inside it (claim, safety-net verdicts), and each runner
 child process (stage progress, events, its own verdict). A runner child shares
@@ -70,11 +81,11 @@ longer describes the code, and the kit's guide forbids rewriting an Accepted
 record, so the corrections arrive as a successor that stands on its own.
 
 * **The claim SQL drifted twice.** ADR-009 quotes the claim as
-  `order by priority desc, id`. The FIFO key has been `queue_seq` since
+  `order by priority desc, id`. The FIFO (first in, first out) key has been `queue_seq` since
   schema v16 (TASK-047): a person can move a job, and `id` cannot move. And
   since TASK-070 the claim is refused while any job is running -
   `AND NOT EXISTS (SELECT 1 FROM job WHERE status='running')` inside the same
-  statement - because ADR-001's "at most one GPU runner" was the supervisor's
+  statement - because ADR-001's "at most one GPU (graphics processing unit) runner" was the supervisor's
   habit of running its loop in sequence, not a rule SQLite enforced: a second
   app instance on the same data, or a runner that outlived a stopped app,
   claimed beside the running job and put two children on one card.
@@ -193,7 +204,7 @@ a probe diff adding `threading.RLock()` to `scribe/supervisor.py` and
 * Introduce a second queue, a message broker, a lock file or a pid file for
   job state or for "one runner at a time".
 * Import `redis`, `celery` or `rq` anywhere under `scribe/`.
-* Store media bytes or transcript artifacts in the database. The one BLOB
+* Store media bytes or transcript artifacts in the database. The one BLOB (binary large object)
   column is `speaker_embedding.embedding` (`scribe/db.py:46`).
 
 ### Exceptions
@@ -229,14 +240,14 @@ a probe diff adding `threading.RLock()` to `scribe/supervisor.py` and
 ### Negative
 
 * SQLite has one writer at a time; long transactions in the runner would
-  stall the UI. Mitigated by `busy_timeout=5000` (`scribe/db.py:547`) and by
+  stall the UI (user interface). Mitigated by `busy_timeout=5000` (`scribe/db.py:547`) and by
   throttling runner progress writes to one per 0.4 s
   (`REPORT_MIN_INTERVAL`, `scribe/runner.py:33`).
 * A live runner left by a previous app life holds the queue until it ends.
   That is the rule working; the reconcile on every empty claim keeps a dead
   one from holding it.
 * The anchored import rules still miss `import os, redis` and a dynamic
-  import, as ADR-009 said; the LLM pass and review cover that.
+  import, as ADR-009 said; the LLM (large language model) pass and review cover that.
 * Line anchors drift. This record dates its anchors (2026-09-16); a future
   reader checks the symbol, not the number.
 

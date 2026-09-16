@@ -1,15 +1,15 @@
 ---
 id: "ADR-014"
 title: "The application log is observation: nothing reads it to decide anything, with an enforcement rule that can match"
-status: "Proposed"
+status: "Accepted"
 date: "2026-09-16"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
-supersedes: []
+supersedes:
+  - "ADR-007"
 superseded_by: null
-format: "madr"
 topics:
   - "logging"
   - "observability"
@@ -29,6 +29,7 @@ symbols:
   - "applog.tail"
   - "applog._append"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -37,7 +38,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-09-16.
+Accepted, 2026-09-16.
 
 ## Status History
 
@@ -48,6 +49,16 @@ status_history:
     changed_by: Claude Fable 5.1 (agent)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-09-16
+    status: Proposed
+    changed_by: "User: Robert van den Breemen"
+    reason: Superseded by ADR-014 on Robert's instruction, 2026-09-16
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-16
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: Accepted by Robert van den Breemen in the session of 2026-09-16 (explicit command)
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

@@ -1,14 +1,14 @@
 ---
 id: "ADR-007"
 title: "The application log is observation: nothing reads it to decide anything"
-status: "Accepted"
-date: "2026-09-06"
+status: "Superseded"
+date: "2026-09-16"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
-superseded_by: null
+superseded_by: "ADR-014"
 topics:
   - "logging"
   - "observability"
@@ -38,7 +38,7 @@ format: "madr"
 
 ## Status
 
-Accepted, 2026-09-06.
+Superseded by ADR-014, 2026-09-16.
 
 ## Status History
 
@@ -53,6 +53,11 @@ status_history:
     status: Accepted
     changed_by: Robert van den Breemen
     reason: "Accepted by the user in session 2026-09-06 (explicit: 'Accept ADR-007'); the one open question answered by the user the same day"
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-16
+    status: Superseded
+    changed_by: "User: Robert van den Breemen"
+    reason: Superseded by ADR-014 on Robert's instruction, 2026-09-16
     changed_via: adr-kit lifecycle
 ```
 

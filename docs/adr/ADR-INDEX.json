@@ -354,8 +354,8 @@
       "title": "The application log is observation: nothing reads it to decide anything",
       "path": "ADR-007-the-application-log-is-observation-nothing-reads-it-to-decide-anything.md",
       "format": "madr",
-      "status": "Accepted",
-      "date": "2026-09-06",
+      "status": "Superseded",
+      "date": "2026-09-16",
       "decision_summary": "Chosen option: the JSON-Lines file with a bounded lock and the observation rule, because a log that lives in the data...",
       "topics": [
         "logging",
@@ -382,28 +382,10 @@
       ],
       "context_scope": "selective",
       "decision_contract": {
-        "must": [
-          "Every line is one write of a complete JSON document ending in \\n, made while holding the byte lock on app.log.lock - a file nothing reads.",
-          "The lock wait is bounded (LOCKWAITS) and non-blocking; on expiry the writer writes anyway. A rare spliced line is accepted over a stalled process.",
-          "applog.log never raises. A failure to write is reported on stderr once and swallowed.",
-          "The writer name in proc is thread-local with a process-wide default; a thread that shares a process with request threads names only itself.",
-          "Retention is a cap: MAXBYTES, one previous file. The file is renamed, never truncated.",
-          "Field names containing key, token, secret, password or authorization are redacted; URL query strings and cookie-file paths are redacted by shape."
-        ],
-        "must_not": [
-          "Nothing in scribe/ may read app.log to make a decision: not the supervisor, not the runner, not a route. The only readers are /logs and a human.",
-          "The lock must not be taken on app.log itself, and must not be a blocking LKLOCK.",
-          "The log must not be a second record of job state. Transitions may appear in both places; progress (percentages, ETA (estimated time of arrival) samples) appears only in the event log."
-        ],
-        "exceptions": [
-          "tests/ may read the file to assert on it."
-        ],
-        "verification": [
-          "tests/testapplog.py::testtwoprocessesappendingatonceinterleavenothing",
-          "tests/testapplog.py::testthesupervisorthreadnamesitselfwithoutrenamingthewebprocess",
-          "tests/testapplog.py::testwritersholdthecrossprocessmutexwhiledecidingtorotate",
-          "Source anchor: scribe/applog.py::append"
-        ]
+        "must": [],
+        "must_not": [],
+        "exceptions": [],
+        "verification": []
       },
       "scope": {
         "path_globs": [
@@ -417,7 +399,7 @@
         "documents_shipped": false,
         "verified_in": [],
         "supersedes": [],
-        "superseded_by": null
+        "superseded_by": "ADR-014"
       }
     },
     {
@@ -515,8 +497,8 @@
       "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner, restated with anchored import rules",
       "path": "ADR-009-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner-restated-with-anchored-import-rules.md",
       "format": "madr",
-      "status": "Accepted",
-      "date": "2026-09-13",
+      "status": "Superseded",
+      "date": "2026-09-16",
       "decision_summary": "Chosen option: SQLite WAL with atomic SQL (ADR-002's decision, unchanged), with \"no broker\" checked by forbidimport r...",
       "topics": [
         "concurrency",
@@ -543,27 +525,10 @@
       ],
       "context_scope": "selective",
       "decision_contract": {
-        "must": [
-          "Job claims use begin immediate plus update ... returning (scribe/jobs.py:110-116).",
-          "Terminal verdicts are written with a status guard so the first one wins (scribe/jobs.py:148).",
-          "db.LOCK (the one module-level lock in scribe.db) is the only lock guarding database access in the web process, and every database access there holds it, whichever connection it uses. A lock around a different resource is fine (scribe/web...",
-          "job.status stays constrained by a check (a rule SQLite enforces on every write) to exactly queued, running, done, failed, cancelled, interrupted (scribe/db.py:50).",
-          "A declarative rule in this record's Enforcement block that forbids a module matches its import statement, not the module's name anywhere on a line."
-        ],
-        "must_not": [
-          "Introduce a second queue or a message broker for job state.",
-          "Import redis, celery or rq anywhere under scribe/.",
-          "Store media bytes or transcript artifacts in the database. The one BLOB (binary large object) column is speakerembedding.embedding (scribe/db.py:44-46)."
-        ],
-        "exceptions": [
-          "None."
-        ],
-        "verification": [
-          "tests/testjobs.py::testclaimraceexactlyonewinnerperjob, ::testfinishfirstverdictwins, ::testrequestcancelonqueuedcancelsinstantly, ::testemitmonotonicsequnderconcurrentemit.",
-          "tests/testdb.py::testwalandfkon, ::testjobstatuscheckconstraintrejectsbogus.",
-          "ADRKITNOLLM=1 adr-judge --dry-run-enforcement ADR-009 on a diff like the probe flags the import statements and none of the prose or look-alike lines (table in Context). The judge applies this record only once it is Accepted.",
-          "grep -rnE \"^\\s(import|from)\\s+(redis|celery|rq)\\b\" scribe/ returns nothing on 2026-09-11: the rules are a tripwire, not a cleanup."
-        ]
+        "must": [],
+        "must_not": [],
+        "exceptions": [],
+        "verification": []
       },
       "scope": {
         "path_globs": [
@@ -580,7 +545,7 @@
         "supersedes": [
           "ADR-002"
         ],
-        "superseded_by": null
+        "superseded_by": "ADR-013"
       }
     },
     {
@@ -805,7 +770,7 @@
       "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner, with one runner at a time in the claim and anchors that match the code",
       "path": "ADR-013-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner-with-one-runner-at-a-time-in-the-claim-and-anchors-that-match-the-code.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-09-16",
       "decision_summary": "Chosen option: SQLite WAL with atomic SQL, one-at-a-time in the claim, because every hard coordination problem is the...",
       "topics": [
@@ -845,7 +810,7 @@
         "must_not": [
           "Introduce a second queue, a message broker, a lock file or a pid file for job state or for \"one runner at a time\".",
           "Import redis, celery or rq anywhere under scribe/.",
-          "Store media bytes or transcript artifacts in the database. The one BLOB column is speakerembedding.embedding (scribe/db.py:46)."
+          "Store media bytes or transcript artifacts in the database. The one BLOB (binary large object) column is speakerembedding.embedding (scribe/db.py:46)."
         ],
         "exceptions": [
           "None."
@@ -868,7 +833,9 @@
         "gate": null,
         "documents_shipped": false,
         "verified_in": [],
-        "supersedes": [],
+        "supersedes": [
+          "ADR-009"
+        ],
         "superseded_by": null
       }
     },
@@ -877,7 +844,7 @@
       "title": "The application log is observation: nothing reads it to decide anything, with an enforcement rule that can match",
       "path": "ADR-014-the-application-log-is-observation-nothing-reads-it-to-decide-anything-with-an-enforcement-rule-that-can-match.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-09-16",
       "decision_summary": "Chosen option: one pattern over scribe/, with the one reader marked.",
       "topics": [
@@ -939,7 +906,9 @@
         "gate": null,
         "documents_shipped": false,
         "verified_in": [],
-        "supersedes": [],
+        "supersedes": [
+          "ADR-007"
+        ],
         "superseded_by": null
       }
     }
@@ -1024,6 +993,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-007",
+      "target": "ADR-014",
+      "type": "superseded-by",
+      "resolved": true
+    },
+    {
       "source": "ADR-008",
       "target": "ADR-001",
       "type": "related",
@@ -1063,6 +1038,12 @@
       "source": "ADR-009",
       "target": "ADR-008",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-009",
+      "target": "ADR-013",
+      "type": "superseded-by",
       "resolved": true
     },
     {
@@ -1162,6 +1143,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-013",
+      "target": "ADR-009",
+      "type": "supersedes",
+      "resolved": true
+    },
+    {
       "source": "ADR-014",
       "target": "ADR-001",
       "type": "related",
@@ -1171,6 +1158,12 @@
       "source": "ADR-014",
       "target": "ADR-007",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-014",
+      "target": "ADR-007",
+      "type": "supersedes",
       "resolved": true
     },
     {

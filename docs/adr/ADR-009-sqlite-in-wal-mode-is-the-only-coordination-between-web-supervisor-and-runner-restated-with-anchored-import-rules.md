@@ -1,15 +1,15 @@
 ---
 id: "ADR-009"
 title: "SQLite in WAL mode is the only coordination between web, supervisor and runner, restated with anchored import rules"
-status: "Accepted"
-date: "2026-09-13"
+status: "Superseded"
+date: "2026-09-16"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes:
   - "ADR-002"
-superseded_by: null
+superseded_by: "ADR-013"
 topics:
   - "storage"
   - "job-orchestration"
@@ -39,7 +39,7 @@ format: "madr"
 
 ## Status
 
-Accepted, 2026-09-13.
+Superseded by ADR-013, 2026-09-16.
 full with one change to the Enforcement block. The supersede itself is
 human-gated and has not been run; the pending steps are under Related
 Decisions.
@@ -62,6 +62,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: ADR-009 restates it with anchored forbid_import patterns (TASK-033)
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-16
+    status: Superseded
+    changed_by: "User: Robert van den Breemen"
+    reason: Superseded by ADR-013 on Robert's instruction, 2026-09-16
     changed_via: adr-kit lifecycle
 ```
 
