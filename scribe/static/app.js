@@ -1662,8 +1662,18 @@
 
     /* ---- the panel re-fetches itself; the words are new nodes ---- */
 
-    document.body.addEventListener('htmx:afterSwap', function () {
-      if (!document.getElementById('transcript-panel')) { return; }
+    document.body.addEventListener('htmx:afterSwap', function (event) {
+      var panel = document.getElementById('transcript-panel');
+      if (!panel) { return; }
+      /* Only when the panel itself was replaced (TASK-068). The AI region sits
+         outside it and every one of its cards polls every two seconds, each
+         swap reaching this listener; asking merely whether a panel *existed*
+         wiped the reader's search and the shift-click anchor on every poll.
+         A swap whose target is neither the panel nor something holding it
+         left these words in place, so their state is still good. No target
+         information at all keeps the old, conservative reset. */
+      var swapped = event && event.detail ? event.detail.target : null;
+      if (swapped && swapped !== panel && !(swapped.contains && swapped.contains(panel))) { return; }
       clearSearch();
       anchor = -1;  /* the new panel's words carry no selection */
       index();

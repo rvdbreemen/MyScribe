@@ -564,7 +564,11 @@ const vm = require('vm');
    could only be tested by reading its source text, which is no test at all.
    Anything else, a pseudo-class or a child combinator, still throws: see this
    module's note on why a stub must not silently answer "no". */
-const SIMPLE = /^([a-z]+)?((?:[#.][A-Za-z0-9_-]+|\[[a-z-]+(?:="[^"]*")?\])*)$/;
+/* The tag name may carry a digit: app.js reaches for `#transcript h3.speaker`,
+   and `[a-z]+` refused it while `span.w` sailed through - a stub that answers
+   for one heading level and throws for another is worse than one that throws
+   for both. */
+const SIMPLE = /^([a-z][a-z0-9]*)?((?:[#.][A-Za-z0-9_-]+|\[[a-z-]+(?:="[^"]*")?\])*)$/;
 const PART = /[#.][A-Za-z0-9_-]+|\[[a-z-]+(?:="[^"]*")?\]/g;
 
 function matchesOne(node, selector) {
@@ -639,6 +643,14 @@ function el(tag, attrs) {
     },
     remove: function (name) {
       node.attrs['class'] = node.classList._list().filter(function (c) { return c !== name; }).join(' ');
+    },
+    /* Built on the two above so there stays one way to write the attribute.
+       The forced form is the one that matters here: app.js's showRange says
+       `toggle('sel', inside)` for every word on every range change. */
+    toggle: function (name, force) {
+      const on = force === undefined ? !node.classList.contains(name) : Boolean(force);
+      if (on) { node.classList.add(name); } else { node.classList.remove(name); }
+      return on;
     }
   };
   Object.defineProperty(node, 'isConnected', { get: function () {

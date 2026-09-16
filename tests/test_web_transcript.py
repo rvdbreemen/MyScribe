@@ -37,6 +37,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from mp3_headers import mp3
+from test_web_url_dialog import needs_node, run_dom
 from scribe import db, jobs, paths, playback, render
 from scribe.app import create_app
 from scribe.web import transcript
@@ -1285,6 +1286,72 @@ def test_the_speed_buttons_read_the_rate_rather_than_remembering_it(client):
     # setSpeed must not write the buttons itself, or the two paths can disagree
     body = js.split("function setSpeed(")[1].split("}")[0]
     assert "aria-pressed" not in body
+
+
+@needs_node
+def test_a_swap_outside_the_panel_leaves_the_word_selection_alone(tmp_path):
+    """TASK-068: the AI cards poll every two seconds, outside the panel.
+
+    app.js reset the transcript's state on every htmx:afterSwap that reached
+    the body, asking only whether a #transcript-panel existed - not whether it
+    was the thing replaced. So while an AI answer was pending, every two
+    seconds `anchor = -1` threw away the word a reader had clicked, and the
+    shift-click that should have closed a range started a new one instead.
+
+    The anchor is a variable, so what is asserted is what it does: click word
+    0, let a card swap happen, shift-click word 2. With the anchor intact that
+    is three selected words; without it, one.
+
+    (The same listener also calls clearSearch(). That half cannot be shown
+    here: the find code walks text nodes, and this stub refuses to build them
+    on purpose - see its createTextNode. The anchor half needs only classes.)
+    """
+    result = run_dom(
+        tmp_path,
+        r"""
+    /* The page as _transcript_panel.html builds it: the panel with the words,
+       and the AI region beside it, outside the panel. */
+    const panel = body.append(el('div', { id: 'transcript-panel' }));
+    /* The block keys off the player: no #player, no transcript behaviour. */
+    panel.append(el('audio', { id: 'player' }));
+    const transcript = panel.append(el('div', { id: 'transcript' }));
+    const para = transcript.append(el('p', { class: 'para' }));
+    const words = ['budget', 'is', 'the', 'budget'].map(function (text, i) {
+      const w = para.append(el('span', {
+        class: 'w', 'data-i': String(i), 'data-s': String(i), 'data-e': String(i + 1)
+      }));
+      w.textContent = text;
+      return w;
+    });
+    const card = body.append(el('section', { id: 'ai-summary' }));
+
+    load(APP);
+
+    function selected() { return document.querySelectorAll('#transcript .w.sel').length; }
+
+    fire(document, 'click', event({ target: words[0] }));      /* anchors word 0 */
+    const anchored = document.querySelectorAll('#transcript .w.anchor').length;
+
+    /* The AI card's own poll answered and htmx swapped it. The panel was not
+       touched, so the reader's anchor must still be there. */
+    fire(document.body, 'htmx:afterSwap', event({ detail: { target: card } }));
+    fire(document, 'click', event({ target: words[2], shiftKey: true }));
+    const afterCardSwap = selected();
+
+    /* The panel itself being replaced is the case that must still reset:
+       those words are new nodes and an index into the old ones means nothing. */
+    fire(document, 'click', event({ target: words[0] }));
+    fire(document.body, 'htmx:afterSwap', event({ detail: { target: panel } }));
+    fire(document, 'click', event({ target: words[2], shiftKey: true }));
+    const afterPanelSwap = selected();
+
+    done({ anchored: anchored, afterCardSwap: afterCardSwap, afterPanelSwap: afterPanelSwap });
+""",
+    )
+
+    assert result["anchored"] == 1, "the click did not anchor, so the test proves nothing"
+    assert result["afterCardSwap"] == 3, "a swap outside the panel threw the anchor away"
+    assert result["afterPanelSwap"] == 1
 
 
 def test_the_search_looks_at_whichever_reading_is_on_screen(client):
