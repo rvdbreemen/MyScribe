@@ -77,19 +77,93 @@ def pid_alive(pid: int | None) -> bool:
         return True
 
 
+def process_started_at(pid: int | None) -> float | None:
+    """When the process holding `pid` started, as unix time, or None.
+
+    None means "cannot tell", never "it is young": every caller must treat an
+    unanswerable question as no evidence and leave the row alone. Windows has
+    GetProcessTimes; elsewhere there is no way to ask without a dependency, so
+    POSIX gets None and keeps the bare-pid behaviour it had (TASK-065).
+    """
+    if not pid or pid <= 0 or sys.platform != "win32":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        created = ctypes.wintypes.FILETIME()
+        unused = ctypes.wintypes.FILETIME()
+        ok = kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(unused),
+            ctypes.byref(unused),
+            ctypes.byref(unused),
+        )
+        if not ok:
+            return None
+        ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        # FILETIME counts 100-nanosecond intervals since 1601-01-01.
+        return ticks / 1e7 - 11644473600
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+# A process that started this long after the job may still be its runner: the
+# two clocks are the same one here, but a claim and a spawn are not atomic.
+_PID_AGE_SLACK_SECONDS = 60.0
+
+
+def _pid_is_younger_than_job(row) -> bool:
+    """Did the process holding this row's pid start after the job did?
+
+    Only a yes is an answer. No `started_at`, no readable process time, or a
+    platform that cannot say (POSIX) all return False, which leaves the row
+    exactly where the bare-pid check put it. The slack is there because the
+    claim and the spawn are two statements, not one.
+    """
+    started_at = row["started_at"]
+    if started_at is None:
+        return False
+    process_start = process_started_at(row["pid"])
+    if process_start is None:
+        return False
+    return process_start > float(started_at) + _PID_AGE_SLACK_SECONDS
+
+
 def reconcile(conn) -> int:
     """Flip orphaned running jobs (dead or absent pid) to interrupted.
 
     Run at startup, before the supervisor starts. Returns how many jobs
     were flipped.
+
+    Two things a bare pid cannot tell us, both found in the 2026-09-16 review:
+
+    * **No pid yet is not a dead pid.** `claim_next` publishes a job as
+      running with `pid=NULL` and the supervisor writes the child's pid a
+      moment later. A reconcile landing in that gap used to declare a job dead
+      that was about to start - and the runner's own verdict is then refused,
+      because `finish` only moves a row that is still running (TASK-064).
+    * **A pid can be somebody else's.** Windows hands out pids again after a
+      reboot, so a job interrupted by a power cut can find its pid held by an
+      unrelated process and sit on running for ever. A process that started
+      well after the job did cannot be that job's runner (TASK-065).
     """
     with db.LOCK:
         rows = conn.execute(
-            "SELECT id, pid FROM job WHERE status='running'"
+            "SELECT id, pid, started_at FROM job WHERE status='running'"
         ).fetchall()
     count = 0
     for row in rows:
-        if pid_alive(row["pid"]):
+        if row["pid"] is None and row["started_at"] is not None:
+            # Claimed, not yet spawned: the supervisor owns this row and will
+            # write the pid in a moment. `claim_next` (jobs.py:135) is the only
+            # thing that sets a job running, and it always stamps started_at -
+            # so a running row with neither pid nor start time is not a job in
+            # that gap but a leftover, and keeps the old treatment.
+            continue
+        if pid_alive(row["pid"]) and not _pid_is_younger_than_job(row):
             continue
         with db.LOCK:
             cur = conn.execute(

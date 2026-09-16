@@ -77,6 +77,8 @@ def sleeping_runner_cmd(tmp_path):
     )
 
 
+
+
 # --- happy path ---------------------------------------------------------------
 
 
@@ -120,6 +122,49 @@ def test_runner_death_without_verdict_marks_failed_runner_died(
     row = _row(conn, job_id)
     assert row["error_code"] == "RUNNER_DIED"
     assert row["finished_at"] is not None
+
+
+# --- reconcile and the pid ----------------------------------------------------
+
+
+def test_reconcile_leaves_a_just_claimed_job_alone(conn):
+    """TASK-064: claim_next publishes 'running' with pid=NULL.
+
+    The supervisor writes the child's pid a moment later (supervisor.py:254).
+    In that gap the row says running and carries no pid, and pid_alive(None)
+    is False - so a reconcile running right then declares a job dead that is
+    about to start, or is already decoding. The runner's own verdict is then
+    refused, because finish() only moves a row that is still 'running'.
+    """
+    jobs.enqueue(conn, "fake")
+    claimed = jobs.claim_next(conn)
+
+    assert claimed is not None and claimed["pid"] is None
+    supervisor.reconcile(conn)
+
+    assert _row(conn, claimed["id"])["status"] == "running"
+
+
+def test_reconcile_flips_a_job_whose_pid_belongs_to_a_younger_process(conn):
+    """TASK-065: a bare pid is not proof the job's own child is alive.
+
+    Windows hands out pids again after a reboot, so a job interrupted by a
+    power cut can find its pid held by something unrelated - and reconcile,
+    seeing it alive, leaves the row on 'running' for ever. A process that
+    started *after* the job did cannot be that job's runner.
+    """
+    job_id = jobs.enqueue(conn, "fake")
+    long_ago = time.time() - 3600
+    with db.LOCK:
+        conn.execute(
+            "UPDATE job SET status='running', started_at=?, pid=? WHERE id=?",
+            (long_ago, os.getpid(), job_id),  # this process started just now
+        )
+        conn.commit()
+
+    supervisor.reconcile(conn)
+
+    assert _row(conn, job_id)["status"] == "interrupted"
 
 
 # --- cancel + kill grace ------------------------------------------------------
