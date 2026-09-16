@@ -132,6 +132,45 @@ def _pid_is_younger_than_job(row) -> bool:
     return process_start > float(started_at) + _PID_AGE_SLACK_SECONDS
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """End the runner and everything it started, then wait for the runner.
+
+    A runner blocked inside ffmpeg never reads the cancel flag, and ending the
+    runner alone left that ffmpeg converting on (TASK-069). The launcher
+    already does this for the app as a whole; this is the same shape for one
+    job: on Windows taskkill walks the tree the process group defines, on
+    POSIX the session gets SIGTERM and then SIGKILL for stragglers.
+    """
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            proc.wait(timeout=_KILL_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=_KILL_WAIT_SECONDS)
+        return
+    try:  # pragma: no cover - POSIX
+        group = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        proc.wait(timeout=_KILL_WAIT_SECONDS)
+        return
+    os.killpg(group, signal.SIGTERM)
+    try:
+        proc.wait(timeout=_KILL_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=_KILL_WAIT_SECONDS)
+
+
 def reconcile(conn) -> int:
     """Flip orphaned running jobs (dead or absent pid) to interrupted.
 
@@ -287,9 +326,16 @@ class Supervisor:
             if self.runner_cmd
             else [sys.executable, "-m", "scribe.runner"]
         )
+        # Its own process group, so a cancel can reach what the runner starts
+        # underneath it - prepare's ffmpeg above all (TASK-069). The same
+        # flags the launcher uses for the app: on Windows a group for
+        # taskkill /T to walk, on POSIX a session for killpg.
         creationflags = (
-            subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            if sys.platform == "win32"
+            else 0
         )
+        session = {} if sys.platform == "win32" else {"start_new_session": True}
         # The child's stderr goes to a file, not a pipe and not nowhere. A pipe
         # nobody drains deadlocks a chatty child; nowhere is where the one
         # sentence explaining a DLL that would not load used to go. The file
@@ -300,7 +346,7 @@ class Supervisor:
         try:
             return subprocess.Popen(
                 prefix + [str(job_id)], creationflags=creationflags,
-                stdout=subprocess.DEVNULL, stderr=errors,
+                stdout=subprocess.DEVNULL, stderr=errors, **session,
             )
         finally:
             errors.close()  # the child holds its own handle
@@ -379,12 +425,10 @@ class Supervisor:
                 cancel_seen is not None
                 and time.monotonic() - cancel_seen >= self.kill_grace
             ):
-                proc.terminate()
-                try:
-                    proc.wait(timeout=_KILL_WAIT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=_KILL_WAIT_SECONDS)
+                _kill_tree(proc)
+                # The runner's own finally removes this on every way out it
+                # lives to see; a kill is the one it does not (TASK-069).
+                paths.remove_job_work_dir(job_id)
                 break
             time.sleep(_WATCH_POLL_SECONDS)
 

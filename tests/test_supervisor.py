@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from scribe import db, jobs, supervisor
+from scribe import db, jobs, paths, supervisor
 
 
 @pytest.fixture
@@ -168,6 +168,80 @@ def test_reconcile_flips_a_job_whose_pid_belongs_to_a_younger_process(conn):
 
 
 # --- cancel + kill grace ------------------------------------------------------
+
+
+@pytest.fixture
+def grandchild_runner_cmd(tmp_path):
+    """Fake runner that starts a child of its own, the way prepare runs ffmpeg.
+
+    It writes the grandchild's pid where the test can find it, then blocks on
+    that child - never looking at the cancel flag, like a runner inside a
+    long conversion. Returns the runner_cmd prefix; the marker file sits at
+    tmp_path / "grandchild.pid".
+    """
+    marker = tmp_path / "grandchild.pid"
+    return _script_cmd(
+        tmp_path,
+        "grandchild_runner.py",
+        f"""\
+import pathlib, subprocess, sys
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+pathlib.Path({str(marker)!r}).write_text(str(child.pid), encoding="utf-8")
+child.wait()
+""",
+    )
+
+
+def test_cancel_kills_the_grandchild_and_removes_the_scratch(
+    conn, db_path, grandchild_runner_cmd, tmp_path, monkeypatch
+):
+    """TASK-069: the kill reached the runner and nothing below it.
+
+    A runner blocked in ffmpeg never sees the cancel flag; the supervisor
+    terminated the runner alone, so ffmpeg went on converting a two-hour file
+    and the runner's own finally - the one that removes the job's scratch -
+    never ran. The launcher kills the whole tree for the app; the supervisor
+    has to do the same for a job.
+    """
+    monkeypatch.setattr(paths, "WORK_DIR", tmp_path / "work")
+    grace = 1.0
+    job_id = jobs.enqueue(conn, "fake")
+    marker = tmp_path / "grandchild.pid"
+
+    sup = supervisor.Supervisor(
+        db_path, poll_interval=0.05, runner_cmd=grandchild_runner_cmd, kill_grace=grace
+    )
+    sup.start()
+    try:
+        assert _wait_for(lambda: marker.is_file() and marker.read_text().strip()), (
+            "the runner never started its child"
+        )
+        grandchild = int(marker.read_text(encoding="utf-8").strip())
+        assert supervisor.pid_alive(grandchild)
+        scratch = paths.job_work_dir(job_id)
+        scratch.mkdir(parents=True)
+        (scratch / "audio.wav").write_bytes(b"scratch")
+
+        jobs.request_cancel(conn, job_id)
+        assert _wait_for(
+            lambda: _row(conn, job_id)["status"] == "cancelled", timeout=grace + 8.0
+        ), "job was not cancelled"
+
+        assert _wait_for(lambda: not supervisor.pid_alive(grandchild), timeout=3.0), (
+            "the grandchild outlived the cancel"
+        )
+        assert _wait_for(lambda: not scratch.exists(), timeout=3.0), (
+            "the job's scratch was left behind"
+        )
+    finally:
+        sup.stop()
+        if marker.is_file():
+            try:
+                pid = int(marker.read_text(encoding="utf-8").strip())
+                if supervisor.pid_alive(pid):
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+            except (ValueError, OSError):
+                pass
 
 
 def test_cancel_kills_hung_runner_within_grace_and_cancels_job(
