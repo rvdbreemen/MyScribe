@@ -7,7 +7,11 @@ are those of the commits that set the version.
 
 ## [Unreleased]
 
-Everything on `main` since 0.2.1. The fixes below came out of a
+Nothing yet.
+
+## [0.3.0] - 2026-09-16
+
+The fixes below came out of a
 whole-codebase review on 2026-09-16: six reviewers over the real code, every
 finding put to an independent reviewer told to refute it, and 28 confirmed.
 Each fix shipped with the test that failed before it and passed after.
