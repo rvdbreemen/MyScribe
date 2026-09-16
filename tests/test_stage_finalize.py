@@ -142,6 +142,30 @@ def test_a_re_transcription_inherits_the_names_the_previous_run_earned(conn):
     }
 
 
+def test_an_inherited_label_keeps_the_colour_it_had(conn):
+    """TASK-076: the copy carried name, source, receipt and confidence and
+    dropped the colour, so a re-transcription painted the same person plain.
+    The rename route takes a colour; whatever set it, it belongs to the label."""
+    media_id = seed_media(conn, title="Guide")
+    old_run = seed_run(conn, media_id)
+    _name(conn, old_run, "SPEAKER_00", "Nancy", source="human")
+    with db.LOCK:
+        conn.execute(
+            "UPDATE speaker_label SET color='#ff8800' WHERE run_id=? AND cluster_label='SPEAKER_00'",
+            (old_run,),
+        )
+        conn.commit()
+    new_run = seed_run(conn, media_id)
+
+    finalize.inherit_speaker_names(conn, new_run, previous=old_run, clusters=["SPEAKER_00", "SPEAKER_01"])
+
+    row = conn.execute(
+        "SELECT display_name, color FROM speaker_label WHERE run_id=? AND cluster_label='SPEAKER_00'",
+        (new_run,),
+    ).fetchone()
+    assert (row["display_name"], row["color"]) == ("Nancy", "#ff8800")
+
+
 def test_a_cluster_the_old_run_did_not_have_does_not_cost_the_others_their_names(conn):
     """Diarization found a third voice this time. The two it found before are
     still under their labels, word for word, so their names still fit; the

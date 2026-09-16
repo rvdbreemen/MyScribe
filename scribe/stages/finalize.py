@@ -280,7 +280,7 @@ def inherit_speaker_names(
         old = {
             str(row["cluster_label"]): row
             for row in conn.execute(
-                "SELECT cluster_label, display_name, source, llm_output_id, confidence"
+                "SELECT cluster_label, display_name, color, source, llm_output_id, confidence"
                 " FROM speaker_label WHERE run_id=?",
                 (previous,),
             )
@@ -295,13 +295,16 @@ def inherit_speaker_names(
             return []
 
         for cluster, row in old.items():
+            # The whole label, colour included (TASK-076): the rename route
+            # takes a colour, and a person's pick belongs to the person.
             conn.execute(
                 "INSERT OR IGNORE INTO speaker_label(run_id, cluster_label, display_name,"
-                " source, llm_output_id, confidence) VALUES (?, ?, ?, ?, ?, ?)",
+                " color, source, llm_output_id, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     cluster,
                     row["display_name"],
+                    row["color"],
                     row["source"],
                     row["llm_output_id"],
                     row["confidence"],

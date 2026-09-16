@@ -80,6 +80,7 @@ Each fix shipped with the test that failed before it and passed after.
   of that recording ran the whole transcode again - 80 s for 39 minutes,
   on every page load. The refusal is now kept beside the proxy and read
   instead; `python -m scribe.proxies` is the retry and forgets it first.
+- A speaker's colour did not follow their name across a re-transcription.
 
 ### Added
 
