@@ -2181,6 +2181,14 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
     reuses the stored parts, copy included (`stored_chunk` does not ask
     whether a reading was published), so it would be refused again.
     """
+    # A part is compared with its own part only. When the counts differ the
+    # mapping is not what the caller thinks it is, so no part is paired at
+    # all: a ratio, a copy check or a per-part reason over the wrong pairs
+    # would be a number about nothing. The totals count every part on both
+    # sides either way - they are what the refusal is stored with and what
+    # the page quotes, and zip() used to keep only the common prefix
+    # (TASK-080).
+    aligned = len(source) == len(cleaned)
     per_chunk = [
         {
             "index": i,
@@ -2190,13 +2198,13 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
             "unchanged": a.split() == b.split(),
         }
         for i, (a, b) in enumerate(zip(source, cleaned))
-    ]
-    total_in = sum(part["words_in"] for part in per_chunk)
-    total_out = sum(part["words_out"] for part in per_chunk)
+    ] if aligned else []
+    total_in = sum(len(a.split()) for a in source)
+    total_out = sum(len(b.split()) for b in cleaned)
     overall = total_out / total_in if total_in else 0.0
 
     reasons: list[str] = []
-    if len(source) != len(cleaned):
+    if not aligned:
         reasons.append(
             f"the cleaning came back in {len(cleaned)} part(s) where the transcript "
             f"was cut into {len(source)}"

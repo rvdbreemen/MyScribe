@@ -81,6 +81,11 @@ Each fix shipped with the test that failed before it and passed after.
   on every page load. The refusal is now kept beside the proxy and read
   instead; `python -m scribe.proxies` is the retry and forgets it first.
 - A speaker's colour did not follow their name across a re-transcription.
+- A cleaning refused for coming back in the wrong number of parts was
+  stored with word counts over the parts that happened to line up, and with
+  reasons compared across parts that were not each other's. The counts now
+  cover every part on both sides, and nothing is compared across a wrong
+  pairing.
 - With scripting off, a save on the Settings page came back to the Defaults
   card with the saved card hidden behind it; every plain-form save now lands
   on the card it saved.

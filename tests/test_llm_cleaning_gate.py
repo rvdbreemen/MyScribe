@@ -68,11 +68,18 @@ def test_one_collapsed_part_is_caught_even_when_the_total_looks_healthy():
 def test_a_cleaning_with_the_wrong_number_of_parts_is_refused():
     """Parts are joined in order. A different count means the mapping between
     transcript and reading is not what the caller thinks it is, and comparing
-    them pairwise would compare the wrong things."""
+    them pairwise would compare the wrong things - so nothing is (TASK-080):
+    no part is paired, and the totals the refusal is stored with count every
+    part on both sides rather than the common prefix zip() would have kept."""
     verdict = tasks.check_cleaning([w(500), w(500)], [w(900)])
 
     assert not verdict["ok"]
-    assert "part(s)" in verdict["reasons"][0]
+    assert verdict["reasons"] == [
+        "the cleaning came back in 1 part(s) where the transcript was cut into 2"
+    ]
+    assert (verdict["words_in"], verdict["words_out"]) == (1000, 900)
+    assert verdict["overall"] == pytest.approx(0.9)
+    assert verdict["chunks"] == []
 
 
 def test_the_verdict_carries_the_numbers_a_refusal_has_to_quote():
