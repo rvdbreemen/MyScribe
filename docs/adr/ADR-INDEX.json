@@ -799,6 +799,149 @@
         ],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-013",
+      "title": "SQLite in WAL mode is the only coordination between web, supervisor and runner, with one runner at a time in the claim and anchors that match the code",
+      "path": "ADR-013-sqlite-in-wal-mode-is-the-only-coordination-between-web-supervisor-and-runner-with-one-runner-at-a-time-in-the-claim-and-anchors-that-match-the-code.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-16",
+      "decision_summary": "Chosen option: SQLite WAL with atomic SQL, one-at-a-time in the claim, because every hard coordination problem is the...",
+      "topics": [
+        "concurrency",
+        "enforcement",
+        "job-orchestration",
+        "storage"
+      ],
+      "aliases": [
+        "anchored import rules",
+        "atomic claim",
+        "first verdict wins",
+        "job queue",
+        "no message broker",
+        "one runner at a time"
+      ],
+      "components": [
+        "scribe.db",
+        "scribe.jobs"
+      ],
+      "symbols": [
+        "claim_next",
+        "db.LOCK",
+        "finish",
+        "reconcile"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Job claims use begin immediate plus update ... returning, ordered by priority desc, queueseq, id, with not exists (... status='running') in the same statement (scribe/jobs.py:142-150).",
+          "Terminal verdicts are written with a status guard so the first one wins (scribe/jobs.py:178-182).",
+          "The supervisor reconciles running rows whenever a claim comes back empty, and at startup before accepting work (scribe/supervisor.py:179, :343).",
+          "db.LOCK (scribe/db.py:17) is the only lock guarding database access in the web process, and every database access there holds it, whichever connection it uses. A lock around a different resource is fine (scribe/playback.py:274-281), but...",
+          "job.status stays constrained by a check to exactly queued, running, done, failed, cancelled, interrupted (scribe/db.py:50).",
+          "A declarative rule in this record's Enforcement block that forbids a module matches its import statement, not the module's name anywhere on a line."
+        ],
+        "must_not": [
+          "Introduce a second queue, a message broker, a lock file or a pid file for job state or for \"one runner at a time\".",
+          "Import redis, celery or rq anywhere under scribe/.",
+          "Store media bytes or transcript artifacts in the database. The one BLOB column is speakerembedding.embedding (scribe/db.py:46)."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testjobs.py::testclaimnextrefuseswhileajobisrunning, ::testclaimraceexactlyonewinnerperjob, ::testfinishfirstverdictwins, ::testrequestcancelonqueuedcancelsinstantly, ::testemitmonotonicsequnderconcurrentemit.",
+          "tests/testsupervisor.py::testadeadorphanfromapreviouslifedoesnotholdthequeue, ::testaliveorphanfromapreviouslifeholdsthequeueuntilitends.",
+          "tests/testdb.py::testwalandfkon, ::testjobstatuscheckconstraintrejectsbogus.",
+          "grep -rnE \"^\\s(import|from)\\s+(redis|celery|rq)\\b\" scribe/ returns nothing on 2026-09-16.",
+          "grep -rn \"threading.RLock()\" scribe/ returns scribe/db.py:17 only on 2026-09-16."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-014",
+      "title": "The application log is observation: nothing reads it to decide anything, with an enforcement rule that can match",
+      "path": "ADR-014-the-application-log-is-observation-nothing-reads-it-to-decide-anything-with-an-enforcement-rule-that-can-match.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-16",
+      "decision_summary": "Chosen option: one pattern over scribe/, with the one reader marked.",
+      "topics": [
+        "enforcement",
+        "logging",
+        "observability",
+        "process-model"
+      ],
+      "aliases": [
+        "app.log",
+        "application log",
+        "applog",
+        "log page",
+        "the one reader"
+      ],
+      "components": [
+        "scribe/applog.py",
+        "scribe/web/logs_ui.py"
+      ],
+      "symbols": [
+        "applog._append",
+        "applog.log",
+        "applog.tail"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Every line is one write of a complete JSON document ending in \\n, made while holding the byte lock on app.log.lock - a file nothing reads.",
+          "The lock wait is bounded (LOCKWAITS) and non-blocking; on expiry the writer writes anyway. A rare spliced line is accepted over a stalled process.",
+          "applog.log never raises. A failure to write is reported on stderr once and swallowed.",
+          "The writer name in proc is thread-local with a process-wide default.",
+          "Retention is a cap: MAXBYTES, one previous file. The file is renamed, never truncated.",
+          "Field names containing key, token, secret, password or authorization are redacted; URL query strings and cookie-file paths are redacted by shape.",
+          "Every line under scribe/ that reads the log carries the marker the one reader (ADR-014), and only scribe/web/logsui.py carries it."
+        ],
+        "must_not": [
+          "Nothing in scribe/ may read app.log to make a decision: not the supervisor, not the runner, not a route. The only readers are /logs and a human.",
+          "The lock must not be taken on app.log itself, and must not be a blocking LKLOCK.",
+          "The log must not be a second record of job state. Transitions may appear in both places; progress appears only in the event log."
+        ],
+        "exceptions": [
+          "tests/ may read the file to assert on it (the rule's glob is scribe/, so tests are outside it)."
+        ],
+        "verification": [
+          "tests/testapplog.py::testtwoprocessesappendingatonceinterleavenothing",
+          "tests/testapplog.py::testthesupervisorthreadnamesitselfwithoutrenamingthewebprocess",
+          "tests/testapplog.py::testwritersholdthecrossprocessmutexwhiledecidingtorotate",
+          "grep -rn \"applog\\.tail(\" scribe/ lists scribe/web/logsui.py lines only, each carrying the marker (2026-09-16).",
+          "Source anchor: scribe/applog.py::append, scribe/web/logsui.py."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -985,6 +1128,60 @@
     {
       "source": "ADR-012",
       "target": "ADR-011",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-013",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-013",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-013",
+      "target": "ADR-003",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-013",
+      "target": "ADR-008",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-013",
+      "target": "ADR-009",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-014",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-014",
+      "target": "ADR-007",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-014",
+      "target": "ADR-009",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-014",
+      "target": "ADR-013",
       "type": "related",
       "resolved": true
     }

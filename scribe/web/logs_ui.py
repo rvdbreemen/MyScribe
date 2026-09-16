@@ -70,7 +70,7 @@ def _filters(request: Request) -> tuple[str, str]:
 @router.get("/logs", include_in_schema=False)
 def logs_page(request: Request) -> Response:
     level, q = _filters(request)
-    lines, offset = applog.tail(0, limit=FIRST_PAINT)
+    lines, offset = applog.tail(0, limit=FIRST_PAINT)  # the one reader (ADR-014)
     shown = [_view(line) for line in lines if _wanted(line, level, q)]
     return render(
         request, "logs.html",
@@ -92,7 +92,7 @@ def logs_tail(request: Request) -> Response:
     # the end of the file - which is what a page holds after a rotation. Both
     # resync to the end: the rows already on the page are not sent twice.
     if after == 0 or after > applog.size():
-        _, after = applog.tail(0, limit=1)
-    lines, offset = applog.tail(after)
+        _, after = applog.tail(0, limit=1)  # the one reader (ADR-014)
+    lines, offset = applog.tail(after)  # the one reader (ADR-014)
     shown = [_view(line) for line in lines if _wanted(line, level, q)]
     return render(request, "_log_lines.html", lines=shown, offset=offset, level=level, q=q)

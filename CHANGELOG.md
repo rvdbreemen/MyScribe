@@ -7,7 +7,11 @@ are those of the commits that set the version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- ADR-013 and ADR-014 are proposed as successors of ADR-009 and ADR-007:
+  the claim SQL as the code has it, current anchors, and enforcement rules
+  the judge can apply (the old globs matched no file). Acceptance is pending.
 
 ## [0.3.0] - 2026-09-16
 
