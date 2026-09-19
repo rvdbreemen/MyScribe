@@ -2,12 +2,17 @@
 
 What changed in MyScribe, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the
-ones in `pyproject.toml`. The repository carries no tags yet, so the dates
-are those of the commits that set the version.
+ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
+2026-09-19 was the first one built and published by CI.
 
 ## [Unreleased]
 
-Nothing yet.
+### Documentation
+
+- `docs/RELEASING.md`: what cutting a release does, in what order, and the
+  four things that went wrong on the way to v0.5.0 - a smoke test that ran a
+  directory, an Inno Setup directive in the wrong section, a Linux runner out
+  of disk, and attestation that a user-owned private repository cannot have.
 
 ## [0.5.0] - 2026-09-19
 

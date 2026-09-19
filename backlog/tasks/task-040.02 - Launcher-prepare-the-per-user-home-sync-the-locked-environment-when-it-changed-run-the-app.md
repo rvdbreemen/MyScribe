@@ -3,11 +3,11 @@ id: TASK-040.02
 title: >-
   Launcher: prepare the per-user home, sync the locked environment when it
   changed, run the app
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-11 21:42'
+updated_date: '2026-09-19 16:59'
 labels:
   - packaging
 dependencies:
@@ -42,3 +42,9 @@ ADR-011: the executable a user double-clicks. It runs before any Python environm
 <!-- SECTION:NOTES:BEGIN -->
 Real run 2026-09-11 on the M2, unfrozen launcher, payload from packaging/build_payload.py (uv 0.12.13, ffmpeg 8.1.2 LGPL built from source), PATH reduced to Finder's (/usr/bin:/bin:/usr/sbin:/sbin), fresh home: first --sync-only 11 s (uv-managed CPython 3.12.14 + 126 packages; fast connection), second run 0 s (stamp matched). --doctor: all OK incl. gpu-smoke on mlx, using the bundled ffmpeg 8.1.2 not Homebrew's. --smoke on 4311: /health ok, / ok. Headless on 4242 with HF_TOKEN in the home's .env (created from .env.example on first run): job 1 (44 s dialogue) done, transcribe 14.4 s on mlx, diarize 64.5 s community-1 no fallback, 2 speakers, 0 unattributed - diarize slow on the cold first run (fresh bytecode prefix); job 2 warm: transcribe 12.3 s, diarize 29.7 s. The first real run found a bug the unit tests had not: a relative --payload broke uv's path because the sync runs with cwd = home; Layout now makes both roots absolute (test_relative_roots_become_absolute, red then green). tests/test_launcher.py: 19 passed. The Tk window is exercised in the frozen .app (TASK-029.03).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+De launcher doet wat hij moet doen en alle vijf de criteria zijn afgevinkt met bewijs. Eerste start maakt de omgeving in de per-user home met de meegeleverde uv en een uv-beheerde Python, latere starts slaan de sync over zolang uv.lock niet wijzigde; de app draait uit die omgeving met SCRIBE_DATA_DIR, .env en de meegeleverde ffmpeg vooraan op PATH; een tweede start opent de browser in plaats van een tweede server; afsluiten stopt de server en zijn runner-kind. tests/test_launcher.py dekt de paden, het sync-besluit en de single-instance-regel zonder netwerk. Daarbovenop is de launcher sinds 2026-09-19 op alle drie de platforms gestart door CI: release.yml draait build_release.py --smoke, die de zojuist gebouwde bevroren launcher tegen een verse home start - eerste sync, /health, een pagina, afsluiten - en dat was groen in run 35447454324 voor windows-x64, macos-arm64 en linux-x64.
+<!-- SECTION:FINAL_SUMMARY:END -->

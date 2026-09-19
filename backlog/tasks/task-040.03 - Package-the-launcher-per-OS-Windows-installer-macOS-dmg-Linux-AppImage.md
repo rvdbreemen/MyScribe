@@ -1,11 +1,11 @@
 ---
 id: TASK-040.03
 title: 'Package the launcher per OS: Windows installer, macOS dmg, Linux AppImage'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-19 08:57'
+updated_date: '2026-09-19 16:59'
 labels:
   - packaging
 dependencies:
@@ -22,7 +22,7 @@ ADR-011: each OS needs a native artifact carrying the frozen launcher, the app s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One build script per OS produces the artifact from a clean checkout on its GitHub runner
+- [x] #1 One build script per OS produces the artifact from a clean checkout on its GitHub runner
 - [x] #2 Each artifact is well under 2 GiB and contains the launcher, app source, uv.lock, the pinned uv and ffmpeg plus ffprobe
 - [x] #3 uv and ffmpeg downloads are pinned by version and verified by SHA-256 before they are packaged
 - [x] #4 The macOS build produces a working artifact locally on the M2 and it launches the app
@@ -48,4 +48,12 @@ Two bugs found by running it rather than reading it. build_ffmpeg_macos.sh cds i
 Worth flagging for AC1's release: the artifact is named 0.2.1, from scribe/__init__.py, while pyproject.toml says 0.3.1. release.yml checks the tag against __version__, so tagging v0.3.1 today would fail that check - correctly.
 
 AC1: run 35430468828 built nothing (ci.yml runs the suite), but release.yml build job is the same code path and was exercised locally end to end on the M2 - dist/MyScribe-0.2.1-macos-arm64.dmg, 54.5 MB, smoke green. The per-OS build from a clean checkout on a runner is proven only for macOS locally; ubuntu and windows build steps remain unrun until a tag or a workflow_dispatch fires release.yml.
+
+AC1 bewezen door workflow_dispatch-run 35447454324 (2026-09-19, https://github.com/rvdbreemen/MyScribe/actions/runs/35447454324): de drie build-jobs draaiden elk op hun eigen runner vanaf een schone actions/checkout@v4 en stapten alle drie groen door 'Build the artifact and prove it starts'. De run uploadde myscribe-windows-x64 (93.160.776 B), myscribe-macos-arm64 (54.277.331 B) en myscribe-linux-x64 (120.806.864 B). Dezelfde code publiceerde in de tag-run 35437243823 de v0.5.0-assets. Daarmee is 'vanaf een schone checkout op zijn GitHub-runner' voor alle drie de OS-en bewezen, niet langer alleen lokaal voor macOS.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Alle vier de criteria afgevinkt. Er is een buildscript per OS (packaging/build_release.py met packaging/windows/myscribe.iss voor de installer en build_ffmpeg_macos.sh voor de Mac), en dat script produceert het artefact vanaf een schone checkout op de eigen GitHub-runner van elk platform - bewezen in run 35447454324, waar de drie build-jobs groen door 'Build the artifact and prove it starts' stapten en drie artifacts uploadden. De artefacten zijn ruim onder 2 GiB (93 MB Windows, 54 MB macOS, 121 MB Linux) en bevatten de launcher, app-source, uv.lock, de gepinde uv en ffmpeg plus ffprobe; uv en ffmpeg worden op versie gepind en op SHA-256 gecontroleerd voor ze verpakt worden. De macOS-build is lokaal op de M2 geverifieerd en start de app. Twee bugs kwamen alleen aan het licht door te draaien: de smoke-test die een map in plaats van een executable startte, en Inno Setup dat SetupAppTitle in [Setup] weigerde.
+<!-- SECTION:FINAL_SUMMARY:END -->
