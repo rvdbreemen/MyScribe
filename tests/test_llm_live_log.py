@@ -219,3 +219,12 @@ def test_a_window_that_cannot_hold_the_job_is_its_own_outcome():
 
     assert runner._error_code(base.ContextTooLong("no room")) == "MODEL_UNSUITABLE"
     assert runner._error_code(base.BadResponse("nonsense")) == "LLM_FAILED"
+
+
+def test_a_cut_too_small_to_matter_is_not_announced():
+    """A system prompt three characters over the limit came out as
+    "... [3 characters not shown] ...", which reads as breakage."""
+    text = "A" * 203
+
+    assert tasks.excerpt(text, limit=100) == text
+    assert "not shown" in tasks.excerpt("A" * 1000, limit=100)

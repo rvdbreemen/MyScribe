@@ -3,10 +3,10 @@ id: TASK-040.07
 title: >-
   Four tests fail on Windows in CI, and the machine to finish this on is a
   Windows one
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-19 07:15'
-updated_date: '2026-09-19 07:19'
+updated_date: '2026-09-19 08:56'
 labels:
   - ci
   - windows
@@ -39,8 +39,8 @@ The halves are not a workaround for this. CLAUDE.md documents that the whole-sui
 <!-- AC:BEGIN -->
 - [x] #1 The four failing test names are captured from a Windows run and written into this task
 - [x] #2 Each one is understood as either a real Windows bug in the app or a test that only holds on POSIX, and the task says which
-- [ ] #3 A Windows bug is fixed with a test that fails before and passes after; a POSIX-only assumption in a test is corrected without weakening what the test proves
-- [ ] #4 One full ci run on GitHub is green on all three operating systems, with its run URL in the notes
+- [x] #3 A Windows bug is fixed with a test that fails before and passes after; a POSIX-only assumption in a test is corrected without weakening what the test proves
+- [x] #4 One full ci run on GitHub is green on all three operating systems, with its run URL in the notes
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -79,4 +79,16 @@ So this was never a Windows bug. The tests asserted bit-equality (np.array_equal
 They now compare within UNTOUCHED = 1e-4, which sits between the two things being told apart: the bug TASK-036 exists for moves a feature by 0.484 on a scale of -1.2 to 0.8, four thousand times the tolerance. And the companion test that proves the pair cannot both pass by saying nothing was strengthened - it asserted 'not identical', which noise alone would satisfy, and now asserts the distance.
 
 Not verified on Linux or Windows from here; this Mac cannot reproduce the failure, which is the whole point of it. The next ci run on the branch is what confirms it. AC3 and AC4 stay open until then.
+
+Confirmed, and the diagnosis held: run 35430468828 on commit 944bb2c is green on all three - macos-latest 4m0s, windows-latest 22m33s, ubuntu-latest 5m25s. https://github.com/rvdbreemen/MyScribe/actions/runs/35430468828
+
+So the four Windows failures were the four loudness tests after all, and there was never a Windows bug to fix: np.array_equal on mel features is a claim about a BLAS, not about the app. The lead in this task - counted from progress dots, with the uncertainty stated - pointed at the right file.
+
+Windows takes 22 minutes against 4 and 5 for the others, which is the hardlink warning from uv plus the suite in halves. Worth watching, not worth fixing here.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Never a Windows bug. Four tests asserted bit-equality on mel features, which is a claim about whichever FFT and matrix multiply are underneath; they now compare within a tolerance that sits four thousand times below the effect they exist to detect. Confirmed by a green ci run on all three operating systems.
+<!-- SECTION:FINAL_SUMMARY:END -->

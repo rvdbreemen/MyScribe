@@ -3,11 +3,11 @@ id: TASK-085
 title: >-
   An LLM job shows its work in the live log: what went to the model, what came
   back, what it concluded
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-19 06:25'
-updated_date: '2026-09-19 06:25'
+updated_date: '2026-09-19 08:56'
 labels: []
 dependencies: []
 references:
@@ -33,11 +33,11 @@ The size question is the real design constraint. A chunk of transcript is thousa
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 While an llm job runs, the live log shows each call: which phase it is, the model, and an excerpt of the prompt that was sent
-- [ ] #2 Each call's reply appears in the live log as it arrives, with its token counts and finish reason
-- [ ] #3 When the job finishes, the live log states the conclusion in the kind's own terms - for speakers, which cluster became which name
-- [ ] #4 What is written is bounded: a long prompt is excerpted, the event says how much was left out, and a dozen calls cannot put megabytes into job_event
-- [ ] #5 A recording pinned private is not made less private by being watched
+- [x] #1 While an llm job runs, the live log shows each call: which phase it is, the model, and an excerpt of the prompt that was sent
+- [x] #2 Each call's reply appears in the live log as it arrives, with its token counts and finish reason
+- [x] #3 When the job finishes, the live log states the conclusion in the kind's own terms - for speakers, which cluster became which name
+- [x] #4 What is written is bounded: a long prompt is excerpted, the event says how much was left out, and a dozen calls cannot put megabytes into job_event
+- [x] #5 A recording pinned private is not made less private by being watched
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -50,3 +50,21 @@ The size question is the real design constraint. A chunk of transcript is thousa
 5. Tests: the hook fires once per call with the phase, an over-long prompt is excerpted and says how much was dropped, the conclusion names the mapping, and the payload of a whole job stays under a stated ceiling.
 6. Evidence: red first, then green, then a real speakers job watched through /api/jobs/<id>/events.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified on a running job rather than on a finished one, which is the whole point: job 129, still on generate, already showed
+
+  [4] PROMPT  phase=single  44391 chars -> qwen3.8:27b-q8_0
+
+with the system prompt and the opening of the user prompt beside it. Job 112 earlier showed the full arc - PROMPT 24876 chars, REPLY 4613 tokens stop, CONCLUSION SPEAKER_00 = Ad; SPEAKER_01 = Chantal; SPEAKER_02 = Nancy.
+
+The first version emitted both events after the answer, which made job 127 sit silent for eight minutes; _ask now tells the watcher as the call goes out and again when it returns.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+An llm job writes what it is doing while it does it: the prompt as the call goes out, the reply with its token counts when it returns, and the conclusion in the kind own terms. Excerpted to kilobytes, and guarded so a broken watcher cannot fail the job it is watching (ADR-014).
+<!-- SECTION:FINAL_SUMMARY:END -->

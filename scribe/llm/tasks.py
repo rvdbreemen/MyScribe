@@ -1538,6 +1538,10 @@ person watching actually reads: how the prompt starts, how it ends, and how
 much they are not being shown."""
 
 
+MARKER_WORTH_IT = 200
+"""The least a cut must hide before it is worth saying it was cut."""
+
+
 def excerpt(text: str, *, limit: int = EXCERPT_CHARS) -> str:
     """``text``, or its two ends with the middle counted.
 
@@ -1545,9 +1549,12 @@ def excerpt(text: str, *, limit: int = EXCERPT_CHARS) -> str:
     the log is observation - it must not become the thing that fails a job.
     """
     text = text or ""
-    if len(text) <= limit * 2:
-        return text
     dropped = len(text) - limit * 2
+    # A marker that hides less than it costs to read is noise: a system prompt
+    # cut by three characters came out as "... [3 characters not shown] ...",
+    # which reads as breakage rather than as an excerpt.
+    if dropped < MARKER_WORTH_IT:
+        return text
     return f"{text[:limit]}\n... [{dropped} characters not shown] ...\n{text[-limit:]}"
 
 

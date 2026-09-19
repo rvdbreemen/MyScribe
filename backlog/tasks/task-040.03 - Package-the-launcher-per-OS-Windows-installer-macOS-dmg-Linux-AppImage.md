@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-19 06:06'
+updated_date: '2026-09-19 08:57'
 labels:
   - packaging
 dependencies:
@@ -46,4 +46,6 @@ The same run exercised build_release.py --smoke, which is new: it starts the fro
 Two bugs found by running it rather than reading it. build_ffmpeg_macos.sh cds into its own work directory, so a relative out-dir lands there and is deleted by the trap - the CI step now passes an absolute path, which it would otherwise have failed on. And build_release.py referenced APP_NAME, a name defined in the launcher and not in that module: it is FROZEN_NAME now, spelled once, because a rename that moved only one of them would produce an artifact that builds and cannot be run.
 
 Worth flagging for AC1's release: the artifact is named 0.2.1, from scribe/__init__.py, while pyproject.toml says 0.3.1. release.yml checks the tag against __version__, so tagging v0.3.1 today would fail that check - correctly.
+
+AC1: run 35430468828 built nothing (ci.yml runs the suite), but release.yml build job is the same code path and was exercised locally end to end on the M2 - dist/MyScribe-0.2.1-macos-arm64.dmg, 54.5 MB, smoke green. The per-OS build from a clean checkout on a runner is proven only for macOS locally; ubuntu and windows build steps remain unrun until a tag or a workflow_dispatch fires release.yml.
 <!-- SECTION:NOTES:END -->
