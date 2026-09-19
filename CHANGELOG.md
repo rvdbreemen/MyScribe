@@ -9,6 +9,44 @@ are those of the commits that set the version.
 
 Nothing yet.
 
+## [0.5.0] - 2026-09-19
+
+### Added
+
+- A word corrected by hand teaches the glossary: the name typed becomes a
+  term and what Whisper produced becomes a variant, so the correction pass and
+  the hotword bias both improve from a person's feedback. Only names are
+  learned, a term somebody weighted keeps its weight, and a spelling another
+  term already answers for is left alone - the guard that keeps one correction
+  from rewriting a library.
+- The live log of an llm job reads as a conversation: what is being asked
+  while it is being asked, the reply with its token counts when it arrives,
+  and the conclusion in the kind's own terms.
+
+### Fixed
+
+- A cancel reaches the runner, whoever spawned it. A runner left behind by an
+  earlier app was watched by nobody, so nothing read the cancel flag for it:
+  the board said "cancelled" while the work carried on, once for twenty-eight
+  minutes with a 27B model resident. And the verdict is now the one that was
+  asked for, where the supervisor's own reconcile used to race it and leave a
+  cancelled job saying "interrupted".
+- A local call is planned against the window the model reports, up to a memory
+  ceiling that is now a setting (`llm_num_ctx`). Capping every model at the
+  shipped default made choosing a bigger one do nothing at all, while the
+  error message recommended exactly that.
+- A completion's timeout grows with the window it was planned for. Five
+  minutes was measured with a 9B model against 8192 tokens; a 27B at q8
+  against 32768 has four times the prompt to read and three times the weights
+  to read it with.
+- `reconcile` can see a recycled pid on macOS and Linux, not only on Windows.
+  The guard TASK-065 added had been firing nowhere else, because
+  `process_started_at` answered only there - `/proc/<pid>/stat` and
+  `ps -o lstart=` both answer it.
+- Four tests asserted bit-equality on mel features, which is a claim about
+  whichever FFT and matrix multiply are underneath rather than about this app.
+  They were the whole of the Windows failure and half the Linux one.
+
 ## [0.4.0] - 2026-09-19
 
 ### Added
