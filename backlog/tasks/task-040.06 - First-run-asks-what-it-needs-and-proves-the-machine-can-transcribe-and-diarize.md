@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-18 20:26'
-updated_date: '2026-09-18 20:36'
+updated_date: '2026-09-19 05:54'
 labels:
   - packaging
 dependencies:
@@ -32,11 +32,11 @@ Settings has the same reporting gap: it shows a default provider and a model per
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 scribe.doctor fails, not passes, on a machine where the diarize pipeline cannot load, and says which of the three routes to fix it
-- [ ] #2 First run asks for a Hugging Face token only when diarization still needs one, writes it to the per-user .env, and links the conditions that must be accepted
+- [x] #2 First run asks for a Hugging Face token only when diarization still needs one, writes it to the per-user .env, and links the conditions that must be accepted
 - [x] #3 Settings has a field for the token the diarize error already tells people to set
 - [ ] #4 First run asks which provider answers questions, and Settings states the effective provider, model and window in one line
-- [ ] #5 First run offers a model tier and does not download a tier the user did not choose
-- [ ] #6 The setup can be re-run from the app afterwards, and every answer it writes is visible in Settings
+- [x] #5 First run offers a model tier and does not download a tier the user did not choose
+- [x] #6 The setup can be re-run from the app afterwards, and every answer it writes is visible in Settings
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -53,4 +53,12 @@ AC3 - the token field, beside 'Recognise speakers' rather than with the AI provi
 Suite 2411 passed; 9 new tests (4 doctor, 5 settings).
 
 Left: the first-run questions themselves (AC2, 4, 5, 6) - they live in the launcher's Tk window and are the larger half.
+
+First run asks the four questions in one modal window before the app starts, so a token given there is in .env before anything reads it. Skippable, re-runnable with --setup, and every answer is in Settings afterwards. The launcher only asks: it hands the answers to python -m scribe.setup in the app's environment (ADR-011 keeps it frozen and stdlib-only), and a blank answer is not passed at all so it cannot overwrite a setting the user already had.
+
+Two things the tests caught while being written. TranscribeOptions is a pydantic model, not a dataclass, so dataclasses.replace raised - model_copy keeps its validation in play. And paths.MODELS_DIR is a module constant computed at import, so moving DATA_DIR in a test does not move it: needed() was answering about the real pipeline on this machine rather than the temporary one.
+
+Suite 2431 passed; 10 new tests (7 setup, 3 launcher).
+
+Left: AC1 is done and AC3 was done earlier; what remains is a visible launch of the Tk dialog, which needs a person at the screen - the window is unverified the same way TASK-040.03's notes say the launcher's own window is.
 <!-- SECTION:NOTES:END -->

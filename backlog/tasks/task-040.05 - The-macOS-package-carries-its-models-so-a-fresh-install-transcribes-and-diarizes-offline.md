@@ -3,11 +3,11 @@ id: TASK-040.05
 title: >-
   The macOS package carries its models, so a fresh install transcribes and
   diarizes offline
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-18 20:25'
-updated_date: '2026-09-18 21:46'
+updated_date: '2026-09-19 05:54'
 labels:
   - packaging
 dependencies: []
@@ -34,7 +34,7 @@ pyannote already has a supported local path: diarize.local_weights_dir() (MODELS
 <!-- AC:BEGIN -->
 - [x] #1 One command fetches every shipped model by pinned revision and verifies it by digest, and refuses to keep a file that does not match
 - [x] #2 The app itself can fetch the models on demand, into the directory the stages already look in, with progress and a resumable partial
-- [ ] #3 The installed package stays slim - no weights in the artifact - and says plainly what still has to be downloaded and how big it is
+- [x] #3 The installed package stays slim - no weights in the artifact - and says plainly what still has to be downloaded and how big it is
 - [x] #4 A machine that already has the weights, or a user who fetched them by hand, is never made to download them again
 - [x] #5 Nothing gated is redistributed: the pyannote fetch uses the user's own token and the conditions they accepted
 - [x] #6 A fetch that cannot finish - no network, no token, a refused gate - says which of those it was and leaves no half-written model behind
@@ -72,4 +72,12 @@ Two things running it caught that the tests had not. The progress bar went backw
 Verified live: status says have/MISSING correctly against two different directories, a real 33 MB pyannote fetch into data/models/pyannote completed with monotonic progress and wrote LICENCE-AND-CREDIT.txt beside the weights, and diarize.open_pipeline loaded that directory offline with no token. Suite 2421 passed; 11 tests here, none touching the network.
 
 Left: AC3 - the installed package saying plainly what still has to be downloaded. That belongs in the first-run screen (TASK-040.06) and in the doctor's card.
+
+AC3: doctor.check_models says what is still to come - '1.6 GB still to download: whisper-large-v3-turbo (1.6 GB)' with the command, and the gate mentioned when the missing one is gated. Optional, because a machine that has not downloaded them yet is new rather than broken. Asked by existence and size; present() keeps the hashing for ensure(), where a wrong file is caught before anything relies on it - hashing 1.6 GB to draw a card would make every settings render take seconds.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The package ships without weights and fetches them itself: models.json pins each by revision and sha256, scribe.models downloads with progress into the directory the stages already look in, and the doctor says what is still missing and how big. Nothing gated is redistributed - pyannote comes down with the user's own token under conditions they accepted. Verified live: a 33 MB pyannote fetch with monotonic progress, then diarize.open_pipeline loading it offline with no token at all.
+<!-- SECTION:FINAL_SUMMARY:END -->

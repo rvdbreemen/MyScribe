@@ -1180,5 +1180,36 @@ def settings_context(conn: sqlite3.Connection, *, flash: str | None = None) -> d
         "llm_providers": provider_rows(conn),
         "llm_provider": default_provider(conn),
         "llm_private_default": private_default(conn),
+        "llm_effective": effective_llm(conn),
         "llm_flash": flash,
     }
+
+
+def effective_llm(conn: sqlite3.Connection) -> dict:
+    """What actually answers a question here, in one line (TASK-040.06).
+
+    The page has always shown a default provider and a model per provider, and
+    never what those add up to. Reading it took three controls and the
+    knowledge that each question may override the default - so a user could not
+    answer "is this leaving my machine?" by looking.
+
+    The window is the planned one, `tasks.context_tokens_for`, because that is
+    the number that decides whether a kind can run at all: an 8192 there is why
+    "Who is speaking" was impossible on Ollama (TASK-084). Looking it up asks
+    the local daemon, so it is wrapped - a daemon that is down or slow must
+    cost a settings page nothing, and an unknown window is simply not shown.
+    """
+    name = default_provider(conn)
+    model = default_model(conn, name)
+    row = {"provider": name, "label": provider_label(name), "model": model, "local": False, "window": None}
+    try:
+        provider_cls = llm.provider_class(name)
+    except Exception:  # noqa: BLE001 - a provider that no longer exists is not a crash here
+        return row
+    row["label"] = provider_label(name)
+    row["local"] = bool(provider_cls.is_local)
+    try:
+        row["window"] = tasks.context_tokens_for(provider_cls, model)
+    except Exception:  # noqa: BLE001 - the window is a nicety; the sentence is the point
+        row["window"] = None
+    return row
