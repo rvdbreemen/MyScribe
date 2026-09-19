@@ -1611,6 +1611,21 @@ def _ask(
         json_schema=json_schema,
         reasoning_off=plan.spec.reasoning_off,
     )
+    def watched(response: ChatResponse | None) -> None:
+        """Tell the watcher, and never let it stop the work (ADR-014)."""
+        if on_call is None:
+            return
+        try:
+            on_call(phase, request, response)
+        except Exception:  # noqa: BLE001 - watching must never break the work
+            pass
+
+    # Before the call, not only after it. The prompt is knowable the moment it
+    # goes out and the reply can be minutes later on a local 27B model: telling
+    # the watcher only once, afterwards, is a live log that says nothing while
+    # the one slow thing is happening - which is exactly what job 127 showed,
+    # sitting on `generate` with no prompt in sight.
+    watched(None)
     response = llm.chat(
         conn,
         media_id=plan.media_id,
@@ -1618,14 +1633,7 @@ def _ask(
         request=request,
         **provider_kwargs,
     )
-    if on_call is not None:
-        # After the answer, not before: a watcher wants the pair, and a hook
-        # that raised on the way in would turn observation into a way to fail
-        # a call (ADR-014). Guarded for the same reason.
-        try:
-            on_call(phase, request, response)
-        except Exception:  # noqa: BLE001 - watching must never break the work
-            pass
+    watched(response)
     return response
 
 

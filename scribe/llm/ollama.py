@@ -96,9 +96,33 @@ from scribe.llm.base import ChatRequest, ChatResponse
 DEFAULT_HOST = "http://127.0.0.1:11434"
 
 DEFAULT_TIMEOUT = 300.0
-"""Seconds for one completion. Generous where the cloud providers get 60: a
-local 9B model on a busy card takes tens of seconds to load before it emits a
-first token, and killing it at 60 s would turn a slow answer into no answer."""
+"""Seconds for one completion at the shipped window, and the floor under any
+other. Generous where the cloud providers get 60: a local 9B model on a busy
+card takes tens of seconds to load before it emits a first token, and killing
+it at 60 s would turn a slow answer into no answer.
+
+It is a floor and no longer the whole answer, because the work is no longer
+one size. This number was measured with a 9B model against 8192 tokens; a 27B
+at q8 against 32768 has four times the prompt to read and three times the
+weights to read it with, and 300 s stopped being generous - it killed job 126
+at exactly five minutes with "ollama did not answer: timed out". See
+`timeout_for`."""
+
+
+def timeout_for(num_ctx: int) -> float:
+    """How long one completion may take, given the window it was planned for.
+
+    Linear in the window, floored at `DEFAULT_TIMEOUT`. Prompt evaluation is
+    the part that grows - the model has to read every token before it writes
+    one - so a window four times larger is roughly four times the wait, and a
+    timeout that ignores that turns "slow" into "failed" precisely when a user
+    has chosen the bigger model on purpose.
+
+    Not a promise that the answer arrives: it is the point at which waiting
+    longer stops being useful, and it still ends a daemon that has hung.
+    """
+    scale = max(1.0, float(num_ctx) / float(DEFAULT_NUM_CTX))
+    return DEFAULT_TIMEOUT * scale
 
 PROBE_TIMEOUT = 2.0
 """The bound on `available()`. See the note on that method - it is the one
@@ -234,6 +258,7 @@ class OllamaProvider(base.Provider):
         self.client_factory = client_factory or default_client_factory
         self.timeout = timeout
         self._client: Any | None = None
+        self._client_timeout: float | None = None
 
     # --- what window this model actually has ----------------------------------
 
@@ -333,9 +358,20 @@ class OllamaProvider(base.Provider):
 
     # --- the transport --------------------------------------------------------
 
-    def client(self):
+    def client(self, timeout: float | None = None):
+        """The http client, built on first use.
+
+        ``timeout`` is the per-call budget: a completion against a large window
+        may take far longer than the probe that found the window (`timeout_for`).
+        A different budget needs its own client, because the one being reused
+        carries the timeout it was built with.
+        """
+        wanted = self.timeout if timeout is None else timeout
+        if self._client is not None and wanted != self._client_timeout:
+            self.close()
         if self._client is None:
-            self._client = self.client_factory(base_url=self.host, timeout=self.timeout)
+            self._client = self.client_factory(base_url=self.host, timeout=wanted)
+            self._client_timeout = wanted
         return self._client
 
     def close(self) -> None:
@@ -387,7 +423,10 @@ class OllamaProvider(base.Provider):
     def complete(self, req: ChatRequest) -> ChatResponse:
         self._refuse_a_prompt_that_cannot_fit(req)
         try:
-            response = self.client().post("/api/chat", json=self._body(req))
+            # The budget that matches the window this call was planned for,
+            # not the one a model-info lookup was built with.
+            budget = timeout_for(self.context_tokens(req.model))
+            response = self.client(budget).post("/api/chat", json=self._body(req))
         except httpx2.HTTPError as exc:
             raise self._unreachable(exc) from None
         self._raise_for_status(response, model=req.model)

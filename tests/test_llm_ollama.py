@@ -588,3 +588,30 @@ def test_an_explicit_num_ctx_is_never_overridden():
 
     assert p.num_ctx == 4096
     assert p.context_tokens("qwen3.8:27b-q8_0") == 4096
+
+
+def test_the_budget_grows_with_the_window_it_was_planned_for():
+    """Job 126 died at exactly five minutes with "ollama did not answer: timed
+    out". DEFAULT_TIMEOUT was measured with a 9B model against 8192 tokens; a
+    27B at q8 against 32768 has four times the prompt to read and three times
+    the weights to read it with. A fixed timeout turns "slow" into "failed"
+    precisely when somebody has chosen the bigger model on purpose."""
+    assert ollama.timeout_for(ollama.DEFAULT_NUM_CTX) == ollama.DEFAULT_TIMEOUT
+    assert ollama.timeout_for(4096) == ollama.DEFAULT_TIMEOUT, "the floor holds under a small window"
+    assert ollama.timeout_for(32768) == ollama.DEFAULT_TIMEOUT * 4
+
+
+def test_a_chat_is_given_the_budget_not_the_probe_s():
+    """The model-info lookup and the completion are not the same wait, and the
+    client carries the timeout it was built with."""
+    rec = Recorder(chat_answer("Paris"), show=show(32768))
+    seen: list[float] = []
+
+    def factory(*, base_url, timeout):
+        seen.append(timeout)
+        return httpx2.Client(base_url=base_url, timeout=timeout, transport=httpx2.MockTransport(rec))
+
+    p = ollama.OllamaProvider(None, client_factory=factory)
+    p.complete(base.ChatRequest(system="s", user="u", model="big:27b"))
+
+    assert ollama.timeout_for(32768) in seen, f"the completion never got its budget: {seen}"

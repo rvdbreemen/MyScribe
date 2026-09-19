@@ -153,16 +153,20 @@ def _watch(ctx: "RunnerContext") -> Callable[[str, Any, Any], None]:
     """
 
     def watch(phase: str, request: Any, response: Any) -> None:
-        jobs.emit(
-            ctx.conn,
-            ctx.job["id"],
-            "llm-prompt",
-            phase=phase,
-            model=getattr(request, "model", ""),
-            system=tasks.excerpt(getattr(request, "system", "") or "", limit=300),
-            prompt=tasks.excerpt(getattr(request, "user", "") or ""),
-            prompt_chars=len(getattr(request, "user", "") or ""),
-        )
+        if response is None:
+            # The call is going out now. Said here rather than with the reply
+            # so the log shows what is being asked while it is being asked.
+            jobs.emit(
+                ctx.conn,
+                ctx.job["id"],
+                "llm-prompt",
+                phase=phase,
+                model=getattr(request, "model", ""),
+                system=tasks.excerpt(getattr(request, "system", "") or "", limit=300),
+                prompt=tasks.excerpt(getattr(request, "user", "") or ""),
+                prompt_chars=len(getattr(request, "user", "") or ""),
+            )
+            return
         jobs.emit(
             ctx.conn,
             ctx.job["id"],

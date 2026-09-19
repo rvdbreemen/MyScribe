@@ -32,9 +32,15 @@ def test_a_short_prompt_is_not_excerpted_at_all():
     assert tasks.excerpt("short enough", limit=100) == "short enough"
 
 
-def test_every_call_is_seen_once_with_its_phase(monkeypatch):
-    """`_ask` is the one door: a note, a part, a single answer and a combine
-    all pass through it, so a hook there cannot miss a call."""
+def test_a_call_is_announced_before_it_is_made_and_again_when_it_answers(monkeypatch):
+    """Twice, and the first time matters most. The prompt is knowable the
+    moment it goes out and the reply can be minutes later on a local 27B
+    model - job 127 sat on `generate` with nothing in its log because both
+    events were emitted after the answer.
+
+    `_ask` is the one door: a note, a part, a single answer and a combine all
+    pass through it, so a hook there cannot miss a call either way.
+    """
     seen: list[tuple] = []
 
     class Reply:
@@ -57,10 +63,11 @@ def test_every_call_is_seen_once_with_its_phase(monkeypatch):
         on_call=lambda *args: seen.append(args),
     )
 
-    assert len(seen) == 1
-    phase, request, response = seen[0]
-    assert phase == "single"
-    assert request.user == "usr" and response.text == '{"speakers": []}'
+    assert len(seen) == 2, "one before the call, one after it"
+    before, after = seen
+    assert before[0] == "single" and before[1].user == "usr"
+    assert before[2] is None, "there is no reply yet when the call goes out"
+    assert after[2].text == '{"speakers": []}'
 
 
 def _plan():
@@ -132,7 +139,9 @@ def test_the_stage_emits_prompt_reply_and_conclusion(monkeypatch):
         completion_tokens = 22
         raw_finish_reason = "stop"
 
-    llm_stage._watch(Ctx())("note", Request(), Reply())
+    watch = llm_stage._watch(Ctx())
+    watch("note", Request(), None)   # the call goes out
+    watch("note", Request(), Reply())  # and answers
 
     kinds = [kind for kind, _ in emitted]
     assert kinds == ["llm-prompt", "llm-reply"]
@@ -166,7 +175,9 @@ def test_one_call_costs_kilobytes_not_megabytes(monkeypatch):
         completion_tokens = 1
         raw_finish_reason = "stop"
 
-    llm_stage._watch(Ctx())("single", Request(), Reply())
+    watch = llm_stage._watch(Ctx())
+    watch("single", Request(), None)
+    watch("single", Request(), Reply())
 
     written = sum(len(json.dumps(payload)) for _kind, payload in emitted)
     assert written < 10_000, f"one call wrote {written} characters into the live log"
