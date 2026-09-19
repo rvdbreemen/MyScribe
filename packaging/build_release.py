@@ -234,14 +234,26 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _frozen_binary(frozen: Path, platform_name: str) -> Path:
-    """The executable inside the frozen onedir, per platform layout."""
-    if platform_name == "macos-arm64":
-        app = next(frozen.glob("*.app"), None)
-        if app is not None:
-            return app / "Contents" / "MacOS" / FROZEN_NAME
-    if platform_name == "windows-x64":
-        return frozen / f"{FROZEN_NAME}.exe"
-    return frozen / FROZEN_NAME
+    """The executable inside the frozen onedir, per platform layout.
+
+    PyInstaller's onedir puts everything in a folder named after the app, with
+    the executable inside it - which `inno` and `appimage` both already knew
+    (each hands on `frozen / "MyScribe"` as a directory). The first version of
+    this read that name as the executable, so the smoke test tried to run a
+    directory and the Linux job died with "PermissionError: [Errno 13]
+    Permission denied" after building a perfectly good 121 MB AppImage.
+
+    macOS is the exception, because `dmg` wraps the onedir in a bundle and the
+    executable moves to Contents/MacOS.
+    """
+    app = next(frozen.glob("*.app"), None)
+    if platform_name == "macos-arm64" and app is not None:
+        return app / "Contents" / "MacOS" / FROZEN_NAME
+    suffix = ".exe" if platform_name == "windows-x64" else ""
+    onedir = frozen / FROZEN_NAME
+    # The fallback keeps a layout change from becoming a mystery: if the
+    # onedir is not there, the old spelling is at least a path that exists.
+    return onedir / f"{FROZEN_NAME}{suffix}" if onedir.is_dir() else frozen / f"{FROZEN_NAME}{suffix}"
 
 
 if __name__ == "__main__":

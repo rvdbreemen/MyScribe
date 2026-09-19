@@ -415,3 +415,28 @@ def test_an_unanswered_question_is_not_passed_at_all(tmp_path):
     command = launcher.setup_command(layout, {"hf_token": "", "provider": "", "tier": "", "fetch_models": False})
 
     assert command == [str(layout.env_python), "-m", "scribe.setup"]
+
+
+# --- the smoke test has to find the executable (release run 35435965404) -----------
+
+
+def test_the_smoke_test_looks_inside_the_onedir(tmp_path):
+    """PyInstaller's onedir is a folder named after the app with the
+    executable inside it, which `inno` and `appimage` both already knew. The
+    first version read that name as the executable, so the Linux job tried to
+    run a directory: "PermissionError: [Errno 13] Permission denied", after
+    building a perfectly good 121 MB AppImage."""
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
+    import build_release
+
+    frozen = tmp_path / "frozen"
+    (frozen / "MyScribe").mkdir(parents=True)
+
+    assert build_release._frozen_binary(frozen, "linux-x64") == frozen / "MyScribe" / "MyScribe"
+    assert build_release._frozen_binary(frozen, "windows-x64") == frozen / "MyScribe" / "MyScribe.exe"
+
+    (frozen / "MyScribe.app").mkdir()
+    mac = build_release._frozen_binary(frozen, "macos-arm64")
+    assert mac == frozen / "MyScribe.app" / "Contents" / "MacOS" / "MyScribe"

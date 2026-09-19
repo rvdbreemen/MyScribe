@@ -27,7 +27,6 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExe}
-SetupAppTitle={#MyAppName}
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
@@ -43,5 +42,10 @@ Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 Filename: "{app}\{#MyAppExe}"; Description: "Start {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Messages]
+; SetupAppTitle is a message, not a [Setup] directive. iscc refused the
+; whole script over it - "Unrecognized [Setup] directive" on this line -
+; the first time the Windows build ever ran on a runner.
+SetupAppTitle={#MyAppName}
+
 ; The one thing a user has to know before the first start.
 WelcomeLabel2=This installs [name/ver] for your account only.%n%nThe first start downloads the speech engine (about 3 GB) and shows its progress. Later starts skip that. Your recordings, transcripts and models are kept in %LOCALAPPDATA%\MyScribe and are left alone when you uninstall.
