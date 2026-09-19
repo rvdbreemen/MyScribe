@@ -7,12 +7,20 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.1] - 2026-09-19
+
 ### Documentation
 
 - `docs/RELEASING.md`: what cutting a release does, in what order, and the
   four things that went wrong on the way to v0.5.0 - a smoke test that ran a
   directory, an Inno Setup directive in the wrong section, a Linux runner out
   of disk, and attestation that a user-owned private repository cannot have.
+- The release notes for v0.5.0 on GitHub were the auto-generated stub; they
+  now carry the install table, the first-open steps per OS and the reason
+  there is no attestation. This changelog no longer claims the repository
+  carries no tags.
 
 ## [0.5.0] - 2026-09-19
 
