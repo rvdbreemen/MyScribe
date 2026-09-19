@@ -1,0 +1,45 @@
+{
+  "_comment": "Model weights shipped in the payload (TASK-040.05). Pinned by revision and verified by sha256 before packaging, the same rule tools.json states for binaries. Large files carry the Hub's own LFS digest; small ones were hashed when this file was written.",
+  "mlx-community/whisper-large-v3-turbo": {
+    "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+    "files": {
+      "config.json": {
+        "sha256": "b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379",
+        "size": 268
+      },
+      "weights.safetensors": {
+        "sha256": "951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6",
+        "size": 1613977612
+      }
+    },
+    "license": "mit",
+    "credit": "Whisper large-v3-turbo, (c) OpenAI, MIT licence. MLX conversion by the mlx-community organisation."
+  },
+  "pyannote/speaker-diarization-community-1": {
+    "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
+    "files": {
+      "config.yaml": {
+        "sha256": "5ce2bfa9a938dc132cec1172592d65173cbb8f444ea1e4133f10f9391de155be",
+        "size": 444
+      },
+      "embedding/pytorch_model.bin": {
+        "sha256": "6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929",
+        "size": 26646242
+      },
+      "segmentation/pytorch_model.bin": {
+        "sha256": "7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e",
+        "size": 5906507
+      },
+      "plda/plda.npz": {
+        "sha256": "9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255",
+        "size": 133852
+      },
+      "plda/xvec_transform.npz": {
+        "sha256": "325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f",
+        "size": 134376
+      }
+    },
+    "license": "cc-by-4.0",
+    "credit": "pyannote speaker-diarization-community-1 by Herve Bredin and the pyannote authors, licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Redistributed unmodified in this package. Source: https://hf.co/pyannote/speaker-diarization-community-1"
+  }
+}
