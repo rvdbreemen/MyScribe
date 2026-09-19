@@ -114,6 +114,38 @@ def digest(path: Path) -> str:
     return sha.hexdigest()
 
 
+def hub_snapshot(model: Model) -> Path | None:
+    """The huggingface_hub cache copy of ``model`` at its pinned revision, if any.
+
+    Found by validating on the Mac: the doctor said "1.6 GB still to download"
+    on a machine that had just transcribed with that very model. The weights
+    were where `huggingface_hub` puts them - `models--org--name/snapshots/<sha>`
+    - rather than under MODELS_DIR, and a download this app already has is not
+    a download to ask for again.
+
+    The revision is the pin, so a cache holding some *other* revision is
+    correctly not a hit. `doctor.hf_cache_dir` owns the precedence between
+    HF_HUB_CACHE, HF_HOME and the default, and is imported here rather than
+    copied: two spellings of a cache location is how they come to disagree.
+    """
+    from scribe import doctor
+
+    try:
+        base = doctor.hf_cache_dir() / f"models--{model.repo.replace('/', '--')}" / "snapshots" / model.revision
+    except Exception:  # noqa: BLE001 - an unreadable environment is simply not a hit
+        return None
+    if not base.is_dir():
+        return None
+    for rel, pin in model.files.items():
+        path = base / rel
+        if not path.exists():
+            return None
+        size = int(pin.get("size") or 0)
+        if size and path.stat().st_size != size:
+            return None
+    return base
+
+
 def present(model: Model, *, where: Path | None = None, verify: bool = False) -> bool:
     """Is every pinned file here? The question "must I download?".
 
@@ -128,6 +160,8 @@ def present(model: Model, *, where: Path | None = None, verify: bool = False) ->
     the right size and the wrong content is caught there, which is before
     anything has relied on it.
     """
+    if where is None and hub_snapshot(model) is not None:
+        return True
     base = (where or root()) / model.folder
     for rel, pin in model.files.items():
         path = base / rel
@@ -151,6 +185,7 @@ def status(*, where: Path | None = None) -> list[dict]:
         {
             "repo": m.repo,
             "here": present(m, where=where),
+            "at": str(hub_snapshot(m) or ((where or root()) / m.folder)),
             "bytes": m.bytes_total,
             "gated": m.gated,
             "licence": m.license,
@@ -293,7 +328,11 @@ def main(argv: list[str] | None = None) -> int:
     from scribe import env
 
     env.load_dotenv()
-    base = args.dest or root()
+    # None, not root(): a caller who named no directory is asking whether this
+    # installation can use the model, and a copy in the huggingface_hub cache
+    # answers that. `--dest` is the other question - assemble it *here* - and
+    # there a cache copy somewhere else is not an answer.
+    base = args.dest
 
     if not args.fetch:
         for row in status(where=base):

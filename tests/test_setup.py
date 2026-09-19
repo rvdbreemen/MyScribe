@@ -86,6 +86,11 @@ def test_what_is_still_needed_is_about_this_machine_now(tmp_path, conn, monkeypa
     # this machine has a real pipeline in the real one.
     monkeypatch.setattr(models, "root", lambda: tmp_path / "models")
     monkeypatch.setattr(diarize, "local_weights_dir", lambda: tmp_path / "models" / "pyannote")
+    # And the hub cache, which `present` now consults: this machine has the
+    # whisper weights there, and the question is about a fresh install.
+    from scribe import doctor
+
+    monkeypatch.setattr(doctor, "hf_cache_dir", lambda: tmp_path / "hub")
 
     state = setup.needed(conn)
 

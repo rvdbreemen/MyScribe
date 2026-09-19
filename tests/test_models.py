@@ -169,3 +169,55 @@ def test_progress_never_goes_backwards(tmp_path, one_model, monkeypatch):
     models.ensure(where=tmp_path, on_progress=lambda repo, done, total: seen.append(done))
 
     assert seen == sorted(seen), f"progress went backwards: {seen}"
+
+
+# --- a copy the hub already holds (found on the Mac) -------------------------------
+
+
+def hub_copy(tmp_path: Path, model: models.Model, *, revision: str | None = None) -> Path:
+    """A huggingface_hub cache laid out the way the library lays it out."""
+    base = (
+        tmp_path / "hub" / f"models--{model.repo.replace('/', '--')}"
+        / "snapshots" / (revision or model.revision)
+    )
+    for rel, pin in model.files.items():
+        path = base / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * int(pin["size"]))
+    return base
+
+
+def test_a_model_the_hub_cache_already_holds_is_not_missing(tmp_path, one_model, monkeypatch):
+    """Found by running the doctor on the Mac: it said "1.6 GB still to
+    download" on a machine that had just transcribed with that model. The
+    weights were in the hub cache rather than under MODELS_DIR, and a download
+    this app already has is not a download to ask for again."""
+    from scribe import doctor
+
+    hub_copy(tmp_path, one_model)
+    monkeypatch.setattr(doctor, "hf_cache_dir", lambda: tmp_path / "hub")
+
+    assert models.present(one_model) is True
+    assert models.missing() == []
+
+
+def test_the_cache_only_counts_at_the_pinned_revision(tmp_path, one_model, monkeypatch):
+    """Another revision of the same repo is a different model, and the pin is
+    the whole point of pinning."""
+    from scribe import doctor
+
+    hub_copy(tmp_path, one_model, revision="b" * 40)
+    monkeypatch.setattr(doctor, "hf_cache_dir", lambda: tmp_path / "hub")
+
+    assert models.present(one_model) is False
+
+
+def test_assembling_a_payload_does_not_count_a_cache_somewhere_else(tmp_path, one_model, monkeypatch):
+    """`--dest` asks "is it *here*", which a copy in a user cache does not
+    answer: a build has to put the files in the artifact."""
+    from scribe import doctor
+
+    hub_copy(tmp_path, one_model)
+    monkeypatch.setattr(doctor, "hf_cache_dir", lambda: tmp_path / "hub")
+
+    assert models.present(one_model, where=tmp_path / "payload") is False
