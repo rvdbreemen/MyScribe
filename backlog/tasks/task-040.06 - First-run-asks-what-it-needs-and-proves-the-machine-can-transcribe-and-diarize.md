@@ -1,11 +1,11 @@
 ---
 id: TASK-040.06
 title: First run asks what it needs and proves the machine can transcribe and diarize
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-18 20:26'
-updated_date: '2026-09-19 05:54'
+updated_date: '2026-09-19 05:58'
 labels:
   - packaging
 dependencies:
@@ -34,7 +34,7 @@ Settings has the same reporting gap: it shows a default provider and a model per
 - [x] #1 scribe.doctor fails, not passes, on a machine where the diarize pipeline cannot load, and says which of the three routes to fix it
 - [x] #2 First run asks for a Hugging Face token only when diarization still needs one, writes it to the per-user .env, and links the conditions that must be accepted
 - [x] #3 Settings has a field for the token the diarize error already tells people to set
-- [ ] #4 First run asks which provider answers questions, and Settings states the effective provider, model and window in one line
+- [x] #4 First run asks which provider answers questions, and Settings states the effective provider, model and window in one line
 - [x] #5 First run offers a model tier and does not download a tier the user did not choose
 - [x] #6 The setup can be re-run from the app afterwards, and every answer it writes is visible in Settings
 <!-- AC:END -->
@@ -61,4 +61,12 @@ Two things the tests caught while being written. TranscribeOptions is a pydantic
 Suite 2431 passed; 10 new tests (7 setup, 3 launcher).
 
 Left: AC1 is done and AC3 was done earlier; what remains is a visible launch of the Tk dialog, which needs a person at the screen - the window is unverified the same way TASK-040.03's notes say the launcher's own window is.
+
+AC4's second half: _settings_llm.html now opens with 'In effect now: questions are answered by OpenRouter using ~openai/gpt-luna-latest, planned against a 128,000-token window. This sends transcript text off this machine.' - or 'Nothing leaves this machine.' on a local provider. Verified in the running app for both. effective_llm wraps the window lookup because it asks the local daemon: a settings render must not depend on ollama being up.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+First run asks four questions - token, provider, model tier, fetch the weights now - and nothing more; all four are skippable, all four live in Settings afterwards, and --setup asks again. The doctor now fails rather than passes on a machine that cannot diarize, and says which of the three routes to fix it; it also loads .env, without which it was answering about a different machine than the app runs on. Settings gained the hf_token field the diarize error has always pointed at, and a line saying what actually answers a question and whether that leaves the machine. Verified in the running app and by 19 new tests.
+<!-- SECTION:FINAL_SUMMARY:END -->

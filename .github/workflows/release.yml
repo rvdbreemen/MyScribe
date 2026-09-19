@@ -89,10 +89,19 @@ jobs:
 
       - name: Build ffmpeg (macOS)
         if: runner.os == 'macOS'
+        shell: bash
         # LGPL, from source, --disable-autodetect: the shipped binary must be
         # one we can account for, and the BtbN builds are Windows and Linux
-        # only (packaging/tools.json).
-        run: bash packaging/build_ffmpeg_macos.sh
+        # only. The url and its sha256 come from packaging/tools.json rather
+        # than from this file, so the pin has one home.
+        run: |
+          url=$(python3 -c "import json;print(json.load(open('packaging/tools.json'))['ffmpeg']['platforms']['macos-arm64']['source_url'])")
+          sum=$(python3 -c "import json;print(json.load(open('packaging/tools.json'))['ffmpeg']['platforms']['macos-arm64']['sha256'])")
+          mkdir -p packaging/build
+          curl -Lsf "$url" -o packaging/build/ffmpeg-src.tar.xz
+          # Absolute: the script cd's into its own work directory, so a
+          # relative out-dir lands there and is deleted with it by the trap.
+          bash packaging/build_ffmpeg_macos.sh "$PWD/packaging/build/ffmpeg-src.tar.xz" "$sum" "$PWD/packaging/build/ffmpeg"
 
       - name: Build the artifact and prove it starts
         shell: bash
