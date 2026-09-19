@@ -489,6 +489,50 @@ MIN_OUTPUT_TOKENS = 512
 """The least answer worth asking for. A window that cannot hold this *and*
 `MIN_TRANSCRIPT_TOKENS` is refused in words rather than quietly truncated."""
 
+MIN_NOTE_FLOOR = 256
+"""Below this a note is not a shorter note, it is nothing.
+
+`MIN_NOTE_TOKENS` is what a note is worth asking for and this is what one has
+to be to exist: a couple of sentences, a name with the line that proves it.
+Between the two, `plan_notes` takes whatever the window affords - a terse note
+is a real answer where a refusal is not. Below it, the configuration genuinely
+cannot do the job and says so."""
+
+
+def suggest_bigger_window(context_tokens: int) -> str:
+    """One sentence naming something that would actually work.
+
+    "Use a bigger model" is not help. This looks at what is installed here and
+    names a model whose window is larger, because the fastest fix for a local
+    user is usually a model they already have. Guarded and cheap: a daemon
+    that is down leaves the generic advice, which is still true.
+    """
+    try:
+        from scribe.llm import ollama
+
+        provider = ollama.OllamaProvider()
+        try:
+            roomier = []
+            for name in provider.models():
+                window = provider._model_window(name)
+                if window and window > context_tokens:
+                    roomier.append((window, name))
+        finally:
+            provider.close()
+        if roomier:
+            window, name = max(roomier)
+            return (
+                f"On this machine {name} reports a {window}-token window, which would fit; "
+                f"choose it under Settings, or raise the local cap ({ollama.MAX_NUM_CTX})."
+            )
+    except Exception:  # noqa: BLE001 - a suggestion is a nicety, never a second failure
+        pass
+    return (
+        "A provider with a bigger window would fit this - the cloud ones are roughly sixteen "
+        "times this size - or ask about a shorter recording."
+    )
+
+
 MIN_NOTE_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
 """The floor under a chunk's note budget, and the reason a task can be refused.
 
@@ -1183,17 +1227,30 @@ def plan_notes(
         duration=duration,
         custom_prompt=custom_prompt,
     )
-    note_budget = max(MIN_NOTE_TOKENS, min(capacity, budget_tokens) // chunks)
-    if note_budget * chunks > capacity:
+    # What one note may be, given that all of them have to come back through
+    # one combine call. `MIN_NOTE_TOKENS` is what a note is *worth* asking for;
+    # `affordable` is what there is room for. Taking the smaller of the two -
+    # rather than refusing whenever they disagree - is what makes a long
+    # recording work in a small window at all (Robert, 2026-09-19: adapt the
+    # content length rather than assume a large context).
+    # Only the *capacity* is shared between the chunks. `budget_tokens` is a
+    # per-chunk bound - a note should not be longer than the chunk it
+    # compresses - and dividing it too was how a 128000-token window came to
+    # report room for 25 tokens a chunk.
+    affordable = capacity // max(chunks, 1)
+    note_budget = min(MIN_NOTE_TOKENS, affordable, max(budget_tokens, MIN_NOTE_FLOOR))
+
+    if note_budget < MIN_NOTE_FLOOR:
+        # Now it really is impossible: room for fewer than a sentence or two
+        # per chunk is not a smaller answer, it is no answer. Say so with the
+        # numbers, and name something that would work.
         raise base.ContextTooLong(
-            f"this recording needs {chunks} chunks, and notes worth answering take at least "
-            f"{MIN_NOTE_TOKENS} tokens each, so {note_budget * chunks} tokens of notes have to "
-            f"come back through one combine call that has room for {capacity} in a "
-            f"{context_tokens}-token window. Nothing has been sent and nothing will be. "
-            "Two things work today: ask a provider with a bigger window (the cloud ones have "
-            "roughly sixteen times this one), or ask about a shorter recording. Chat still "
-            "works here either way - it retrieves the parts it needs instead of reading all "
-            "of it."
+            f"this recording needs {chunks} chunks, and a {context_tokens}-token window leaves "
+            f"room for {capacity} tokens of notes to come back through one combine call - "
+            f"{affordable} per chunk, where {MIN_NOTE_FLOOR} is the least that is still a note. "
+            f"Nothing has been sent and nothing will be. {suggest_bigger_window(context_tokens)} "
+            "Chat still works here either way - it retrieves the parts it needs instead of "
+            "reading all of it."
         )
     return note_budget
 
@@ -1470,6 +1527,61 @@ def outputs_for(conn: sqlite3.Connection, media_id: int, kind: str) -> list[dict
 # --- making the calls -------------------------------------------------------------------------------------
 
 
+EXCERPT_CHARS = 700
+"""How much of a prompt or a reply a live-log event carries, per end.
+
+The size question is the whole design of TASK-085. A chunk of transcript is
+thousands of tokens and a chunked job makes a dozen calls, so writing every
+prompt in full would put megabytes into `job_event` rows and down a stream the
+page replays on every reload. Both ends and a count of the middle is what a
+person watching actually reads: how the prompt starts, how it ends, and how
+much they are not being shown."""
+
+
+def excerpt(text: str, *, limit: int = EXCERPT_CHARS) -> str:
+    """``text``, or its two ends with the middle counted.
+
+    Never raises and never returns None: this feeds a log, and ADR-014 is that
+    the log is observation - it must not become the thing that fails a job.
+    """
+    text = text or ""
+    if len(text) <= limit * 2:
+        return text
+    dropped = len(text) - limit * 2
+    return f"{text[:limit]}\n... [{dropped} characters not shown] ...\n{text[-limit:]}"
+
+
+def conclusion(kind: str, answer: str) -> str:
+    """What this kind concluded, in one line a person can read.
+
+    A blob of JSON in a live log is not an answer to "what did it decide"; for
+    `speakers` the decision is which cluster became which name, and that is
+    what gets said. Anything unreadable is reported as such rather than raised.
+    """
+    try:
+        data = json.loads(answer) if isinstance(answer, str) else (answer or {})
+    except Exception:  # noqa: BLE001 - an answer that will not parse is still news
+        return f"answer could not be read as JSON ({len(answer or '')} characters)"
+    if not isinstance(data, dict):
+        return f"answer was {type(data).__name__}, not an object"
+
+    if kind == "speakers":
+        rows = data.get("speakers") or []
+        named = [
+            f"{row.get('cluster') or row.get('label') or '?'} = {row.get('name') or 'unnamed'}"
+            + (f" ({row.get('role')})" if row.get("role") else "")
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        return "; ".join(named) if named else "no speaker could be named from this transcript"
+    if kind == "labels":
+        rows = data.get("labels") or []
+        return "; ".join(str(row.get("label")) for row in rows if isinstance(row, dict)) or "no labels"
+
+    text = next((str(v) for v in data.values() if isinstance(v, str) and v.strip()), "")
+    return excerpt(text, limit=200) if text else f"{len(json.dumps(data))} characters of answer"
+
+
 def _ask(
     conn: sqlite3.Connection,
     plan: TaskPlan,
@@ -1478,6 +1590,8 @@ def _ask(
     user: str,
     max_output_tokens: int,
     json_schema: dict | None,
+    phase: str = "single",
+    on_call: Callable[[str, ChatRequest, ChatResponse], None] | None = None,
     **provider_kwargs: Any,
 ) -> ChatResponse:
     """One call, through the front door.
@@ -1497,13 +1611,22 @@ def _ask(
         json_schema=json_schema,
         reasoning_off=plan.spec.reasoning_off,
     )
-    return llm.chat(
+    response = llm.chat(
         conn,
         media_id=plan.media_id,
         provider_name=plan.provider_name,
         request=request,
         **provider_kwargs,
     )
+    if on_call is not None:
+        # After the answer, not before: a watcher wants the pair, and a hook
+        # that raised on the way in would turn observation into a way to fail
+        # a call (ADR-014). Guarded for the same reason.
+        try:
+            on_call(phase, request, response)
+        except Exception:  # noqa: BLE001 - watching must never break the work
+            pass
+    return response
 
 
 def generate(
@@ -1511,6 +1634,7 @@ def generate(
     plan: TaskPlan,
     *,
     on_progress: Callable[[float], None] | None = None,
+    on_call: Callable[[str, ChatRequest, ChatResponse], None] | None = None,
     **provider_kwargs: Any,
 ) -> TaskResult:
     """Make the calls the plan asks for and validate the last one.
@@ -1522,6 +1646,10 @@ def generate(
     `on_progress` is called after each call with 0..1, a reused chunk counting
     as progress: from the outside, work that does not have to be done again is
     work that is done.
+
+    `on_call` is handed every call this makes, with the phase it belongs to -
+    what the live log is written from (TASK-085). It watches; it decides
+    nothing, and an exception in it is swallowed at the door in `_ask`.
     """
     total_calls = len(plan.chunks) + (1 if plan.chunked else 0)
     done = 0
@@ -1550,6 +1678,8 @@ def generate(
             max_output_tokens=plan.max_output_tokens,
             json_schema=schema,
             **provider_kwargs,
+            phase="single",
+            on_call=on_call,
         )
         step()
         if plan.spec.combine == "concat":
@@ -1569,7 +1699,7 @@ def generate(
         )
 
     if plan.spec.combine == "concat":
-        parts, chunk_ids, calls = _collect_parts(conn, plan, step, **provider_kwargs)
+        parts, chunk_ids, calls = _collect_parts(conn, plan, step, on_call, **provider_kwargs)
         text = "\n\n".join(parts)
         payload = parse_answer(plan.spec, text)
         return TaskResult(
@@ -1589,7 +1719,7 @@ def generate(
             calls=calls,
         )
 
-    notes, chunk_ids, calls = _collect_notes(conn, plan, step, **provider_kwargs)
+    notes, chunk_ids, calls = _collect_notes(conn, plan, step, on_call, **provider_kwargs)
 
     body = user_prompt(
         plan.spec,
@@ -1610,6 +1740,8 @@ def generate(
         max_output_tokens=plan.max_output_tokens,
         json_schema=schema,
         **provider_kwargs,
+        phase="combine",
+        on_call=on_call,
     )
     step()
     payload = parse_answer(plan.spec, response.text)
@@ -1626,6 +1758,7 @@ def _collect_notes(
     conn: sqlite3.Connection,
     plan: TaskPlan,
     step: Callable[[], None],
+    on_call: Callable[[str, ChatRequest, ChatResponse], None] | None = None,
     **provider_kwargs: Any,
 ) -> tuple[list[str], list[int], int]:
     """Notes for every chunk, asking only for the ones not already stored.
@@ -1666,6 +1799,8 @@ def _collect_notes(
             max_output_tokens=note_budget,
             json_schema=None,  # notes are prose; only the combine has a shape to keep
             **provider_kwargs,
+            phase="note",
+            on_call=on_call,
         )
         calls += 1
         where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
@@ -1727,6 +1862,7 @@ def _collect_parts(
     conn: sqlite3.Connection,
     plan: TaskPlan,
     step: Callable[[], None],
+    on_call: Callable[[str, ChatRequest, ChatResponse], None] | None = None,
     **provider_kwargs: Any,
 ) -> tuple[list[str], list[int], int]:
     """The kind's own answer for every chunk, for a `concat` task.
@@ -1759,6 +1895,8 @@ def _collect_parts(
             max_output_tokens=plan.max_output_tokens,
             json_schema=None,
             **provider_kwargs,
+            phase="part",
+            on_call=on_call,
         )
         calls += 1
         where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"

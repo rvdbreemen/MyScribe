@@ -39,7 +39,7 @@ it has paid for, so retrying it resumes rather than starts again.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import Any, TYPE_CHECKING, Callable
 
 from scribe import jobs, llm
 from scribe.llm import chat_tool, selftest, tasks
@@ -139,10 +139,49 @@ def _progress(ctx: "RunnerContext") -> Callable[[float], None]:
     return report
 
 
+def _watch(ctx: "RunnerContext") -> Callable[[str, Any, Any], None]:
+    """Turn each call into two live-log events: what went, and what came back.
+
+    Watching only (ADR-014). Nothing reads these rows to decide anything, and
+    `tasks._ask` swallows whatever this raises - a job must not fail because
+    somebody was looking at it.
+
+    Excerpted by `tasks.excerpt`, and deliberately in two events rather than
+    one: the prompt is knowable the moment the call goes out, and on a local
+    27B model the reply can be five minutes later. One event would mean
+    watching a job that says nothing until it is over.
+    """
+
+    def watch(phase: str, request: Any, response: Any) -> None:
+        jobs.emit(
+            ctx.conn,
+            ctx.job["id"],
+            "llm-prompt",
+            phase=phase,
+            model=getattr(request, "model", ""),
+            system=tasks.excerpt(getattr(request, "system", "") or "", limit=300),
+            prompt=tasks.excerpt(getattr(request, "user", "") or ""),
+            prompt_chars=len(getattr(request, "user", "") or ""),
+        )
+        jobs.emit(
+            ctx.conn,
+            ctx.job["id"],
+            "llm-reply",
+            phase=phase,
+            reply=tasks.excerpt(getattr(response, "text", "") or ""),
+            reply_chars=len(getattr(response, "text", "") or ""),
+            prompt_tokens=getattr(response, "prompt_tokens", None),
+            completion_tokens=getattr(response, "completion_tokens", None),
+            finish_reason=getattr(response, "raw_finish_reason", "") or "",
+        )
+
+    return watch
+
+
 def task_generate(ctx: "RunnerContext") -> None:
     """Make the calls. The slow stage, and the only one that spends anything."""
     ctx.state["result"] = tasks.generate(
-        ctx.conn, ctx.state["plan"], on_progress=_progress(ctx)
+        ctx.conn, ctx.state["plan"], on_progress=_progress(ctx), on_call=_watch(ctx)
     )
 
 
@@ -165,6 +204,15 @@ def task_store(ctx: "RunnerContext") -> None:
         chunks=len(plan.chunks),
         prompt_tokens=result.response.prompt_tokens,
         completion_tokens=result.response.completion_tokens,
+    )
+    # What it decided, in the kind's own terms: a live log that ends with
+    # "stored output 7" has not said what the job was for (TASK-085).
+    jobs.emit(
+        ctx.conn,
+        ctx.job["id"],
+        "llm-conclusion",
+        task=plan.kind,
+        conclusion=tasks.conclusion(plan.kind, result.response.text),
     )
     ctx.report(1.0)
 
