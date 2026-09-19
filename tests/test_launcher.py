@@ -298,7 +298,11 @@ def test_quit_stops_the_server_and_the_runner_it_started(layout, monkeypatch):
 
     app.start()
     try:
-        assert app.wait_ready(timeout=30) is True
+        # Generous on purpose: what this test proves is that Quit stops the
+        # server *and* the runner it started, not how fast a cold machine can
+        # start one. Thirty seconds was enough on a laptop and not on a hosted
+        # macOS runner, where the first import of the app is slower.
+        assert app.wait_ready(timeout=180) is True
         pid_file = layout.data_dir / "child.pid"
         deadline = time.monotonic() + 10
         while not pid_file.exists() and time.monotonic() < deadline:
