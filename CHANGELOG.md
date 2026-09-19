@@ -9,6 +9,58 @@ are those of the commits that set the version.
 
 Nothing yet.
 
+## [0.4.0] - 2026-09-19
+
+### Added
+
+- A podcast page that yt-dlp has no extractor for is read once for the feed it
+  announces, and that feed is imported instead. A Castopod profile page went
+  from "Unsupported URL" to a 47-episode listing. The discovered address is the
+  page author's text, so it must pass the public-host guard before anything
+  fetches it.
+- The model weights are a download this app makes for itself, pinned by
+  revision and sha256, into the directory the stages already look in.
+  `python -m scribe.models` says what is here and what it would cost;
+  `--fetch` downloads it with progress. Nothing gated is redistributed: the
+  pyannote pipeline comes down with the user's own token under conditions they
+  accepted.
+- First run asks four things - the Hugging Face token, who answers questions
+  about a transcript, the model tier, and whether to fetch the weights now.
+  All four are skippable, all four are in Settings afterwards, and `--setup`
+  asks again.
+- Settings has a field for the Hugging Face token the diarize error has always
+  told people to set, and a line saying what actually answers a question, with
+  which model and window, and whether that leaves this machine.
+- The doctor checks that speaker separation can actually start, and says how
+  much is still to download. It also reads `.env`, without which it was
+  answering about a different machine than the app runs on.
+- An llm job shows its work in the live log: the prompt that went out, the
+  reply that came back with its token counts, and the conclusion in the kind's
+  own terms - for speakers, which cluster became which name. Excerpted, so a
+  dozen calls cost kilobytes.
+- CI on Windows, macOS and Linux, and a release workflow that checks the tag
+  against the version, builds the three artifacts, proves each one starts, and
+  publishes only on a tag.
+
+### Fixed
+
+- "Who is speaking" could not run on a local provider at all: its answer budget
+  alone exceeded the window it was planned against, so every run failed at the
+  prepare stage before a model was called. A kind's answer budget is now
+  clamped to what the window affords - which is what every spec already meant
+  by "a cap, not a spend".
+- A long recording shortens its notes to fit the combine call instead of being
+  refused. When even the floor does not fit, the job's outcome is
+  `MODEL_UNSUITABLE` - a verdict about the model rather than a failure - and
+  the message names a model installed here that would fit.
+- A local call is planned against the window the model really has, downwards
+  only: the daemon answers 200 to a prompt it quietly truncated, so a plan that
+  assumed more would never find out.
+- Weights already in the huggingface_hub cache are no longer reported as
+  missing, which would have sent a user to download 1.6 GB they had.
+- `scribe.__version__` and `pyproject.toml` agree again, and so does the
+  lockfile.
+
 ## [0.3.1] - 2026-09-16
 
 ### Changed
