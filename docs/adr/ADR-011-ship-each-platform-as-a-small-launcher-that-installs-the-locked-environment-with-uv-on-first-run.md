@@ -1,15 +1,14 @@
 ---
 id: "ADR-011"
 title: "Ship each platform as a small launcher that installs the locked environment with uv on first run"
-status: "Proposed"
-date: "2026-09-11"
+status: "Accepted"
+date: "2026-09-19"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
-format: "madr"
 topics:
   - "packaging"
   - "release"
@@ -27,6 +26,7 @@ components:
   - ".github/workflows/release.yml"
 symbols: []
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -35,7 +35,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-09-11.
+Accepted, 2026-09-19.
 
 ## Status History
 
@@ -46,13 +46,19 @@ status_history:
     changed_by: Claude Opus 5 (agent)
     reason: "Initial proposal: per-OS executables built by release automation (user request 2026-09-11)"
     changed_via: adr-kit
+  - date: 2026-09-19
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: "Accepted by Robert on 2026-09-19, on the record of two published releases. The launcher decided here is built and started by CI on all three platforms and shipped in v0.5.0 and v0.5.1: run 35447454324 built each artifact on its own runner and proved it starts, and the v0.5.1 release carries the Windows installer, the macOS dmg and the Linux AppImage. The open question about the macOS ffmpeg build was answered by the build script that produced those artifacts."
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
 
 Installing MyScribe today means cloning, making a venv, and running pip
-against a different requirement file per OS - with the CUDA index URL on
-Windows, or pip silently installs a CPU torch (ADR-006). The user asked on
+against a different requirement file per OS - with the CUDA (Compute
+Unified Device Architecture, NVIDIA's GPU toolkit) index URL on Windows, or
+pip silently installs a CPU (central processor) torch (ADR-006). The user asked on
 2026-09-11 for deployable executables on Windows, Linux and macOS, built by
 release automation that can be trusted to produce them on every release.
 
@@ -75,7 +81,8 @@ The facts that shape the answer, measured or sourced that day:
 * Precedent: ComfyUI Desktop and the InvokeAI launcher ship a small app that
   installs torch with uv on first start; aTrain, Buzz and noScribe freeze
   torch into multi-gigabyte installers and split or self-host them.
-* GitHub-hosted runners have no GPU. CI can build and smoke-test the CPU
+* GitHub-hosted runners have no GPU. CI (continuous integration, the
+  workflows that build on every change) can build and smoke-test the CPU
   path; the CUDA and Metal paths stay verified on real hardware (ADR-006's
   "any pin bump must re-run the doctor").
 
@@ -84,7 +91,8 @@ The facts that shape the answer, measured or sourced that day:
 * One click to install on each OS, no Python or pip knowledge required.
 * Every release's artifacts come from CI, from a tag, reproducibly.
 * No asset over GitHub's 2 GiB limit.
-* The runner-child and CUDA-DLL mechanisms keep working unchanged.
+* The runner-child and CUDA-DLL (dynamic-link library, the Windows shared
+  object torch ships its CUDA in) mechanisms keep working unchanged.
 * Updates should not re-download 3 GB when only the app changed.
 
 ## Considered Options
@@ -99,7 +107,7 @@ The facts that shape the answer, measured or sourced that day:
 
 Chosen option: **a per-OS launcher plus uv**, chosen by the user on
 2026-09-11, because it is the only option that keeps every asset small,
-keeps the runner and DLL mechanisms untouched, and makes an update an
+keeps the runner and DLL (dynamic-link library) mechanisms untouched, and makes an update an
 incremental sync rather than a full re-download.
 
 The launcher is a small stdlib-only Python program frozen per OS. It holds
@@ -126,7 +134,8 @@ their secrets are configured.
 * A published release has the three artifacts, `SHA256SUMS`, and an
   attestation per artifact that `gh attestation verify` accepts.
 * On real hardware, the installed app passes the doctor with the GPU
-  checks: the RTX 3080 on Windows, an Apple Silicon Mac.
+  checks: the RTX (NVIDIA's consumer GPU line) 3080 on Windows, an Apple
+  Silicon Mac.
 
 ## Decision Contract
 
@@ -175,7 +184,8 @@ their secrets are configured.
   the PyTorch index and PyPI reachable. The launcher shows progress and
   says so up front.
 * Unsigned artifacts meet Gatekeeper and SmartScreen warnings until
-  certificates are bought (Apple Developer ID; for Windows an OV/EV
+  certificates are bought (Apple Developer ID; for Windows an OV
+  (organization-validated) or EV (extended-validation) code-signing
   certificate - Azure Artifact Signing is open to individuals only in the
   US and Canada).
 * The repository is private: release downloads need a GitHub account with
@@ -209,7 +219,7 @@ their secrets are configured.
 
 ## Open Questions
 
-- [ ] Which LGPL ffmpeg/ffprobe build to ship for macOS arm64 (Windows and Linux: BtbN's LGPL builds), or rely on Homebrew's there.
+- [x] Which LGPL (GNU Lesser General Public License) ffmpeg/ffprobe build to ship for macOS arm64 (Windows and Linux: BtbN's LGPL builds), or rely on Homebrew's there. — **Answered 2026-09-19 by User: Robert van den Breemen:** MyScribe builds its own ffmpeg for macOS arm64 rather than relying on Homebrew's, because a launcher that assumes Homebrew is a launcher that fails on a machine without it. packaging/build_ffmpeg_macos.sh builds 8.1.2 from the FFmpeg release source tarball, checked against its sha256 and its PGP (Pretty Good Privacy) signature on 2026-09-11; the configure line omits --enable-gpl, so the result is LGPL, and --disable-autodetect keeps it hermetic - nothing from Homebrew links in. Built on the M2 in 1 m 52 s, it links only libSystem and three system frameworks and does every operation the app asks of it. Windows and Linux ship BtbN's LGPL builds of the same version, pinned by sha256 in packaging/tools.json.
 
 ## Related Decisions
 

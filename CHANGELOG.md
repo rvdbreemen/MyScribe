@@ -24,6 +24,11 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
   accepted. Both were superseded in 56d92e1 - by ADR-014 and ADR-013 - so
   the README had been pointing readers at the retired versions of the
   logging and coordination rules.
+- ADR-011 is Accepted. The per-OS launcher it decides has been built and
+  started by CI on all three platforms and shipped in v0.5.0 and v0.5.1,
+  which left a decision in production carrying the status of a proposal. Its
+  one open question - which LGPL ffmpeg to ship for macOS arm64 - was
+  answered by the build script that made those artifacts.
 
 ## [0.5.1] - 2026-09-19
 

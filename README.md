@@ -292,9 +292,9 @@ render time (ADR-003); the default model and what translate substitutes
 with a per-platform torch source (ADR-012, superseding ADR-006); SQLite in
 WAL mode as the only coordination between web, supervisor and runner, one
 runner at a time in the claim (ADR-013, superseding ADR-009, which had
-superseded ADR-002); and the application log as observation only, nothing
-reads it to decide (ADR-014, superseding ADR-007).
+superseded ADR-002); the application log as observation only, nothing reads
+it to decide (ADR-014, superseding ADR-007); and a per-OS launcher that
+installs the locked environment with uv on first run (ADR-011).
 
-**Proposed:** the feed import as a polled subscription (ADR-008); reasoning
-as a per-kind hint (ADR-010); and a per-OS launcher that installs the locked
-environment on first run (ADR-011).
+**Proposed:** the feed import as a polled subscription (ADR-008), and
+reasoning as a per-kind hint (ADR-010).

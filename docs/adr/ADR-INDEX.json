@@ -638,8 +638,8 @@
       "title": "Ship each platform as a small launcher that installs the locked environment with uv on first run",
       "path": "ADR-011-ship-each-platform-as-a-small-launcher-that-installs-the-locked-environment-with-uv-on-first-run.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-09-11",
+      "status": "Accepted",
+      "date": "2026-09-19",
       "decision_summary": "Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps...",
       "topics": [
         "ci",
