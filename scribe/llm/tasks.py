@@ -475,6 +475,20 @@ for. 128k is what the current cloud models hold at the low end - `gpt-4o-mini`
 sits exactly there and `openai/gpt-5.6-luna` at 1.05M is far above it. A caller
 who does know the model's real window passes `context_tokens` and gets it."""
 
+MIN_TRANSCRIPT_TOKENS = 1500
+"""The least transcript a call is worth making with.
+
+`max_output_tokens` is a cap, not a spend - every spec says so - but nothing
+enforced that reading, so `speakers` at 8000 could eat a whole 8192-token local
+window and leave the transcript negative (TASK-084). This is the other side of
+that cap: whatever a kind asks to be allowed to say, this much of the recording
+goes in first. 1500 tokens is roughly ten minutes of speech, which is a chunk
+worth summarising; below it the chunking is producing calls, not answers."""
+
+MIN_OUTPUT_TOKENS = 512
+"""The least answer worth asking for. A window that cannot hold this *and*
+`MIN_TRANSCRIPT_TOKENS` is refused in words rather than quietly truncated."""
+
 MIN_NOTE_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
 """The floor under a chunk's note budget, and the reason a task can be refused.
 
@@ -805,14 +819,56 @@ def schema_payload(spec: TaskSpec, supports_json_schema: bool) -> dict | None:
 # --- budgets --------------------------------------------------------------------------------
 
 
-def context_tokens_for(provider_cls: type[base.Provider]) -> int:
+def context_tokens_for(provider_cls: type[base.Provider], model: str | None = None) -> int:
     """How much context to plan against for this provider, by locality.
 
     `is_local` rather than a table of names: what makes the local number small
     is that the window is this machine's VRAM, and what makes the cloud number
     large is that it is not. A caller with a specific model in hand overrides it.
+
+    The provider is asked first (`window_for_model`). A local runtime can read
+    the model's real window off the daemon, and the constants below are what
+    answers when nobody can: before this asked, a 262144-token model was
+    planned against 8192 because that is what the table said (TASK-084).
     """
+    known = provider_cls.window_for_model(model)
+    if known:
+        return known
     return LOCAL_CONTEXT_TOKENS if provider_cls.is_local else CLOUD_CONTEXT_TOKENS
+
+
+def fit_output_tokens(
+    spec: TaskSpec,
+    *,
+    context_tokens: int,
+    max_output_tokens: int | None = None,
+    title: str = "",
+    duration: float = 0.0,
+    custom_prompt: str | None = None,
+) -> int:
+    """The answer budget this window can actually afford for ``spec``.
+
+    A spec's `max_output_tokens` is a ceiling chosen so a model that thinks is
+    not cut off mid-answer, and it was measured where windows are large. In a
+    small window the same number is a claim on space the transcript needs, so
+    it is clamped to what is left after `MIN_TRANSCRIPT_TOKENS` - the cap stays
+    a cap, and the call happens. A window too small to hold even
+    `MIN_OUTPUT_TOKENS` beside that floor is refused here, in words, rather
+    than by `budget_for` subtracting its way to a negative number.
+    """
+    wanted = spec.max_output_tokens if max_output_tokens is None else max_output_tokens
+    overhead = estimate_tokens(system_for(spec)) + estimate_tokens(
+        user_prompt(spec, transcript="", title=title, duration=duration, custom_prompt=custom_prompt)
+    )
+    affordable = context_tokens - overhead - MIN_TRANSCRIPT_TOKENS
+    if affordable < MIN_OUTPUT_TOKENS:
+        raise ValueError(
+            f"a {context_tokens}-token context cannot hold the {spec.kind!r} task: "
+            f"{overhead} tokens of prompt, at least {MIN_TRANSCRIPT_TOKENS} of transcript and "
+            f"{MIN_OUTPUT_TOKENS} of answer need {overhead + MIN_TRANSCRIPT_TOKENS + MIN_OUTPUT_TOKENS}. "
+            f"Choose a model with a bigger window"
+        )
+    return max(MIN_OUTPUT_TOKENS, min(wanted, affordable))
 
 
 def budget_for(
@@ -998,11 +1054,21 @@ def plan_task(
         raise ValueError(f"provider {provider_name!r} has no default model; name one explicitly")
 
     doc = docs.load(conn, media_id, run_id)
-    output_tokens = max_output_tokens or spec.max_output_tokens
     # Resolved whether or not `budget_tokens` was given: the window is a
     # property of the model, and a caller slicing the transcript smaller than
     # it has to has not made the window smaller.
-    window = context_tokens or context_tokens_for(provider_cls)
+    window = context_tokens or context_tokens_for(provider_cls, chosen_model)
+    # The spec's ceiling, clamped to what this window affords. A caller who
+    # named a number is clamped too: the window is the window, and a request
+    # for more answer than it holds is the failure TASK-084 was about.
+    output_tokens = fit_output_tokens(
+        spec,
+        context_tokens=window,
+        max_output_tokens=max_output_tokens,
+        title=doc.title,
+        duration=doc.duration,
+        custom_prompt=custom_prompt,
+    )
     if budget_tokens is None:
         budget_tokens = budget_for(
             spec,

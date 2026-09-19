@@ -1637,3 +1637,60 @@ def test_the_llm_stages_file_their_timings_under_the_model_that_answered(conn, m
     perf = [dict(r) for r in conn.execute("SELECT stage, model FROM stage_perf ORDER BY id")]
     assert [r["stage"] for r in perf] == ["prepare", "generate", "store", "apply"]
     assert {r["model"] for r in perf} == {"fake-1"}
+
+
+# --- every kind has to fit the window it plans against (TASK-084) -------------------
+
+
+@pytest.mark.parametrize("kind", sorted(tasks.TASKS))
+def test_every_kind_fits_the_smallest_local_window(kind):
+    """The regression this file did not have.
+
+    `speakers` carried `max_output_tokens=8000`, measured against a cloud
+    window of 128k where it is free. Against the local floor of 8192 the same
+    number left -852 tokens for the transcript, so the task could not run at
+    all on Ollama - and nothing failed until a user queued it and got a
+    RUNTIME error out of the prepare stage. A kind whose own answer budget
+    does not fit the smallest window it may be planned against is broken on
+    arrival, and that is a property of the table, not of a run.
+    """
+    spec = tasks.TASKS[kind]
+    prompt = "a question" if spec.needs_prompt else None
+
+    output = tasks.fit_output_tokens(
+        spec, context_tokens=tasks.LOCAL_CONTEXT_TOKENS, custom_prompt=prompt
+    )
+    budget = tasks.budget_for(
+        spec,
+        context_tokens=tasks.LOCAL_CONTEXT_TOKENS,
+        max_output_tokens=output,
+        custom_prompt=prompt,
+    )
+
+    assert budget >= tasks.MIN_TRANSCRIPT_TOKENS, (
+        f"{kind} leaves only {budget} tokens for the transcript at the local floor of "
+        f"{tasks.LOCAL_CONTEXT_TOKENS}; lower its max_output_tokens or raise the floor"
+    )
+
+
+def test_a_window_too_small_for_any_answer_is_refused_in_words():
+    """The other half of TASK-084: when clamping cannot save the call, the
+    refusal has to name the numbers and what to change, not subtract its way
+    to a negative and say the context 'leaves nothing'."""
+    spec = tasks.TASKS["speakers"]
+
+    with pytest.raises(ValueError) as exc:
+        tasks.fit_output_tokens(spec, context_tokens=2048)
+
+    message = str(exc.value)
+    assert "2048" in message and "speakers" in message
+    assert "bigger window" in message
+
+
+def test_a_caller_asking_for_more_answer_than_the_window_holds_is_clamped():
+    """A number from a caller is a preference, not a licence to overrun."""
+    spec = tasks.TASKS["summary"]
+
+    fitted = tasks.fit_output_tokens(spec, context_tokens=8192, max_output_tokens=99_000)
+
+    assert tasks.MIN_OUTPUT_TOKENS <= fitted <= 8192 - tasks.MIN_TRANSCRIPT_TOKENS

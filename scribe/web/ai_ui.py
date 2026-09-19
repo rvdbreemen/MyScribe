@@ -787,6 +787,31 @@ def ai_output(media_id: int, kind: str, request: Request) -> Response:
     return _one_panel(request, conn, media_id, kind)
 
 
+def _refuse_if_window_too_small(
+    spec: tasks.TaskSpec, provider_name: str, model: str, *, custom_prompt: str = ""
+) -> None:
+    """Refuse here what the prepare stage would refuse an hour later.
+
+    The window a kind is planned against is known before the row is written -
+    it is the provider's and the model's, not the recording's. `speakers`
+    against an 8192-token local window failed for every recording, and it
+    failed as a RUNTIME job on the board rather than as an answer to the click
+    that caused it (TASK-084). This is the same arithmetic, in front of the
+    enqueue, with the numbers in the message.
+
+    A provider that cannot be asked right now - a daemon that is down - must
+    not block a queue: planning falls back to the constants, and anything this
+    cannot decide is left to the runner as before.
+    """
+    try:
+        window = tasks.context_tokens_for(llm.provider_class(provider_name), model)
+        tasks.fit_output_tokens(spec, context_tokens=window, custom_prompt=custom_prompt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:  # noqa: BLE001 - a window we could not work out is the runner's problem
+        return
+
+
 @router.post("/media/{media_id}/ai/{kind}", include_in_schema=False)
 def ai_run(
     media_id: int,
@@ -827,6 +852,8 @@ def ai_run(
     }
     if asked:
         params["prompt"] = asked
+
+    _refuse_if_window_too_small(spec, provider_name, params["model"], custom_prompt=asked)
 
     # A second click while the first is still queued or running is the same
     # question asked twice, and on a cloud provider that is a second paid call

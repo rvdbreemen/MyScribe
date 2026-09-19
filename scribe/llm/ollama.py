@@ -103,6 +103,18 @@ PROBE_TIMEOUT = 2.0
 sanctioned network call in a method the base class says makes none."""
 
 DEFAULT_NUM_CTX = 8192
+"""The floor, and what a daemon that will not say gets. Kept as the shipped
+default it always was: every measurement in this docstring was taken at it."""
+
+MAX_NUM_CTX = 32768
+"""The ceiling discovery may raise a window to.
+
+A window is KV cache, and the cache is this machine's memory. `qwen3.8:27b-q8_0`
+reports a 262144-token window, which is true of the weights and untrue of the
+card: asking the daemon to hold a quarter of a million tokens of cache beside a
+27B model is how a local box starts swapping mid-answer. 32k is four times the
+floor - room for the answer budgets the cloud kinds were tuned with, and for an
+hour of transcript in one call - and still a cache a 16 GB card can hold."""
 """The window asked for when a caller does not say. Task 3's chunker computes
 one from the transcript; until then this is a value a 4B model holds on this
 card without evicting Whisper."""
@@ -182,7 +194,7 @@ class OllamaProvider(base.Provider):
         *,
         host: str = DEFAULT_HOST,
         model: str | None = None,
-        num_ctx: int = DEFAULT_NUM_CTX,
+        num_ctx: int | None = None,
         client_factory: Callable[..., Any] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ):
@@ -191,16 +203,94 @@ class OllamaProvider(base.Provider):
         the context window is a thing only a local runtime lets you choose. The
         chunker (Task 3) will size it per transcript and pass it here.
 
+        `None` - the default - means ask the daemon what the model holds
+        (`context_tokens`) rather than assume the floor. A number means the
+        caller has a reason, and is never second-guessed.
+
         `conn` is accepted and unused so `llm.get_provider(name, conn)` builds
         every provider the same way.
         """
         self.conn = conn
         self.host = _this_machine_only(host).rstrip("/")
         self.model = model or self.default_model
-        self.num_ctx = num_ctx
+        self.num_ctx = DEFAULT_NUM_CTX if num_ctx is None else num_ctx
+        self._num_ctx_is_mine = num_ctx is None
+        self._windows: dict[str, int] = {}
         self.client_factory = client_factory or default_client_factory
         self.timeout = timeout
         self._client: Any | None = None
+
+    # --- what window this model actually has ----------------------------------
+
+    def context_tokens(self, model: str | None = None) -> int:
+        """How many tokens ``model`` may be planned against on this machine.
+
+        The daemon knows: `/api/show` reports `<arch>.context_length` from the
+        GGUF itself. Before this asked, every local call was planned against
+        `DEFAULT_NUM_CTX` whatever the model held, which is how the `speakers`
+        kind - whose answer budget alone is 8000 tokens - became arithmetically
+        impossible on Ollama while working on every cloud provider (TASK-084).
+
+        Clamped both ways. `MAX_NUM_CTX` is the cache this machine can hold;
+        `DEFAULT_NUM_CTX` is the floor, because a 4k model is not a reason to
+        plan for less than the daemon has always been asked for. A daemon that
+        cannot answer - old, offline, a model that is not pulled - is not an
+        error here: it gets the floor, which is what it got before.
+
+        Cached per model: this is asked once per plan and once per call, and
+        the answer is a property of a file on disk.
+        """
+        if not self._num_ctx_is_mine:
+            return self.num_ctx
+        name = (model or self.model or "").strip()
+        if not name:
+            return self.num_ctx
+        if name not in self._windows:
+            found = self._model_window(name)
+            self._windows[name] = (
+                self.num_ctx if found is None else max(DEFAULT_NUM_CTX, min(MAX_NUM_CTX, found))
+            )
+        return self._windows[name]
+
+    def _model_window(self, model: str) -> int | None:
+        """`<arch>.context_length` from `/api/show`, or None if it cannot be had.
+
+        Every failure is the same answer - None - on purpose: this is a better
+        number when it can be got, never a new way for a task to fail.
+        """
+        try:
+            response = self.client().post("/api/show", json={"model": model})
+            if response.status_code != 200:
+                return None
+            info = (response.json() or {}).get("model_info") or {}
+        except Exception:  # noqa: BLE001 - a window we could not read is not a failure
+            return None
+        arch = str(info.get("general.architecture") or "").strip()
+        for key in ([f"{arch}.context_length"] if arch else []) + [
+            k for k in info if k.endswith(".context_length")
+        ]:
+            value = info.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+        return None
+
+    @classmethod
+    def window_for_model(cls, model: str | None = None) -> int | None:
+        """`context_tokens` for a caller holding the class, not an instance.
+
+        `tasks.context_tokens_for` plans before anything is constructed. Asking
+        the provider to answer for itself keeps that planner free of a table of
+        provider names, and keeps the daemon call inside the module that owns
+        the daemon.
+        """
+        try:
+            provider = cls()
+            try:
+                return provider.context_tokens(model)
+            finally:
+                provider.close()
+        except Exception:  # noqa: BLE001 - planning never fails on a missing daemon
+            return None
 
     # --- the transport --------------------------------------------------------
 
@@ -331,7 +421,7 @@ class OllamaProvider(base.Provider):
             "stream": False,
             "options": {
                 "temperature": req.temperature,
-                "num_ctx": self.num_ctx,
+                "num_ctx": self.context_tokens(req.model),
                 "num_predict": req.max_output_tokens,
             },
             "keep_alive": KEEP_ALIVE,

@@ -340,6 +340,18 @@ class Provider(ABC):
     def models(self) -> list[str]:
         """The model ids this endpoint offers, sorted. May do I/O."""
 
+    @classmethod
+    def window_for_model(cls, model: str | None = None) -> int | None:
+        """This provider's own answer for how big ``model``'s window is.
+
+        None - the default, and every provider that cannot ask - means "use
+        the planner's number for providers like me". A local runtime can do
+        better: it has the model on disk and a daemon that will read its
+        metadata. Kept a classmethod because planning happens before anything
+        is constructed (`tasks.context_tokens_for`).
+        """
+        return None
+
     @abstractmethod
     def complete(self, req: ChatRequest) -> ChatResponse:
         """One completion, or an `LlmError`. Never a vendor exception."""

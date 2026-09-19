@@ -29,27 +29,43 @@ class Recorder:
     couples two provider suites together.
     """
 
-    def __init__(self, *responses):
+    def __init__(self, *responses, show=None):
         # One response per call; the last repeats once they run out, so a retry
         # test can hand over a single 500 and still get three of them.
         self.responses = list(responses)
         self.requests: list[httpx2.Request] = []
+        # `/api/show` is answered from here rather than from the script
+        # (TASK-084). The provider asks it once per model to learn the window,
+        # and a lookup that consumed a scripted response would renumber every
+        # assertion in this file for a request that is not what it is testing.
+        self.show = show
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
-        index = min(len(self.requests) - 1, len(self.responses) - 1)
+        if request.url.path == "/api/show":
+            return self.show or httpx2.Response(200, json={"model_info": {}})
+        index = min(len(self.asked) - 1, len(self.responses) - 1)
         answer = self.responses[index]
         return answer(request) if callable(answer) else answer
 
     @property
+    def asked(self) -> list[httpx2.Request]:
+        """Every request but the window lookup - what the tests are about."""
+        return [r for r in self.requests if r.url.path != "/api/show"]
+
+    @property
     def calls(self) -> int:
-        return len(self.requests)
+        return len(self.asked)
+
+    @property
+    def lookups(self) -> list[httpx2.Request]:
+        return [r for r in self.requests if r.url.path == "/api/show"]
 
     def body(self, index: int = 0) -> dict:
-        return json.loads(self.requests[index].content)
+        return json.loads(self.asked[index].content)
 
     def path(self, index: int = 0) -> str:
-        return self.requests[index].url.path
+        return self.asked[index].url.path
 
 
 def fake_factory(handler):
@@ -457,3 +473,70 @@ def test_a_host_that_is_not_this_machine_cannot_be_constructed(host):
 )
 def test_every_way_of_spelling_this_machine_is_accepted(host):
     assert ollama.OllamaProvider(None, host=host).host
+
+
+# --- the window a model actually has (TASK-084) ------------------------------------
+
+
+def show(context_length=262144, arch="qwen35"):
+    """The shape `/api/show` returned for qwen3.8:27b-q8_0 on 2026-09-18."""
+    return httpx2.Response(
+        200,
+        json={
+            "model_info": {"general.architecture": arch, f"{arch}.context_length": context_length},
+            "capabilities": ["completion", "tools", "thinking"],
+        },
+    )
+
+
+def test_a_models_window_is_read_from_the_daemon_not_assumed():
+    rec = Recorder(show=show(262144))
+
+    got = provider(rec).context_tokens("qwen3.8:27b-q8_0")
+
+    assert [r.url.path for r in rec.lookups] == ["/api/show"]
+    assert json.loads(rec.lookups[0].content)["model"] == "qwen3.8:27b-q8_0"
+    assert got == ollama.MAX_NUM_CTX, "262144 tokens of KV cache is not a window this machine holds"
+
+
+def test_a_window_smaller_than_the_floor_keeps_the_floor():
+    """A 4k model is not a reason to plan for less than the shipped default:
+    the daemon is asked for `num_ctx` and answers 200 either way."""
+    assert provider(Recorder(show=show(4096))).context_tokens("tiny:1b") == ollama.DEFAULT_NUM_CTX
+
+
+def test_a_window_between_the_floor_and_the_cap_is_taken_as_it_is():
+    assert provider(Recorder(show=show(16384))).context_tokens("mid:7b") == 16384
+
+
+def test_a_daemon_that_cannot_say_falls_back_to_the_floor():
+    """An old daemon, a 404, a model_info without the key: none of them is a
+    reason to fail a task that would have run at the shipped default."""
+    for answer in (
+        httpx2.Response(404, json={"error": "model 'x' not found"}),
+        httpx2.Response(200, json={"model_info": {"general.architecture": "qwen35"}}),
+        httpx2.Response(500, text="boom"),
+    ):
+        assert provider(Recorder(show=answer)).context_tokens("x") == ollama.DEFAULT_NUM_CTX
+
+
+def test_the_window_asked_of_the_daemon_is_the_window_that_was_planned():
+    """The two must agree. `LOCAL_CONTEXT_TOKENS` says planning for more than
+    the provider requests means sending a prompt the daemon quietly truncates,
+    and it answers 200 while doing it - so a disagreement here is invisible."""
+    rec = Recorder(chat_answer("Paris"), show=show(16384))
+    p = provider(rec)
+
+    planned = p.context_tokens("mid:7b")
+    p.complete(base.ChatRequest(system="s", user="u", model="mid:7b"))
+
+    assert planned == 16384
+    assert rec.body(0)["options"]["num_ctx"] == planned
+
+
+def test_an_explicit_num_ctx_is_never_overridden():
+    """A caller who names a window has a reason - a small card, a measurement."""
+    p = provider(Recorder(show=show(262144)), num_ctx=4096)
+
+    assert p.num_ctx == 4096
+    assert p.context_tokens("qwen3.8:27b-q8_0") == 4096
