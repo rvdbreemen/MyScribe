@@ -366,3 +366,48 @@ def test_an_installed_tool_does_not_inherit_the_download_s_quarantine(layout):
 
     attrs = subprocess.run(["xattr", str(layout.tools_dir / "ffmpeg")], capture_output=True, text=True).stdout
     assert "com.apple.quarantine" not in attrs
+
+
+# --- first run asks before it starts (TASK-040.06) ---------------------------------
+
+
+def test_setup_is_needed_until_the_app_says_it_is_done(tmp_path):
+    """The stamp is written by `scribe.setup`, not by the launcher: the
+    launcher asks the questions, the app decides what answering them means."""
+    layout = launcher.Layout(tmp_path / "home", tmp_path / "payload")
+
+    assert launcher.setup_needed(layout) is True
+
+    stamp = launcher.setup_stamp(layout)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("{}", encoding="utf-8")
+    assert launcher.setup_needed(layout) is False
+
+
+def test_the_answers_are_handed_to_the_app_not_acted_on_here(tmp_path):
+    """ADR-011: the launcher is frozen and stdlib-only. It cannot write a
+    setting row or parse .env, and must not learn how - it runs the app's
+    python the same way --doctor does."""
+    layout = launcher.Layout(tmp_path / "home", tmp_path / "payload")
+
+    command = launcher.setup_command(
+        layout,
+        {"hf_token": "hf_x", "provider": "ollama", "tier": "max", "diarize": False, "fetch_models": True},
+    )
+
+    assert command[0] == str(layout.env_python)
+    assert command[1:3] == ["-m", "scribe.setup"]
+    assert "--hf-token" in command and "hf_x" in command
+    assert "--provider" in command and "ollama" in command
+    assert "--tier" in command and "max" in command
+    assert "--no-diarize" in command and "--fetch-models" in command
+
+
+def test_an_unanswered_question_is_not_passed_at_all(tmp_path):
+    """Every answer may be left blank, and a blank must not arrive as an empty
+    string that overwrites a setting the user already had."""
+    layout = launcher.Layout(tmp_path / "home", tmp_path / "payload")
+
+    command = launcher.setup_command(layout, {"hf_token": "", "provider": "", "tier": "", "fetch_models": False})
+
+    assert command == [str(layout.env_python), "-m", "scribe.setup"]

@@ -454,6 +454,49 @@ class Launch:
             self.app.stop()
 
 
+def setup_stamp(layout: Layout) -> Path:
+    """Written by `scribe.setup` when the questions have been answered."""
+    return layout.data_dir / "setup.json"
+
+
+def setup_needed(layout: Layout) -> bool:
+    return not setup_stamp(layout).exists()
+
+
+def setup_command(layout: Layout, answers: dict) -> list[str]:
+    """`python -m scribe.setup` with the answers, in the app's environment.
+
+    The launcher is frozen and stdlib-only (ADR-011): it cannot write a setting
+    row or parse `.env` for itself, and should not learn how. It asks the
+    questions and hands the answers to the app, the same way `--doctor` hands
+    over a check.
+    """
+    command = [str(layout.env_python), "-m", "scribe.setup"]
+    if answers.get("hf_token"):
+        command += ["--hf-token", answers["hf_token"]]
+    if answers.get("provider"):
+        command += ["--provider", answers["provider"]]
+    if answers.get("tier"):
+        command += ["--tier", answers["tier"]]
+    if answers.get("diarize") is not None:
+        command += ["--diarize" if answers["diarize"] else "--no-diarize"]
+    if answers.get("fetch_models"):
+        command += ["--fetch-models"]
+    return command
+
+
+def run_setup(layout: Layout, answers: dict, on_line: Callable[[str], None]) -> bool:
+    """Apply the answers, streaming what happens - a 1.6 GB download has to
+    look like something happening rather than a window that stopped."""
+    code = run_streaming(
+        setup_command(layout, answers),
+        env=app_environment(layout),
+        cwd=layout.app_dir,
+        on_line=on_line,
+    )
+    return code == 0
+
+
 def run_headless(launch: Launch) -> int:
     if not launch.run():
         return 1
@@ -469,7 +512,89 @@ def run_headless(launch: Launch) -> int:
     return 0
 
 
-def run_window(layout: Layout, port: int, open_browser: bool) -> int:
+def ask_setup(root, layout: Layout) -> dict | None:
+    """The four first-run questions, in one modal window.
+
+    Four and no more. Each is something the app cannot work out for itself and
+    would otherwise fail on later: the token speaker separation needs, who
+    answers questions about a transcript, how big a model this machine should
+    commit to, and whether to fetch the weights now while somebody is watching.
+
+    Every answer may be left blank, and every one can be changed in Settings
+    afterwards. A setup screen that must be completed before anything works is
+    a worse first impression than one that can be skipped.
+
+    Returns the answers, or None when the person closed the window - which is
+    "ask me next time", not "never".
+    """
+    import tkinter as tk
+
+    win = tk.Toplevel(root)
+    win.title(f"Set up {APP_NAME}")
+    win.transient(root)
+    win.grab_set()
+    answers: dict = {}
+
+    tk.Label(
+        win,
+        text=(
+            "Two answers make speaker separation work, and two decide what this "
+            "machine downloads. All of them can be changed later in Settings."
+        ),
+        wraplength=520, justify="left", anchor="w",
+    ).grid(row=0, column=0, columnspan=2, sticky="we", padx=12, pady=(12, 8))
+
+    tk.Label(win, text="Hugging Face token", anchor="w").grid(row=1, column=0, sticky="w", padx=12)
+    token = tk.Entry(win, width=44, show="\u2022")
+    token.grid(row=1, column=1, sticky="we", padx=12, pady=2)
+    tk.Label(
+        win,
+        text="Speaker separation downloads a gated model. Accept its conditions at\n"
+             "hf.co/pyannote/speaker-diarization-community-1 and paste a token here.",
+        wraplength=520, justify="left", anchor="w", fg="#555",
+    ).grid(row=2, column=0, columnspan=2, sticky="we", padx=12, pady=(0, 8))
+
+    tk.Label(win, text="Answers about a transcript", anchor="w").grid(row=3, column=0, sticky="w", padx=12)
+    provider = tk.StringVar(value="ollama")
+    providers = tk.Frame(win)
+    providers.grid(row=3, column=1, sticky="w", padx=12)
+    for value, label in (("ollama", "Ollama, on this machine"), ("openrouter", "OpenRouter"), ("openai", "OpenAI")):
+        tk.Radiobutton(providers, text=label, variable=provider, value=value).pack(side="left")
+
+    tk.Label(win, text="Transcription model", anchor="w").grid(row=4, column=0, sticky="w", padx=12, pady=(8, 0))
+    tier = tk.StringVar(value="turbo")
+    tiers = tk.Frame(win)
+    tiers.grid(row=4, column=1, sticky="w", padx=12, pady=(8, 0))
+    tk.Radiobutton(tiers, text="Turbo - fast", variable=tier, value="turbo").pack(side="left")
+    tk.Radiobutton(tiers, text="Maximaal - about four times slower", variable=tier, value="max").pack(side="left")
+
+    fetch = tk.BooleanVar(value=True)
+    tk.Checkbutton(
+        win, variable=fetch, anchor="w",
+        text="Download the model weights now (about 1.6 GB; otherwise the first transcription waits for them)",
+        wraplength=520, justify="left",
+    ).grid(row=5, column=0, columnspan=2, sticky="we", padx=12, pady=(10, 4))
+
+    def save() -> None:
+        answers.update(
+            hf_token=token.get().strip(),
+            provider=provider.get(),
+            tier=tier.get(),
+            fetch_models=bool(fetch.get()),
+        )
+        win.destroy()
+
+    row = tk.Frame(win)
+    row.grid(row=6, column=0, columnspan=2, sticky="we", padx=12, pady=12)
+    tk.Button(row, text="Save and start", command=save, default="active").pack(side="right")
+    tk.Button(row, text="Skip for now", command=win.destroy).pack(side="right", padx=8)
+
+    win.columnconfigure(1, weight=1)
+    root.wait_window(win)
+    return answers or None
+
+
+def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool = False) -> int:
     import tkinter as tk
     from tkinter import scrolledtext
 
@@ -523,7 +648,26 @@ def run_window(layout: Layout, port: int, open_browser: bool) -> int:
             status.set(f"MyScribe stopped; see {layout.logs_dir / 'app.log'}")
         root.after(200, pump)
 
-    threading.Thread(target=launch.run, name="myscribe-launch", daemon=True).start()
+    def begin() -> None:
+        """Ask first, then launch. The questions come before the app starts so
+        a token given here is in `.env` before anything reads it - the runner
+        children inherit the environment the app was started with."""
+        if setup_needed(layout) or force_setup:
+            answers = ask_setup(root, layout)
+            if answers:
+                status.set("Saving your answers...")
+                threading.Thread(
+                    target=lambda: (
+                        run_setup(layout, answers, lambda line: events.put(("busy", line))),
+                        launch.run(),
+                    ),
+                    name="myscribe-setup",
+                    daemon=True,
+                ).start()
+                return
+        threading.Thread(target=launch.run, name="myscribe-launch", daemon=True).start()
+
+    root.after(50, begin)
     root.after(200, pump)
     root.mainloop()
     return 0
@@ -550,6 +694,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--payload", type=Path, help="the shipped app/ and bin/ (default: inside the launcher)")
     parser.add_argument("--sync-only", action="store_true", help="install or update the environment, then exit")
     parser.add_argument("--doctor", nargs=argparse.REMAINDER, help="run python -m scribe.doctor [ARGS] in the environment")
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="ask the first-run questions again (they are also in Settings)",
+    )
     parser.add_argument("--smoke", action="store_true", help="start the app, check /health and /, stop it (CI)")
     parser.add_argument("--version", action="store_true")
     return parser
@@ -584,7 +733,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         import tkinter  # noqa: F401
     except ImportError:
         return run_headless(Launch(layout, args.port, not args.no_browser, console))
-    return run_window(layout, args.port, not args.no_browser)
+    return run_window(layout, args.port, not args.no_browser, force_setup=args.setup)
 
 
 def smoke(layout: Layout, port: int) -> int:

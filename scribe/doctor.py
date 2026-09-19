@@ -537,6 +537,39 @@ def _gated_repo_reachable(repo: str, token: str) -> tuple[bool, str]:
         return False, f"could not be asked ({exc})"
 
 
+def check_models() -> Check:
+    """Are the weights here, and if not, how much is still to come?
+
+    The package ships without them (TASK-040.05), so on a fresh install this
+    is the difference between "nothing works and I do not know why" and "1.6 GB
+    to download, here is the command". Asked cheaply - existence and size, not
+    a hash of 1.6 GB - because this renders on a card.
+
+    Optional: a machine that has not downloaded them yet is not broken, it is
+    new. It fails loudly enough to be read.
+    """
+    from scribe import models
+
+    rows = models.status()
+    absent = [row for row in rows if not row["here"]]
+    if not absent:
+        return Check(name="models", ok=True, detail=f"{len(rows)} model(s) present")
+
+    outstanding = sum(row["bytes"] for row in absent)
+    names = ", ".join(f"{row['repo'].split('/')[-1]} ({models.human(row['bytes'])})" for row in absent)
+    gated = any(row["gated"] for row in absent)
+    return Check(
+        name="models",
+        ok=False,
+        optional=True,
+        detail=f"{models.human(outstanding)} still to download: {names}",
+        fix_hint=(
+            "Run `python -m scribe.models --fetch`"
+            + (", after saving a Hugging Face token (Settings) for the gated one." if gated else ".")
+        ),
+    )
+
+
 CPU_CHECKS = (
     check_python,
     check_sqlite,
@@ -548,6 +581,7 @@ CPU_CHECKS = (
     check_database,
     check_accelerators,
     check_diarization,
+    check_models,
 )
 
 GPU_CHECKS = (

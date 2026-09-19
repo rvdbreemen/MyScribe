@@ -114,17 +114,35 @@ def digest(path: Path) -> str:
     return sha.hexdigest()
 
 
-def present(model: Model, *, where: Path | None = None) -> bool:
-    """Is every pinned file here and intact? The question "must I download?"."""
+def present(model: Model, *, where: Path | None = None, verify: bool = False) -> bool:
+    """Is every pinned file here? The question "must I download?".
+
+    `verify` decides how hard the question is asked, and the default is the
+    cheap one on purpose: a settings page and a doctor card ask it on every
+    render, and hashing 1.6 GB of weights to draw a table would make the page
+    take seconds and the disk work for nothing. Size and existence is what a
+    status line needs.
+
+    The expensive answer is for the moment it matters - `ensure` verifies every
+    byte it writes, and refuses anything that does not match. A file that is
+    the right size and the wrong content is caught there, which is before
+    anything has relied on it.
+    """
     base = (where or root()) / model.folder
-    return all(
-        (base / rel).exists() and digest(base / rel) == pin["sha256"]
-        for rel, pin in model.files.items()
-    )
+    for rel, pin in model.files.items():
+        path = base / rel
+        if not path.exists():
+            return False
+        if verify:
+            if digest(path) != pin["sha256"]:
+                return False
+        elif int(pin.get("size") or 0) and path.stat().st_size != int(pin["size"]):
+            return False
+    return True
 
 
-def missing(*, where: Path | None = None) -> list[Model]:
-    return [m for m in catalogue().values() if not present(m, where=where)]
+def missing(*, where: Path | None = None, verify: bool = False) -> list[Model]:
+    return [m for m in catalogue().values() if not present(m, where=where, verify=verify)]
 
 
 def status(*, where: Path | None = None) -> list[dict]:
@@ -195,7 +213,7 @@ def ensure(
     for model in catalogue().values():
         if wanted is not None and model.repo not in set(wanted):
             continue
-        if present(model, where=base):
+        if present(model, where=base, verify=True):
             continue
         if model.gated and not token:
             raise ModelError(
