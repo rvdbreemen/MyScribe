@@ -1,0 +1,93 @@
+# Cutting a release
+
+What happens, in what order, and what has actually gone wrong doing it. The
+first real release was v0.5.0 on 2026-09-19; it took four tags, and every
+failure is written down below rather than smoothed over, because each one is
+a thing the next release can hit again.
+
+## The short version
+
+```sh
+# 1. The version, in the three places that must agree
+#    pyproject.toml, scribe/__init__.py, uv.lock (uv lock rewrites the third)
+uv lock
+
+# 2. The CHANGELOG entry, newest first, dated
+# 3. Commit, push, let ci.yml go green on all three operating systems
+# 4. Merge to main - a release should point at code that is on main
+# 5. Tag and push
+git tag -a v0.5.0 -m "MyScribe 0.5.0 ..."
+git push origin v0.5.0
+```
+
+The tag starts `release.yml`. Nothing is published until all three builds and
+their smoke tests have passed.
+
+## What the workflow does
+
+| Job | What it proves |
+| --- | --- |
+| `version` | The tag matches `scribe.__version__`. Six seconds, before anything is built: an artifact reporting a different version than its tag is a support case that outlives the release. |
+| `build` (×3) | The artifact is built on its own OS **and started**: `build_release.py --smoke` runs the frozen launcher against a fresh home - first sync, `/health`, a page, quit. "The build produced a file" is not the thing a release needs to be true. |
+| `publish` | SHA256SUMS, the attestation where GitHub offers one, and the GitHub Release. Tag runs only; a `workflow_dispatch` run uploads the same artifacts and publishes nothing. |
+
+## A rehearsal without a tag
+
+```sh
+gh workflow run release.yml --ref main
+```
+
+Same build and smoke jobs, artifacts uploaded to the run, no Release created.
+Worth doing when anything in `packaging/` has changed, because a tag you have
+to withdraw is messier than a run that fails.
+
+## What has gone wrong, and what it looked like
+
+These are not hypotheticals. All four happened on the way to v0.5.0, each on a
+step that had never run on a real runner before.
+
+**The smoke test ran a directory.** PyInstaller's onedir is a folder named
+after the app with the executable *inside* it. Linux said
+`PermissionError: [Errno 13] Permission denied` after building a perfectly
+good 121 MB AppImage. Fixed in `_frozen_binary`; the shape is pinned by a test.
+
+**Inno Setup refused the whole script.** `Unrecognized [Setup] directive` -
+`SetupAppTitle` is a `[Messages]` entry. It had been in `[Setup]` since the
+script was written and no Windows build had ever run to say so.
+
+**The Linux runner ran out of disk.** The smoke test does a real first sync,
+and on Linux that is torch with its whole CUDA stack, into a runner that
+arrives with about 5 GB free. Both workflows now clear the toolchains nobody
+here uses before they start.
+
+**Attestation is not available for a user-owned private repository.**
+`actions/attest-build-provenance` failed the publish over three good builds
+with exactly that message. It is conditional now, the way signing already was.
+`SHA256SUMS` is published either way, and that is the part a user can check.
+
+## Signing
+
+Both signing steps run only when their secret exists and print a notice when
+it does not, so a missing certificate cannot stop a release that is otherwise
+sound. Today neither is configured:
+
+* macOS ships ad-hoc signed. A downloaded dmg carries `com.apple.quarantine`
+  and Gatekeeper will refuse it until the user chooses **Open Anyway** - the
+  dmg's "Open me first" note explains that.
+* The Windows installer is unsigned and SmartScreen will say so.
+
+Set `MACOS_CERTIFICATE` or `WINDOWS_CERTIFICATE` in the repository's secrets
+and the steps start doing the work instead of explaining themselves.
+
+## If a release fails
+
+Nothing is published unless every build passed, so a failed run leaves no
+half-release behind. Fix the cause, then move the tag:
+
+```sh
+git tag -d v0.5.0 && git push origin :refs/tags/v0.5.0
+git tag -a v0.5.0 -m "..." && git push origin v0.5.0
+```
+
+Moving a tag is only clean while nothing was published. Once a Release exists,
+cut the next number instead.

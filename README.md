@@ -63,6 +63,38 @@ including the model load, which dominates a file that short.
 
 ## Install
 
+### From a release
+
+Each release carries a ready-made artifact per platform, built on that
+platform and started once by CI before it was published:
+
+| | |
+| --- | --- |
+| macOS (Apple Silicon) | `MyScribe-<version>-macos-arm64.dmg` |
+| Windows (x64) | `MyScribe-<version>-windows-x64.exe` |
+| Linux (x86_64) | `MyScribe-<version>-linux-x64.AppImage` |
+
+Nothing is signed yet, so each OS will say so the first time:
+
+* **macOS** - the dmg is ad-hoc signed, so a download carries Apple's
+  quarantine flag and Gatekeeper refuses it outright. Open it from Finder with
+  **Control-click → Open**, then **Open Anyway**; the dmg's own "Open me first"
+  note says the same. Copying it out of the dmg keeps the flag, which is why
+  the bundled tools are installed as fresh files rather than copied.
+* **Windows** - SmartScreen will warn about an unknown publisher: **More
+  info → Run anyway**. It installs for your account only, into
+  `%LOCALAPPDATA%\MyScribe`, and leaves your recordings there on uninstall.
+* **Linux** - make the AppImage executable (`chmod +x`) and run it.
+
+The first start downloads the speech engine - about 3 GB on Windows and Linux,
+less on a Mac - and shows its progress. Later starts skip it. The model
+weights are a separate download the app makes for itself; `Settings` says what
+is still missing and how big it is.
+
+Verify a download against `SHA256SUMS`, published beside the artifacts.
+
+### From a clone
+
 Clone, then one command on every OS. `pyproject.toml` holds the pins and
 `uv.lock` the exact, hashed set for each platform (ADR-012): Windows gets
 torch built for CUDA 12.8 from PyTorch's index, Linux PyPI's torch with its
