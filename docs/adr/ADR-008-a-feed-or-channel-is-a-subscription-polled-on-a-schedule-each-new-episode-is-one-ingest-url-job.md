@@ -1,15 +1,14 @@
 ---
 id: "ADR-008"
 title: "A feed or channel is a subscription polled on a schedule; each new episode is one ingest_url job"
-status: "Proposed"
-date: "2026-09-09"
+status: "Accepted"
+date: "2026-09-19"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
-format: "madr"
 topics:
   - "ingest"
   - "feeds"
@@ -42,6 +41,7 @@ symbols:
   - "FeedWatcher"
   - "due_feeds"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -50,7 +50,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-09-09. Revised while still Proposed; never accepted in its
+Accepted, 2026-09-19.
 first shape.
 
 ## Status History
@@ -67,6 +67,11 @@ status_history:
     changed_by: Claude Opus 5 (agent, session 2026-09-09)
     reason: Revised at the user's instruction; the first shape forbade the feed table, subscription and poller the user then asked for. Listing and import are unchanged; the prohibition becomes a bounded subscription. Edited at the source because the record was never accepted.
     changed_via: source edit
+  - date: 2026-09-19
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: "Accepted by Robert on 2026-09-19. The decision carries no open questions and is built: FeedWatcher is its own daemon thread in scribe/ingest/feeds.py, started from the lifespan in scribe/app.py beside the supervisor and the watcher, the Feeds page is scribe/web/feeds_ui.py, and tests/test_feeds.py and tests/test_web_feeds.py cover the due selection, the back-catalogue rule, the per-poll cap and the page. A decision this far into production should not read as a proposal."
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

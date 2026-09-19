@@ -29,6 +29,14 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
   which left a decision in production carrying the status of a proposal. Its
   one open question - which LGPL ffmpeg to ship for macOS arm64 - was
   answered by the build script that made those artifacts.
+- ADR-008 and ADR-010 are Accepted, which leaves nothing Proposed in
+  `docs/adr/`. Both were already running: the feed poller is `FeedWatcher`
+  in `scribe/ingest/feeds.py` with its own page and two test files, and the
+  reasoning hint travels from `TaskSpec` to every provider's own wire field.
+  ADR-010's two remaining questions were settled first - the ban on
+  `effort: low` stands as the cautious default with its single-sample basis
+  now stated in the record, and a cleaned part that came back a copy of its
+  source is refused, with the reuse path fixed in the same change (TASK-088).
 
 ## [0.5.1] - 2026-09-19
 

@@ -1,8 +1,8 @@
 ---
 id: "ADR-010"
 title: "Reasoning is a per-kind hint; an ignored hint is bounded only where the endpoint enforces the cap"
-status: "Proposed"
-date: "2026-09-11"
+status: "Accepted"
+date: "2026-09-19"
 binding: false
 gate: null
 documents_shipped: false
@@ -46,7 +46,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-09-11. Written with the TASK-029 implementation; a human
+Accepted, 2026-09-19.
 accepts it. Revised the same day, still Proposed: step 0 is measured and
 keeps the 3,000-token chunk (Chunks); the cloud cleanup cap stays where it
 is, and this record adopts a reworded AC3 for TASK-029 (Open Questions -
@@ -63,6 +63,11 @@ status_history:
     changed_by: Claude Opus 5 (agent, session 2026-09-11)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-09-19
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: "Accepted by Robert on 2026-09-19, after both remaining open questions were put to him with their alternatives and consequences. The decision has been running for some time: reasoning_off travels from TaskSpec to ChatRequest and each provider turns it into its own wire field in scribe/llm/base.py, ollama.py and openai_like.py. The ban on effort low stands as the cautious default with its single-sample basis stated in the record; the refusal of a part that is a copy of its source, with the reuse path fixed in the same change, is TASK-088."
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

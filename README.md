@@ -293,8 +293,12 @@ with a per-platform torch source (ADR-012, superseding ADR-006); SQLite in
 WAL mode as the only coordination between web, supervisor and runner, one
 runner at a time in the claim (ADR-013, superseding ADR-009, which had
 superseded ADR-002); the application log as observation only, nothing reads
-it to decide (ADR-014, superseding ADR-007); and a per-OS launcher that
-installs the locked environment with uv on first run (ADR-011).
+it to decide (ADR-014, superseding ADR-007); a feed or channel as a
+subscription polled on a due date, each new episode one `ingest_url` job
+(ADR-008); reasoning as a per-kind hint, bounded by the cap only where the
+endpoint enforces one (ADR-010); and a per-OS launcher that installs the
+locked environment with uv on first run (ADR-011).
 
-**Proposed:** the feed import as a polled subscription (ADR-008), and
-reasoning as a per-kind hint (ADR-010).
+Nothing is Proposed. Every decision in `docs/adr/` is either Accepted or
+superseded by one that is; ADR-002, ADR-006, ADR-007 and ADR-009 are history
+and each names its successor.
