@@ -9,7 +9,6 @@ documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
-format: "madr"
 topics:
   - "llm"
   - "reasoning-models"
@@ -38,6 +37,7 @@ symbols:
   - "check_cleaning"
   - "cleaned_parts"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -509,7 +509,7 @@ reading is open (Open Questions).
   hint. The cost of that choice is a Negative consequence above: gpt-5-mini
   could not clean media 12's largest chunk in the one call tried, and a
   heavy mandatory reasoner may not clean at all.
-- [ ] Is `effort: low` worse for `[m:ss]` stamps and speaker labels than `enabled: false`, or was the single media-1 comparison per-part variance?
+- [x] Is `effort: low` worse for `[m:ss]` stamps and speaker labels than `enabled: false`, or was the single media-1 comparison per-part variance? — **Answered 2026-09-19 by User: Robert van den Breemen:** The ban stands, and this record says plainly what it rests on. It is the cautious default, not a measured conclusion: one comparison on one chunk of media 1 showed effort low dropping the [m:ss] stamps and the speaker labels where enabled false kept them, and the live check of 2026-09-11 then showed enabled false itself keeping between 10 of 81 and 96 of 99 stamps per part of media 12. That spread is wide enough that the single comparison could have been per-part variance. The ban costs nothing while no kind asks for effort low, and the failure it guards against is a silent one - no gate would catch it, because the per-part ratio gates count lost words and a stamp is not a word, so a missing stamp surfaces only in an export. Settling it needs both settings over several parts; until someone runs that, the cautious default holds.
   The Must Not and the Enforcement pattern rest on that one sample, while in
   the 2026-09-11 live check deepseek with `enabled: false` kept between 10 of
   81 and 96 of 99 stamps per part of media 12. Settling it needs both
@@ -535,7 +535,7 @@ reading is open (Open Questions).
   dropped', on R1's three rate-limited calls, which asked for no hint. It
   now prints what was asked and, only when an answer came, what that answer
   carried (`test_a_call_that_got_no_answer_prints_what_was_asked_not_a_guess`).
-- [ ] Should a part that came back as it went in refuse the reading when its source has a line that continues the speaker before it?
+- [x] Should a part that came back as it went in refuse the reading when its source has a line that continues the speaker before it? — **Answered 2026-09-19 by User: Robert van den Breemen:** Yes, it is refused - and the reuse path is fixed in the same change, because refusing without that leaves a reading nobody can repair. A part that comes back byte-identical while its source carries a line continuing the speaker before it skipped the grouping it was asked for, and no existing gate sees that: the per-part ratio gates count lost words and a copy loses none. The shape to build from is the 1-of-11 part of qwen3.5:4b's media 12 reading, starting from a failing test; tests/test_llm_cleaning_gate.py:145 pins today's answer and has to move. The second half is not optional: stored_chunk does not ask whether a reading was published, so a rerun on the same provider, model and prompt version reuses the stored parts, copy included, and is refused again - the reading would be unrepairable short of emptying the cache. A part that is honestly unchanged, one line or alternating speakers, must still pass; the refusal keys on the continuing line in the source, not on sameness alone.
   `cleanup.md` keeps only the stamp that starts each stretch, so such a
   part skipped the grouping it was asked for; a one-line part, or one of
   alternating speakers, could honestly come back unchanged and would still
