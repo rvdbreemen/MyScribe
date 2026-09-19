@@ -22,6 +22,7 @@ the one runner at a time.
 
 import os
 import subprocess
+from datetime import datetime
 import sys
 import threading
 import time
@@ -86,11 +87,23 @@ def process_started_at(pid: int | None) -> float | None:
     """When the process holding `pid` started, as unix time, or None.
 
     None means "cannot tell", never "it is young": every caller must treat an
-    unanswerable question as no evidence and leave the row alone. Windows has
-    GetProcessTimes; elsewhere there is no way to ask without a dependency, so
-    POSIX gets None and keeps the bare-pid behaviour it had (TASK-065).
+    unanswerable question as no evidence and leave the row alone.
+
+    Every platform can answer this, which the first version of TASK-065 did not
+    believe: Windows has GetProcessTimes, Linux has `/proc/<pid>/stat` field 22
+    against the boot time in `/proc/stat`, and macOS has `ps -o lstart=`. Only
+    Windows was implemented, so on a Mac and on Linux the pid-recycling guard
+    never fired at all - which is exactly what
+    `test_reconcile_flips_a_job_whose_pid_belongs_to_a_younger_process` has
+    been red about since it was written, on every machine that is not Windows.
     """
-    if not pid or pid <= 0 or sys.platform != "win32":
+    if not pid or pid <= 0:
+        return None
+    if sys.platform == "linux":
+        return _linux_process_started_at(int(pid))
+    if sys.platform == "darwin":
+        return _darwin_process_started_at(int(pid))
+    if sys.platform != "win32":
         return None
     kernel32 = ctypes.windll.kernel32
     handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
@@ -113,6 +126,49 @@ def process_started_at(pid: int | None) -> float | None:
         return ticks / 1e7 - 11644473600
     finally:
         kernel32.CloseHandle(handle)
+
+
+def _linux_process_started_at(pid: int) -> float | None:
+    """Field 22 of `/proc/<pid>/stat`, in ticks since boot, plus the boot time.
+
+    The comm field can hold spaces and parentheses - a process is free to call
+    itself `(evil) 1 2 3` - so the fields are counted from the *last* `)`,
+    which is the only place the kernel's format is unambiguous.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        after_comm = raw[raw.rindex(")") + 1:].split()
+        ticks = int(after_comm[19])  # field 22 overall: state is field 3
+        hertz = os.sysconf("SC_CLK_TCK")
+        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1]) + ticks / float(hertz)
+    except Exception:  # noqa: BLE001 - an unreadable /proc is "cannot tell"
+        return None
+    return None
+
+
+def _darwin_process_started_at(pid: int) -> float | None:
+    """`ps -o lstart=`, which macOS has and `etimes` is not.
+
+    `LC_ALL=C` because the format is the locale's otherwise, and this has to
+    parse on a machine set to any language. An absolute stamp rather than
+    `etime`, so nothing has to be subtracted from a clock that may have moved.
+    """
+    try:
+        out = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"},
+        )
+        stamp = " ".join(out.stdout.split())
+        if out.returncode != 0 or not stamp:
+            return None
+        return datetime.strptime(stamp, "%a %b %d %H:%M:%S %Y").timestamp()
+    except Exception:  # noqa: BLE001 - no ps, a refusal, an unexpected format
+        return None
 
 
 # A process that started this long after the job may still be its runner: the

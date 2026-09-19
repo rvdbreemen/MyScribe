@@ -527,3 +527,41 @@ def test_the_stderr_tail_is_read_by_seeking_not_by_loading_the_file(tmp_path):
     tail = supervisor._read_tail(big, limit=20)
 
     assert tail.endswith("last words") and len(tail) <= 20
+
+
+# --- the pid-age question, answered on this platform too ---------------------------
+
+
+def test_this_process_start_time_is_readable_here():
+    """TASK-065 implemented the Windows answer and left POSIX returning None,
+    so the guard above it never fired on a Mac or on Linux - which is why
+    `test_reconcile_flips_a_job_whose_pid_belongs_to_a_younger_process` was red
+    on every machine that is not Windows. Every platform can answer this."""
+    started = supervisor.process_started_at(os.getpid())
+
+    assert started is not None, f"no process start time on {sys.platform}"
+    assert 0 <= time.time() - started < 86400, "a start time that is not in living memory"
+
+
+def test_a_pid_nobody_holds_has_no_start_time():
+    """"Cannot tell" and "is not there" both have to be None: the caller reads
+    None as no evidence and leaves the row where the bare-pid check put it."""
+    assert supervisor.process_started_at(0) is None
+    assert supervisor.process_started_at(-1) is None
+    assert supervisor.process_started_at(None) is None
+
+
+def test_an_unreadable_answer_is_no_evidence(monkeypatch):
+    """A `ps` that is missing, refuses, or prints something unexpected must not
+    raise into a reconcile that runs at startup."""
+    if sys.platform == "darwin":
+        monkeypatch.setattr(
+            supervisor.subprocess, "run",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("no ps here")),
+        )
+    elif sys.platform == "linux":
+        monkeypatch.setattr(supervisor.Path, "read_text", lambda self, **k: "nonsense")
+    else:
+        pytest.skip("covered by the Windows path")
+
+    assert supervisor.process_started_at(os.getpid()) is None
