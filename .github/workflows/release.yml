@@ -1,0 +1,165 @@
+# Build the three artifacts, prove each one starts, and publish (TASK-040.04).
+#
+# Two ways in, and they differ in exactly one thing: a `v*` tag publishes a
+# release, `workflow_dispatch` uploads the same artifacts and publishes
+# nothing. Everything before that point is the same code path, so the dispatch
+# run is a real rehearsal rather than a different build that happens to work.
+#
+# The version is checked against the tag before anything is built. A release
+# whose artifact reports a different version than its tag is a support case
+# that outlives the release, and the check costs one second. (It reads
+# scribe.__version__, which is what the app serves at /health.)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to build"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  version:
+    name: the tag is the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - id: read
+        shell: bash
+        run: |
+          version=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('scribe/__init__.py').read_text()).group(1))")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "scribe.__version__ is $version"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag v$tag does not match scribe.__version__ $version"
+              exit 1
+            fi
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-arm64
+            platform: macos-arm64
+          - os: windows-latest
+            name: windows-x64
+            platform: windows-x64
+          - os: ubuntu-latest
+            name: linux-x64
+            platform: linux-x64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Install uv
+        if: runner.os != 'Windows'
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        shell: pwsh
+
+      - name: Build ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        # LGPL, from source, --disable-autodetect: the shipped binary must be
+        # one we can account for, and the BtbN builds are Windows and Linux
+        # only (packaging/tools.json).
+        run: bash packaging/build_ffmpeg_macos.sh
+
+      - name: Build the artifact and prove it starts
+        shell: bash
+        # --smoke runs the frozen launcher the build just produced: first sync,
+        # /health, a page, quit. "The build produced a file" is not the thing a
+        # release needs to be true.
+        run: |
+          extra=""
+          if [ "$RUNNER_OS" = "macOS" ]; then extra="--ffmpeg-dir packaging/build/ffmpeg"; fi
+          uv run python packaging/build_release.py --platform ${{ matrix.platform }} --smoke $extra
+
+      - name: Sign (macOS)
+        # Only when the secrets exist. An unsigned artifact is a real thing a
+        # user can run past Gatekeeper with "Open Anyway", which is what the
+        # dmg's note explains; a workflow that fails for want of a certificate
+        # would stop releases that are otherwise fine.
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: echo "signing would run here"
+
+      - name: Signing skipped (macOS)
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE == ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: echo "::notice::MACOS_CERTIFICATE is not configured; shipping the ad-hoc signed app"
+
+      - name: Sign (Windows)
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: echo "signing would run here"
+
+      - name: Signing skipped (Windows)
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE == ''
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: echo "::notice::WINDOWS_CERTIFICATE is not configured; the installer is unsigned"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myscribe-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [version, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: "artifacts/*"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
