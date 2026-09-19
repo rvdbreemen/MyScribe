@@ -565,3 +565,80 @@ def test_an_unreadable_answer_is_no_evidence(monkeypatch):
         pytest.skip("covered by the Windows path")
 
     assert supervisor.process_started_at(os.getpid()) is None
+
+
+# --- a cancel has to reach a runner nobody is watching (jobs 127, 129) -------------
+
+
+def test_a_runner_nobody_watches_is_ended_by_a_cancel(db_path, tmp_path):
+    """`stop()` leaves a working child alone on purpose, so a long
+    transcription survives an app restart and still delivers its verdict. The
+    cost is an orphan: no loop reads the cancel flag for it, and `reconcile`
+    leaves its row alone because the pid is alive and older than the job. The
+    board said "cancelled" while the work carried on."""
+    import subprocess as sp
+
+    child = sp.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        start_new_session=True,
+    )
+    try:
+        assert supervisor.pid_alive(child.pid)
+
+        assert supervisor.kill_orphan(child.pid) is True
+
+        # A zombie until somebody reaps it - in production the orphan's parent
+        # is the app that died, so init does; here the parent is this test.
+        assert supervisor.is_zombie(child.pid) or not supervisor.pid_alive(child.pid)
+        child.wait(timeout=5)
+        assert not supervisor.pid_alive(child.pid)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+
+
+def test_killing_what_is_already_gone_says_so_rather_than_raising():
+    assert supervisor.kill_orphan(None) is False
+    assert supervisor.kill_orphan(0) is False
+
+
+def test_a_supervisor_says_which_job_it_is_watching(db_path):
+    sup = supervisor.Supervisor(db_path)
+
+    assert sup.owns(1) is False
+
+    sup._watching = 7
+    assert sup.owns(7) is True and sup.owns(8) is False
+
+
+def test_a_cancelled_job_whose_runner_is_gone_says_cancelled(conn):
+    """The loop reconciles on every idle tick, so it raced the cancel route to
+    the verdict and usually won - a job the user cancelled came to rest saying
+    "interrupted". The runner ending after a cancel is the request being
+    carried out, not something that happened to it."""
+    job_id = jobs.enqueue(conn, "fake")
+    with db.LOCK:
+        conn.execute(
+            "UPDATE job SET status='running', started_at=?, pid=?, cancel_requested=1 WHERE id=?",
+            (time.time() - 5, 999_999, job_id),  # a pid nobody holds
+        )
+        conn.commit()
+
+    supervisor.reconcile(conn)
+
+    assert _row(conn, job_id)["status"] == "cancelled"
+
+
+def test_a_job_nobody_cancelled_is_still_interrupted(conn):
+    job_id = jobs.enqueue(conn, "fake")
+    with db.LOCK:
+        conn.execute(
+            "UPDATE job SET status='running', started_at=?, pid=? WHERE id=?",
+            (time.time() - 5, 999_999, job_id),
+        )
+        conn.commit()
+
+    supervisor.reconcile(conn)
+
+    assert _row(conn, job_id)["status"] == "interrupted"

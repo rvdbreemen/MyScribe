@@ -21,6 +21,7 @@ the one runner at a time.
 """
 
 import os
+import signal
 import subprocess
 from datetime import datetime
 import sys
@@ -193,6 +194,79 @@ def _pid_is_younger_than_job(row) -> bool:
     return process_start > float(started_at) + _PID_AGE_SLACK_SECONDS
 
 
+def is_zombie(pid: int | None) -> bool:
+    """Has this pid exited without anyone collecting it?
+
+    `pid_alive` asks `os.kill(pid, 0)`, which a zombie answers: the entry is
+    still in the table until its parent waits. That is not a process doing
+    work, and treating it as one would make `kill_orphan` report failure for a
+    kill that worked. In production the orphan's parent is the app that died,
+    so init reaps it in a moment; in a test the parent is the test.
+    """
+    if not pid or pid <= 0:
+        return False
+    try:
+        if sys.platform == "linux":
+            raw = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+            return raw[raw.rindex(")") + 1:].split()[0] == "Z"
+        if sys.platform == "darwin":
+            out = subprocess.run(
+                ["/bin/ps", "-p", str(int(pid)), "-o", "stat="],
+                capture_output=True, text=True, timeout=5,
+                env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"},
+            )
+            return out.stdout.strip().startswith("Z")
+    except Exception:  # noqa: BLE001 - an unanswerable question is not a zombie
+        return False
+    return False
+
+
+def kill_orphan(pid: int | None) -> bool:
+    """End a runner this process never spawned, and whatever it started.
+
+    `_kill_tree` needs a `Popen`; an orphan is a bare pid. The shape is the
+    same - the group on POSIX, `taskkill /T` on Windows - because the thing
+    being ended is the same: a runner that may be sitting inside ffmpeg or a
+    model call, plus its children.
+
+    Orphans exist because `stop()` leaves a working child alone on purpose,
+    so a long transcription survives an app restart and still delivers its
+    verdict. What that costs is this: nobody watches it, so nobody reads the
+    cancel flag for it, and `reconcile` leaves its row alone because the pid
+    is alive and older than the job. A cancel then flipped the row and the
+    work carried on - jobs 127 and 129, 2026-09-19.
+    """
+    if not pid_alive(pid):
+        return False
+    pid = int(pid)
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                timeout=_KILL_WAIT_SECONDS,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            # The group, because the runner is started in its own (see
+            # `_spawn`): killing the runner alone leaves its ffmpeg converting.
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + _KILL_WAIT_SECONDS
+            while pid_alive(pid) and not is_zombie(pid) and time.monotonic() < deadline:
+                time.sleep(_WATCH_POLL_SECONDS)
+            if pid_alive(pid) and not is_zombie(pid):
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return False
+    return not pid_alive(pid) or is_zombie(pid)
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     """End the runner and everything it started, then wait for the runner.
 
@@ -233,7 +307,11 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def reconcile(conn) -> int:
-    """Flip orphaned running jobs (dead or absent pid) to interrupted.
+    """Flip orphaned running jobs (dead or absent pid) to a terminal verdict.
+
+    `interrupted`, or `cancelled` where the row carries a cancel that was
+    asked for: a runner that is gone after somebody pressed Cancel did what
+    was asked of it.
 
     Run at startup, before the supervisor starts. Returns how many jobs
     were flipped.
@@ -252,7 +330,7 @@ def reconcile(conn) -> int:
     """
     with db.LOCK:
         rows = conn.execute(
-            "SELECT id, pid, started_at FROM job WHERE status='running'"
+            "SELECT id, pid, started_at, cancel_requested FROM job WHERE status='running'"
         ).fetchall()
     count = 0
     for row in rows:
@@ -265,11 +343,17 @@ def reconcile(conn) -> int:
             continue
         if pid_alive(row["pid"]) and not _pid_is_younger_than_job(row):
             continue
+        # A job somebody asked to stop, whose runner is now gone, was
+        # cancelled - the process ending is the request being carried out, not
+        # an interruption that happened to it. Without this the loop's own
+        # reconcile raced the cancel route to the verdict and usually won,
+        # so a job the user cancelled came to rest saying "interrupted".
+        verdict = "cancelled" if row["cancel_requested"] else "interrupted"
         with db.LOCK:
             cur = conn.execute(
-                "UPDATE job SET status='interrupted', finished_at=?"
+                "UPDATE job SET status=?, finished_at=?"
                 " WHERE id=? AND status='running'",
-                (time.time(), row["id"]),
+                (verdict, time.time(), row["id"]),
             )
             conn.commit()
             count += cur.rowcount
@@ -342,6 +426,8 @@ class Supervisor:
         self.runner_cmd = runner_cmd
         self.kill_grace = kill_grace
         self._stop_event = threading.Event()
+        self._watching: int | None = None
+        """The job whose runner this loop is inside `_watch` for, or None."""
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -353,6 +439,16 @@ class Supervisor:
             target=self._loop, name="scribe-supervisor", daemon=True
         )
         self._thread.start()
+
+    def owns(self, job_id: int) -> bool:
+        """Is this supervisor watching that job's runner right now?
+
+        The question a cancel has to ask before deciding what to do: a child
+        this loop owns is stopped the cooperative way, with the grace period
+        `_watch` gives it, while one left behind by an earlier app has nobody
+        to honour the flag and is ended outright.
+        """
+        return self._watching == job_id
 
     def stop(self, timeout: float = 10.0) -> None:
         """Ask the loop to exit and join it. A still-running child is left
@@ -463,7 +559,11 @@ class Supervisor:
             conn.commit()
         applog.log("runner.spawned", job=job_id, pid=proc.pid)
         started = time.monotonic()
-        self._watch(conn, job_id, proc)
+        self._watching = job_id
+        try:
+            self._watch(conn, job_id, proc)
+        finally:
+            self._watching = None
         self._report_exit(conn, job_id, proc, time.monotonic() - started)
 
     def _report_exit(self, conn, job_id: int, proc: subprocess.Popen, seconds: float) -> None:

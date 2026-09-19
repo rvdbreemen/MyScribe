@@ -346,8 +346,17 @@ def create_app(
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: int, request: Request) -> dict:
         conn = request.app.state.conn
-        _get_job(conn, job_id)
+        row = _get_job(conn, job_id)
         jobs.request_cancel(conn, job_id)
+        # The flag is cooperative and the supervisor enforces it - but only for
+        # a child it spawned. A runner left behind by an earlier app is watched
+        # by nobody, so the flag sat in the row while the work carried on and
+        # the board said "cancelled" (jobs 127 and 129). Here the pid is known
+        # and the answer is simple: end it.
+        sup = getattr(request.app.state, "supervisor", None)
+        if row["status"] == "running" and row["pid"] and not (sup and sup.owns(job_id)):
+            if supervisor.kill_orphan(row["pid"]):
+                jobs.finish(conn, job_id, "cancelled")
         return _job_out(conn, _get_job(conn, job_id))
 
     @app.post("/api/jobs/{job_id}/retry")
