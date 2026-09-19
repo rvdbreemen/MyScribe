@@ -24,6 +24,8 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import urllib.error
+import urllib.request
 import sys
 import tempfile
 import time
@@ -293,6 +295,7 @@ from scribe.stages.transcribe import DEFAULT_MODEL  # noqa: E402
 
 # Likewise the diarize stage owns where a re-hosted pyannote pipeline lives;
 # the model inventory lists that directory under the name the stage uses.
+from scribe import env  # noqa: E402
 from scribe.stages.diarize import local_weights_dir  # noqa: E402
 
 SMOKE_CLIP = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "clip30.wav"
@@ -447,6 +450,93 @@ def check_gpu_smoke() -> Check:
     return gpu_smoke()
 
 
+def check_diarization() -> Check:
+    """Can this machine name who is speaking, without loading the pipeline?
+
+    The gap this closes: on 2026-09-18 the doctor said "All required checks
+    passed" on a machine where `speaker-diarization-community-1`, its 3.1
+    fallback and the local directory were all unavailable, and the first
+    transcribe job found that out at the diarize stage, an hour of audio later.
+    Every other required check answers a question the pipeline needs; this one
+    was simply missing.
+
+    Deliberately *not* a load. `open_pipeline` pulls torch, pyannote and the
+    weights - minutes, and a model in a process ADR-001 keeps free of them.
+    What decides the answer is the same three routes `_no_weights_hint` lists,
+    asked cheaply: a local pipeline directory, or a token the Hub will accept
+    for the gated repo. A HEAD for the config the loader would fetch is one
+    request and no weights.
+
+    Optional, because diarization is a feature and not the app: a machine that
+    can transcribe is usable. It is reported all the same, which is the whole
+    point - "SKIP" with the reason beats a green card and a failed job.
+    """
+    from scribe.stages import diarize
+
+    local = diarize.local_weights_dir()
+    if (local / "config.yaml").exists():
+        return Check(name="diarization", ok=True, detail=f"local pipeline at {local}")
+
+    token = None
+    try:
+        token = diarize.hf_token(None)
+    except Exception:  # noqa: BLE001 - no database here is not an answer about the token
+        token = None
+    token = token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if not token:
+        return Check(
+            name="diarization",
+            ok=False,
+            optional=True,
+            detail="no local pipeline and no Hugging Face token",
+            fix_hint=_diarization_hint(local),
+        )
+
+    reachable, why = _gated_repo_reachable(diarize.DEFAULT_PIPELINE, token)
+    if reachable:
+        return Check(name="diarization", ok=True, detail=f"{diarize.DEFAULT_PIPELINE} reachable with this token")
+    return Check(
+        name="diarization",
+        ok=False,
+        optional=True,
+        detail=f"{diarize.DEFAULT_PIPELINE}: {why}",
+        fix_hint=_diarization_hint(local),
+    )
+
+
+def _diarization_hint(local: "Path") -> str:
+    from scribe.stages import diarize
+
+    return (
+        f"Accept the conditions at https://hf.co/{diarize.DEFAULT_PIPELINE} and store the token "
+        f"as the '{diarize.SETTING_TOKEN}' setting or in HF_TOKEN, or put a pipeline directory "
+        f"(a config.yaml and the checkpoints it names) at {local}. Transcription works without it; "
+        "only speaker separation does not."
+    )
+
+
+def _gated_repo_reachable(repo: str, token: str) -> tuple[bool, str]:
+    """Would the Hub serve this repo's config to this token? One HEAD, no weights.
+
+    401 and 403 are the two answers that mean "not for you" - the first for a
+    token the Hub does not know, the second for one that knows it but has not
+    accepted the conditions - and both are reported as they come back, because
+    the fix differs. Anything else (offline, DNS, a 500) is not an answer about
+    the token and says so rather than blaming it.
+    """
+    url = f"https://huggingface.co/{repo}/resolve/main/config.yaml"
+    request = urllib.request.Request(url, method="HEAD", headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - fixed https host
+            return 200 <= response.status < 300, str(response.status)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False, f"HTTP {exc.code} - the conditions are not accepted for this token"
+        return False, f"HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001 - no network is not a verdict on the token
+        return False, f"could not be asked ({exc})"
+
+
 CPU_CHECKS = (
     check_python,
     check_sqlite,
@@ -457,6 +547,7 @@ CPU_CHECKS = (
     check_disk_space,
     check_database,
     check_accelerators,
+    check_diarization,
 )
 
 GPU_CHECKS = (
@@ -478,7 +569,13 @@ GPU_CHECKS = (
 # what the machine would transcribe on: importing torch in the CLI costs a
 # second and breaks nothing. Naming the real constraint separately keeps both
 # answers right instead of trading one for the other.
-WEB_SAFE_CHECKS = tuple(check for check in CPU_CHECKS if check is not check_accelerators)
+WEB_SAFE_CHECKS = tuple(
+    check for check in CPU_CHECKS if check not in (check_accelerators, check_diarization)
+)
+# `check_diarization` is out for the same reason as `check_accelerators`: it
+# imports `scribe.stages.diarize`, and that module's import graph is the one
+# ADR-001 keeps out of the web process. It also reaches the network, which a
+# settings page render must not.
 
 
 # --- the GPU checks as a job ---------------------------------------------------
@@ -675,6 +772,12 @@ def main(argv: list[str] | None = None) -> int:
     # The doctor loads a model too, so it can meet the same modal box the
     # runner can. A check that hangs is worse than a check that fails.
     cuda_setup.silence_loader_dialogs()
+    # The same `.env` the app reads (`scribe/__main__.py`). Without this the
+    # doctor answers about a different machine than the one the app runs on:
+    # the diarization check reported "no Hugging Face token" with a token
+    # sitting in the file beside it, which is exactly the false green this
+    # check exists to prevent.
+    env.load_dotenv()
 
     parser = argparse.ArgumentParser(prog="scribe.doctor", description="Check that this machine can run scribe.")
     parser.add_argument(

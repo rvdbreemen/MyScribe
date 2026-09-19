@@ -43,6 +43,18 @@
 
       <input type="hidden" name="diarize" value="0">
       <label class="check"><input type="checkbox" name="diarize" value="1"{% if options.diarize %} checked{% endif %}> Recognise speakers</label>
+
+      {# The token that makes "Recognise speakers" possible. Its own form and
+         not part of the defaults Save: a secret is not a preference, and the
+         page has never rendered one back - dots and the source name only, the
+         same manners as a provider key. A form inside a form is not HTML,
+         which is why this sits after the fieldset that holds the checkbox. #}
+      <p class="hint" id="hf-hint">
+        Speaker separation downloads a gated model. It needs a free Hugging Face token, and
+        the conditions accepted at <a href="{{ hf.conditions_url }}" target="_blank" rel="noopener">{{ hf.conditions_url }}</a>.
+        {% if hf.found %}In effect now: <code>{{ hf.mask }}</code> from <code>{{ hf.source }}</code>.
+        {% else %}<strong>Not set</strong> - transcription works, speakers will not.{% endif %}
+      </p>
     </fieldset>
 
     <fieldset id="folders" class="options">
@@ -60,6 +72,19 @@
     <footer class="form-foot">
       <button type="submit" class="primary">Save</button>
     </footer>
+  </form>
+
+  <form class="hf-token" method="post" action="/settings/hf-token"
+        hx-post="/settings/hf-token" hx-target="#settings-defaults" hx-swap="outerHTML">
+    <label class="field">Hugging Face token
+      <input type="password" name="hf_token" autocomplete="off" spellcheck="false"
+             aria-describedby="hf-hint"
+             placeholder="{% if hf.found %}{{ hf.mask }} set in {{ hf.source }}{% else %}hf_...{% endif %}">
+    </label>
+    <button type="submit">Save token</button>
+    {% if hf.stored_here %}
+    <button type="submit" name="clear" value="1" class="quiet">Clear</button>
+    {% endif %}
   </form>
 
   {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}

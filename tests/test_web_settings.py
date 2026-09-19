@@ -831,3 +831,61 @@ def test_leaving_the_typed_box_does_not_clear_it(tmp_path):
     )
 
     assert result == {"typed": "gpt-5.7"}
+
+
+# --- the Hugging Face token (TASK-040.06) ------------------------------------------
+
+
+def test_the_token_can_be_saved_from_the_page(client, conn):
+    """`diarize._no_weights_hint` has told users to store this row since it was
+    written, and until now there was no field to store it in: the only routes
+    were `.env` or SQL."""
+    from scribe.stages import diarize
+
+    resp = client.post("/settings/hf-token", data={"hf_token": "hf_from_the_form"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    row = conn.execute("SELECT value FROM setting WHERE key=?", (diarize.SETTING_TOKEN,)).fetchone()
+    assert row["value"] == "hf_from_the_form"
+
+
+def test_the_token_is_never_rendered_back(client, conn):
+    """The same manners as a provider key: dots and the name of the source."""
+    client.post("/settings/hf-token", data={"hf_token": "hf_secret_value"})
+
+    page = client.get("/settings").text
+
+    assert "hf_secret_value" not in page
+    assert "••••" in page and "<code>settings</code>" in page
+
+
+def test_clearing_falls_back_to_the_environment(client, conn, monkeypatch):
+    from scribe.stages import diarize
+
+    client.post("/settings/hf-token", data={"hf_token": "hf_typed_here"})
+    monkeypatch.setenv("HF_TOKEN", "hf_from_the_environment")
+
+    client.post("/settings/hf-token", data={"clear": "1"})
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM setting WHERE key=?", (diarize.SETTING_TOKEN,)
+    ).fetchone()[0] == 0
+    assert "<code>HF_TOKEN</code>" in client.get("/settings").text
+
+
+def test_saving_nothing_is_refused_rather_than_stored_empty(client):
+    """An empty string is a token as far as Hugging Face is concerned - it
+    answers 401 rather than serving the public copy (`diarize.hf_token`)."""
+    resp = client.post("/settings/hf-token", data={"hf_token": "   "}, follow_redirects=False)
+
+    assert resp.status_code == 400
+    assert "Clear" in resp.text or "clear" in resp.text
+
+
+def test_the_page_says_when_no_token_is_set(client, conn, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+
+    page = client.get("/settings").text
+
+    assert "Not set" in page and "hf.co/pyannote" in page

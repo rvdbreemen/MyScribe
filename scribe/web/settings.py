@@ -85,6 +85,8 @@ FIELD_ROOTS = fsbrowse.SETTING_KEY
 FIELD_GPU = "gpu"
 
 FLASH_SAVED = "Settings saved."
+FLASH_HF_SAVED = "Hugging Face token saved."
+FLASH_HF_CLEARED = "Hugging Face token cleared; the environment decides now."
 FLASH_PRESET_SAVED = "Preset saved."
 FLASH_PRESET_DELETED = "Preset deleted."
 FLASH_WATCH_ADDED = "Watching that folder. Anything already in it is picked up shortly."
@@ -201,7 +203,42 @@ def defaults_context(conn: sqlite3.Connection, *, flash: str | None = None) -> d
         "roots_text": _roots_setting(conn) or "",
         "roots": fsbrowse.allowed_roots(conn),
         "default_roots": fsbrowse.ALLOWED_ROOTS,
+        "hf": hf_token_context(conn),
         "flash": flash,
+    }
+
+
+def hf_token_context(conn: sqlite3.Connection) -> dict:
+    """What the page says about the Hugging Face token, never its value.
+
+    The same shape and the same manners as a provider key (`ai_ui`): dots when
+    one resolves, and the *name of the source* that answered, so a stale
+    environment variable outranking a token just typed is visible without the
+    value being. The token itself is written to `setting` and never read back
+    into a response.
+
+    It lives beside "Recognise speakers" rather than with the AI providers
+    because that is what it buys: `diarize.hf_token` is read by the diarize
+    stage, not by anything that answers questions about a transcript.
+    """
+    from scribe.stages import diarize
+
+    row = None
+    with db.LOCK:
+        found = conn.execute("SELECT value FROM setting WHERE key=?", (diarize.SETTING_TOKEN,)).fetchone()
+    if found is not None and (found["value"] or "").strip():
+        row = "settings"
+    source = row or next(
+        (name for name in ("HF_TOKEN", "HUGGINGFACE_TOKEN") if (os.environ.get(name) or "").strip()),
+        "",
+    )
+    return {
+        "found": bool(source),
+        "source": source,
+        "mask": ai_ui.KEY_MASK if source else "",
+        "stored_here": row == "settings",
+        "conditions_url": f"https://hf.co/{diarize.DEFAULT_PIPELINE}",
+        "setting_key": diarize.SETTING_TOKEN,
     }
 
 
@@ -460,6 +497,40 @@ async def save_settings(request: Request) -> Response:
         return render(
             request, "_settings_defaults.html", oob=True, **defaults_context(conn, flash=FLASH_SAVED)
         )
+    return _back_to("defaults", "settings-defaults")
+
+
+@router.post("/settings/hf-token", include_in_schema=False)
+async def save_hf_token(request: Request) -> Response:
+    """Store the Hugging Face token, or clear it back to the environment.
+
+    Deliberately the same shape as `save_llm_key`: the value is plain text in
+    `setting`, it is never rendered back, and nothing here logs it. The
+    diarize stage has told users to set this row since it was written
+    (`_no_weights_hint` names `hf_token` by key); until now there was no field
+    to set it in, and the only routes were `.env` or SQL (TASK-040.06).
+    """
+    conn = request.app.state.conn
+    from scribe.stages import diarize
+
+    fields = transcribe_dialog._fields(await request.form())
+    if library._truthy(fields.get("clear")):
+        ai_ui.setting_drop(conn, diarize.SETTING_TOKEN)
+        return _hf_answer(request, conn, FLASH_HF_CLEARED)
+
+    value = (fields.get("hf_token") or "").strip()
+    if not value:
+        raise HTTPException(
+            status_code=400,
+            detail="paste a token to save, or use Clear to fall back to HF_TOKEN in the environment",
+        )
+    ai_ui.setting_put(conn, diarize.SETTING_TOKEN, value)
+    return _hf_answer(request, conn, FLASH_HF_SAVED)
+
+
+def _hf_answer(request: Request, conn: sqlite3.Connection, flash: str) -> Response:
+    if library._is_htmx(request):
+        return render(request, "_settings_defaults.html", oob=True, **defaults_context(conn, flash=flash))
     return _back_to("defaults", "settings-defaults")
 
 
