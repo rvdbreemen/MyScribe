@@ -23,7 +23,7 @@ from typing import Callable
 from scribe import applog, cuda_setup, db, doctor, jobs, paths, stages_fake
 from scribe.ingest import urls
 from scribe.llm import privacy as llm_privacy
-from scribe.llm.base import LlmError
+from scribe.llm.base import ContextTooLong, LlmError
 # The registry by name, not the module: _run() binds a local named `stages`.
 from scribe.stages import (
     TRANSCRIBE_STAGES, correct, llm_stage, prepare, probe, transcribe, url_stage,
@@ -79,6 +79,12 @@ _ERROR_CODES: dict[type[BaseException], str] = {
     # a model id that does not exist, a prompt that did not fit, an answer that
     # was not the shape it promised. One code because one thing has to change -
     # the provider, the model or the question - and error_detail says which.
+    # Its own outcome, before the general one: "this model cannot do this job"
+    # is a conclusion, not a failure of the app or of the question. A window
+    # that cannot hold a recording's notes at any usable length is a fact about
+    # the model chosen, and the board should be able to say so - the detail
+    # names a model here that would fit (TASK-085, Robert 2026-09-19).
+    ContextTooLong: "MODEL_UNSUITABLE",
     LlmError: "LLM_FAILED",
     # Not an LlmError, and deliberately: this is a refusal, not a failure. It
     # gets its own code so the board can say "this recording is pinned private"

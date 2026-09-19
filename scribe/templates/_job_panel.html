@@ -37,8 +37,16 @@
   {% if job.status == 'running' %}<div class="stage-bar">{{ m.stage_progress(job) }}</div>{% endif %}
 
   {% if job.status == 'failed' %}
-  <section class="error-card">
+  {# MODEL_UNSUITABLE is a verdict about the model, not a failure of the app or
+     of the question: the window chosen cannot hold this recording's notes at
+     any usable length, and the detail names one that would. Saying "Failed in
+     prepare" over that sends a user looking for a bug there is not. #}
+  <section class="error-card{% if job.error_code == 'MODEL_UNSUITABLE' %} verdict{% endif %}">
+    {% if job.error_code == 'MODEL_UNSUITABLE' %}
+    <h2>This model cannot do this job</h2>
+    {% else %}
     <h2>Failed{% if job.stage %} in {{ job.stage }}{% endif %}</h2>
+    {% endif %}
     <p><code class="error-code">{{ job.error_code or 'RUNTIME' }}</code> {{ job.error_detail or '' }}</p>
     {% if trace %}
     <details class="stderr">

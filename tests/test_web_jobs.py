@@ -802,3 +802,24 @@ def test_an_unknown_move_is_a_400_not_a_guess(client, conn, board):
 
 def test_moving_an_unknown_job_is_a_404(client, conn, board):
     assert client.post("/api/jobs/9999/priority", data={"priority": 0}).status_code == 404
+
+
+def test_a_model_that_cannot_do_the_job_is_not_called_a_failure(client, conn):
+    """Robert, 2026-09-19: the conclusion can also be that the model is not
+    suitable. "Failed in prepare" over that verdict sends a user looking for a
+    bug where there is none - the window chosen cannot hold this recording's
+    notes, and the detail names one that would."""
+    job_id = jobs.enqueue(conn, "llm", media_id=None, params={"kind": "summary"})
+    with db.LOCK:
+        conn.execute(
+            "UPDATE job SET status='failed', stage='prepare', error_code='MODEL_UNSUITABLE',"
+            " error_detail='this recording needs 6 chunks' WHERE id=?",
+            (job_id,),
+        )
+        conn.commit()
+
+    page = client.get(f"/jobs/{job_id}").text
+
+    assert "This model cannot do this job" in page
+    assert "Failed in prepare" not in page
+    assert "MODEL_UNSUITABLE" in page
