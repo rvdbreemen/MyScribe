@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-19 07:15'
-updated_date: '2026-09-19 07:15'
+updated_date: '2026-09-19 07:19'
 labels:
   - ci
   - windows
@@ -37,8 +37,8 @@ The halves are not a workaround for this. CLAUDE.md documents that the whole-sui
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The four failing test names are captured from a Windows run and written into this task
-- [ ] #2 Each one is understood as either a real Windows bug in the app or a test that only holds on POSIX, and the task says which
+- [x] #1 The four failing test names are captured from a Windows run and written into this task
+- [x] #2 Each one is understood as either a real Windows bug in the app or a test that only holds on POSIX, and the task says which
 - [ ] #3 A Windows bug is fixed with a test that fails before and passes after; a POSIX-only assumption in a test is corrected without weakening what the test proves
 - [ ] #4 One full ci run on GitHub is green on all three operating systems, with its run URL in the notes
 <!-- AC:END -->
@@ -62,4 +62,21 @@ Getting them from CI instead, without a Windows machine at hand:
 Only once the run has finished - a cancelled run has no logs, which is how the names were lost the first time. Pushing to the branch cancels any run in flight (concurrency: cancel-in-progress in ci.yml), so let a run end before pushing again if its output is what you are waiting for.
 
 Likely shapes, from what this codebase already knows about Windows, all worth checking before assuming a real bug: a path compared as a string where Windows uses backslashes; a file held open being replaced (the proxy stage and the audio route have hit this); a timing assumption on a slower filesystem; a temporary directory removed while something still has it open. scribe/stages/loudness.py and scribe/stages/finalize.py are where the positions point.
+
+The names arrived from ubuntu rather than from Windows, and they change the diagnosis.
+
+Run 35428397406, ubuntu-latest, 5 failed:
+  tests/test_stage_loudness.py::test_a_louder_look_ahead_leaves_the_windows_features_alone
+  tests/test_stage_loudness.py::test_the_floor_holds_whatever_the_look_ahead_says[0.02]
+  tests/test_stage_loudness.py::test_the_floor_holds_whatever_the_look_ahead_says[0.2]
+  tests/test_stage_loudness.py::test_the_floor_holds_whatever_the_look_ahead_says[1.0]
+  tests/test_stage_prepare.py::test_to_wav_maps_the_position_ffmpeg_reports_onto_the_duration
+
+The first four are one failure wearing four names, and they are almost certainly the same four Windows showed: the position estimate in this task pointed at test_stage_loudness.py, and the shape matches exactly - one, then three together (the parametrised trio).
+
+So this was never a Windows bug. The tests asserted bit-equality (np.array_equal) on mel features, which is not a portable claim: the same audio through the same extractor is bit-identical on this Mac - measured, a difference of exactly 0.0 - and differs in the last bits wherever the FFT and the matrix multiply underneath come from a different library. Arithmetic noise, not a raised floor.
+
+They now compare within UNTOUCHED = 1e-4, which sits between the two things being told apart: the bug TASK-036 exists for moves a feature by 0.484 on a scale of -1.2 to 0.8, four thousand times the tolerance. And the companion test that proves the pair cannot both pass by saying nothing was strengthened - it asserted 'not identical', which noise alone would satisfy, and now asserts the distance.
+
+Not verified on Linux or Windows from here; this Mac cannot reproduce the failure, which is the whole point of it. The next ci run on the branch is what confirms it. AC3 and AC4 stay open until then.
 <!-- SECTION:NOTES:END -->
