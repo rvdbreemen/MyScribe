@@ -7,7 +7,23 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
 
 ## [Unreleased]
 
-Nothing yet.
+### Documentation
+
+- The README lists two things it did not before: every command the app has
+  outside the browser (`scribe.setup`, `scribe.models`, `scribe.export`,
+  `scribe.proxies`, each verified against its own `--help`), and a table of
+  what goes wrong with what to do about it - SmartScreen, Gatekeeper, a CPU
+  torch where CUDA was meant, a diarization fallback, the Windows suite
+  stall. It also says what the data directory holds and what of it is worth
+  backing up, how a download is verified on each OS, and why an app that
+  binds localhost still needs the two guards in `scribe/guard.py`.
+
+### Fixed
+
+- The README's list of architecture decisions named ADR-007 and ADR-009 as
+  accepted. Both were superseded in 56d92e1 - by ADR-014 and ADR-013 - so
+  the README had been pointing readers at the retired versions of the
+  logging and coordination rules.
 
 ## [0.5.1] - 2026-09-19
 

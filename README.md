@@ -46,6 +46,9 @@ What changed, and when, is in `CHANGELOG.md`.
 | GPU | NVIDIA + CUDA wheels from the cu128 index | NVIDIA: PyPI's torch brings CUDA along; otherwise CPU | CPU (Apple GPU: see below) |
 | Optional | `yt-dlp` for links, `node` for the recorder tests | same | same |
 
+A release artifact needs none of this: it carries its own uv, Python and
+ffmpeg. The table is for running from a clone.
+
 Transcription is faster-whisper on CTranslate2. On a CUDA card it runs
 `large-v3-turbo` in float16 (about 14x realtime on the 3080); on a CPU it runs
 int8, several times slower than realtime on a laptop.
@@ -91,7 +94,21 @@ less on a Mac - and shows its progress. Later starts skip it. The model
 weights are a separate download the app makes for itself; `Settings` says what
 is still missing and how big it is.
 
-Verify a download against `SHA256SUMS`, published beside the artifacts.
+Verify a download against `SHA256SUMS`, published beside the artifacts:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing     # Linux
+shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
+```
+
+```powershell
+# Windows: compare the one line for the file you downloaded
+(Get-FileHash MyScribe-0.5.1-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
+Select-String -Path SHA256SUMS -Pattern windows-x64.exe$
+```
+
+There is no build-provenance attestation. GitHub does not offer one for a
+user-owned private repository, so `SHA256SUMS` is the part you can check.
 
 ### From a clone
 
@@ -113,7 +130,10 @@ ADR-012 explains why the app registers torch's DLL directory before
 CTranslate2 loads on Windows.
 
 To change a pin, edit `pyproject.toml` and run `uv lock`; commit both files.
-Re-run the doctor on real hardware after any change to the ML stack.
+Re-run the doctor on real hardware after any change to the ML stack. Use the
+uv the project pins, not whatever is on `PATH`: an older uv rewrites
+`uv.lock` wholesale, and `packaging/tools.json` names the version and its
+sha256.
 
 ### Then
 
@@ -129,15 +149,58 @@ Re-run the doctor on real hardware after any change to the ML stack.
   `--detached` (`-Detached`) for a run that outlives the terminal - which is
   what a long transcribe queue wants.
 
+## Configuration
+
+`.env.example` is the reference and says what each key is for; copy it and
+fill in what you need. Three rules it is worth knowing before you go looking
+for them:
+
+- **A key set under Settings in the app wins** over the environment. For
+  OpenRouter the order is Settings, then `OPENROUTER_TOKEN`, then
+  `OPENROUTER_API_KEY`.
+- **A machine-wide environment variable is readable by every account on the
+  machine.** `.env` is not, so prefer the file.
+- **The private pin overrules every key.** A file or folder pinned private
+  refuses every non-local provider outright, whatever is configured. Ollama
+  still answers, because it never leaves the machine.
+
+`SCRIBE_DATA_DIR` decides where everything lands. Inside it:
+
+| | |
+| --- | --- |
+| `myscribe.db` | the library, transcripts, jobs and settings (SQLite, WAL) |
+| `media/` | the originals and their AAC playback copies |
+| `models/` | the Whisper and diarization weights |
+| `work/` | scratch space for a running job |
+| `logs/` | the application log - observation only, nothing reads it to decide (ADR-014) |
+
+Back up `myscribe.db` and `media/`; the rest is rebuildable.
+
 ## Check that it works
 
 ```sh
 python -m scribe.doctor
 ```
 
-Says, per line, what it found: Python, SQLite, ffmpeg, the data directory,
-disk, the database, the GPU runtime (or "CPU build" when torch has no CUDA)
-and, unless `--no-gpu`, a real model load. Run it before blaming the code.
+Says, per line, what it found. A healthy run on the author's Windows machine:
+
+```
+[OK  ] python       3.12.9 at ...\.venv\Scripts\python.exe
+[OK  ] sqlite       3.45.3, FTS5 available
+[OK  ] ffmpeg       ffmpeg version 8.1.2-full_build-www.gyan.dev
+[OK  ] ffprobe      ffprobe version 8.1.2-full_build-www.gyan.dev
+[OK  ] yt-dlp       yt-dlp 2026.8.19 (31 days old)
+[OK  ] data-dir     ...\data writable
+[OK  ] disk-space   30.2 GB free at ...\data
+[OK  ] database     schema v17 at ...\data\myscribe.db
+[OK  ] accel        transcription on cuda, diarization on cuda
+[OK  ] diarization  pyannote/speaker-diarization-community-1 reachable with this token
+[SKIP] models       1.6 GB still to download: whisper-large-v3-turbo (1.6 GB)
+                    -> Run `python -m scribe.models --fetch`.
+```
+
+Every line that can fail tells you the command that fixes it. Run the doctor
+before blaming the code.
 
 Then put a file through the Transcribe dialog. The job page shows the text
 as it is decoded.
@@ -147,6 +210,51 @@ a playlist - pasted or dropped. A feed or channel lists its episodes with a
 filter; tick one or many and press Import, and each becomes its own download
 job. Episodes already in the library or already queued are marked as such
 the next time the feed is listed.
+
+## From the command line
+
+Everything below runs with the venv's python (`.venv\Scripts\python` on
+Windows, `.venv/bin/python` elsewhere) and reads the same data directory as
+the app.
+
+| | |
+| --- | --- |
+| `python -m scribe` | the app. `--port`, `--no-supervisor`, `--no-browser` |
+| `python -m scribe.doctor` | can this machine run it. `--no-gpu` skips the model load |
+| `python -m scribe.setup` | the first-run answers. `--status` prints them as JSON; `--hf-token`, `--provider`, `--tier`, `--diarize/--no-diarize`, `--fetch-models` answer them without the browser |
+| `python -m scribe.models --fetch` | download the weights. `--only <repo>` for one, `--dest` for elsewhere |
+| `python -m scribe.export` | export without the browser. Ids, or `--all`, or `--folder`; `--preset`, `--format`, `--out` and the subtitle knobs (`--cpl`, `--max-cps`, `--cue-gap`, …) |
+| `python -m scribe.proxies` | make the exact-seeking AAC copy of every recording that needs one. `--dry-run` lists them and makes nothing |
+
+`python -m scribe.export --help` prints the full set; there are more
+subtitle and filename options than fit here.
+
+## When something is wrong
+
+| What you see | What it is | What to do |
+| --- | --- | --- |
+| SmartScreen: "unknown publisher" | The installer is unsigned; no certificate is configured | **More info → Run anyway** |
+| macOS kills the app on open, or "damaged" | Gatekeeper's quarantine flag on an ad-hoc signed app | **Control-click → Open**, then **Open Anyway** |
+| The doctor says `gpu-runtime: CPU build` | torch was installed without CUDA | `uv sync` again from the lock; on Windows the cu128 index is in `pyproject.toml`, and plain pip will silently give you a CPU torch |
+| `accel` says `cpu` on a Mac | `mlx-whisper` is missing | It is in the lock for macOS-arm64; re-run `uv sync` |
+| The doctor fails on disk space | It wants headroom for the weights and a job's scratch space | Free space, or point `SCRIBE_DATA_DIR` at a bigger volume |
+| Diarization falls back and says so | No `HF_TOKEN`, or the model conditions were never accepted | Accept them at the model page, then put the token in `.env` |
+| The whole test suite stalls on Windows | CPython's socketpair emulation behind TestClient (see `pytest.ini`) | Kill it and run the two halves named in `CLAUDE.md` |
+| A second launch does nothing visible | One instance already answers on the port | It opens the browser at the running one instead of starting a second server |
+| Playback seeks to the wrong place | An old recording has no AAC copy yet | `python -m scribe.proxies` |
+
+## One user, one machine
+
+The app binds `127.0.0.1` and has no login, which is not the same as "only
+you can reach it": a browser is a confused deputy. Any page you visit can
+auto-submit a form at `http://127.0.0.1:4242/...` and your browser will send
+it, and media ids are small integers. `scribe/guard.py` closes both doors on
+headers every browser already sends - the `Host` header must name this
+machine, which is what a DNS-rebound page cannot fake - so it costs no login
+and no token. Read that module before changing how routes are reached.
+
+Do not put the app behind a reverse proxy and call it multi-user. It was
+never designed for that, and nothing in it checks who is asking.
 
 ## Tests
 
@@ -162,17 +270,31 @@ attribute) skip elsewhere and say why. The recorder's browser half runs in
 run stalls now and then (CPython's socketpair emulation behind TestClient,
 see `pytest.ini`); run the two halves named in `CLAUDE.md` when it does.
 
+Export golden files are regenerated with
+`SCRIBE_UPDATE_GOLDENS=1 python -m pytest tests/test_exports_text.py`. That
+run is red for every golden that moved and prints the diff; read it, then run
+again without the variable. A green run always means the goldens matched,
+never that they were rewritten.
+
+CI runs the suite on Windows, macOS and Linux for every pull request and
+every push to `main`. `docs/RELEASING.md` describes cutting a release and
+what has actually gone wrong doing it.
+
 ## Where things are decided
 
-`docs/adr/` holds the architecture decisions. Accepted: one web process, a
-supervisor thread and a runner child per job (ADR-001); words as the
-canonical transcript, every grouping derived at render time (ADR-003); the
-default model and what translate substitutes (ADR-004); the preloaded
-waveform for diarization (ADR-005); the application log as observation only,
-nothing reads it to decide (ADR-007); SQLite in WAL mode as the only
-coordination between web, supervisor and runner, with the import rules that
-enforce it (ADR-009, which supersedes ADR-002); and one uv lockfile with a
-per-platform torch source (ADR-012, which supersedes ADR-006). Proposed: the
-feed import as a polled subscription (ADR-008), reasoning as a per-kind hint
-(ADR-010), and a per-OS launcher that installs the locked environment on
-first run (ADR-011).
+`docs/adr/` holds the architecture decisions, and `docs/adr/ADR-INDEX.md`
+lists them all.
+
+**Accepted:** one web process, a supervisor thread and a runner child per job
+(ADR-001); words as the canonical transcript, every grouping derived at
+render time (ADR-003); the default model and what translate substitutes
+(ADR-004); the preloaded waveform for diarization (ADR-005); one uv lockfile
+with a per-platform torch source (ADR-012, superseding ADR-006); SQLite in
+WAL mode as the only coordination between web, supervisor and runner, one
+runner at a time in the claim (ADR-013, superseding ADR-009, which had
+superseded ADR-002); and the application log as observation only, nothing
+reads it to decide (ADR-014, superseding ADR-007).
+
+**Proposed:** the feed import as a polled subscription (ADR-008); reasoning
+as a per-kind hint (ADR-010); and a per-OS launcher that installs the locked
+environment on first run (ADR-011).
