@@ -178,9 +178,21 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
-      - uses: actions/attest-build-provenance@v1
+      - name: Attest what built these
+        # Only where GitHub offers it. Build provenance is not available for a
+        # user-owned private repository, and the attestation step failed the
+        # whole publish over that - after three builds and their smoke tests
+        # had passed (release run on v0.5.0, 2026-09-19). Same treatment as
+        # signing: do it where it can be done, say so where it cannot, and
+        # never lose a release that is otherwise sound.
+        if: github.event.repository.private == false
+        uses: actions/attest-build-provenance@v1
         with:
           subject-path: "artifacts/*"
+
+      - name: Attestation skipped
+        if: github.event.repository.private
+        run: echo "::notice::build provenance is not available for user-owned private repositories; SHA256SUMS is published with the artifacts"
 
       - uses: softprops/action-gh-release@v2
         with:
