@@ -83,6 +83,8 @@ from __future__ import annotations
 
 import ipaddress
 import sqlite3
+
+from scribe import db
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -94,18 +96,67 @@ from scribe.llm.base import ChatRequest, ChatResponse
 DEFAULT_HOST = "http://127.0.0.1:11434"
 
 DEFAULT_TIMEOUT = 300.0
-"""Seconds for one completion. Generous where the cloud providers get 60: a
-local 9B model on a busy card takes tens of seconds to load before it emits a
-first token, and killing it at 60 s would turn a slow answer into no answer."""
+"""Seconds for one completion at the shipped window, and the floor under any
+other. Generous where the cloud providers get 60: a local 9B model on a busy
+card takes tens of seconds to load before it emits a first token, and killing
+it at 60 s would turn a slow answer into no answer.
+
+It is a floor and no longer the whole answer, because the work is no longer
+one size. This number was measured with a 9B model against 8192 tokens; a 27B
+at q8 against 32768 has four times the prompt to read and three times the
+weights to read it with, and 300 s stopped being generous - it killed job 126
+at exactly five minutes with "ollama did not answer: timed out". See
+`timeout_for`."""
+
+
+def timeout_for(num_ctx: int) -> float:
+    """How long one completion may take, given the window it was planned for.
+
+    Linear in the window, floored at `DEFAULT_TIMEOUT`. Prompt evaluation is
+    the part that grows - the model has to read every token before it writes
+    one - so a window four times larger is roughly four times the wait, and a
+    timeout that ignores that turns "slow" into "failed" precisely when a user
+    has chosen the bigger model on purpose.
+
+    Not a promise that the answer arrives: it is the point at which waiting
+    longer stops being useful, and it still ends a daemon that has hung.
+    """
+    scale = max(1.0, float(num_ctx) / float(DEFAULT_NUM_CTX))
+    return DEFAULT_TIMEOUT * scale
 
 PROBE_TIMEOUT = 2.0
 """The bound on `available()`. See the note on that method - it is the one
 sanctioned network call in a method the base class says makes none."""
 
 DEFAULT_NUM_CTX = 8192
-"""The window asked for when a caller does not say. Task 3's chunker computes
-one from the transcript; until then this is a value a 4B model holds on this
-card without evicting Whisper."""
+"""What this plans against when the daemon will not say what a model holds.
+
+An assumption, and deliberately a small one: assuming a large context is how a
+prompt gets silently truncated, because the daemon answers 200 either way. A
+value a 4B model holds on this card without evicting Whisper, and the number
+every measurement in this docstring was taken at."""
+
+SETTING_NUM_CTX = "llm_num_ctx"
+"""The settings row that moves `MAX_NUM_CTX`, for a machine that knows better."""
+
+MAX_NUM_CTX = 32768
+"""The ceiling a *measured* window is planned against.
+
+The distinction this turns on, and the first version got wrong: an assumption
+and a measurement are not the same thing. `DEFAULT_NUM_CTX` is what this plans
+against when nothing is known, and it stays small on purpose - assuming a large
+context is how a prompt gets silently truncated. But when the daemon *reports*
+a model's window, that is not an assumption, and refusing to use it made
+choosing a bigger model do nothing at all: two models reporting 262144 tokens
+were both planned at 8192, while the error message told the user to switch
+between them (jobs 118-122, 2026-09-19).
+
+What the ceiling is actually for is memory. A window is KV cache and the cache
+is this machine's: a quarter of a million tokens beside a 27B model is how a
+local box starts swapping. 32k is four times the default - room for an hour of
+transcript in one call - and a cache a 16 GB card can hold. A machine that
+knows better moves it with the `llm_num_ctx` setting, in either direction."""
+
 
 KEEP_ALIVE = "5m"
 """How long the weights stay resident after an answer. Long enough that the
@@ -182,7 +233,7 @@ class OllamaProvider(base.Provider):
         *,
         host: str = DEFAULT_HOST,
         model: str | None = None,
-        num_ctx: int = DEFAULT_NUM_CTX,
+        num_ctx: int | None = None,
         client_factory: Callable[..., Any] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ):
@@ -191,22 +242,136 @@ class OllamaProvider(base.Provider):
         the context window is a thing only a local runtime lets you choose. The
         chunker (Task 3) will size it per transcript and pass it here.
 
+        `None` - the default - means ask the daemon what the model holds
+        (`context_tokens`) rather than assume the floor. A number means the
+        caller has a reason, and is never second-guessed.
+
         `conn` is accepted and unused so `llm.get_provider(name, conn)` builds
         every provider the same way.
         """
         self.conn = conn
         self.host = _this_machine_only(host).rstrip("/")
         self.model = model or self.default_model
-        self.num_ctx = num_ctx
+        self.num_ctx = DEFAULT_NUM_CTX if num_ctx is None else num_ctx
+        self._num_ctx_is_mine = num_ctx is None
+        self._windows: dict[str, int] = {}
         self.client_factory = client_factory or default_client_factory
         self.timeout = timeout
         self._client: Any | None = None
+        self._client_timeout: float | None = None
+
+    # --- what window this model actually has ----------------------------------
+
+    def context_tokens(self, model: str | None = None) -> int:
+        """How many tokens ``model`` may be planned against on this machine.
+
+        The daemon knows: `/api/show` reports `<arch>.context_length` from the
+        GGUF itself. Before this asked, every local call was planned against
+        `DEFAULT_NUM_CTX` whatever the model held, which is how the `speakers`
+        kind - whose answer budget alone is 8000 tokens - became arithmetically
+        impossible on Ollama while working on every cloud provider (TASK-084).
+
+        Clamped both ways. `MAX_NUM_CTX` is the cache this machine can hold;
+        `DEFAULT_NUM_CTX` is the floor, because a 4k model is not a reason to
+        plan for less than the daemon has always been asked for. A daemon that
+        cannot answer - old, offline, a model that is not pulled - is not an
+        error here: it gets the floor, which is what it got before.
+
+        Cached per model: this is asked once per plan and once per call, and
+        the answer is a property of a file on disk.
+        """
+        if not self._num_ctx_is_mine:
+            return self.num_ctx
+        name = (model or self.model or "").strip()
+        if not name:
+            return self.num_ctx
+        if name not in self._windows:
+            found = self._model_window(name)
+            # No floor upwards: a model that really holds 4096 is planned
+            # against 4096. Asking for more is how a prompt gets truncated
+            # behind a 200.
+            self._windows[name] = self.num_ctx if found is None else min(self.ceiling(), found)
+        return self._windows[name]
+
+    def ceiling(self) -> int:
+        """The most a measured window may be used up to, here on this machine.
+
+        `MAX_NUM_CTX` is a guess about memory that is right for a 16 GB card
+        and wrong for both a 64 GB Mac and a 4 GB laptop, so it is a default
+        and not a rule: the `llm_num_ctx` setting moves it either way. Read per
+        call rather than cached, because a user who lowers it after a job
+        swapped their machine means it now.
+        """
+        if self.conn is not None:
+            try:
+                with db.LOCK:
+                    row = self.conn.execute(
+                        "SELECT value FROM setting WHERE key=?", (SETTING_NUM_CTX,)
+                    ).fetchone()
+                if row is not None:
+                    wanted = int(str(row["value"]).strip())
+                    if wanted > 0:
+                        return wanted
+            except Exception:  # noqa: BLE001 - a setting that is not a number is not a ceiling
+                pass
+        return MAX_NUM_CTX
+
+    def _model_window(self, model: str) -> int | None:
+        """`<arch>.context_length` from `/api/show`, or None if it cannot be had.
+
+        Every failure is the same answer - None - on purpose: this is a better
+        number when it can be got, never a new way for a task to fail.
+        """
+        try:
+            response = self.client().post("/api/show", json={"model": model})
+            if response.status_code != 200:
+                return None
+            info = (response.json() or {}).get("model_info") or {}
+        except Exception:  # noqa: BLE001 - a window we could not read is not a failure
+            return None
+        arch = str(info.get("general.architecture") or "").strip()
+        for key in ([f"{arch}.context_length"] if arch else []) + [
+            k for k in info if k.endswith(".context_length")
+        ]:
+            value = info.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+        return None
+
+    @classmethod
+    def window_for_model(cls, model: str | None = None) -> int | None:
+        """`context_tokens` for a caller holding the class, not an instance.
+
+        `tasks.context_tokens_for` plans before anything is constructed. Asking
+        the provider to answer for itself keeps that planner free of a table of
+        provider names, and keeps the daemon call inside the module that owns
+        the daemon.
+        """
+        try:
+            provider = cls()
+            try:
+                return provider.context_tokens(model)
+            finally:
+                provider.close()
+        except Exception:  # noqa: BLE001 - planning never fails on a missing daemon
+            return None
 
     # --- the transport --------------------------------------------------------
 
-    def client(self):
+    def client(self, timeout: float | None = None):
+        """The http client, built on first use.
+
+        ``timeout`` is the per-call budget: a completion against a large window
+        may take far longer than the probe that found the window (`timeout_for`).
+        A different budget needs its own client, because the one being reused
+        carries the timeout it was built with.
+        """
+        wanted = self.timeout if timeout is None else timeout
+        if self._client is not None and wanted != self._client_timeout:
+            self.close()
         if self._client is None:
-            self._client = self.client_factory(base_url=self.host, timeout=self.timeout)
+            self._client = self.client_factory(base_url=self.host, timeout=wanted)
+            self._client_timeout = wanted
         return self._client
 
     def close(self) -> None:
@@ -258,7 +423,10 @@ class OllamaProvider(base.Provider):
     def complete(self, req: ChatRequest) -> ChatResponse:
         self._refuse_a_prompt_that_cannot_fit(req)
         try:
-            response = self.client().post("/api/chat", json=self._body(req))
+            # The budget that matches the window this call was planned for,
+            # not the one a model-info lookup was built with.
+            budget = timeout_for(self.context_tokens(req.model))
+            response = self.client(budget).post("/api/chat", json=self._body(req))
         except httpx2.HTTPError as exc:
             raise self._unreachable(exc) from None
         self._raise_for_status(response, model=req.model)
@@ -331,7 +499,7 @@ class OllamaProvider(base.Provider):
             "stream": False,
             "options": {
                 "temperature": req.temperature,
-                "num_ctx": self.num_ctx,
+                "num_ctx": self.context_tokens(req.model),
                 "num_predict": req.max_output_tokens,
             },
             "keep_alive": KEEP_ALIVE,

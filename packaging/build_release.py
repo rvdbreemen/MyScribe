@@ -38,6 +38,11 @@ DIST = REPO / "dist"
 BUILD = REPO / "build"
 BUNDLE_ID = "io.github.rvdbreemen.myscribe"
 
+FROZEN_NAME = "MyScribe"
+"""What PyInstaller calls the executable, and therefore what the smoke test
+has to look for inside the bundle. One spelling, because a rename that moved
+only one of them would produce an artifact that builds and cannot be run."""
+
 NATIVE = {"windows-x64": "win32", "macos-arm64": "darwin", "linux-x64": "linux"}
 
 
@@ -73,7 +78,7 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
         shutil.rmtree(out)
     args = [
         pyinstaller, "--noconfirm", "--clean", "--log-level", "WARN",
-        "--name", "MyScribe", "--onedir", "--windowed",
+        "--name", FROZEN_NAME, "--onedir", "--windowed",
         "--distpath", out, "--workpath", BUILD / "pyinstaller", "--specpath", BUILD,
         "--add-data", f"{payload}{os.pathsep}payload",
     ]
@@ -181,6 +186,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--platform", required=True, choices=sorted(ARTIFACTS))
     parser.add_argument("--ffmpeg-dir", type=Path, help="macOS: output of build_ffmpeg_macos.sh")
     parser.add_argument("--skip-payload", action="store_true", help="reuse build/payload-<platform>")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="after building, run the frozen launcher's own --smoke: first sync, /health, a page, quit",
+    )
     args = parser.parse_args(argv)
 
     if NATIVE[args.platform] != sys.platform:
@@ -204,7 +214,34 @@ def main(argv: list[str] | None = None) -> int:
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     (out.parent / f"{out.name}.sha256").write_text(f"{digest}  {out.name}\n", encoding="utf-8")
     print(json.dumps({"artifact": str(out), "bytes": out.stat().st_size, "sha256": digest}, indent=2))
+
+    if args.smoke:
+        # The frozen launcher, not this interpreter: what CI has to prove is
+        # that the thing built here starts, serves and stops - "the build
+        # produced a file" is not that, and it is the failure a release
+        # actually ships. A fresh home so it is a first run, the way a user's
+        # is (and so a stale environment cannot make it pass).
+        home = BUILD / f"smoke-home-{args.platform}"
+        shutil.rmtree(home, ignore_errors=True)
+        binary = _frozen_binary(frozen, args.platform)
+        print(f"smoke: {binary} --home {home} --smoke")
+        code = subprocess.call([str(binary), "--home", str(home), "--smoke"])
+        if code != 0:
+            print(f"::error::the built artifact failed its smoke test (exit {code})")
+            return code
+        print("smoke: the artifact started, served and stopped")
     return 0
+
+
+def _frozen_binary(frozen: Path, platform_name: str) -> Path:
+    """The executable inside the frozen onedir, per platform layout."""
+    if platform_name == "macos-arm64":
+        app = next(frozen.glob("*.app"), None)
+        if app is not None:
+            return app / "Contents" / "MacOS" / FROZEN_NAME
+    if platform_name == "windows-x64":
+        return frozen / f"{FROZEN_NAME}.exe"
+    return frozen / FROZEN_NAME
 
 
 if __name__ == "__main__":

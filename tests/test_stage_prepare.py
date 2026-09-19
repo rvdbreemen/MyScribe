@@ -273,7 +273,12 @@ def test_to_wav_maps_the_position_ffmpeg_reports_onto_the_duration(tmp_path):
 
     prepare.to_wav(CLIP, tmp_path / "audio.wav", 60.0, seen.append)
 
-    assert seen[-2] == 0.5  # 30 s of media against 60 s of claimed duration
+    # Approximately, not exactly: this is ffmpeg's own reported position, and
+    # builds disagree about it in the third decimal - the clip came through as
+    # 29.952 s on ubuntu's ffmpeg 6.1.1 (0.4992) and as 30.0 here. What the
+    # test is for survives either way: the block was parsed and scaled against
+    # the claimed duration, rather than being the 1.0 that `to_wav` appends.
+    assert seen[-2] == pytest.approx(0.5, abs=0.01)  # 30 s of media, 60 s claimed
     assert seen[-1] == 1.0
     assert seen == sorted(seen)
     assert all(0.0 <= p <= 1.0 for p in seen)

@@ -38,11 +38,21 @@ class Recorder:
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
+        if request.url.path == "/api/show":
+            return httpx2.Response(200, json={"model_info": {}})
         return self.response
 
     @property
     def calls(self) -> int:
-        return len(self.requests)
+        """Requests that carried a transcript, which is what this file is about.
+
+        The local provider asks `/api/show` for the model's window before it
+        chats (TASK-084). That request carries a model name and nothing else,
+        and it goes to the same daemon on this machine - it cannot be the leak
+        these tests are looking for, and counting it would turn every
+        `rec.calls == 1` here into an assertion about provider plumbing.
+        """
+        return len([r for r in self.requests if r.url.path != "/api/show"])
 
 
 COMPLETION = httpx2.Response(

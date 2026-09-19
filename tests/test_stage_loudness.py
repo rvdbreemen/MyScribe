@@ -40,6 +40,27 @@ def _frames_inside(samples: int) -> int:
     return (samples - 400) // 160
 
 
+UNTOUCHED = 1e-4
+"""How far two feature arrays may differ and still count as the same ones.
+
+Not a softening: bit-equality is what this held out for, and it is not a
+portable claim. The same audio through the same extractor comes out
+bit-identical on this Mac (measured 2026-09-19: a difference of exactly 0.0)
+and differs in the last bits on a Linux runner, because the FFT and the
+matrix multiply underneath are a different library there. That difference is
+arithmetic noise, not a raised floor.
+
+The number sits between the two things being told apart. The bug these tests
+exist for moves a feature by 0.484 on a scale that runs -1.2 to 0.8 - four
+thousand times this tolerance - and `test_a_louder_look_ahead_without_the_fix
+_changes_every_frame` now asserts that distance explicitly rather than merely
+"not identical", so the pair cannot both pass by saying nothing."""
+
+
+def _same_features(alone, both, keep: int) -> bool:
+    return bool(np.allclose(alone[:, :keep], both[:, :keep], atol=UNTOUCHED, rtol=0))
+
+
 def test_a_louder_look_ahead_leaves_the_windows_features_alone():
     window, lookahead = _window(0.05, 1), _noise(3.0, 0.5, 2)
 
@@ -48,7 +69,7 @@ def test_a_louder_look_ahead_leaves_the_windows_features_alone():
     alone = FE(window)
     both = FE(np.concatenate([window, scaled]))
     keep = _frames_inside(len(window))
-    assert np.array_equal(alone[:, :keep], both[:, :keep])
+    assert _same_features(alone, both, keep)
 
 
 def test_a_louder_look_ahead_without_the_fix_changes_every_frame():
@@ -58,7 +79,10 @@ def test_a_louder_look_ahead_without_the_fix_changes_every_frame():
     alone = FE(window)
     both = FE(np.concatenate([window, lookahead]))
     keep = _frames_inside(len(window))
-    assert not np.array_equal(alone[:, :keep], both[:, :keep])
+    moved = np.abs(alone[:, :keep] - both[:, :keep]).max()
+    # Not "not identical": that would also be satisfied by the arithmetic noise
+    # `UNTOUCHED` allows, and then the test above could pass by saying nothing.
+    assert moved > UNTOUCHED * 100, f"the unfixed look-ahead moved features by only {moved}"
 
 
 def test_a_look_ahead_that_cannot_raise_the_floor_is_handed_back_untouched():
@@ -132,7 +156,7 @@ def test_the_floor_holds_whatever_the_look_ahead_says(amplitude):
 
     both = FE(np.concatenate([window, loudness.scale_lookahead(FE, window, lookahead)]))
     keep = _frames_inside(len(window))
-    assert np.array_equal(FE(window)[:, :keep], both[:, :keep])
+    assert _same_features(FE(window), both, keep)
 
 
 # --- one VAD pass, two uses (TASK-056) --------------------------------------------------

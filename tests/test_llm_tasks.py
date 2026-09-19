@@ -1008,21 +1008,24 @@ def test_rerunning_a_chunked_task_reuses_its_notes_and_only_combines_again(conn,
 
 
 def test_a_window_too_small_to_combine_the_notes_is_refused_before_any_call(conn, monkeypatch):
-    """A map-reduce that cannot end is refused before it starts.
+    """A map-reduce that cannot end is still refused before it starts.
 
-    The chunk notes have a floor (`MIN_NOTE_TOKENS`, measured: below it the
-    shipped local model spends its whole budget thinking and answers nothing).
-    On a small window a long recording needs so many chunks that the notes at
-    that floor cannot fit back into one combine call - and the old order of
-    operations paid for every map call *first* and only then discovered it,
-    around 35 s each on `qwen3.5:4b`. Worse, the notes were then cached, so
-    every retry refused instantly without making a single new call: the task
-    was permanently unrecoverable under that key.
+    The rule this pins moved on 2026-09-19 and the reason it exists did not.
+    It used to refuse whenever notes at `MIN_NOTE_TOKENS` would not fit back
+    through the combine call; now `plan_notes` shortens the notes to what the
+    window affords, because a terse note is a real answer where a refusal is
+    not. What still cannot be done is a recording so long that even
+    `MIN_NOTE_FLOOR` per chunk does not fit - so the recording here is longer
+    than it was, and the refusal is the same refusal: before the first call,
+    with nothing bought and nothing cached.
 
-    The arithmetic is knowable before the first call, so it is done there.
+    The original reason, unchanged: the old order paid for every map call
+    *first* (around 35 s each on `qwen3.5:4b`), then discovered the combine
+    could not happen, and cached the notes - so every retry refused instantly
+    without a new call and the task was permanently unrecoverable.
     """
-    media_id = seed_media(conn, title="A long meeting")
-    seed_long_run(conn, media_id, n_segments=150, words_per=50)
+    media_id = seed_media(conn, title="A very long meeting")
+    seed_long_run(conn, media_id, n_segments=3000, words_per=50)
     provider, calls = fake_provider(map_reduce_script(ANSWERS["summary"]))
     register(monkeypatch, provider)
 
@@ -1519,8 +1522,11 @@ def test_a_job_that_cannot_combine_its_notes_fails_in_prepare_without_spending(c
     """Where the plan says such a refusal belongs: `prepare`, the stage whose
     whole job is to catch what costs nothing to catch. The board says `prepare`,
     so a user reading it knows nothing was bought."""
-    media_id = seed_media(conn, title="A long meeting")
-    seed_long_run(conn, media_id, n_segments=150, words_per=50)
+    # Longer than it was: a 150-segment recording now shortens its notes and
+    # succeeds, which is the point of the change. What belongs in `prepare` is
+    # the case that genuinely cannot be done at any note length.
+    media_id = seed_media(conn, title="A very long meeting")
+    seed_long_run(conn, media_id, n_segments=3000, words_per=50)
     provider, calls = fake_provider(map_reduce_script(ANSWERS["summary"]))
     register(monkeypatch, provider)
     job_id = jobs.enqueue(
@@ -1542,7 +1548,10 @@ def test_a_job_that_cannot_combine_its_notes_fails_in_prepare_without_spending(c
     row = conn.execute("SELECT * FROM job WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == "failed"
     assert row["stage"] == "prepare"
-    assert row["error_code"] == "LLM_FAILED"
+    # Not LLM_FAILED any more: a window that cannot hold this recording's notes
+    # at any usable length is a verdict about the model, and the board says so
+    # in those words (Robert, 2026-09-19).
+    assert row["error_code"] == "MODEL_UNSUITABLE"
     assert calls == []
     assert rows(conn, media_id) == []
 
@@ -1637,3 +1646,133 @@ def test_the_llm_stages_file_their_timings_under_the_model_that_answered(conn, m
     perf = [dict(r) for r in conn.execute("SELECT stage, model FROM stage_perf ORDER BY id")]
     assert [r["stage"] for r in perf] == ["prepare", "generate", "store", "apply"]
     assert {r["model"] for r in perf} == {"fake-1"}
+
+
+# --- every kind has to fit the window it plans against (TASK-084) -------------------
+
+
+@pytest.mark.parametrize("kind", sorted(tasks.TASKS))
+def test_every_kind_fits_the_smallest_local_window(kind):
+    """The regression this file did not have.
+
+    `speakers` carried `max_output_tokens=8000`, measured against a cloud
+    window of 128k where it is free. Against the local floor of 8192 the same
+    number left -852 tokens for the transcript, so the task could not run at
+    all on Ollama - and nothing failed until a user queued it and got a
+    RUNTIME error out of the prepare stage. A kind whose own answer budget
+    does not fit the smallest window it may be planned against is broken on
+    arrival, and that is a property of the table, not of a run.
+    """
+    spec = tasks.TASKS[kind]
+    prompt = "a question" if spec.needs_prompt else None
+
+    output = tasks.fit_output_tokens(
+        spec, context_tokens=tasks.LOCAL_CONTEXT_TOKENS, custom_prompt=prompt
+    )
+    budget = tasks.budget_for(
+        spec,
+        context_tokens=tasks.LOCAL_CONTEXT_TOKENS,
+        max_output_tokens=output,
+        custom_prompt=prompt,
+    )
+
+    assert budget >= tasks.MIN_TRANSCRIPT_TOKENS, (
+        f"{kind} leaves only {budget} tokens for the transcript at the local floor of "
+        f"{tasks.LOCAL_CONTEXT_TOKENS}; lower its max_output_tokens or raise the floor"
+    )
+
+
+def test_a_window_too_small_for_any_answer_is_refused_in_words():
+    """The other half of TASK-084: when clamping cannot save the call, the
+    refusal has to name the numbers and what to change, not subtract its way
+    to a negative and say the context 'leaves nothing'."""
+    spec = tasks.TASKS["speakers"]
+
+    with pytest.raises(ValueError) as exc:
+        tasks.fit_output_tokens(spec, context_tokens=2048)
+
+    message = str(exc.value)
+    assert "2048" in message and "speakers" in message
+    assert "bigger window" in message
+
+
+def test_a_caller_asking_for_more_answer_than_the_window_holds_is_clamped():
+    """A number from a caller is a preference, not a licence to overrun."""
+    spec = tasks.TASKS["summary"]
+
+    fitted = tasks.fit_output_tokens(spec, context_tokens=8192, max_output_tokens=99_000)
+
+    assert tasks.MIN_OUTPUT_TOKENS <= fitted <= 8192 - tasks.MIN_TRANSCRIPT_TOKENS
+
+
+@pytest.mark.parametrize("window", [4096, 8192])
+@pytest.mark.parametrize("kind", sorted(tasks.TASKS))
+def test_every_kind_runs_in_a_small_window(kind, window):
+    """Plan for a limited context, not for what a model claims (Robert,
+    2026-09-19). 4 KB is the smallest window worth supporting, and every kind
+    has to work there - in more calls over smaller chunks, which is the honest
+    cost of a small window rather than a failure."""
+    spec = tasks.TASKS[kind]
+    prompt = "a question" if spec.needs_prompt else None
+
+    output = tasks.fit_output_tokens(spec, context_tokens=window, custom_prompt=prompt)
+    budget = tasks.budget_for(spec, context_tokens=window, max_output_tokens=output, custom_prompt=prompt)
+
+    assert output >= tasks.MIN_OUTPUT_TOKENS
+    assert budget >= tasks.MIN_TRANSCRIPT_TOKENS, (
+        f"{kind} leaves only {budget} transcript tokens in a {window}-token window"
+    )
+
+
+def test_a_long_recording_shortens_its_notes_rather_than_refusing():
+    """Robert, 2026-09-19, from a job that failed on his own recording: adapt
+    the content length dynamically. Ten chunks used to be a refusal because a
+    note "worth answering" was fixed at 4000 tokens; now the note is whatever
+    the combine call can actually hold."""
+    budget = tasks.plan_notes(
+        tasks.TASKS["summary"], chunks=10, context_tokens=8192,
+        budget_tokens=3000, max_output_tokens=4000,
+    )
+
+    assert tasks.MIN_NOTE_FLOOR <= budget < tasks.MIN_NOTE_TOKENS
+    assert budget * 10 <= tasks.combine_capacity(
+        tasks.TASKS["summary"], context_tokens=8192, max_output_tokens=4000, chunks=10
+    )
+
+
+def test_a_roomy_window_still_gets_a_full_note():
+    """Adapting downwards must not cost anything where there is room."""
+    budget = tasks.plan_notes(
+        tasks.TASKS["summary"], chunks=3, context_tokens=128_000,
+        budget_tokens=100_000, max_output_tokens=4000,
+    )
+
+    assert budget == tasks.MIN_NOTE_TOKENS
+
+
+def test_when_it_truly_cannot_be_done_the_error_suggests_a_way_out(monkeypatch):
+    """"If it is simply not possible with the model, give that error and
+    suggest another model" - and the suggestion has to be actionable."""
+    monkeypatch.setattr(tasks, "suggest_bigger_window", lambda ctx: "Try the roomy-model here.")
+
+    with pytest.raises(Exception) as exc:
+        tasks.plan_notes(
+            tasks.TASKS["summary"], chunks=200, context_tokens=8192,
+            budget_tokens=3000, max_output_tokens=4000,
+        )
+
+    message = str(exc.value)
+    assert "Nothing has been sent" in message
+    assert "Try the roomy-model here." in message
+    assert str(tasks.MIN_NOTE_FLOOR) in message
+
+
+def test_the_suggestion_survives_a_daemon_that_is_down(monkeypatch):
+    """A suggestion is a nicety and must never become a second failure."""
+    import scribe.llm.ollama as ollama
+
+    monkeypatch.setattr(ollama.OllamaProvider, "models", lambda self: (_ for _ in ()).throw(OSError("down")))
+
+    said = tasks.suggest_bigger_window(8192)
+
+    assert "bigger window" in said

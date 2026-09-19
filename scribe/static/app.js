@@ -230,6 +230,13 @@
       return isFinite(date.getTime()) && ts > 0 ? date.toLocaleTimeString() : '';
     }
 
+    function indent(text) {
+      /* Every line of a quoted prompt or answer moved right, so the log reads
+         as a conversation and not as one runaway line. */
+      if (typeof text !== 'string' || !text) { return ''; }
+      return text.split('\n').map(function (line) { return '    ' + line; }).join('\n');
+    }
+
     function describe(record) {
       var kind = String(record.kind || '');
       var payload = record.payload && typeof record.payload === 'object' ? record.payload : {};
@@ -244,6 +251,25 @@
       if (kind === 'error') {
         var lines = String(payload.trace == null ? '' : payload.trace).trim().split('\n');
         return 'error ' + lines[lines.length - 1];
+      }
+      /* An llm call, shown the way a person reads one rather than as
+         key=value: what went out, what came back, what it concluded. The
+         prompt is already excerpted server-side (tasks.excerpt), so this only
+         has to lay it out - and it is laid out over several lines on purpose,
+         because a 1400-character prompt on one line is not reading material. */
+      if (kind === 'llm-prompt') {
+        return 'asking ' + String(payload.model || '') + ' (' + String(payload.phase || '') + ', '
+          + String(payload.prompt_chars || 0) + ' chars)\n'
+          + indent(payload.system) + (payload.system ? '\n' : '') + indent(payload.prompt);
+      }
+      if (kind === 'llm-reply') {
+        var head = 'answered (' + String(payload.phase || '') + ', '
+          + String(payload.completion_tokens == null ? '?' : payload.completion_tokens) + ' tokens'
+          + (payload.finish_reason ? ', ' + payload.finish_reason : '') + ')';
+        return head + '\n' + indent(payload.reply);
+      }
+      if (kind === 'llm-conclusion') {
+        return 'concluded: ' + String(payload.conclusion == null ? '' : payload.conclusion);
       }
       var parts = Object.keys(payload).map(function (key) {
         var value = payload[key];

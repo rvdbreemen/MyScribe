@@ -1560,3 +1560,244 @@ def test_the_episode_number_does_not_become_a_hotword(conn, data_dir, monkeypatc
     terms = json.loads(queued["params_json"]).get(transcribe.EXTRA_HOTWORDS_KEY) or []
     assert "Ep" not in terms
     assert conn.execute("SELECT title FROM media").fetchone()["title"] == "Ep 179 - The Courthouse"
+
+
+# --- feed discovery (TASK-083) -------------------------------------------------
+
+
+PAGE_WITH_FEED = (
+    "<html><head>"
+    '<link rel="alternate" type="application/activity+json" href="https://pod.test/@show">'
+    '<link rel="alternate" type="application/rss+xml" title="WHYcast" href="/@show/feed.xml">'
+    "</head><body>a Castopod profile page</body></html>"
+)
+
+
+class FakeFetch:
+    """Stands in for the one page read `discover_feed` does.
+
+    Records what it was asked for so a test can prove the happy path costs no
+    request at all, and answers by URL so a test can hand back a page, a
+    non-HTML body, or an error the way a real host would.
+    """
+
+    def __init__(self, pages: dict[str, tuple[str, str]] | None = None, raises=None):
+        self.pages = pages or {}
+        self.raises = raises
+        self.asked: list[str] = []
+
+    def __call__(self, url: str, *, limit: int) -> tuple[str, str]:
+        self.asked.append(url)
+        if self.raises is not None:
+            raise self.raises
+        try:
+            content_type, body = self.pages[url]
+        except KeyError:  # pragma: no cover - a test asked for a page it never wrote
+            raise AssertionError(f"the fake was asked for {url}") from None
+        return content_type, body[:limit]
+
+
+class ByUrl:
+    """A `build_ydl` replacement whose answer depends on the URL asked.
+
+    `FakeYdl` raises the same thing every call, which cannot express the shape
+    this feature has: the page fails, the feed it announces succeeds.
+    """
+
+    def __init__(self, answers: dict[str, object]):
+        self.answers = answers
+        self.calls: list[str] = []
+
+    def __call__(self, opts: dict):
+        return self
+
+    def extract_info(self, url, download=False):
+        self.calls.append(url)
+        answer = self.answers.get(url)
+        if answer is None:
+            raise AssertionError(f"the fake was asked for {url}")
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+def unsupported(url: str):
+    from yt_dlp.utils import UnsupportedError
+
+    return download_error(f"ERROR: Unsupported URL: {url}", UnsupportedError(url))
+
+
+def test_a_podcast_page_falls_back_to_the_feed_it_announces(monkeypatch):
+    """The whole point: the page yt-dlp cannot read says where its feed is."""
+    page, feed = "https://pod.test/@show", "https://pod.test/@show/feed.xml"
+    ydl = ByUrl({page: unsupported(page), feed: playlist_info(3)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("text/html; charset=utf-8", PAGE_WITH_FEED)})
+
+    info = urls.probe(page, fetch=fetch)
+
+    assert info.kind == "playlist"
+    assert len(info.entries) == 3
+    assert ydl.calls == [page, feed]
+
+
+def test_a_page_with_no_feed_link_keeps_the_original_error(monkeypatch):
+    page = "https://pod.test/@show"
+    ydl = ByUrl({page: unsupported(page)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("text/html", "<html><head></head><body>nothing</body></html>")})
+
+    with pytest.raises(urls.UnsupportedUrl) as exc:
+        urls.probe(page, fetch=fetch)
+
+    assert "Unsupported URL" in str(exc.value)
+    assert ydl.calls == [page]
+
+
+def test_a_feed_that_fails_too_reports_the_page_not_the_feed(monkeypatch):
+    """Discovery is a second chance, never a new way to be confusing: a feed
+    that is itself unreadable must not replace the error the user can act on."""
+    page, feed = "https://pod.test/@show", "https://pod.test/@show/feed.xml"
+    ydl = ByUrl({page: unsupported(page), feed: unsupported(feed)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("text/html", PAGE_WITH_FEED)})
+
+    with pytest.raises(urls.UnsupportedUrl) as exc:
+        urls.probe(page, fetch=fetch)
+
+    assert page in str(exc.value)
+    assert feed not in str(exc.value)
+
+
+def test_a_feed_link_at_a_private_address_is_refused(monkeypatch):
+    """TASK-072, one page further in: the href is the page author's text, and
+    this app has an Ollama on 11434 that a stranger's page must not reach."""
+    page = "https://pod.test/@show"
+    hostile = (
+        '<html><head><link rel="alternate" type="application/rss+xml" '
+        'href="http://127.0.0.1:11434/api/tags"></head></html>'
+    )
+    ydl = ByUrl({page: unsupported(page)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("text/html", hostile)})
+
+    with pytest.raises(urls.UnsupportedUrl):
+        urls.probe(page, fetch=fetch)
+
+    assert ydl.calls == [page], "the private address must never be probed"
+
+
+def test_a_supported_url_is_never_fetched_twice(monkeypatch):
+    """Discovery is off the happy path: a URL that works costs no page read."""
+    fake = FakeYdl(single_info())
+    monkeypatch.setattr(urls, "build_ydl", build_returning(fake))
+    fetch = FakeFetch()
+
+    urls.probe("https://example.test/watch?v=abc123", fetch=fetch)
+
+    assert fetch.asked == []
+
+
+def test_a_body_that_is_not_html_is_not_parsed(monkeypatch):
+    """An audio file at an unsupported URL is not a page with a link tag in it,
+    and reading 10 MB of mp3 looking for one is the bug this avoids."""
+    page = "https://pod.test/episode.mp3"
+    ydl = ByUrl({page: unsupported(page)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("audio/mpeg", PAGE_WITH_FEED)})
+
+    with pytest.raises(urls.UnsupportedUrl):
+        urls.probe(page, fetch=fetch)
+
+
+def test_the_page_read_is_bounded(monkeypatch):
+    page = "https://pod.test/@show"
+    ydl = ByUrl({page: unsupported(page), "https://pod.test/@show/feed.xml": playlist_info(1)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("text/html", PAGE_WITH_FEED)})
+
+    urls.probe(page, fetch=fetch)
+
+    assert fetch.asked == [page]
+
+
+def test_a_page_that_will_not_load_keeps_the_original_error(monkeypatch):
+    """A discovery that cannot even read the page is not a new failure mode."""
+    page = "https://pod.test/@show"
+    ydl = ByUrl({page: unsupported(page)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch(raises=OSError("connection reset"))
+
+    with pytest.raises(urls.UnsupportedUrl) as exc:
+        urls.probe(page, fetch=fetch)
+
+    assert "Unsupported URL" in str(exc.value)
+
+
+def test_discovery_finds_an_atom_feed_too(monkeypatch):
+    page, feed = "https://pod.test/@show", "https://pod.test/atom.xml"
+    body = (
+        '<html><head><link rel="alternate" type="application/atom+xml" '
+        'href="https://pod.test/atom.xml"></head></html>'
+    )
+    ydl = ByUrl({page: unsupported(page), feed: playlist_info(2)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("text/html", body)})
+
+    info = urls.probe(page, fetch=fetch)
+
+    assert len(info.entries) == 2
+
+
+def test_rss_wins_over_atom_when_a_page_offers_both(monkeypatch):
+    """Podcast enclosures live in RSS; Atom is the blog feed beside it."""
+    page, rss = "https://pod.test/@show", "https://pod.test/rss.xml"
+    body = (
+        '<html><head>'
+        '<link rel="alternate" type="application/atom+xml" href="https://pod.test/atom.xml">'
+        '<link rel="alternate" type="application/rss+xml" href="https://pod.test/rss.xml">'
+        "</head></html>"
+    )
+    ydl = ByUrl({page: unsupported(page), rss: playlist_info(1)})
+    monkeypatch.setattr(urls, "build_ydl", ydl)
+    fetch = FakeFetch({page: ("text/html", body)})
+
+    urls.probe(page, fetch=fetch)
+
+    assert ydl.calls == [page, rss]
+
+
+def test_the_page_read_asks_for_html_and_keeps_its_own_budget(monkeypatch):
+    """Found by running it: a Castopod page answers `/@show` with ActivityPub
+    JSON unless the request says it wants HTML, so the first real run found no
+    feed on a page that has one. The timeout is its own (ADR-001): discovery
+    happens inside the preview's budget, and `SOCKET_TIMEOUT` would let one
+    preview hold a socket for twice as long as that exception was written for.
+    """
+    seen = {}
+
+    class Response:
+        headers = type(
+            "H", (), {"get_content_type": lambda self: "text/html", "get_content_charset": lambda self: "utf-8"}
+        )()
+
+        def read(self, limit):
+            return b"<html></html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["accept"] = request.get_header("Accept")
+        seen["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(urls, "urlopen", fake_urlopen)
+
+    urls.fetch_page("https://pod.test/@show", limit=1024)
+
+    assert "text/html" in (seen["accept"] or ""), "a page that negotiates would answer JSON"
+    assert seen["timeout"] == urls.DISCOVERY_TIMEOUT < urls.SOCKET_TIMEOUT

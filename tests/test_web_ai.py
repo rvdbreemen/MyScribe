@@ -1395,3 +1395,42 @@ def speaker_names(conn, media_id) -> dict[str, str]:
         (media_id,),
     ).fetchall()
     return {r["cluster_label"]: r["display_name"] for r in rows}
+
+
+# --- what is actually in force (TASK-040.06) ---------------------------------------
+
+
+def test_settings_states_what_actually_answers_a_question(client, conn):
+    """Three controls and the knowledge that a question can override the
+    default is not an answer to "is this leaving my machine?"."""
+    from scribe.web import ai_ui
+
+    ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "ollama")
+
+    page = client.get("/settings").text
+
+    assert "In effect now:" in page
+    assert "Nothing leaves this machine." in page
+
+
+def test_a_cloud_provider_says_the_transcript_leaves(client, conn):
+    from scribe.web import ai_ui
+
+    ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "openrouter")
+
+    page = client.get("/settings").text
+
+    assert "sends transcript text off this machine" in page
+
+
+def test_a_window_that_cannot_be_worked_out_is_simply_not_shown(conn, monkeypatch):
+    """A daemon that is down must cost a settings page nothing."""
+    from scribe.llm import tasks
+    from scribe.web import ai_ui
+
+    ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "ollama")
+    monkeypatch.setattr(tasks, "context_tokens_for", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+
+    row = ai_ui.effective_llm(conn)
+
+    assert row["window"] is None and row["provider"] == "ollama"

@@ -1,0 +1,97 @@
+# Tests on the three operating systems this app ships to (TASK-040.04).
+#
+# uv installs itself from its own script rather than from a marketplace action:
+# the project already pins uv by version and sha256 in packaging/tools.json for
+# exactly one reason - a build should not depend on something that can change
+# under it - and a floating action tag is the same problem with a nicer name.
+#
+# The suite runs `-m "not gpu"` by default (pytest.ini); no runner here has a
+# card, so the GPU marks stay excluded and TASK-040.01's RTX criterion remains
+# a thing only real hardware can answer.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        if: runner.os != 'Windows'
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        shell: pwsh
+
+      - name: The lockfile matches pyproject.toml
+        run: uv lock --check
+
+      - name: Install the locked environment
+        run: uv sync --frozen
+
+      - name: ffmpeg
+        # The doctor requires it, and so do the tests that put audio through a
+        # real pipeline. Each runner image has its own way to get it.
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y ffmpeg;
+          elif [ "$RUNNER_OS" = "macOS" ]; then brew install ffmpeg;
+          fi
+        shell: bash
+
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+        shell: pwsh
+
+      - name: Make room (Linux)
+        if: runner.os == 'Linux'
+        # The doctor's disk floor is 10 GB and a hosted ubuntu runner arrives
+        # with about 5 free, most of it spent on toolchains this project never
+        # uses. Removing them is cheaper than lowering a floor that exists
+        # because a transcription job fills a disk (TASK-043).
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h / | tail -1
+        shell: bash
+
+      - name: Doctor
+        # Before the suite, because a doctor that fails explains a suite that
+        # fails, and it costs seconds. --no-gpu: no runner has a card.
+        run: uv run python -m scribe.doctor --no-gpu
+
+      - name: Suite
+        if: runner.os != 'Windows'
+        run: uv run python -m pytest -q
+
+      - name: Suite (Windows, in halves)
+        if: runner.os == 'Windows'
+        # CLAUDE.md: the whole-suite run stalls intermittently on Windows -
+        # CPython's socketpair emulation behind TestClient, see pytest.ini. The
+        # halves are the documented workaround, not a way of hiding a failure.
+        run: |
+          uv run python -m pytest -q tests/test_[a-r]*.py
+          uv run python -m pytest -q tests/test_[s-z]*.py
+        shell: bash

@@ -787,6 +787,31 @@ def ai_output(media_id: int, kind: str, request: Request) -> Response:
     return _one_panel(request, conn, media_id, kind)
 
 
+def _refuse_if_window_too_small(
+    spec: tasks.TaskSpec, provider_name: str, model: str, *, custom_prompt: str = ""
+) -> None:
+    """Refuse here what the prepare stage would refuse an hour later.
+
+    The window a kind is planned against is known before the row is written -
+    it is the provider's and the model's, not the recording's. `speakers`
+    against an 8192-token local window failed for every recording, and it
+    failed as a RUNTIME job on the board rather than as an answer to the click
+    that caused it (TASK-084). This is the same arithmetic, in front of the
+    enqueue, with the numbers in the message.
+
+    A provider that cannot be asked right now - a daemon that is down - must
+    not block a queue: planning falls back to the constants, and anything this
+    cannot decide is left to the runner as before.
+    """
+    try:
+        window = tasks.context_tokens_for(llm.provider_class(provider_name), model)
+        tasks.fit_output_tokens(spec, context_tokens=window, custom_prompt=custom_prompt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:  # noqa: BLE001 - a window we could not work out is the runner's problem
+        return
+
+
 @router.post("/media/{media_id}/ai/{kind}", include_in_schema=False)
 def ai_run(
     media_id: int,
@@ -827,6 +852,8 @@ def ai_run(
     }
     if asked:
         params["prompt"] = asked
+
+    _refuse_if_window_too_small(spec, provider_name, params["model"], custom_prompt=asked)
 
     # A second click while the first is still queued or running is the same
     # question asked twice, and on a cloud provider that is a second paid call
@@ -1153,5 +1180,36 @@ def settings_context(conn: sqlite3.Connection, *, flash: str | None = None) -> d
         "llm_providers": provider_rows(conn),
         "llm_provider": default_provider(conn),
         "llm_private_default": private_default(conn),
+        "llm_effective": effective_llm(conn),
         "llm_flash": flash,
     }
+
+
+def effective_llm(conn: sqlite3.Connection) -> dict:
+    """What actually answers a question here, in one line (TASK-040.06).
+
+    The page has always shown a default provider and a model per provider, and
+    never what those add up to. Reading it took three controls and the
+    knowledge that each question may override the default - so a user could not
+    answer "is this leaving my machine?" by looking.
+
+    The window is the planned one, `tasks.context_tokens_for`, because that is
+    the number that decides whether a kind can run at all: an 8192 there is why
+    "Who is speaking" was impossible on Ollama (TASK-084). Looking it up asks
+    the local daemon, so it is wrapped - a daemon that is down or slow must
+    cost a settings page nothing, and an unknown window is simply not shown.
+    """
+    name = default_provider(conn)
+    model = default_model(conn, name)
+    row = {"provider": name, "label": provider_label(name), "model": model, "local": False, "window": None}
+    try:
+        provider_cls = llm.provider_class(name)
+    except Exception:  # noqa: BLE001 - a provider that no longer exists is not a crash here
+        return row
+    row["label"] = provider_label(name)
+    row["local"] = bool(provider_cls.is_local)
+    try:
+        row["window"] = tasks.context_tokens_for(provider_cls, model)
+    except Exception:  # noqa: BLE001 - the window is a nicety; the sentence is the point
+        row["window"] = None
+    return row

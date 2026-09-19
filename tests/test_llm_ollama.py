@@ -29,27 +29,43 @@ class Recorder:
     couples two provider suites together.
     """
 
-    def __init__(self, *responses):
+    def __init__(self, *responses, show=None):
         # One response per call; the last repeats once they run out, so a retry
         # test can hand over a single 500 and still get three of them.
         self.responses = list(responses)
         self.requests: list[httpx2.Request] = []
+        # `/api/show` is answered from here rather than from the script
+        # (TASK-084). The provider asks it once per model to learn the window,
+        # and a lookup that consumed a scripted response would renumber every
+        # assertion in this file for a request that is not what it is testing.
+        self.show = show
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
-        index = min(len(self.requests) - 1, len(self.responses) - 1)
+        if request.url.path == "/api/show":
+            return self.show or httpx2.Response(200, json={"model_info": {}})
+        index = min(len(self.asked) - 1, len(self.responses) - 1)
         answer = self.responses[index]
         return answer(request) if callable(answer) else answer
 
     @property
+    def asked(self) -> list[httpx2.Request]:
+        """Every request but the window lookup - what the tests are about."""
+        return [r for r in self.requests if r.url.path != "/api/show"]
+
+    @property
     def calls(self) -> int:
-        return len(self.requests)
+        return len(self.asked)
+
+    @property
+    def lookups(self) -> list[httpx2.Request]:
+        return [r for r in self.requests if r.url.path == "/api/show"]
 
     def body(self, index: int = 0) -> dict:
-        return json.loads(self.requests[index].content)
+        return json.loads(self.asked[index].content)
 
     def path(self, index: int = 0) -> str:
-        return self.requests[index].url.path
+        return self.asked[index].url.path
 
 
 def fake_factory(handler):
@@ -457,3 +473,145 @@ def test_a_host_that_is_not_this_machine_cannot_be_constructed(host):
 )
 def test_every_way_of_spelling_this_machine_is_accepted(host):
     assert ollama.OllamaProvider(None, host=host).host
+
+
+# --- the window a model actually has (TASK-084) ------------------------------------
+
+
+def show(context_length=262144, arch="qwen35"):
+    """The shape `/api/show` returned for qwen3.8:27b-q8_0 on 2026-09-18."""
+    return httpx2.Response(
+        200,
+        json={
+            "model_info": {"general.architecture": arch, f"{arch}.context_length": context_length},
+            "capabilities": ["completion", "tools", "thinking"],
+        },
+    )
+
+
+def test_a_models_window_is_read_from_the_daemon_not_assumed():
+    rec = Recorder(show=show(262144))
+
+    got = provider(rec).context_tokens("qwen3.8:27b-q8_0")
+
+    assert [r.url.path for r in rec.lookups] == ["/api/show"]
+    assert json.loads(rec.lookups[0].content)["model"] == "qwen3.8:27b-q8_0"
+    assert got == ollama.MAX_NUM_CTX, "262144 tokens of KV cache is not a window this machine holds"
+
+
+def test_a_model_with_a_smaller_window_is_planned_against_that():
+    """The direction discovery really matters in. The daemon answers 200 to a
+    prompt it quietly truncated, so a plan that assumed 8192 of a 4096 model
+    would never find out it was cut (Robert, 2026-09-19: assume a limited
+    context, not what a model claims)."""
+    assert provider(Recorder(show=show(4096))).context_tokens("tiny:1b") == 4096
+
+
+def test_a_large_advertised_window_is_used_up_to_the_memory_ceiling():
+    """A measurement is not an assumption. Refusing to use a window the daemon
+    *reported* made choosing a bigger model do nothing at all - two models both
+    reporting 262144 were planned at 8192, while the error told the user to
+    switch between them (jobs 118-122). What the ceiling is for is memory: a
+    quarter of a million tokens of KV cache beside a 27B model."""
+    got = provider(Recorder(show=show(262144))).context_tokens("big:27b")
+
+    assert got == ollama.MAX_NUM_CTX
+    assert ollama.MAX_NUM_CTX > ollama.DEFAULT_NUM_CTX, "a measured window has to beat the assumption"
+
+
+def test_the_ceiling_is_a_setting_not_a_rule(tmp_path):
+    """MAX_NUM_CTX is right for a 16 GB card and wrong for a 64 GB Mac and a
+    4 GB laptop alike, so a machine that knows better moves it either way."""
+    from scribe import db
+
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (ollama.SETTING_NUM_CTX, "12000"),
+        )
+        conn.commit()
+        p = ollama.OllamaProvider(conn, client_factory=fake_factory(Recorder(show=show(262144))))
+
+        assert p.ceiling() == 12000
+        assert p.context_tokens("big:27b") == 12000
+    finally:
+        conn.close()
+
+
+def test_a_ceiling_that_is_not_a_number_is_not_a_ceiling(tmp_path):
+    from scribe import db
+
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (ollama.SETTING_NUM_CTX, "as much as possible"),
+        )
+        conn.commit()
+
+        assert ollama.OllamaProvider(conn).ceiling() == ollama.MAX_NUM_CTX
+    finally:
+        conn.close()
+
+
+def test_a_daemon_that_cannot_say_falls_back_to_the_floor():
+    """An old daemon, a 404, a model_info without the key: none of them is a
+    reason to fail a task that would have run at the shipped default."""
+    for answer in (
+        httpx2.Response(404, json={"error": "model 'x' not found"}),
+        httpx2.Response(200, json={"model_info": {"general.architecture": "qwen35"}}),
+        httpx2.Response(500, text="boom"),
+    ):
+        assert provider(Recorder(show=answer)).context_tokens("x") == ollama.DEFAULT_NUM_CTX
+
+
+def test_the_window_asked_of_the_daemon_is_the_window_that_was_planned():
+    """The two must agree. `LOCAL_CONTEXT_TOKENS` says planning for more than
+    the provider requests means sending a prompt the daemon quietly truncates,
+    and it answers 200 while doing it - so a disagreement here is invisible."""
+    rec = Recorder(chat_answer("Paris"), show=show(4096))
+    p = provider(rec)
+
+    planned = p.context_tokens("mid:7b")
+    p.complete(base.ChatRequest(system="s", user="u", model="mid:7b"))
+
+    assert planned == 4096
+    assert rec.body(0)["options"]["num_ctx"] == planned
+
+
+def test_an_explicit_num_ctx_is_never_overridden():
+    """A caller who names a window has a reason - a small card, a measurement."""
+    p = provider(Recorder(show=show(262144)), num_ctx=4096)
+
+    assert p.num_ctx == 4096
+    assert p.context_tokens("qwen3.8:27b-q8_0") == 4096
+
+
+def test_the_budget_grows_with_the_window_it_was_planned_for():
+    """Job 126 died at exactly five minutes with "ollama did not answer: timed
+    out". DEFAULT_TIMEOUT was measured with a 9B model against 8192 tokens; a
+    27B at q8 against 32768 has four times the prompt to read and three times
+    the weights to read it with. A fixed timeout turns "slow" into "failed"
+    precisely when somebody has chosen the bigger model on purpose."""
+    assert ollama.timeout_for(ollama.DEFAULT_NUM_CTX) == ollama.DEFAULT_TIMEOUT
+    assert ollama.timeout_for(4096) == ollama.DEFAULT_TIMEOUT, "the floor holds under a small window"
+    assert ollama.timeout_for(32768) == ollama.DEFAULT_TIMEOUT * 4
+
+
+def test_a_chat_is_given_the_budget_not_the_probe_s():
+    """The model-info lookup and the completion are not the same wait, and the
+    client carries the timeout it was built with."""
+    rec = Recorder(chat_answer("Paris"), show=show(32768))
+    seen: list[float] = []
+
+    def factory(*, base_url, timeout):
+        seen.append(timeout)
+        return httpx2.Client(base_url=base_url, timeout=timeout, transport=httpx2.MockTransport(rec))
+
+    p = ollama.OllamaProvider(None, client_factory=factory)
+    p.complete(base.ChatRequest(system="s", user="u", model="big:27b"))
+
+    assert ollama.timeout_for(32768) in seen, f"the completion never got its budget: {seen}"

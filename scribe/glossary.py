@@ -677,7 +677,91 @@ def correct_word(conn: sqlite3.Connection, run_id: int, idx: int, text: str) -> 
             (run_id, idx, word["text"], corrected, RULE_MANUAL, time.time()),
         )
         conn.commit()
+    learn_from_correction(conn, word["text"], core)
     return corrected
+
+
+LEARNED_WEIGHT = 1.0
+"""The weight a term learned from a correction starts at.
+
+The same as a term typed into Settings, because the evidence behind it is at
+least as good: somebody read what Whisper produced, knew it was wrong, and
+typed what it should say. A term a person already weighted is never demoted to
+this - `learn_from_correction` adds the variant and leaves the weight alone."""
+
+
+def looks_like_a_name(text: str) -> bool:
+    """Is this worth biasing the next decode towards?
+
+    The glossary's existing rule, applied to a new source: only capitalised
+    words are names (`name_candidates`), and at least two letters. "teh"
+    corrected to "the" must not become a hotword - the decoder knows that word,
+    and the token budget it would eat belongs to terms somebody chose.
+
+    One word only. A correction spanning several words is a phrase, and a
+    phrase is a thing a person can add to the glossary deliberately; learning
+    it here would fill the list with sentence fragments.
+    """
+    core = _core(text)
+    tokens = _WORD.findall(core)
+    return len(tokens) == 1 and tokens[0] == core and len(core) >= 2 and core[0].isupper()
+
+
+def _already_claimed(heard: str, known: Sequence[Term]) -> bool:
+    """Would any term already here correct ``heard``?
+
+    Asked through `corrections_for`, the same pass that will run over the next
+    transcript, so the question is the one that actually matters rather than a
+    second opinion about it.
+    """
+    if not known:
+        return False
+    word = [{"idx": 0, "text": f" {heard}"}]
+    return bool(corrections_for(word, known))
+
+
+def learn_from_correction(conn: sqlite3.Connection, heard: str, typed: str) -> int | None:
+    """Teach the glossary what a person just corrected. Returns the term id.
+
+    The correction is the lesson (TASK-087): the term is what was typed, and
+    what Whisper produced becomes a variant - which is exactly the pair
+    `corrections_for` scores against, so the next recording is fixed by the
+    same machinery that had nothing to work with before. Before the decode it
+    is a hotword, so the recording after that may not need fixing at all.
+
+    Never raises into the correction it follows. A glossary that cannot be
+    taught is a worse day than a correction that fails to save, and ADR-003
+    puts `word.text` out of reach either way: nothing here writes a word, and
+    lifting the correction off still restores the transcript byte for byte.
+    """
+    try:
+        term = _core(typed)
+        variant = _core(heard)
+        if not looks_like_a_name(term):
+            return None
+
+        known = terms(conn)
+        existing = next((t for t in known if t.term.casefold() == term.casefold()), None)
+        keep = variant if variant and variant.casefold() != term.casefold() else None
+
+        # Do not take a spelling another term already answers for. A person who
+        # types "Vermeulen-Smit" over one word means that word; keeping
+        # "Vermulen" as its variant would make every other "Vermulen" in the
+        # library - including the ones an existing "Vermeulen" already fixes -
+        # come out hyphenated. The name is still worth a hotword; the variant
+        # is what would have rewritten other people's sentences.
+        if keep and _already_claimed(keep, [t for t in known if t is not existing]):
+            keep = None
+
+        if existing is None:
+            return add(conn, term, weight=LEARNED_WEIGHT, variants=[keep] if keep else [])
+        if keep and keep.casefold() not in {v.casefold() for v in existing.variants}:
+            # The weight is the user's business: a term somebody set to 5.0
+            # stays at 5.0 and gains a spelling.
+            update(conn, existing.id, variants=[*existing.variants, keep])
+        return existing.id
+    except Exception:  # noqa: BLE001 - teaching must never fail the correction
+        return None
 
 
 def same_word(conn: sqlite3.Connection, run_id: int, idx: int) -> list[dict]:

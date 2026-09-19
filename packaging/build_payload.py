@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -80,7 +81,7 @@ def tracked_files(paths: tuple[str, ...]) -> list[str]:
     return sorted(p for p in out.split("\0") if p)
 
 
-def build(platform: str, out: Path, ffmpeg_dir: Path | None) -> dict:
+def build(platform: str, out: Path, ffmpeg_dir: Path | None, models: bool = False) -> dict:
     if out.exists():
         shutil.rmtree(out)
     app, bin_dir, licenses = out / "app", out / "bin", out / "licenses"
@@ -111,9 +112,23 @@ def build(platform: str, out: Path, ffmpeg_dir: Path | None) -> dict:
             shutil.copy2(ffmpeg_dir / name, bin_dir / name)
         shutil.copy2(ffmpeg_dir / "ffmpeg-LICENSE.txt", licenses / "ffmpeg-LICENSE.txt")
 
+    shipped_models: dict = {}
+    if models:
+        # Into `models/`, which the launcher installs as MODELS_DIR in the
+        # per-user home: `diarize.local_weights_dir()` is MODELS_DIR/pyannote
+        # and is tried before the Hub, so a bundled pipeline is simply found
+        # (TASK-040.05). Verified against models.json before it lands here -
+        # fetch_models raises rather than return a file that is not the pin.
+        import fetch_models
+
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+        shipped_models = fetch_models.ensure(out / "models", token=token)
+        fetch_models.write_licences(licenses)
+
     manifest = {
         "platform": platform,
         "version": _version(app),
+        "models": shipped_models,
         "commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip(),
         "uv": TOOLS["uv"]["version"],
         "ffmpeg": TOOLS["ffmpeg"]["version"],
@@ -133,13 +148,20 @@ def _version(app: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--with-models",
+        action="store_true",
+        help="fetch and verify the weights in models.json into the payload (about 1.6 GB)",
+    )
     parser.add_argument("--platform", required=True, choices=PLATFORMS)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--ffmpeg-dir", type=Path)
     args = parser.parse_args(argv)
-    manifest = build(args.platform, args.out.resolve(), args.ffmpeg_dir)
+    manifest = build(args.platform, args.out.resolve(), args.ffmpeg_dir, models=args.with_models)
+    shipped = manifest.get("models") or {}
+    note = f", models: {', '.join(sorted(shipped))}" if shipped else ""
     print(f"payload {manifest['platform']} {manifest['version']} ({manifest['commit'][:8]}): "
-          f"{len(manifest['files'])} files at {args.out}")
+          f"{len(manifest['files'])} files at {args.out}{note}")
     return 0
 
 

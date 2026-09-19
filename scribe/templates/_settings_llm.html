@@ -36,6 +36,18 @@
     private can only use it.
   </p>
 
+  {# What the three controls below actually add up to (TASK-040.06). The page
+     has always shown a default and a model per provider and never the sum, so
+     "is this leaving my machine?" could not be answered by looking. The window
+     is the planned one: an 8192 there is why a kind can be refused outright. #}
+  <p class="effective">
+    <strong>In effect now:</strong> questions are answered by {{ llm_effective.label }}
+    {%- if llm_effective.model %} using <code>{{ llm_effective.model }}</code>{% endif %}
+    {%- if llm_effective.window %}, planned against a {{ "{:,}".format(llm_effective.window) }}-token window{% endif %}.
+    {% if llm_effective.local %}Nothing leaves this machine.{% else %}This sends transcript text off this machine.{% endif %}
+    <span class="muted">A single question can still override it below.</span>
+  </p>
+
   <form method="post" action="/settings/llm" hx-post="/settings/llm" hx-target="#llm-providers" hx-swap="outerHTML">
     <label class="field">Default provider
       <select name="provider">

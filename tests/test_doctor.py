@@ -122,3 +122,58 @@ def test_smoke_timings_never_land_under_the_transcribe_stage():
         body = fh.read()
     assert 'record_stage_perf(conn, "smoke"' in body
     assert 'record_stage_perf(conn, "transcribe"' not in body
+
+
+# --- diarization readiness (TASK-040.06) -------------------------------------------
+
+
+def test_a_local_pipeline_directory_is_enough(tmp_path, monkeypatch):
+    """The route that needs no token and no network, and the one a bundled
+    package uses: `diarize.local_weights_dir()` with a config.yaml in it."""
+    from scribe.stages import diarize
+
+    local = tmp_path / "pyannote"
+    local.mkdir()
+    (local / "config.yaml").write_text("pipeline: {}\n", encoding="utf-8")
+    monkeypatch.setattr(diarize, "local_weights_dir", lambda: local)
+
+    check = doctor.check_diarization()
+
+    assert check.ok and "local pipeline" in check.detail
+
+
+def test_no_token_and_no_pipeline_is_reported_not_passed(tmp_path, monkeypatch):
+    """The false green this check exists for: on 2026-09-18 the card said every
+    required check passed on a machine whose diarize stage could not start."""
+    from scribe.stages import diarize
+
+    monkeypatch.setattr(diarize, "local_weights_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr(diarize, "hf_token", lambda conn=None: None)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+
+    check = doctor.check_diarization()
+
+    assert not check.ok
+    assert check.optional, "transcription still works; this must not fail the install"
+    assert "hf.co/pyannote" in check.fix_hint and str(tmp_path / "absent") in check.fix_hint
+
+
+def test_a_token_the_hub_refuses_names_the_conditions(tmp_path, monkeypatch):
+    """401 and 403 are different fixes - an unknown token, and a known one that
+    has not accepted the gate - and the message must not blame the network."""
+    from scribe.stages import diarize
+
+    monkeypatch.setattr(diarize, "local_weights_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr(diarize, "hf_token", lambda conn=None: "hf_pretend")
+    monkeypatch.setattr(doctor, "_gated_repo_reachable", lambda repo, token: (False, "HTTP 403 - the conditions are not accepted for this token"))
+
+    check = doctor.check_diarization()
+
+    assert not check.ok and "403" in check.detail
+
+
+def test_the_web_process_never_runs_it():
+    """ADR-001: it imports the diarize stage and reaches the network, neither of
+    which belongs in a request that renders the settings page."""
+    assert doctor.check_diarization not in doctor.WEB_SAFE_CHECKS

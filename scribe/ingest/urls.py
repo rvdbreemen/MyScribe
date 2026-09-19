@@ -40,10 +40,12 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from html.parser import HTMLParser
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Literal
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
 
 from scribe import glossary
 
@@ -79,6 +81,38 @@ UPDATE_COMMAND = "uv lock --upgrade-package yt-dlp && uv sync"
 # Seconds to wait on a socket. Long enough for a slow server, short enough that
 # a hung connection does not become a job that never ends.
 SOCKET_TIMEOUT = 15
+
+# The link types a podcast page announces its feed with, best first. RSS is
+# what carries enclosures and so what yt-dlp can actually read as episodes;
+# Atom is usually the blog feed published beside it, worth trying only when
+# there is no RSS. Ordered, because a page that offers both means both.
+FEED_LINK_TYPES = ("application/rss+xml", "application/atom+xml")
+
+# How much of a page discovery will read. The link tag lives in `<head>`, so
+# this is a ceiling on a body that turned out not to be a page at all - an
+# unsupported URL can be a 200 MB mp3, and looking for a link tag in it is the
+# bug this number exists to prevent. Half a megabyte is several times the
+# largest podcast home page and still nothing on a socket.
+MAX_DISCOVERY_BYTES = 512 * 1024
+
+# Content types worth parsing for a link tag. A feed itself is never here:
+# yt-dlp reads those, and one that failed will not read better twice.
+_HTML_TYPES = ("text/html", "application/xhtml+xml")
+
+# Seconds discovery may spend on its page, and deliberately not `SOCKET_TIMEOUT`.
+# The dialog's preview is the one place ADR-001 lets the web process touch the
+# network, on a 10 s budget that an abandoned thread then holds for as long as
+# `SOCKET_TIMEOUT` allows. Discovery is a second read inside that same budget,
+# so borrowing the full 15 s would let one preview hold a socket for 30 - twice
+# what ADR-001's exception was written for. Five seconds is a page, or nothing.
+DISCOVERY_TIMEOUT = 5
+
+# What discovery asks for. Not a nicety: a Castopod page answers
+# `https://host/@show` with ActivityPub JSON when the request states no
+# preference, and urllib states none by default - which is exactly how the
+# first real run of this code found no feed on a page that has one. Asking for
+# HTML is what makes the server serve the document the link tag lives in.
+_HTML_ACCEPT = "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"
 
 # A run of letters, apostrophes and hyphens - what counts as a name here and
 # in the hotwords. One definition, in `scribe.glossary` (Phase 6 Task 5), which
@@ -461,12 +495,105 @@ def ensure_public_http_url(url: str) -> str:
     return text
 
 
+def fetch_page(url: str, *, limit: int) -> tuple[str, str]:
+    """``(content_type, text)`` for ``url``, reading at most ``limit`` bytes.
+
+    The one place discovery touches the network, and a seam the tests replace.
+    Deliberately small: no cookies, no rediression policy of our own, no
+    retry. A page that will not load in one try is a page whose podcast the
+    user can still reach by pasting the feed.
+    """
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; MyScribe)",
+            "Accept": _HTML_ACCEPT,
+        },
+    )
+    with urlopen(request, timeout=DISCOVERY_TIMEOUT) as response:  # noqa: S310 - scheme checked by the caller
+        content_type = response.headers.get_content_type()
+        charset = response.headers.get_content_charset() or "utf-8"
+        body = response.read(limit)
+    return content_type, body.decode(charset, errors="replace")
+
+
+class _FeedLinks(HTMLParser):
+    """Collects ``<link rel=alternate type=...feed...>`` hrefs by type.
+
+    `HTMLParser` rather than a regex because this is a stranger's markup: the
+    attributes come in any order, the quoting is whatever their templating
+    did, and the tag may never be closed. The stdlib parser is bored by all
+    three, and it costs no dependency.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "link":
+            return
+        got = {name.lower(): (value or "").strip() for name, value in attrs}
+        rel = got.get("rel", "").lower().split()
+        kind = got.get("type", "").lower().split(";")[0].strip()
+        href = got.get("href", "")
+        if "alternate" in rel and kind in FEED_LINK_TYPES and href:
+            self.found.setdefault(kind, href)
+
+
+def feed_links(html: str) -> list[str]:
+    """Every feed href ``html`` announces, RSS before Atom.
+
+    Relative as written; `discover_feed` resolves and judges them.
+    """
+    parser = _FeedLinks()
+    try:
+        parser.feed(html)
+    except Exception:  # noqa: BLE001 - a stranger's markup is never a crash here
+        pass
+    return [parser.found[kind] for kind in FEED_LINK_TYPES if kind in parser.found]
+
+
+def discover_feed(page_url: str, *, fetch: Callable[..., tuple[str, str]] | None = None) -> str | None:
+    """The feed ``page_url`` announces, or None.
+
+    A podcast home page is not something yt-dlp has an extractor for, but it
+    says where its feed is - `<link rel="alternate" type="application/rss+xml">`
+    is on every Castopod, Podbean, Transistor and Buzzsprout page there is.
+    Reading that tag turns the most obvious thing a user can paste into the
+    thing the app can actually import.
+
+    **The href is the page author's text, not the user's** - the TASK-072
+    case one page further in. A page may advertise its feed at
+    `http://127.0.0.1:11434/api/tags` and have this app fetch it from inside
+    the network, so what comes back goes through `ensure_public_http_url`
+    before anything touches it. Nothing here raises: a discovery that cannot
+    answer returns None and lets the original failure stand.
+    """
+    fetch = fetch or fetch_page
+    try:
+        content_type, body = fetch(page_url, limit=MAX_DISCOVERY_BYTES)
+    except Exception:  # noqa: BLE001 - discovery is a second chance, never a new failure
+        return None
+    if content_type.lower().split(";")[0].strip() not in _HTML_TYPES:
+        return None
+    for href in feed_links(body):
+        candidate = urljoin(page_url, href)
+        try:
+            return ensure_public_http_url(candidate)
+        except UrlError:
+            continue  # a private address, or not a web address at all
+    return None
+
+
 def probe(
     url: str,
     *,
     cookies_file: str | None = None,
     limit: int | None = None,
     ydl=None,
+    fetch: Callable[..., tuple[str, str]] | None = None,
+    discover: bool = True,
 ) -> UrlInfo:
     """What this URL is, without downloading a byte.
 
@@ -474,10 +601,30 @@ def probe(
     `truncated` is judged against. `returned` is yt-dlp's raw count, before
     `_entries` drops the items nobody could fetch: the question is whether
     the *site* had more, not whether every item was usable.
+
+    ``discover`` is the podcast home page fallback (TASK-083): a URL yt-dlp
+    has no extractor for gets read once as a page, and if it announces a feed,
+    that feed is probed instead. Off the happy path by construction - a URL
+    that works costs no extra request - and one hop only, because the feed's
+    own failure is the user's answer, not a third thing to try.
     """
     url = ensure_http_url(url)
     ydl = ydl if ydl is not None else build_ydl(probe_opts(cookies_file, limit=limit))
-    info = _extract(ydl, url, download=False)
+    try:
+        info = _extract(ydl, url, download=False)
+    except UnsupportedUrl as unsupported:
+        if not discover:
+            raise
+        feed = discover_feed(url, fetch=fetch)
+        if feed is None:
+            raise
+        try:
+            return probe(feed, cookies_file=cookies_file, limit=limit, ydl=ydl, discover=False)
+        except UrlError:
+            # The feed was announced but is no better. The page is what the
+            # user pasted and what they can act on, so its error is the one
+            # that survives.
+            raise unsupported from None
 
     entries = _entries(info)
     returned = len(info.get("entries") or [])
