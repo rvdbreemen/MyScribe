@@ -87,6 +87,20 @@ jobs:
           "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
         shell: pwsh
 
+      - name: Make room (Linux)
+        if: runner.os == 'Linux'
+        # The same clearing ci.yml does, for a hungrier reason. The smoke test
+        # runs a real first sync, and on Linux that pulls torch with its whole
+        # CUDA stack - nvidia-cusolver alone is hundreds of megabytes - into a
+        # runner that arrives with about 5 GB free. The AppImage had already
+        # built; it was the sync behind the smoke that ran out of disk
+        # (release run 35436498028).
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+        shell: bash
+
       - name: Build ffmpeg (macOS)
         if: runner.os == 'macOS'
         shell: bash
