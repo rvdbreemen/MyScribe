@@ -83,6 +83,8 @@ from __future__ import annotations
 
 import ipaddress
 import sqlite3
+
+from scribe import db
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -103,32 +105,34 @@ PROBE_TIMEOUT = 2.0
 sanctioned network call in a method the base class says makes none."""
 
 DEFAULT_NUM_CTX = 8192
-"""The floor, and what a daemon that will not say gets. Kept as the shipped
-default it always was: every measurement in this docstring was taken at it."""
+"""What this plans against when the daemon will not say what a model holds.
 
-MAX_NUM_CTX = DEFAULT_NUM_CTX
-"""The ceiling a discovered window is planned against, and deliberately small.
+An assumption, and deliberately a small one: assuming a large context is how a
+prompt gets silently truncated, because the daemon answers 200 either way. A
+value a 4B model holds on this card without evicting Whisper, and the number
+every measurement in this docstring was taken at."""
 
-A model reporting a large window is not a reason to use one. A window is KV
-cache and the cache is this machine's memory: `qwen3.8:27b-q8_0` advertises
-262144 tokens, which is true of the weights and untrue of the card. Asking the
-daemon to hold that beside a 27B model is how a local box starts swapping
-mid-answer, and a 4 GB machine running a 4B model has less room again.
+SETTING_NUM_CTX = "llm_num_ctx"
+"""The settings row that moves `MAX_NUM_CTX`, for a machine that knows better."""
 
-So the assumption stays 8192, the number every measurement in this docstring
-was taken at (Robert, 2026-09-19: plan for a limited context, 4 or 8 KB, not
-for what a model claims). Nothing is lost by it: `tasks.fit_output_tokens`
-clamps a kind's answer budget to what the window affords, so every kind runs
-at 8192 and at 4096 - in more calls over smaller chunks, which is the honest
-cost of a small window rather than a failure.
+MAX_NUM_CTX = 32768
+"""The ceiling a *measured* window is planned against.
 
-Discovery still matters in the other direction. A model whose real window is
-*smaller* than this is planned against that smaller number, because the daemon
-answers 200 to a prompt it quietly truncated (`_answer`), and a plan that
-assumed more would never find out."""
-"""The window asked for when a caller does not say. Task 3's chunker computes
-one from the transcript; until then this is a value a 4B model holds on this
-card without evicting Whisper."""
+The distinction this turns on, and the first version got wrong: an assumption
+and a measurement are not the same thing. `DEFAULT_NUM_CTX` is what this plans
+against when nothing is known, and it stays small on purpose - assuming a large
+context is how a prompt gets silently truncated. But when the daemon *reports*
+a model's window, that is not an assumption, and refusing to use it made
+choosing a bigger model do nothing at all: two models reporting 262144 tokens
+were both planned at 8192, while the error message told the user to switch
+between them (jobs 118-122, 2026-09-19).
+
+What the ceiling is actually for is memory. A window is KV cache and the cache
+is this machine's: a quarter of a million tokens beside a 27B model is how a
+local box starts swapping. 32k is four times the default - room for an hour of
+transcript in one call - and a cache a 16 GB card can hold. A machine that
+knows better moves it with the `llm_num_ctx` setting, in either direction."""
+
 
 KEEP_ALIVE = "5m"
 """How long the weights stay resident after an answer. Long enough that the
@@ -261,8 +265,31 @@ class OllamaProvider(base.Provider):
             # No floor upwards: a model that really holds 4096 is planned
             # against 4096. Asking for more is how a prompt gets truncated
             # behind a 200.
-            self._windows[name] = self.num_ctx if found is None else min(MAX_NUM_CTX, found)
+            self._windows[name] = self.num_ctx if found is None else min(self.ceiling(), found)
         return self._windows[name]
+
+    def ceiling(self) -> int:
+        """The most a measured window may be used up to, here on this machine.
+
+        `MAX_NUM_CTX` is a guess about memory that is right for a 16 GB card
+        and wrong for both a 64 GB Mac and a 4 GB laptop, so it is a default
+        and not a rule: the `llm_num_ctx` setting moves it either way. Read per
+        call rather than cached, because a user who lowers it after a job
+        swapped their machine means it now.
+        """
+        if self.conn is not None:
+            try:
+                with db.LOCK:
+                    row = self.conn.execute(
+                        "SELECT value FROM setting WHERE key=?", (SETTING_NUM_CTX,)
+                    ).fetchone()
+                if row is not None:
+                    wanted = int(str(row["value"]).strip())
+                    if wanted > 0:
+                        return wanted
+            except Exception:  # noqa: BLE001 - a setting that is not a number is not a ceiling
+                pass
+        return MAX_NUM_CTX
 
     def _model_window(self, model: str) -> int | None:
         """`<arch>.context_length` from `/api/show`, or None if it cannot be had.

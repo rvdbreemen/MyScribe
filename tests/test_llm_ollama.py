@@ -507,11 +507,54 @@ def test_a_model_with_a_smaller_window_is_planned_against_that():
     assert provider(Recorder(show=show(4096))).context_tokens("tiny:1b") == 4096
 
 
-def test_a_large_advertised_window_is_not_taken_up():
-    """A model reporting 262144 is not a reason to ask for it: a window is KV
-    cache, and the cache is this machine's memory."""
-    assert provider(Recorder(show=show(262144))).context_tokens("big:27b") == ollama.MAX_NUM_CTX
-    assert ollama.MAX_NUM_CTX == ollama.DEFAULT_NUM_CTX
+def test_a_large_advertised_window_is_used_up_to_the_memory_ceiling():
+    """A measurement is not an assumption. Refusing to use a window the daemon
+    *reported* made choosing a bigger model do nothing at all - two models both
+    reporting 262144 were planned at 8192, while the error told the user to
+    switch between them (jobs 118-122). What the ceiling is for is memory: a
+    quarter of a million tokens of KV cache beside a 27B model."""
+    got = provider(Recorder(show=show(262144))).context_tokens("big:27b")
+
+    assert got == ollama.MAX_NUM_CTX
+    assert ollama.MAX_NUM_CTX > ollama.DEFAULT_NUM_CTX, "a measured window has to beat the assumption"
+
+
+def test_the_ceiling_is_a_setting_not_a_rule(tmp_path):
+    """MAX_NUM_CTX is right for a 16 GB card and wrong for a 64 GB Mac and a
+    4 GB laptop alike, so a machine that knows better moves it either way."""
+    from scribe import db
+
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (ollama.SETTING_NUM_CTX, "12000"),
+        )
+        conn.commit()
+        p = ollama.OllamaProvider(conn, client_factory=fake_factory(Recorder(show=show(262144))))
+
+        assert p.ceiling() == 12000
+        assert p.context_tokens("big:27b") == 12000
+    finally:
+        conn.close()
+
+
+def test_a_ceiling_that_is_not_a_number_is_not_a_ceiling(tmp_path):
+    from scribe import db
+
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (ollama.SETTING_NUM_CTX, "as much as possible"),
+        )
+        conn.commit()
+
+        assert ollama.OllamaProvider(conn).ceiling() == ollama.MAX_NUM_CTX
+    finally:
+        conn.close()
 
 
 def test_a_daemon_that_cannot_say_falls_back_to_the_floor():
