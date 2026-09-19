@@ -499,14 +499,19 @@ def test_a_models_window_is_read_from_the_daemon_not_assumed():
     assert got == ollama.MAX_NUM_CTX, "262144 tokens of KV cache is not a window this machine holds"
 
 
-def test_a_window_smaller_than_the_floor_keeps_the_floor():
-    """A 4k model is not a reason to plan for less than the shipped default:
-    the daemon is asked for `num_ctx` and answers 200 either way."""
-    assert provider(Recorder(show=show(4096))).context_tokens("tiny:1b") == ollama.DEFAULT_NUM_CTX
+def test_a_model_with_a_smaller_window_is_planned_against_that():
+    """The direction discovery really matters in. The daemon answers 200 to a
+    prompt it quietly truncated, so a plan that assumed 8192 of a 4096 model
+    would never find out it was cut (Robert, 2026-09-19: assume a limited
+    context, not what a model claims)."""
+    assert provider(Recorder(show=show(4096))).context_tokens("tiny:1b") == 4096
 
 
-def test_a_window_between_the_floor_and_the_cap_is_taken_as_it_is():
-    assert provider(Recorder(show=show(16384))).context_tokens("mid:7b") == 16384
+def test_a_large_advertised_window_is_not_taken_up():
+    """A model reporting 262144 is not a reason to ask for it: a window is KV
+    cache, and the cache is this machine's memory."""
+    assert provider(Recorder(show=show(262144))).context_tokens("big:27b") == ollama.MAX_NUM_CTX
+    assert ollama.MAX_NUM_CTX == ollama.DEFAULT_NUM_CTX
 
 
 def test_a_daemon_that_cannot_say_falls_back_to_the_floor():
@@ -524,13 +529,13 @@ def test_the_window_asked_of_the_daemon_is_the_window_that_was_planned():
     """The two must agree. `LOCAL_CONTEXT_TOKENS` says planning for more than
     the provider requests means sending a prompt the daemon quietly truncates,
     and it answers 200 while doing it - so a disagreement here is invisible."""
-    rec = Recorder(chat_answer("Paris"), show=show(16384))
+    rec = Recorder(chat_answer("Paris"), show=show(4096))
     p = provider(rec)
 
     planned = p.context_tokens("mid:7b")
     p.complete(base.ChatRequest(system="s", user="u", model="mid:7b"))
 
-    assert planned == 16384
+    assert planned == 4096
     assert rec.body(0)["options"]["num_ctx"] == planned
 
 

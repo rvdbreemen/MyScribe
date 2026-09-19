@@ -106,15 +106,26 @@ DEFAULT_NUM_CTX = 8192
 """The floor, and what a daemon that will not say gets. Kept as the shipped
 default it always was: every measurement in this docstring was taken at it."""
 
-MAX_NUM_CTX = 32768
-"""The ceiling discovery may raise a window to.
+MAX_NUM_CTX = DEFAULT_NUM_CTX
+"""The ceiling a discovered window is planned against, and deliberately small.
 
-A window is KV cache, and the cache is this machine's memory. `qwen3.8:27b-q8_0`
-reports a 262144-token window, which is true of the weights and untrue of the
-card: asking the daemon to hold a quarter of a million tokens of cache beside a
-27B model is how a local box starts swapping mid-answer. 32k is four times the
-floor - room for the answer budgets the cloud kinds were tuned with, and for an
-hour of transcript in one call - and still a cache a 16 GB card can hold."""
+A model reporting a large window is not a reason to use one. A window is KV
+cache and the cache is this machine's memory: `qwen3.8:27b-q8_0` advertises
+262144 tokens, which is true of the weights and untrue of the card. Asking the
+daemon to hold that beside a 27B model is how a local box starts swapping
+mid-answer, and a 4 GB machine running a 4B model has less room again.
+
+So the assumption stays 8192, the number every measurement in this docstring
+was taken at (Robert, 2026-09-19: plan for a limited context, 4 or 8 KB, not
+for what a model claims). Nothing is lost by it: `tasks.fit_output_tokens`
+clamps a kind's answer budget to what the window affords, so every kind runs
+at 8192 and at 4096 - in more calls over smaller chunks, which is the honest
+cost of a small window rather than a failure.
+
+Discovery still matters in the other direction. A model whose real window is
+*smaller* than this is planned against that smaller number, because the daemon
+answers 200 to a prompt it quietly truncated (`_answer`), and a plan that
+assumed more would never find out."""
 """The window asked for when a caller does not say. Task 3's chunker computes
 one from the transcript; until then this is a value a 4B model holds on this
 card without evicting Whisper."""
@@ -247,9 +258,10 @@ class OllamaProvider(base.Provider):
             return self.num_ctx
         if name not in self._windows:
             found = self._model_window(name)
-            self._windows[name] = (
-                self.num_ctx if found is None else max(DEFAULT_NUM_CTX, min(MAX_NUM_CTX, found))
-            )
+            # No floor upwards: a model that really holds 4096 is planned
+            # against 4096. Asking for more is how a prompt gets truncated
+            # behind a 200.
+            self._windows[name] = self.num_ctx if found is None else min(MAX_NUM_CTX, found)
         return self._windows[name]
 
     def _model_window(self, model: str) -> int | None:
