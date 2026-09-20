@@ -10,18 +10,24 @@ three lenses, and three of the four tied at 7.0; a synthesis chose a spine
 and grafted the rest onto it; a completeness critic then found seven factual
 errors (W1-W7) and eleven omissions (M1-M11) in that synthesis, plus nine
 questions nobody had asked (U1-U9). All eighteen findings are folded in
-below, and each of the nine questions is taken, declined or left open by
-name: U1 and U6 with M2 and U2 with M5 (§2), U8 with M6 (§3.2), U3, U4 and
-U5 in §1, U7 in §8, U9 at the end of §1. Robert decided four forks
+below, and each of the nine questions is taken or declined by name: U1 and
+U6 with M2 and U2 with M5 (§2), U8 with M6 (§3.2), U3, U4, U5 and U7 in
+§1, U9 at the end of §1. Robert decided four forks
 interactively the same day (R1-R4, §0). The choices are stated with their
 reasons so they can be overturned one at a time. A cross-check against the
 backlog tasks and the ADR-015 draft, the same day, moved this text where the
 three disagreed: line 3 of §1's table, the 12B threshold (§3.3),
 `CUDA_VISIBLE_DEVICES` (§3.8), the names of the Settings sections, the wait
 in §7, and the second fact in the pointer file, now marked as a proposal.
-The keys used throughout - R for Robert's decisions, W, M and U for the
-critic's findings - are spelled out in `2026-09-20-installer-decisions.md`,
-and the measurements quoted here are in `2026-09-20-installer-evidence/`.
+Robert's grill of ADR-015, later that day (G1-G9), split the record in
+three (§3.14) and moved this text in §1 (row 8a), §2 (sequence, not code),
+§3.1, §3.3, §3.9 and §4 to §8. Code is cited by file and line as of commit
+d80360a, the state before TASK-089.03's build, which moves lines in every
+file it touches; Accepted records are cited by section. The keys used
+throughout - R for Robert's decisions, W, M and U for the critic's
+findings, G for the grill - are spelled out in
+`2026-09-20-installer-decisions.md`, and the measurements quoted here are
+in `2026-09-20-installer-evidence/`.
 
 The runner-up is a `/welcome` page in the web UI. It tied at 7.0 and was the
 maintainers' favourite at 7.5, and it does five things better than what
@@ -54,13 +60,13 @@ transcribes. `python -m scribe.setup` becomes the one place that detects,
 asks, writes and proves; the frozen launcher's first run, a new stdlib
 `install.py` for a clone, and the headless console all render it. Three
 changes in the app itself are in scope because skipping is only honest
-with them: no provider row means no provider (R1), a job keeps its
+with them: no provider row means no provider (R1, ADR-016), a job keeps its
 transcript when the speaker weights cannot load, and an AI action that
-cannot be answered shows what is missing. A fourth is proposed and held as
-an open question (§3.9, §8): `/health` says which checkout and library it
-serves. Not in scope: the Inno Setup wizard's pages (it keeps
-its one desktop-icon question), code signing, and anything in the
-transcribe pipeline beyond the two loaders in §3.7.
+cannot be answered shows what is missing. A fourth was decided in the grill
+(G5, §3.9): `/health` says which checkout and library it serves. Not in
+scope: the Inno Setup wizard's pages (it keeps its one desktop-icon
+question), code signing, and anything in the transcribe pipeline beyond the
+two loaders in §3.7.
 
 ## 0. What is asked, and what is already there
 
@@ -236,7 +242,7 @@ What was measured on this machine on 2026-09-20, values never printed:
 | `OPENROUTER_TOKEN` | in the process and in the machine hive |
 | `OPENAI_API_KEY` | in `<repo>/.env` only |
 | `HUGGING_FACE_HUB_TOKEN`, `SCRIBE_DATA_DIR` | nowhere |
-| Ollama | 0.34.0 answering; 8 models, 3 with the `completion` capability (`gemma4:12b`, `qwen3.5:4b`, `qwen3.5:9b`); every model carried a `capabilities` key on `/api/tags` |
+| Ollama | 0.34.0 answering; 8 models, 3 with the `completion` capability (`gemma4:12b`, `qwen3.5:4b`, `qwen3.5:9b`); every model carried a `capabilities` key on `/api/tags`. `OLLAMA_MODELS` is set in the registry's user hive and points at a folder on D: (`reg query HKCU\Environment`), so on this machine `state()` can never read *absent* (§3.3) |
 | The library | `<repo>/data/myscribe.db`, 107 MB; no `setup.json`; no `%LOCALAPPDATA%\MyScribe` |
 | `.venv` on disk | 5,321 MiB (`du`), dev group included |
 | Ollama v0.34.2, the latest release (GitHub API) | `OllamaSetup.exe` 1,569,993,232 bytes, sha256 `8c9eb7ba…066a8b`; `Ollama.dmg` 197,873,582 bytes, sha256 `ca3c5c15…9d5d7b` |
@@ -264,7 +270,7 @@ Four conclusions follow:
    first of the three is TASK-089.07.
 4. **Requirement 9 needs MyScribe's own gate.** Ollama's scripts do not
    stop at "already there": `install.sh` kills a running Ollama and removes
-   `/Applications/Ollama.app` before installing (`:62-68` of the script as
+   `/Applications/Ollama.app` before installing (`:62-69` of the script as
    fetched on 2026-09-20), and on Linux it creates a user, enables a
    service and may install NVIDIA drivers, all under sudo.
 
@@ -303,12 +309,13 @@ the doctor under "This machine".
 | --- | --- | --- | --- | --- | --- |
 | 1 | **Where should MyScribe keep everything?** Shows the default home, the free space per volume, the total this install will download with its parts, and the disk it needs - the 10 GB the app keeps free included (§2). | Release only, before the sync, and only when no pointer file exists, no `--home` or `MYSCRIBE_HOME` is given and the default home holds no environment yet. Asked again when a pointer names a folder that is not there (§2). | Today's location | Everything - environment, Python, cache, library, models - lands on the system volume. | Quit, move the folder, put its path in the pointer file; `--setup` shows the path in force and says this. Nothing is moved for you. |
 | 2 | **Do you already have a MyScribe library? (M5, U2)** When one was found: "An existing library was found at `<path>` (N recordings). Use it, start a new one, or name another folder?" A release asks even when none was found - "start new" preselected, and "I already have one: name its folder" - because a release cannot see a clone's library (§2). In a clone with none found: keep recordings in `<repo>/data`, or somewhere else? | After the sync, first. A release: every first sitting. A clone: when a `myscribe.db` exists somewhere other than the target - `<repo>/data`, the default home, or a `SCRIBE_DATA_DIR` found in any environment layer. Not asked when the target already holds a library. | Start new (clone: `<repo>/data`) | A library that was found is left untouched and the sitting says where it is. In a clone the data stays inside the git working tree, and one line says `git clean -fdx` would delete it. | `--setup`, which lists this entry for as long as the target library holds no recordings; or `SCRIBE_DATA_DIR` in `.env` (clone) |
-| 3 | (macOS clone) **ffmpeg is not on PATH.** Not a question: one information line gives the command `brew install ffmpeg`, and the person runs it. MyScribe does not run brew, because ADR-015's rule allows only a pinned, sha256-verified artifact and brew's is neither (TASK-089.17). The synthesis had a y/n here; the number stays so the others do not move. | darwin, a clone, ffmpeg or ffprobe missing. | - | The report marks ffmpeg FAIL: nothing transcribes until it is on `PATH`. | `brew install ffmpeg`, then `python3 install.py --check` |
+| 3 | (macOS clone) **ffmpeg is not on PATH.** Not a question: one information line gives the command `brew install ffmpeg`, and the person runs it. MyScribe does not run brew, because ADR-017's rule allows only a pinned, sha256-verified artifact and brew's is neither (TASK-089.17). The synthesis had a y/n here; the number stays so the others do not move. | darwin, a clone, ffmpeg or ffprobe missing. | - | The report marks ffmpeg FAIL: nothing transcribes until it is on `PATH`. | `brew install ffmpeg`, then `python3 install.py --check` |
 | 4 | **Hugging Face token** for "Recognise speakers". Hidden input; the conditions page opens with one click. Checked at once with one announced request. | No local pipeline and no token found anywhere (§3.2). A found token that is later refused reopens this. | Skip | Nothing is saved. Transcription is unaffected; a job that asks for speakers ends with a transcript and a note (TASK-089.08). | Settings > Transcription > Hugging Face token |
 | 5 | **Who answers questions about a transcript?** Each choice shows what was detected. Cloud choices carry "sends transcript text off this machine; recordings pinned private are always refused". | No `llm_provider` row. A re-run shows the stored value and never resets it. | Ollama when it is ready, else "decide later". A cloud provider is never the Enter default. | This question writes no row, so there is no provider (R1): the AI panel says "choose a provider" and the automatic speaker-naming pass waits. One later answer still writes the row: a yes to question 7, whose text says so. | Settings > AI providers |
 | 6 | **API key for `<provider>`.** Hidden input. | The answer to 5, or the stored provider, is a cloud provider and no non-blank key is found for it. | Skip | The provider is saved without a credential; Summary and Chat show a no-key card (TASK-089.10). | Settings > AI providers > Save key |
 | 7 | **Ollama is not on this machine. Install it, and let it answer questions about a transcript?** Exactly what will run is shown before the question (§6). When 5 was left open the text adds "MyScribe will then use this Ollama", so a yes is also an explicit answer to 5 (§3.3). | Only in state *absent*, and only when the answer to 5 is Ollama or undecided. | No | Nothing is downloaded or run. Recordings pinned private cannot use AI until a local provider exists. | The same offer, for as long as Ollama is absent; or ollama.com/download |
-| 8 | **Which model should the new Ollama get?** | Same sitting, shown only when 7 is yes. Never for an Ollama that was already there. | `qwen3.5:4b` (3.4 GB) | Ollama is installed with no model; the report gives the copyable pull command. | `--setup` while this install's own marker stands and Ollama answers (§3.3) - the one exception to "never pulled into", and never for an Ollama that was already there; or `ollama pull` |
+| 8 | **Which model should the new Ollama get?** | Same sitting, shown only when 7 is yes. Never for an Ollama that was already there. | `qwen3.5:4b` (3.4 GB) | Ollama is installed with no model; the report gives the copyable pull command. | `--setup` while this install's own marker stands and Ollama answers, as a question whose default is No (§3.3, G6) - the one exception to "never pulled into", and never for an Ollama that was already there; or `ollama pull` |
+| 8a | **Ollama's default volume is too small for this model. Keep its models with MyScribe instead? (U7, G8)** Both numbers are shown. Which folder that is, TASK-089.18 names: outside the git working tree in a clone (`git clean -fdx`, row 2) and nothing an uninstall removes (M8). On Windows a yes sets `OLLAMA_MODELS` as a variable of the user's account before the installer starts, so that the daemon it starts gets it - read here as: once the artifact has passed its sha256 and signer check, immediately before it runs, so a failed download writes nothing (§3.3 says what a failed installer leaves). The variable outlives the sitting, so it is shown with the command line (§6). On macOS and Linux it stays a sentence with the exact command. Unverified: whether the daemon the silent installer starts inherits the variable (TASK-089.18's sandbox run); until that run, nothing says the models went where they were asked to go without checking. The number is 8a so the others do not move. | Same sitting, only when 7 is yes and free space at Ollama's default model folder is short of the model chosen in 8. With room, Ollama keeps its own default and nothing is asked. Never for an Ollama that was already there. | Yes, because the other answer ends the offer | The offer ends with both numbers: nothing is installed and nothing is pulled. That reads "the offer" as all of question 7, as TASK-089.18's criterion 10 does, because an Ollama with no room for a model answers nothing; Robert's words were only "ends the offer". Overturn by installing without a model, as row 8's skip does. | The same offer, for as long as Ollama is absent |
 | 9 | **Which of your Ollama models should MyScribe use?** Chat-capable models only. Writes MyScribe's own row; changes nothing in Ollama. | Provider is Ollama, it was already there and running, no `llm_model_ollama` row, the default is not pulled and another chat model is. | Skip (TASK-054: never save a model nobody chose) | MyScribe keeps asking for `qwen3.5:4b`; the AI panel names the missing model. | Settings > AI providers > model |
 | 10 | **Transcription quality: Turbo or Maximum?** Real download size for this platform; without a GPU, a line that Maximum is several times slower here. | A first sitting only. Opens on the stored default. | The stored default | Nothing is written. | The transcribe dialog, or Settings > Transcription |
 | 11 | **Download the speech weights now?** Names the repositories, the bytes and the free space on the volume they land on. The gated 33 MB goes first. | Something this platform and tier load is missing. | Yes | The first transcription downloads inside the job with no progress shown. The report says so. | `python -m scribe.setup --fetch-models` |
@@ -339,11 +346,11 @@ the doctor under "This machine".
   that cannot be read counts as present, never as absent. One exception,
   named here because the rule above reads as absolute: an Ollama that
   *this install* put on the machine and that has never been ready - the
-  marker of §3.3 (M1) - may still get the one model pull that was agreed
-  to in the same yes. That is not an Ollama that was "already there".
-  Even then nothing is started: with the marker standing and Ollama not
-  answering, the sitting shows the same "Start it, then Check again"
-  sentence and waits.
+  marker of §3.3 (M1, G6, G7) - is still offered the one model pull that
+  was agreed to in the same yes. That is not an Ollama that was "already
+  there". Even then nothing is started: with the marker standing and
+  Ollama not answering, the sitting shows the same "Start it, then Check
+  again" sentence and waits.
 * **On Robert's own machine** most of this is not asked, which is the
   point of requirement 7. Not asked: 1 (a clone), 2 (the target already
   holds the library), 3, 4 (token found in the environment, with the note
@@ -360,9 +367,10 @@ removed on evidence: "a language code is a bias, not a constraint",
 (there is no i18n layer to configure); and GPU versus CPU (ADR-012: one
 lock with a per-platform torch source; the honest move is the sentence
 "transcription on cpu, Maximum is several times slower here"). A proxy is
-detected and shown, not asked (§3.2). Where Ollama keeps its models is
-Ollama's configuration and is not asked (U7, §8). Declined by Robert (U5):
-a start script or shortcut for a clone. `python install.py --start` and the
+detected and shown, not asked (§3.2). Where an Ollama that is already there
+keeps its models is its own configuration and is never asked; a new one gets
+row 8a, and only when it must (U7, G8). Declined by Robert (U5): a start
+script or shortcut for a clone. `python install.py --start` and the
 existing `scripts/start.*` are what a clone has.
 
 ## 2. Architecture
@@ -413,8 +421,8 @@ the synthesis holds that Tk is always there on Windows (not verified
 here).
 
 **The boundary, and exactly what crosses it.** ADR-011's Must is "Keep the
-launcher stdlib-only: it must work before the environment exists" (`:151`),
-and the launcher's own docstring adds that it "cannot write a setting row
+launcher stdlib-only: it must work before the environment exists", and
+the launcher's own docstring adds that it "cannot write a setting row
 or parse `.env` for itself, and should not learn how" (`:469-472`). That
 does not move. Downward: a command line that never carries a secret; the
 environment `app_environment` already builds; and, for `--apply-stdin`
@@ -447,7 +455,7 @@ into `footprint.json` with a test that it equals `doctor.DISK_FLOOR_GB`, or
 read as text the way `app_version` reads the version (`:119-126`); which
 of the two is TASK-089.14's to settle.
 
-The answer is persisted in a one-line pointer file *next to* the default
+The answer is persisted in a small pointer file *next to* the default
 home (`MyScribe.location` beside `%LOCALAPPDATA%\MyScribe`, and the same
 beside the macOS and XDG defaults), holding one JSON object: `{"home":
 "D:\\MyScribe"}`. This spec proposes a second key, `"data"`, which the
@@ -469,7 +477,7 @@ The checks live in `main()`. Two existing tests call `home_dir("darwin",
 pointer, so the pointer's path is a parameter and §3.13 isolates it.
 
 Refused with a sentence: a path inside the install directory (ADR-011's
-Must Not, `:156-158`), a relative path, a folder that cannot be written,
+Must Not), a relative path, a folder that cannot be written,
 and a UNC path. The library is SQLite in WAL mode (ADR-013), and SQLite's
 own documentation says "WAL does not work over a network filesystem"
 (sqlite.org/wal.html, read 2026-09-20). A mapped drive letter hides the
@@ -581,50 +589,39 @@ the launcher writes it into its own pointer file as `"data"`, which
 `Layout.data_dir` then prefers. The pointer stays the one file a front-end
 writes, but it then holds two facts, and the engine decided the second. That
 is this spec's proposal and not a settled design: how a release points at an
-adopted library is TASK-089.19's to decide before it is built (its criterion 8),
-ADR-015 keeps the pointer at one fact until then and lists the question, and
-§8 puts it to Robert. In a clone the engine writes `SCRIBE_DATA_DIR` into
-`.env`. R1 is what makes adoption safe: an adopted library with no provider
-chosen queues nothing at its first start.
+adopted library is TASK-089.19's to settle before it is built (its criterion
+8, and §8). ADR-015 fixes only the principle: a small pointer file that the
+launcher can read before anything else exists. In a clone the engine writes
+`SCRIBE_DATA_DIR` into `.env`. R1 is what makes adoption safe: an adopted
+library with no provider chosen queues nothing at its first start.
 
-**Share the launcher's code, or only its sequence (M11).** The synthesis
-gave `install.py` the launcher's own `bootstrap(layout, ui)` through a
-`CloneLayout`. The mapped state's packaging reader had advised the
-opposite: share the sequence, not the code, because the launcher must stay
-frozen-safe. This spec does not decide it - ADR-015 records it as a
-considered option - but the argument belongs here.
-
-* *For sharing the code:* one implementation of tools, sync, plan, ask,
-  apply, prove, start; one set of order tests; a fix in one door is a fix
-  in both. The first-run hang is exactly the kind of bug that would
-  otherwise be fixed in one door and live on in the other.
-* *Against:* `Layout` makes `python_dir`, `cache_dir`, `pycache_dir` and
-  `data_dir` optional and the environment builders learn to skip `None` -
-  inside the frozen binary, for a caller that is never frozen.
-  `sync_environment` and `app_environment` (`:187-213`) are the 27
-  lines that decide where 3 GB lands and which library opens; they are the
-  last place to add branches. ADR-011 keeps the launcher small on purpose.
-  And the clone's differences (the dev group, `.venv`, no cache override,
-  no forced data directory) are easier to review in `install.py`'s own
-  short sequence than as flags on a shared object.
-* *What is shared either way:* the engine, which is where the behaviour
-  lives; `packaging/build_payload.fetch` and `extract` for the pinned
-  tools; and one test that drives both doors with fakes and asserts the
-  same ordered step names.
-
-This spec leans to sharing the sequence and proving it with that one test:
-the duplicated part is short and says what it does, and the part that
-would otherwise grow is the one ADR-011 guards. §3.11 and §3.12 are
-written so either outcome is buildable.
+**`install.py` shares the launcher's sequence, not its code (M11, G2).**
+Decided by Robert on 2026-09-20, on a count made that day: about 100 of the
+launcher's 750-odd lines are plumbing both doors need - the lock digest,
+the stamp, the sync decision, running a child, the setup call. The home,
+the environment and the tools differ per door, and the clone's differences
+(the dev group, `.venv`, no cache override, no forced data directory) are
+easier to review in `install.py`'s own short sequence than as branches in
+`sync_environment` and `app_environment` (`:187-213`), the 27 lines that
+decide where 3 GB lands and which library opens. So the launcher that
+shipped in v0.5.0 and v0.5.1 is not rebuilt around a shared bootstrap and
+gains no branch only a clone reaches. Against drift in the duplicated
+plumbing, one contract test gives both doors the same lock and stamp and
+demands the same sync decision. The part where drift would hurt most is
+not in the launcher at all: it copies its tools out of the payload, and
+fetching them and checking their sha256 is `fetch` and `extract` in
+`packaging/build_payload.py`, which `install.py` shares. A shared module
+under `packaging/launcher/` was weighed and set aside: it rebuilds shipped
+code whose frozen path only the release smoke and a person at the screen
+exercise.
 
 ## 3. Components
 
-Tasks are named by key; the backlog holds them. TASK-089.01 to TASK-089.24 are the
-pre-critique tasks; TASK-089.14 to TASK-089.13 are the ones the critique and
-Robert's decisions added. Two pieces of work sit inside a task whose title
-does not name them, and are said here so nobody looks for a task that is
-not there: the `/health` fields of §3.9 belong to TASK-089.17's open question
-(W2), and the path an autostart entry names (§3.10) belongs to TASK-089.21.
+Tasks are named by key; the backlog holds them. Two pieces of work sit
+inside a task whose title does not name them, and are said here so nobody
+looks for a task that is not there: the `/health` fields of §3.9 belong to
+TASK-089.17 (W2, G5), and the path an autostart entry names (§3.10) belongs
+to TASK-089.21.
 
 ### 3.1 `scribe/setup.py` (TASK-089.09)
 
@@ -661,29 +658,30 @@ not there: the `/health` fields of §3.9 belong to TASK-089.17's open question
   the first place that lookup reads: a runner child needs nothing from the
   environment. A typed Hugging Face token is checked with the doctor's one
   HEAD before it is saved; a typed OpenAI key with the authenticated model
-  list; for OpenRouter a free key check is used only if its endpoint is
-  verified at implementation, else the paid one-word probe runs on consent.
+  list; a typed OpenRouter key with an authenticated request to
+  `https://openrouter.ai/api/v1/key`, which costs nothing and answers 401
+  for a bad key (the agent's finding in the grill, from the documentation
+  and a probe that sent no key; a run with a real key is still owed).
   The result line carries `wrote`, `reopen` and `relocate`; exit codes 3, 2
-  and 1 keep their meaning (`:198`). No new secret flag exists, and nothing
+  and 1 keep their meaning (`:198`). No secret flag exists, and nothing
   MyScribe builds carries a secret on a command line: the launcher stops
   passing `--hf-token` (`:475-476`; `tests/test_launcher.py:404` pins that
-  it does, and is revised). The flag itself stays for one release,
-  deprecated, and that is a choice with its reason: `README.md:224`
-  documents it as the way to answer without the browser, so a 0.5.x script
-  may hold it, and the launcher and the app ship in one payload, so nothing
-  of MyScribe's own needs it. Using it prints a deprecation line that names
-  the two replacements - `HF_TOKEN` in the environment or `.env`, which
-  detection finds, and `--apply-stdin` - and says a token on a command line
-  is readable in the process list. It goes in the first release after the
-  one this ships in. Read strictly, the house rule ("never put on a command
-  line") argues for removing it at once; §8 puts that to Robert.
-  `--provider` gets `choices`.
-* **Setup does not write `default_diarize`, in any path (W6).** The
-  synthesis had setup switch "Recognise speakers" off when no token was
-  found, mark that it had, and restore it when a token was saved later. That
-  rested on a wrong model of the row: `default_diarize` is "the last options
-  submitted", rewritten by `save_defaults` from seven call sites on every
-  upload (`ingest_ui.py:375`, `:438`, `:509`, `:888`,
+  it does, and is revised). The flag itself goes now, with a sentence and
+  not an argparse error (G4, decided by Robert on 2026-09-20): it is still
+  recognised and is refused, saying that a token on a command line can be
+  read by other processes and ends up in shell history, and that it belongs
+  in `HF_TOKEN` - in the environment or `.env`, where detection finds it -
+  or in the document piped to `--apply-stdin`; exit 2, which `mismatch`
+  also uses (`:198`). It is argparse's own usage-error code, the refusal
+  comes before any work starts, and the launcher never meets it, because
+  it no longer passes the flag. `README.md:224`, which documents the flag,
+  is corrected. `--provider` gets `choices`.
+* **Setup never writes `default_diarize` by itself (W6); the explicit flag
+  stays (G3).** The synthesis had setup switch "Recognise speakers" off when
+  no token was found, mark that it had, and restore it when a token was
+  saved later. That rested on a wrong model of the row: `default_diarize`
+  is "the last options submitted", rewritten by `save_defaults` from seven
+  call sites on every upload (`ingest_ui.py:375`, `:438`, `:509`, `:888`,
   `transcribe_dialog.py:247`, `:280`, `settings.py:492`), so a provenance
   marker goes stale at the first upload and the restore could flip a choice
   somebody made on purpose. Watch folders carry their own options and never
@@ -694,19 +692,21 @@ not there: the `/health` fields of §3.9 belong to TASK-089.17's open question
   for. The tier is saved today through `transcribe_dialog.save_defaults`,
   which writes language, tier and diarize in one `executemany`
   (`scribe/web/transcribe_dialog.py:97-108`; `scribe/setup.py:125-136`), so
-  answering question 10 would write the very row this bullet says is never
-  written. The engine writes the `default_tier` row alone. And setup already
-  holds an explicit diarize answer: `Answers.diarize` and
-  `--diarize/--no-diarize` (`scribe/setup.py:51`, `:164-165`), the
-  launcher's pass-through (`:481-482`) and a README row (`README.md:224`).
-  Nothing asks it; the Tk form never sets it. It is removed, flags included,
-  because "setup does not write the row" is only checkable when no path
-  does, and the row stays reachable where it belongs: the transcribe dialog
-  and Settings > Transcription. The tests that change:
-  `tests/test_setup.py:55-60` (tier only, and the diarize row absent before
-  and after) and `tests/test_launcher.py:407` (no `--no-diarize`). Overturn
-  that by keeping the flag as an explicit-only answer outside this rule: a
-  person typing `--no-diarize` is not a guard.
+  answering question 10 would write a diarize row nobody answered. The
+  engine writes the `default_tier` row alone, and a new red-first test pins
+  it: a tier answer only, and the diarize row absent before and after.
+  `tests/test_setup.py:55-60` passes an explicit `diarize=False` and stays
+  as the explicit-choice test (G3). And setup
+  already holds an explicit diarize answer: `Answers.diarize` and
+  `--diarize/--no-diarize` (`scribe/setup.py:51`, `:164-165`; a README row,
+  `README.md:224`). It stays, as an explicit choice and nothing else -
+  decided by Robert on 2026-09-20, after this spec had removed it by reading
+  "does not write the row at all" literally, which nobody had asked for.
+  Somebody who types `--no-diarize` is choosing, not guarding, and the flag
+  shipped in v0.5.0 and v0.5.1. So the test for "setup does not write the
+  row" covers every path except that flag. No question asks it and the Tk
+  form never sets it, so the launcher's pass-through (`:481-482`,
+  `tests/test_launcher.py:407`) goes when its answers move to stdin (§3.11).
 * Run bare on a terminal it is the console asker over the same questions:
   Enter takes the shown default, `s` skips, secrets go through `getpass`.
   Without a terminal it never calls `getpass`, prints the found-table and
@@ -755,8 +755,8 @@ machine and one OS, and a test that pins it is a criterion.
 ### 3.3 `scribe/ollama_setup.py`, `scribe/ollama_release.json`, both new (TASK-089.06, TASK-089.18)
 
 TASK-089.06 is the detection - `state()` and the chat-model test. TASK-089.18 is
-everything that installs: the plan, the pin and its owner, the marker and
-the model offer.
+everything that installs: the plan, the pin and its owner, the marker, the
+model offer and row 8a.
 
 * `state()` returns `absent`, `installed_not_running`,
   `running_no_chat_model`, `ready` or `unknown`, with the binary path, the
@@ -789,39 +789,50 @@ the model offer.
   get answered should not then meet "choose a provider" - that is a separate
   thing afterwards (requirement 5). Overturn it by writing
   `llm_model_ollama` only and leaving question 5 open.
-* **The marker (M1).** `ollama_installed_by_setup` is written only *after*
-  the installer finished successfully, into a file of its own beside the
-  stamp (§2, the gate: the stamp is written when a sitting ends, and this is
-  written in the middle of one). The installer is never offered while any
-  Ollama binary exists, marker or not. The marker is cleared the first time
-  Ollama is seen `ready`. The one thing it unlocks is finishing this
-  install's own work: the model pull into an Ollama that MyScribe installed
-  and that has never yet been ready - the one exception §1 names to "never
-  pulled into". It unlocks no start: with the marker standing and Ollama
+* **The marker (M1, G6, G7).** `ollama_installed_by_setup` is written only
+  *after* the installer finished successfully, into a file of its own beside
+  the stamp (§2, the gate: the stamp is written when a sitting ends, and
+  this is written in the middle of one). The installer is never offered
+  while any Ollama binary exists, marker or not. The marker is cleared the
+  first time Ollama is seen `ready`. The one thing it unlocks is finishing
+  this install's own work: the model pull into an Ollama that MyScribe
+  installed and that has never yet been ready - the one exception §1 names
+  to "never pulled into". After the install's own sitting the pull is
+  offered only in a sitting opened with `--setup`, as a question whose
+  default is No (G6): Robert chose that on 2026-09-20 over the narrower rule
+  the agent recommended - the pull in the install's sitting or not at all,
+  and no marker. It unlocks no start: with the marker standing and Ollama
   `installed_not_running`, the sitting shows "Start it, then Check again"
-  and the pull is offered once it answers. That purpose is a choice Robert
-  can drop: without it no marker is needed at all, and an interrupted
-  install ends on the copyable pull command like any other Ollama that is
-  present. A failed or cancelled download leaves no marker, so the state is
-  simply *absent* again; and an Ollama the user installed in the meantime is
-  theirs, with or without a half-finished attempt behind it. The synthesis
-  wrote the marker *before* the installer ran, which could bring the
-  installer back over an Ollama the user had installed since - the one thing
-  requirement 9 forbids. Whether the marker should also be bound to the
-  installed version and path is left open in ADR-015.
+  and the pull is offered once it answers. The marker records the version
+  and the path MyScribe installed and counts only while that version still
+  stands at that path; any doubt drops it, and that Ollama is then left
+  alone with the copyable pull command (G7). It fails to the safe side:
+  Ollama updates itself, the marker lapses, and somebody types one command;
+  the path alone could not tell MyScribe's Ollama from one installed later
+  at the same default path. A failed or cancelled download leaves no
+  marker and no variable - row 8a's `OLLAMA_MODELS` is written only once
+  the artifact has passed its checks - so the state is simply *absent*
+  again. An installer that then fails would leave a variable MyScribe set
+  itself, which `state()` reads as present, and row 7's offer would never
+  return. Proposed, and TASK-089.18's to settle and test:
+  `ollama_setup.json` records the value first, under a key that is not the
+  marker; a failure removes the variable while it still holds that value;
+  and `state()` disregards one equal to the record. The synthesis wrote the
+  marker *before* the installer ran, which could bring the installer back
+  over an Ollama the user had installed since - the one thing requirement 9
+  forbids.
 * **The model offer states its unit (W4).** `qwen3.5:4b` is the default,
   on the repository's one measurement: the 9B and the 12B both failed to
   start "while 12.7 GB of the 16 GB card was in use"
   (`scribe/llm/ollama.py:221-224`). `gemma4:12b` is listed only at 22 GiB
   (23,622,320,128 bytes) of CUDA memory or more, compared in bytes against
   the reported total, and not at all on Apple Silicon until somebody has
-  measured it on a real Mac. The critic read Robert's "16 GB" card at
-  17,179,344,896 bytes, which is 15.9995 GiB, so a threshold *at* 16 would
-  flip on the unit. A threshold at 20 would do the same one class up, if a
-  nominal 20 GB card reports just under 20 GiB the way this one reports
-  just under 16 - nobody has measured one. 22 sits at no card's nominal
-  size: a 16 GB and a 20 GB card fail and a 24 GB card passes, whether the
-  number is later read as GiB or as decimal GB (TASK-089.18). It is an estimate
+  measured it on a real Mac. Robert's "16 GB" card reports 17,179,344,896
+  bytes, 15.9995 GiB, so a threshold *at* 16 would flip on the unit, and 20
+  would do the same one class up if a 20 GB card reports the same way -
+  nobody has measured one. 22 sits at no card's nominal size: a 16 GB and a
+  20 GB card fail and a 24 GB card passes, whether the number is later read
+  as GiB or as decimal GB (TASK-089.18). It is an estimate
   modelled on one measured card, and the sitting and the code label it so.
   The sizes shown are the ones this machine's Ollama reports: 3,389,983,735
   bytes for `qwen3.5:4b`, 7,556,508,396 for
@@ -868,7 +879,7 @@ unaffected - importing `scribe.doctor` still loads no file - and the
 criterion is one red-first test per command: `SCRIBE_DATA_DIR` set only in
 `.env`, and the command reports that directory.
 
-### 3.5 No row, no provider: `scribe/llm/__init__.py` and its callers (TASK-089.07, R1)
+### 3.5 No row, no provider: `scribe/llm/__init__.py` and its callers (TASK-089.07, R1, ADR-016)
 
 `default_provider(conn)` returns no provider when the row is missing - and
 when it names a provider that is no longer registered, which today also
@@ -928,7 +939,7 @@ verified by nobody.
 
 `gpu-runtime` becomes information in two cases only, and ADR-012's Must is
 unchanged: "`doctor.check_gpu_runtime` fails when `torch.version.cuda is
-None` on a machine that should have CUDA" (ADR-012 `:139-140`). "The
+None` on a machine that should have CUDA" (ADR-012, Must). "The
 accelerator resolves to `cpu`" is not the test, because it is also true
 for the two failures the check exists to catch. A CPU-only torch on
 Windows or Linux stays FAIL (`:335-340`): that is the wrong-index install
@@ -962,32 +973,33 @@ the first start" and is not a FAIL - a fresh clone under `install.py
 migrate one (`:267-272`). The GPU smoke skips its `smoke` row. A proof
 must not migrate a library under an older running app (W1).
 
-### 3.9 `scribe/app.py`: `/health` says what it serves (W2; TASK-089.17's open question)
+### 3.9 `scribe/app.py`: `/health` says what it serves (W2, G5; TASK-089.17)
 
 The synthesis had `install.py` "refuse to sync while MyScribe answers
 `/health` from this checkout". Today that cannot be known: `/health` carries
 no path, and the launcher's own single-instance rule is per port and
-identity-blind. The mechanism proposed here: `/health` gains `app_dir` (the
-source tree, `env.REPO_DIR`) and `data_dir` (`paths.DATA_DIR`). That changes
-`scribe/app.py:296-298` and the one test that pins the answer's exact shape
-(`tests/test_app.py:48`); the launcher reads only `ok` (`:310`) and is
-unaffected. `install.py` compares `app_dir` with its own root, and the
-engine compares `data_dir` with its own, both after
-`os.path.normcase(os.path.realpath(...))`. A match means this checkout, or
-this library, is being served. A `/health` that answers without the fields
-is an older MyScribe: that is doubt, and doubt refuses the sync ("stop it
-first, or use `--no-sync`"). It discloses nothing new: `GET /settings` on
-the same loopback port already shows the store's path
-(`scribe/templates/settings.html:104`), and a cross-origin page can send the
-GET but cannot read the answer. The stated limit: only the default port and
-a given `--port` are probed, so an app on another port is not seen. That is
-§8's first question; if it is judged unsound, the refusal goes and the
-sentence becomes a warning. TASK-089.17 holds the question and lists
-`scribe/app.py` in its change. TASK-089.19 (the adoption refusal) reads the same
-fields and follows TASK-089.17 in the backlog. TASK-089.13 (the proof, §7) reads them
-too, is built before TASK-089.17 and needs no ordering for it: until the fields
-exist, every `/health` that answers is doubt, and doubt refuses the adoption
-and reports "not tested".
+identity-blind. Decided by Robert on 2026-09-20 (G5): `/health` gains
+`app_dir` (the source tree, `env.REPO_DIR`) and `data_dir`
+(`paths.DATA_DIR`). That changes `scribe/app.py:296-298` and the one test
+that pins the answer's exact shape (`tests/test_app.py:48`); the launcher
+reads only `ok` (`:310`) and is unaffected. `install.py` compares `app_dir`
+with its own root, and the engine compares `data_dir` with its own, both
+after `os.path.normcase(os.path.realpath(...))`. A match means this
+checkout, or this library, is being served, and this checkout refuses the
+sync; another checkout, or no answer, goes on. A `/health` that answers
+without the fields is an older MyScribe: that is doubt, and doubt refuses
+the sync ("stop it first, or use `--no-sync`"). It gives nothing away: a
+cross-origin page can send the GET but cannot read the answer, the host
+check covers the whole app against a rebound hostname
+(`scribe/guard.py:110`), and a local process that can read it can read the
+file system as well. The blind spot is kept and named: only the default
+port and a given `--port` are asked, so an app on a port nobody mentioned
+is not seen - this repository's own `--port 4299` is such a case.
+TASK-089.19 (the adoption refusal) reads the same fields and follows
+TASK-089.17 in the backlog.
+TASK-089.13 (the proof, §7) reads them too, is built before TASK-089.17 and
+needs no ordering for it: until the fields exist, every `/health` that
+answers is doubt, and doubt refuses the adoption and reports "not tested".
 
 ### 3.10 `scribe/autostart.py`, a new file (TASK-089.21, TASK-089.22), and the watch-folder check (TASK-089.20) (R3)
 
@@ -1010,7 +1022,7 @@ and reports "not tested".
   AppImage the running executable sits under a temporary mount that is
   gone after exit, so an entry naming it breaks at the next login. All
   three are unverified, and the AppImage behaviour is general knowledge
-  about AppImage that nobody here tested (ADR-011 `:119-120` says only
+  about AppImage that nobody here tested (ADR-011's Decision Outcome says only
   that Linux ships as one). The binary is windowed on every target
   (`packaging/build_release.py:81`), so a login start opens the launcher's
   Tk window; whether it shows or starts minimised is TASK-089.21's to record. A
@@ -1139,13 +1151,16 @@ a parameter, and an autouse fixture in the launcher's tests points it at
 * **Uninstall, and the texts that name the home (M8; TASK-089.23).** The Inno
   welcome text (`packaging/windows/myscribe.iss:51`) and the README say
   what stays behind. An Ollama and a model that MyScribe installed survive
-  an uninstall and belong to the user. So does the pointer file, and that
-  one bites: left behind, it sends a reinstall to the old folder without a
-  word. The texts name it and say how to remove it. `.tools/` in a clone
-  is documented and gitignored. Four shipped texts state the fixed home as
-  fact and become wrong the day question 1 is answered: the welcome text
-  (`:51`), the `.iss` header (`:5-8`), the README's Windows bullet
-  (`README.md:87-89`) and ADR-011's Decision Outcome (`:113-116`). The
+  an uninstall and belong to the user. So do row 8a's models folder and
+  its `OLLAMA_MODELS` user variable, which would steer any Ollama installed
+  later: the texts give the command that removes it. So does the pointer
+  file, and that one bites: left behind, it sends a reinstall to the old
+  folder without a word. The texts name it and say how to remove it.
+  `.tools/` in a clone is documented and gitignored. Four shipped texts
+  state the fixed home as fact and become wrong the day question 1 is
+  answered: the welcome text (`:51`), the `.iss` header (`:5-8`), the
+  README's Windows bullet (`README.md:87-89`) and ADR-011's Decision
+  Outcome. The
   first three are edited to say that `%LOCALAPPDATA%\MyScribe` is the
   default and that the first start asks. ADR-011 is Accepted and is not
   edited: ADR-015 records that the home can be chosen, as an extension of
@@ -1153,23 +1168,27 @@ a parameter, and an autouse fixture in the launcher's tests points it at
   ADR-011 (`:1`).
 * `README.md`: "From a clone" becomes the two commands; the fallback claim
   is corrected. `CHANGELOG.md`: the four-answers entry, and R1's line.
-* ADR-015 (Proposed, through `/adr-kit:adr`): the setup contract, and the
-  rule for installing third-party software (§6); considered options
+* The decision records, through `/adr-kit:adr`; the grill split one Proposed
+  record in three (G1). ADR-015: the setup contract; its considered options
   include Inno wizard pages, the `/welcome` page, asking before the sync,
-  delegating "only when missing" to Ollama's scripts, and M11. The
+  and M11. ADR-016: no provider row means no provider (R1, §3.5), with no
+  open question, so it can be accepted before TASK-089.07 builds under it.
+  ADR-017: the rule for installing third-party software (§6) and all that
+  concerns an Ollama MyScribe installs - the marker and row 8a (§3.3), the
+  pin's owner and what stays behind (M7, M8 above), how the setup child is
+  stopped (§3.11); delegating "only when missing" to Ollama's scripts is
+  its considered option. The
   stdlib-only guard for `install.py` goes into ADR-015's *own* Enforcement
-  block: a `forbid_pattern` with `path_glob` `install.py`, and the plain
-  statement that the regex is a deny-list of seven module names - the
-  same list as ADR-011's (`:242`) - so `import requests` would pass it;
-  the real stdlib-only proof is the AST allow-list test over `install.py`,
-  `build_payload.py` and the launcher (TASK-089.17). ADR-011 is Accepted and is
-  not touched. The guide says "Never rewrite an Accepted ADR. Create a
-  Proposed successor" (`.adr-kit/ADR-guide.md:52-53`), and this repository
-  did exactly that twice to change an Enforcement block: ADR-002 to
-  ADR-009 to ADR-013, and ADR-007 to ADR-014. The synthesis had this as an
-  edit to ADR-011's Enforcement; that was wrong. If the guard should ever
-  live in ADR-011's own lineage, that is a Proposed successor and not this
-  work.
+  block: a `forbid_import` rule with `path_glob` `install.py`, and the plain
+  statement that the regex is a deny-list - ADR-011's seven module names
+  plus the launcher module - so `import requests` would pass it; the real
+  stdlib-only proof is the AST allow-list test over
+  `install.py`, `build_payload.py` and the launcher (TASK-089.17). The
+  synthesis had this as an edit to ADR-011's Enforcement; that was wrong.
+  The guide says "Never rewrite an Accepted ADR. Create a Proposed
+  successor" (`.adr-kit/ADR-guide.md:52-53`), and this repository did that
+  twice to change an Enforcement block: ADR-002 to ADR-009 to ADR-013, and
+  ADR-007 to ADR-014.
 
 ## 4. Data flow of one first run
 
@@ -1192,7 +1211,7 @@ A Windows machine with no Ollama, no token and a small C: drive.
    command line. There is no library yet: the plan reads that as no rows
    and creates nothing. The plan: nothing found, Ollama `absent`, no
    library elsewhere, questions 2 ("start new" preselected), 4, 5, 7 (8
-   behind its `shown_if`), 10-15.
+   behind its `shown_if`, and 8a if C: is short of the chosen model), 10-15.
 4. One dialog. The user leaves 2 on "start new", skips the token, leaves
    the provider undecided, says yes to Ollama with `qwen3.5:4b` - having
    read the URL, the 1.57 GB, the sha256, the command line, and that a yes
@@ -1217,13 +1236,9 @@ A Windows machine with no Ollama, no token and a small C: drive.
    transcript and the note "speakers skipped".
 
 On Robert's machine the same engine under `python install.py` asks no
-credential question and no Ollama question (§1). When his app is
-answering on 4242 for this library, `--prove` queues the GPU lines as jobs
-instead of loading a model beside it. When what answers is not provably
-this library - another data directory, or a MyScribe too old to say which
-it serves - `--prove` loads no model either and reports "not tested (a
-MyScribe is running on port 4242)", never ok. Only when nothing answers
-does the setup child run the smoke itself (§7).
+credential question and no Ollama question (§1), and `--prove` takes
+whichever of §7's three branches his app on 4242 puts it in: it loads a
+model itself only when nothing answers.
 
 ## 5. Error handling
 
@@ -1234,14 +1249,16 @@ does the setup child run the smoke itself (§7).
 | No network mid-download of the weights | engine | a short read is `offline`, not `mismatch`; the `.part` stays and the next try resumes with `Range`; the sitting is stamped with the question still open |
 | A wrong or revoked Hugging Face token | engine | 401: "token not recognised". Not saved; question 4 reopens. A *found* token that is refused reopens 4 with the note that a typed token goes to Settings, which outranks the refused one |
 | A gated model whose conditions were never accepted | engine | 403: "conditions not accepted yet", with the URL and a button that opens it. Not saved; reopens. The gated 33 MB goes first, so this shows in seconds |
-| A rejected OpenAI key | engine | not written; question 6 reopens. An OpenRouter key is "saved, not tested" unless the free check exists or question 15 was yes |
+| A rejected OpenAI or OpenRouter key | engine | not written; question 6 reopens. Both checks are free (§3.1); OpenRouter's has not yet run with a real key |
 | A cloud provider chosen and its key skipped | engine | saved, with the sentence that Summary and Chat show a no-key card until a key exists, and where to add one |
 | Ollama absent | sitting | question 7 |
+| Ollama absent, and its default volume too small for the model | sitting | question 8a; a No ends the offer with both numbers |
 | Ollama installed, stopped | sitting | the sentence and Check again; never started - also not when this install's own marker stands (§3.3) |
-| Ollama running, no chat model | sitting | the sentence, the pull command, Check again; never pulled into. The one exception is the marker of §3.3: an Ollama this install put there and that was never ready is offered the pull it was asked for |
+| Ollama running, no chat model | sitting | the sentence, the pull command, Check again; never pulled into. The one exception is the marker of §3.3: an Ollama this install put there, still at the version and path it installed and never ready, is offered the pull it was asked for |
 | Ollama state unreadable | sitting | "could not tell"; treated as present |
 | The Ollama download 404s or fails its sha256 or signer | engine | "get it from ollama.com/download, then Check again". Never an unpinned fallback; no marker |
-| The Ollama download is cancelled or the connection drops | engine | the `.part` stays for a resume; no marker; the state is *absent* again |
+| The Ollama download is cancelled or the connection drops | engine | the `.part` stays for a resume; no marker, and row 8a's variable was not written yet; the state is *absent* again |
+| The Ollama installer itself fails or is killed | engine | its exit code, and "get it from ollama.com/download, then Check again"; no marker. A variable row 8a set would make the state read present, so it is removed again (§3.3, a proposal) |
 | Ollama installed but not answering after 120 s | engine | "installed, not answering yet", not failure, with "Start Ollama, then Check again"; MyScribe does not start it. The marker stands, so the pull is offered at the next `--setup` once Ollama answers |
 | A pull that answers 200 and then an `error` line | engine | the pull failed, with Ollama's words; the marker stands |
 | A full disk while writing | engine | `ENOSPC` reads "disk full" with the volume, not `offline` |
@@ -1269,15 +1286,15 @@ does the setup child run the smoke itself (§7).
   stamp, the report and both logs hold source names and booleans. A SENTINEL
   planted in every source must appear in no repr, no JSON, no log and no
   child argv; that test is a criterion of TASK-089.04, TASK-089.09 and TASK-089.15. It
-  covers every command line MyScribe builds. The deprecated `--hf-token`
-  (§3.1) is the one secret-bearing flag left, it is outside that test by
-  name, and a second test asserts that nothing in the repository passes it.
+  covers every command line MyScribe builds, and the rule has no exception:
+  `--hf-token` is refused with a sentence and exit 2 (§3.1, G4).
   A found credential stays where it was found. A proxy URL's userinfo is
   stripped before it is shown. `--answers FILE` is the user's own file; it
   reaches the engine over stdin.
-* **Installing somebody else's software**, the rule ADR-015 records.
+* **Installing somebody else's software**, the rule ADR-017 records.
   MyScribe may do it only when the software is absent; the exact artifact
-  and command line have been shown; the user has given an explicit yes;
+  and command line have been shown, and with them anything that outlives
+  the sitting (row 8a's variable); the user has given an explicit yes;
   the artifact is pinned and sha256-verified, and on Windows the
   Authenticode signer is checked; a remote script is never piped into a
   shell; and on Linux the commands are shown as download, read, then run,
@@ -1292,10 +1309,10 @@ does the setup child run the smoke itself (§7).
   command equals the shown command. The pinned digest is GitHub's
   published one, a single source, until the release step hashes the
   download itself.
-* **R1 is a privacy fix.** Today a machine with an OpenRouter key anywhere
-  sends every transcript that is not pinned private to OpenRouter without
-  anyone having chosen it - through the pass `finalize` queues after each
-  diarized job and through the startup sweep over the whole back
+* **R1 is a privacy fix (ADR-016).** Today a machine with an OpenRouter key
+  anywhere sends every transcript that is not pinned private to OpenRouter
+  without anyone having chosen it - through the pass `finalize` queues after
+  each diarized job and through the startup sweep over the whole back
   catalogue. This machine has that key machine-wide. Once every question
   is skippable, the skip path is the default most people get, and
   `scribe/setup.py:13-14` already argues the conclusion: "sending a private
@@ -1335,10 +1352,9 @@ paragraph; `scribe/web/settings.py:10-13`, `:154-163`,
 `scribe/web/ai_ui.py:1100-1109`). The criterion is worded to match. With no
 app running, the library's directory holds the same file names and the same
 bytes before and after `--prove`. With an app running, the difference is
-those rows and nothing else. "The same file names" is not free: a plain
-`mode=ro` open of a cleanly closed WAL database leaves a `-shm` and a `-wal`
-file behind (measured, §0), which is why the open is `immutable=1` when no
-`-wal` file is there (§2). A copy of the database is the fallback if that
+those rows and nothing else. "The same file names" is why the open is
+`immutable=1` when no `-wal` file is there (§2; measured, §0). A copy of
+the database is the fallback if that
 turns out to misread a library. When `/health` already answers for this
 library the line reads "app: already serving, version X" and nothing is
 started. The release launcher proves serving by starting the app for real,
@@ -1346,7 +1362,7 @@ once. Evidence runs on Robert's machine go further and point the whole
 engine at a scratch directory, never at `<repo>/data`.
 
 **The doctor job when the app is up (W5; TASK-089.13).** ADR-001: GPU work runs
-only in a runner child, one at a time (`:116-118`). There are three
+only in a runner child, one at a time (its Must). There are three
 branches, and only the last loads a model in the setup child.
 
 * `/health` answers and is provably this library (§3.9: `data_dir`
@@ -1364,9 +1380,7 @@ branches, and only the last loads a model in the setup child.
   never ok. There is one card per machine, not one per library, so a
   smoke beside that app is the very collision W5 forbids. Nothing is
   queued either: that app's queue is not this library's. Until §3.9's
-  fields exist, every `/health` that answers lands here. §3.9 already
-  treats a field-less answer as doubt for the sync; this is the same rule
-  for the proof.
+  fields exist, every `/health` that answers lands here.
 * Nothing answers, and no job row in this library is `running`. The setup
   child runs the smoke itself, as `python -m scribe.doctor` does today.
   With a `running` row it reads "not tested (a job is running)".
@@ -1379,10 +1393,9 @@ command that loads a model in its own process is the existing precedent: the
 doctor's CLI does exactly that today (`scribe/doctor.py:7-16`, `:805-808`).
 What the three branches cannot see is a stated limit, the same one as §3.9:
 only the default port and a given `--port` are probed. An app on another
-port serving this library is not seen - the project's CLAUDE.md documents
-running a second copy on 4299 - and a clone user can start the app in the
-middle of a proof. The `running`-row check narrows that gap and does not
-close it, and the report says so in one line. Report lines: environment (the
+port serving this library is not seen, and a clone user can start the app
+in the middle of a proof. The `running`-row check narrows that gap and does
+not close it, and the report says so in one line. Report lines: environment (the
 uv version and lock sha), ffmpeg and ffprobe with where each came from, the
 CPU checks, the accelerator, one line per credential with its source and any
 conflict, Ollama, the AI provider's one word, transcription (device, load
@@ -1394,28 +1407,34 @@ from a fresh checkout to a green suite, with `git status --short` clean
 afterwards; the `--plan` shape, pinned by a `main()`-level test (today no
 test calls `setup.main`); an all-skipped run that writes no settings row,
 leaves `.env` unchanged and stamps every id as skipped; the SENTINEL tests;
-every Ollama state through `MockTransport`, including five embedders only,
-the missing `capabilities` key and a refused connection with a stripped
-`PATH`; that nothing runs or downloads in the three present states; the
-marker's three rules; the contract-1 stamp migration; the gate reading two
-files and importing nothing, with a marker file and no stamp, and with a
-stamp that has a `contract` and no `ended`; a `--plan` on a missing database
-and on a cleanly closed one, each leaving the directory's file list
-unchanged; R1 with one test per call site and one that names
-`sweep_speaker_passes`; the order test over both doors; the proxy bypass,
-red first with a dead proxy in the environment; the release smoke walking
-the setup path; the pin's URL and digest.
+`--hf-token` refused with exit 2; every Ollama state through
+`MockTransport`, including five embedders only, the missing `capabilities`
+key and a refused connection with a stripped `PATH`; that nothing runs or
+downloads in the three present states; the marker's rules, its binding to
+version and path included; the contract-1 stamp migration; the gate
+reading two files and importing nothing, with a marker file and no stamp,
+and with a stamp that has a `contract` and no `ended`; a `--plan` on a
+missing database and on a cleanly closed one, each leaving the directory's
+file list unchanged; R1 with one test per call site and one that names
+`sweep_speaker_passes`; the contract test over both doors (G2); the proxy
+bypass, red first with a dead proxy in the environment; the release smoke
+walking the setup path; the pin's URL and digest.
 
 **What only a person at a real machine can prove, and who:** the Tk
 dialog's pixels, once per OS (Robert, Windows; a Mac and a Linux desktop:
 not available to the design run). Anything on macOS: Gatekeeper, the dmg
-flow, MLX loading a local folder (Robert, if the Mac that TASK-040.07
-records a session on, 2026-09-19, is still his to use - not confirmed; the
-README names an Apple M2, `README.md:9`; otherwise reported as not run).
+flow, MLX loading a local folder. The Mac is somebody else's (G9): each
+milestone bundles its macOS criteria into one list - per point the command
+and the expected output - for one sitting with its owner, and until then
+every macOS claim reads "not run". The release notes say what CI proves on
+its macOS runner - the build, the first sync, the health answer, a page,
+the stop - and nothing more (TASK-089.24). The README's sentence about the
+M2 (`README.md:9`) gets its date and says whose machine it was.
 The absent-Ollama install: Windows Sandbox or a VM without Ollama, a Mac,
 and WSL for the guided Linux path - this machine proves only that a
 present Ollama is left alone. Whether `/VERYSILENT` starts the daemon,
-and how `taskkill /T` treats it afterwards: the same Windows Sandbox run.
+whether that daemon inherits `OLLAMA_MODELS` (8a), and how `taskkill /T`
+treats it afterwards: the same Windows Sandbox run.
 The GPU smoke on the RTX 3080 and on Apple Silicon (TASK-040's open
 criterion, which none of this closes). An autostart entry surviving a
 real logout, per OS. A real corporate proxy. A path nobody ran is
@@ -1435,60 +1454,36 @@ line carries the `.env` conflict.
 
 For Robert:
 
-1. **`/health` naming its checkout and library (§3.9).** Sound for the
-   default port and a given `--port`; blind to an app on another port. If
-   that is not good enough, the refusal becomes a warning.
-2. **Where should a new Ollama keep its models (U7)?** Not included: it is
-   Ollama-side configuration. But the sitting checks free space at
-   Ollama's default folder and offers no way out when it fails - and on
-   this machine `OLLAMA_MODELS` is set in the user hive and points at D:
-   (checked 2026-09-20), so the concern is a real one here. Setting it on
-   an install MyScribe itself performs would not touch an existing Ollama.
-3. **A watch folder outside the browse roots.** On Windows the default
+1. **A watch folder outside the browse roots.** On Windows the default
    root is the profile's drive (`scribe/fsbrowse.py:44-53`), so a folder
    on D: is refused; and a `fsbrowse_roots` row *replaces* the default
    (`:59-63`), so adding just that folder would narrow browsing to it.
    Widening a read boundary is not done behind a y/n here. One more
    explicit question could do it.
-4. **M11**, in ADR-015: the launcher's code, or only its sequence.
-5. **Which of the two Hugging Face tokens on this machine is valid** was
+2. **Which of the two Hugging Face tokens on this machine is valid** was
    not tested by anybody. The first real `--prove` will say.
-6. **A login entry for a clone (§3.10).** R3 declined a start script or
-   shortcut for a clone; a login entry that names the existing
-   `scripts/start.*` sits close to that. It is offered because this
-   machine is a clone with watch folders. The fallback: release only; a
-   clone is not asked and Settings says why.
-7. **Did you choose the modal before the app starts?** The synthesis said
-   so; TASK-040.06 records only the four things the first run settles as
-   yours, and the modal in the implementation notes. It was one of three
-   reasons the `/welcome` page lost.
-8. **`--hf-token` on the command line: deprecated for one release, or gone
-   at once (§3.1)?** Nothing of MyScribe's passes it any more either way.
-   Deprecation protects a 0.5.x script; removal is the strict reading of
-   "a secret is never put on a command line".
-9. **The marker's one purpose (§3.3)** - offering the unfinished pull to an
-   Ollama this install put there - can be dropped. Then no marker exists,
-   "never pulled into" has no exception, and an interrupted install ends
-   on the copyable pull command.
-10. **A yes to installing Ollama also makes it the provider when question
-    5 was left open (§3.3).** Question 7 says so in its text. The other
-    way: write the model row only, and leave "choose a provider" standing.
-11. **`--diarize/--no-diarize` is removed from `scribe.setup` (§3.1).**
-    The other way: keep it as an explicit-only flag outside the W6 rule.
-12. **How a release points at an adopted library (§2).** This spec proposes
-    a second fact, `"data"`, in the pointer file, decided by the engine and
-    written by the launcher. The pointer as decided on 2026-09-20 holds one
-    fact on one line, and ADR-015 keeps it so until TASK-089.19 settles this,
-    before it is built.
+3. **A login entry for a clone (§3.10)** sits close to the start script
+   R3 declined. The fallback: release only.
+4. **Did you choose the modal before the app starts?** The status
+   paragraph says what TASK-040.06 does and does not record; it was one of
+   three reasons the `/welcome` page lost.
+5. **A yes to installing Ollama also makes it the provider when question
+   5 was left open (§3.3)**, and question 7 says so. The other way: write
+   the model row only.
+6. **How a release points at an adopted library (§2).** The `"data"` key
+   is this spec's proposal. The grill left it to TASK-089.19 - the agent's
+   proposal, not Robert's decision, and he can overturn it when ADR-015
+   comes up for acceptance.
 
 Verified by nobody, and every task that leans on one says so: the real Tk
 window; anything on macOS; whether `OllamaSetup.exe /VERYSILENT` starts the
-daemon; an OpenRouter key-check endpoint; `mlx-whisper` loading from a local
-folder; process lineage under `taskkill /T` after the Ollama installer
-exits; what Ollama does with a pull whose client goes away; whether an
-Ollama older than 0.34.0 returns `capabilities` on `/api/tags`; the known
-install locations on macOS and Linux; the three autostart entries, and the
-path each must name for a release (`APPIMAGE`, the `.app` bundle,
+daemon, and whether that daemon inherits `OLLAMA_MODELS` (8a); the Windows
+signer's name; OpenRouter's key check with a real key; `mlx-whisper` loading
+from a local folder; process lineage under `taskkill /T` after the Ollama
+installer exits; what Ollama does with a pull whose client goes away;
+whether an Ollama older than 0.34.0 returns `capabilities` on `/api/tags`;
+the known install locations on macOS and Linux; the three autostart entries,
+and the path each must name for a release (`APPIMAGE`, the `.app` bundle,
 `sys.executable`); whether a sync under a running app fails loudly on
 Windows; how "no NVIDIA device" is read per OS (§3.8); which of §3.4's two
 mechanisms makes the three commands read `.env` before `scribe.paths`
@@ -1499,7 +1494,10 @@ what `immutable=1` misreads beside a WAL that holds rows was not tested. The
 proxy behaviour has one measurement, on this machine (§0) - not on macOS or
 Linux, and not yet pinned by a test. The Ollama install commands were
 re-read on 2026-09-20 from the v0.34.2 README and from both install scripts
-as served that day; re-verify them at the pin bump, every time.
+as served that day; re-verify them at the pin bump, every time. Two of these
+are the open questions the records still carry: the silent installer and the
+tree kill (ADR-017, TASK-089.18), and the app's own probes behind a proxy
+(ADR-015, TASK-089.05).
 
 Judgment calls stated for the record: the contract is a number and not a
 list of ids, because a number keeps the launcher from learning anything

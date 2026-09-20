@@ -1,6 +1,6 @@
 Ollama's install scripts, as served on 2026-09-20
 
-The design spec and ADR-015 quote line numbers in these two scripts. The
+The design spec and ADR-017 quote line numbers in these two scripts. The
 scripts are Ollama's and change over time, so they are not copied into this
 repository; what is recorded is what was fetched, so that a later reader can
 tell whether the script they are looking at is still the one that was read.

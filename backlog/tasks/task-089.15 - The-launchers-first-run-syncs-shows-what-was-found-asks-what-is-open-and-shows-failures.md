@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-20 21:48'
 labels:
   - packaging
   - ui
@@ -34,7 +35,7 @@ CI has never walked any of this: `--smoke` returns before run_window (:717-728).
 
 The order becomes: location (TASK-089.14), tools, sync, plan, one sitting, apply, prove, start. The launcher stays stdlib-only and inside ADR-011: it learns only to read one JSON document and to write one.
 
-Needs a real machine: A person at the screen once per OS: Robert on Windows, and in WSL for the Linux console door. macOS: Robert, if the Mac of TASK-040.07 (a session on 2026-09-19) is still his to use - not confirmed; otherwise reported as not done. Nobody has run the real Tk window.
+Needs a real machine: A person at the screen once per OS: Robert on Windows, and in WSL for the Linux console door. macOS: the Mac is somebody else's (brief: G9, decided by Robert on 2026-09-20); its points are bundled for the Mac's owner in TASK-089 criterion 10, and until that sitting reported as not done. Nobody has run the real Tk window.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -48,8 +49,8 @@ Needs a real machine: A person at the screen once per OS: Robert on Windows, and
 - [ ] #7 Every reported line is teed to <home>/logs/launcher.log with secrets redacted.
 - [ ] #8 A Setup button and `--setup` reopen the sitting on current state. The button is new: today the window has 'Open MyScribe', 'Open data folder' and 'Quit' (packaging/launcher/myscribe_launcher.py:613-623). A question recorded as skipped is asked again in a sitting opened from the button; that route's test lives here and not in TASK-089.11, which is built first. A sitting opened from the Setup button while the app runs loads no model in the setup child: the launcher passes its port, and the proof follows TASK-089.13. A test asserts the gpu-smoke is never called on that path.
 - [ ] #9 On macOS and Linux with --headless, or without Tk, the console asker runs with the terminal attached when stdin is a TTY. Without a TTY one line says nothing was asked, and how to ask. The Windows binary is windowed and has no console; Tk is always there.
-- [ ] #10 Quit during a MyScribe download stops the setup child, and a test shows that no orphaned python process survives. How: the launcher keeps the child's handle and stops that one process - terminate(), not the tree kill it uses for the app (packaging/launcher/myscribe_launcher.py:376-380) - so that no tree kill passes over an Ollama the installer has just started. The design spec and ADR-015's Must say the same, and the notes confirm it or say what changed. What a single-process stop can orphan is said in those words: at most a version probe that ends by itself within 15 s (scribe/doctor.py:116-125), and the test waits that long. What Quit may promise around a freshly installed Ollama is for TASK-089.18 to establish first (brief: M10).
+- [ ] #10 Quit during a MyScribe download stops the setup child, and a test shows that no orphaned python process survives. How: the launcher keeps the child's handle and stops that one process - terminate(), not the tree kill it uses for the app (packaging/launcher/myscribe_launcher.py:376-380) - so that no tree kill passes over an Ollama the installer has just started. The design spec and ADR-017's Must say the same (M10 belongs to ADR-017 since the split of 2026-09-20, brief: G1). This lands while ADR-017 is still Proposed, and TASK-089.18 criterion 13 confirms or changes it; the notes here say what was promised and what that run then found. What a single-process stop can orphan is said in those words: at most a version probe that ends by itself within 15 s (scribe/doctor.py:116-125), and the test waits that long. What Quit may promise around a freshly installed Ollama is for TASK-089.18 to establish first (brief: M10).
 - [ ] #11 The Hugging Face conditions link is clickable. The hard-coded provider tuple (:561) and the '1.6 GB' literal (:574) are gone from the launcher.
 - [ ] #12 `--smoke` applies `{}` over stdin before /health, and asserts that no setting row was written and that the app still serves. It writes <home>/logs/launcher-smoke.log, which build_release.py prints on failure.
-- [ ] #13 Needs a person at the screen: one recorded real first run per OS with a fresh --home. Robert does Windows, and Linux in WSL through the console door; whether the Tk window shows under WSL has been tried by nobody. macOS needs a real Mac. Robert answers it if the Mac that TASK-040.07 records a session on (2026-09-19) is still his to use; that was not confirmed when these tasks were written, and no Mac was available in the design run. If it is not run, the box stays unticked and the parent's final summary lists it.
+- [ ] #13 Needs a person at the screen: one recorded real first run per OS with a fresh --home. Robert does Windows, and Linux in WSL through the console door; whether the Tk window shows under WSL has been tried by nobody. macOS needs a real Mac. The Mac is somebody else's, decided by Robert on 2026-09-20 (brief: G9), so this point is not asked on its own: it goes into the bundled macOS list of TASK-089 criterion 10 with its command and its expected output, and reads 'not run' until that sitting. If it is not run, the box stays unticked and the parent's final summary lists it.
 <!-- AC:END -->

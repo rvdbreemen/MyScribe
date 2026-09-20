@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-20 21:47'
 labels:
   - transcribe
   - packaging
@@ -36,7 +37,7 @@ The critic re-checked that WhisperModel accepts a local directory (faster_whispe
 
 This is NOT on the engine's critical path (brief: M9). It follows TASK-089.09 and takes over the catalogue line that `--plan` reports until then.
 
-Needs a real machine: Robert's RTX 3080 for the offline transcription on Windows, and his WSL for Linux. A real Apple Silicon Mac for the MLX half: Robert, if the Mac of TASK-040.07 (a session on 2026-09-19) is still his to use - not confirmed; otherwise reported as not run. Nobody has verified that mlx-whisper loads from a local folder.
+Needs a real machine: Robert's RTX 3080 for the offline transcription on Windows, and his WSL for Linux. A real Apple Silicon Mac for the MLX half: the Mac is somebody else's (brief: G9, decided by Robert on 2026-09-20); its points are bundled for the Mac's owner in TASK-089 criterion 10, and until that sitting reported as not run. Nobody has verified that mlx-whisper loads from a local folder.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -48,7 +49,7 @@ Needs a real machine: Robert's RTX 3080 for the offline transcription on Windows
 - [ ] #5 Free space is checked on the volume the files land on, before the first byte. When it is too small, one sentence gives both numbers and no download is attempted. ENOSPC surfaces as disk-full, not as 'offline'.
 - [ ] #6 transcribe.load_model and the MLX backend load from the pinned local folder when it is complete, and behave as today otherwise. tests/test_stage_transcribe.py:43-54 (ADR-004) stays green.
 - [ ] #7 Needs a real GPU: with a fresh HF_HOME and a scratch data directory on Windows, fetch turbo, then transcribe tests/fixtures/clip30.wav with HF_HUB_OFFLINE=1. The word count and the seconds are printed. The same run is done in WSL. Robert runs both, on his RTX 3080.
-- [ ] #8 Needs a real Mac: the same offline run on Apple Silicon answers whether mlx-whisper loads from a local folder. Robert answers it if the Mac that TASK-040.07 records a session on (2026-09-19) is still his to use; that was not confirmed when these tasks were written, and no Mac was available in the design run. If it is not run, the box stays unticked and the parent's final summary lists it. Until it is run the MLX half is not called done.
+- [ ] #8 Needs a real Mac: the same offline run on Apple Silicon answers whether mlx-whisper loads from a local folder. The Mac is somebody else's, decided by Robert on 2026-09-20 (brief: G9), so this point is not asked on its own: it goes into the bundled macOS list of TASK-089 criterion 10 with its command and its expected output, and reads 'not run' until that sitting. If it is not run, the box stays unticked and the parent's final summary lists it. Until it is run the MLX half is not called done.
 - [ ] #9 401 and 403 produce different sentences in models.fetch_file and in doctor._gated_repo_reachable.
 - [ ] #10 The Authorization header is sent only for gated repos and is dropped on a cross-host redirect. The two-server probe is red, then green.
 - [ ] #11 Choosing tier max downloads large-v3 and nothing for turbo. This makes TASK-040.06 AC5 true.

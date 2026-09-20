@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-20 21:29'
 labels:
   - llm
   - security
@@ -21,7 +22,7 @@ ordinal: 144000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Decided by Robert on 2026-09-20 (brief: R1, W3). Today a missing llm_provider row falls through to OpenRouter. DEFAULT_PROVIDER is OpenRouterProvider.name (scribe/llm/tasks.py:456), and default_provider() returns it whenever the stored name is missing or no longer registered (scribe/llm/__init__.py:164-175). Three more fall-throughs sit in the stage itself: `ctx.params.get("provider") or tasks.DEFAULT_PROVIDER` at scribe/stages/llm_stage.py:94, :271 and :345.
+Decided by Robert on 2026-09-20 (brief: R1, W3), and recorded in ADR-016: a missing provider row selects no provider, and nothing is sent until somebody has chosen. This task builds under ADR-016, which is decided before this code lands (TASK-089.02 criterion 8; brief: G1). Today a missing llm_provider row falls through to OpenRouter. DEFAULT_PROVIDER is OpenRouterProvider.name (scribe/llm/tasks.py:456), and default_provider() returns it whenever the stored name is missing or no longer registered (scribe/llm/__init__.py:164-175). Three more fall-throughs sit in the stage itself: `ctx.params.get("provider") or tasks.DEFAULT_PROVIDER` at scribe/stages/llm_stage.py:94, :271 and :345.
 
 What a user hits: they press 'Skip for now', or install from a clone and are never asked. With no key, every AI action fails for lack of a credential for a cloud provider they never chose, while the dialog they skipped had Ollama preselected (packaging/launcher/myscribe_launcher.py:558). With an OpenRouter key anywhere on the machine - scribe/llm/base.py:196-203 records that this machine has one machine-wide under HKLM - every transcript not pinned private can go to OpenRouter without anybody having chosen it.
 

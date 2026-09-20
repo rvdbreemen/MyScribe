@@ -639,7 +639,7 @@
       "path": "ADR-011-ship-each-platform-as-a-small-launcher-that-installs-the-locked-environment-with-uv-on-first-run.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-09-20",
+      "date": "2026-09-21",
       "decision_summary": "Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps...",
       "topics": [
         "ci",
@@ -914,16 +914,14 @@
     },
     {
       "id": "ADR-015",
-      "title": "First-run setup is one app-side engine behind a JSON contract, a skipped question selects nothing, and third-party software is installed only when absent, shown and agreed to",
-      "path": "ADR-015-first-run-setup-is-one-app-side-engine-behind-a-json-contract-a-skipped-question-selects-nothing-and-third-party-software-is-installed-only-when-absent-shown-and-agreed-to.md",
+      "title": "First-run setup is one app-side engine behind a JSON contract, and every front-end only renders it",
+      "path": "ADR-015-first-run-setup-is-one-app-side-engine-behind-a-json-contract-and-every-front-end-only-renders-it.md",
       "format": "madr",
       "status": "Proposed",
-      "date": "2026-09-20",
-      "decision_summary": "Chosen option: one app-side engine behind a versioned JSON contract, because it is the only option in which a questio...",
+      "date": "2026-09-21",
+      "decision_summary": "Chosen option: one app-side engine behind a versioned JSON contract: only there does a question exist once, does dete...",
       "topics": [
         "installer",
-        "llm",
-        "ollama",
         "packaging",
         "secrets",
         "setup"
@@ -932,72 +930,46 @@
         "--apply-stdin",
         "--plan",
         "first run",
-        "install.py",
-        "no provider row",
-        "Ollama install",
-        "scribe.setup",
+        "pointer file",
         "setup.json"
       ],
       "components": [
         "install.py",
         "packaging.launcher",
-        "scribe.llm",
         "scribe.setup"
       ],
       "symbols": [
-        "default_provider",
+        "home_dir",
         "run_streaming",
-        "setup_command",
-        "sweep_speaker_passes"
+        "setup_command"
       ],
       "context_scope": "selective",
       "decision_contract": {
         "must": [
-          "python -m scribe.setup is the only code that detects, decides what is open, checks, writes and proves. --plan goes out and --apply-stdin comes in, each one JSON document carrying the contract number.",
-          "Detect before asking. A plan made for a start lists only the questions that are open and were never put; a plan asked for through --setup also lists the skipped and the answered ones, each with its current value. The plan names where a c...",
-          "Every question can be skipped and says what skipping costs. A skip writes nothing for that question.",
-          "Every question names where it can be answered later. A question whose answer is a stored setting is asked only when Settings can take the same answer; one with no counterpart there waits until it has one, as start at login waits for TASK...",
-          "A typed secret goes to its settings row only, from the moment every lookup reads that row through the one resolver of TASK-089.04, and not before. A refused credential is not saved, and its question reopens.",
-          "\"Save and start\" writes the stamp, failed downloads included, with the contract version and the ids answered, skipped and open. Closing the sitting writes none.",
-          "Whether a start opens a sitting is read from the stamp and one number out of the payload, as data, without starting a child. It opens one when there is no stamp; once for a stamp in the old {provider, tier, hftoken, fetched} format, putt...",
-          "A door with neither a window nor a terminal starts no setup child because a sitting is due; it says in one line that nothing was asked and how to ask.",
-          "--plan reports the model catalogue as it is today, labelled as such, until the platform-aware catalogue of TASK-089.16 lands; the key question, the found table and the Ollama state do not wait for it. That mlx-whisper loads its weights f...",
-          "--prove exits 0 only when every required line is OK. A skipped or untestable line reads \"not tested\" with where to finish it. While the app answers /health, or a job is running in this library, prove queues the existing doctor job or rep...",
-          "The launcher keeps the setup child's handle, and Quit stops that child: that one process, not its tree (TASK-089.15). The tree kill the launcher uses for the app (taskkill /T /F, launcher :376-382) is not used here, so that none passes o...",
-          "install.py needs nothing the environment would provide and runs on the Python a clone user already has; it uses only the pinned, sha256-verified uv of packaging/tools.json.",
-          "Both doors check free space before the first sync (TASK-089.14, TASK-089.17). Installing somebody else's software:",
-          "Every loopback probe - Ollama's and /health - ignores a configured proxy. A proxy that is found is shown in the found table and never asked about.",
-          "Offer only when absent, show before asking, run exactly what was shown, verify the pinned sha256 first. A missing artifact or a mismatch ends in the vendor's download page and \"Check again\".",
-          "Write the marker only after the installer has finished successfully; never offer the installer while any Ollama binary exists; clear the marker once Ollama has been seen ready.",
-          "Keep the pin under scribe/, with its release step and its CI check.",
-          "Tell the user, in the installer and the readme, what stays behind after an uninstall and what install.py leaves in a clone (.tools/). The installer's text stops naming one fixed folder once the location can be chosen (TASK-089.23). What...",
-          "With no llmprovider row there is no provider: the panel asks for a choice and no automatic pass is queued, sweepspeakerpasses included. Adopting an existing library with no provider chosen queues nothing.",
-          "The spec and the changelog each carry a line saying the default changed."
+          "python -m scribe.setup alone detects, decides what is open, checks, writes and proves. --plan goes out and --apply-stdin comes in, each one JSON document carrying the contract number.",
+          "Detect before asking. A plan made for a start lists the questions that are open and were never put; one asked for with --setup lists all, with current values. It names where a credential was found, never its value. Its loopback probes ig...",
+          "Every question can be skipped, says what skipping costs and names where it can be answered later; a missing or null answer writes nothing. One whose answer is a stored setting waits until Settings can take it (TASK-089.21).",
+          "A typed secret goes to its settings row only, once every lookup reads that row through the resolver of TASK-089.04. A refused credential is not saved and its question reopens; an OpenRouter key is checked for free first.",
+          "--hf-token is still recognised and is refused: a sentence saying where a token belongs - HFTOKEN in the environment or .env, or the document piped to --apply-stdin - and exit 2 (TASK-089.09); the other flags of README.md:224 keep working.",
+          "\"Save and start\" writes the stamp - the contract version and the ids answered, skipped and open - failed downloads included; closing the sitting writes none (:527-528, :590-594). A start opens a sitting when there is no stamp, once for a...",
+          "install.py runs on the Python a clone user already has, with the pinned, sha256-verified uv of packaging/tools.json; it asks /health on 4242 or on --port and refuses to sync when the source tree is this checkout or the two fields are mis...",
+          "--prove exits 0 only when every required line is OK; an untestable line reads \"not tested\" with where to finish it. While the app answers /health or a job runs in this library, it queues the doctor job or says \"not tested\" (TASK-089.13)."
         ],
         "must_not": [
-          "Put a secret on a command line, in the plan, in the stamp, in a log or on the screen.",
-          "Copy a credential from where it was found into another store.",
-          "Let a front-end decide, check or write an answer, or interpret any condition other than shownif.",
-          "Install over, upgrade, start, stop, pull into or reconfigure an Ollama that is present, whatever its state - except the one pull under Exceptions.",
-          "Pipe a remote script into a shell, run a script as root on the user's behalf, or fall back to an unpinned download.",
-          "Load a model in the setup child while the app answers /health or a job is running in this library (ADR-001).",
-          "Start a second app on the live data directory to prove that it serves: its lifespan migrates the database and runs the sweep (scribe/app.py:247-261). The proof uses a scratch data directory, or \"/health already answers\".",
-          "Write the defaultdiarize row from setup, in either direction: not from a plan question, not from a front-end and not from a flag.",
-          "Import anything in install.py that the environment would have to provide. The standard library is allowed; this repository's own stdlib-only packaging modules are allowed only if the open question on sharing code is answered that way."
+          "Put a secret on a command line, in the plan, in the stamp, in a log or on the screen, or copy it from where it was found into another store. No exception.",
+          "Let a front-end decide, check or write an answer, or interpret a condition other than shownif.",
+          "Load a model in the setup child while the app answers /health or a job runs in this library (ADR-001), or start a second app on the live data directory: the serve check uses a scratch data directory, or \"/health already answers\" (W1).",
+          "Write defaultdiarize from setup by itself: not from a plan question, not as a guard (TASK-089.08 protects instead), and not as the side effect a tier answer has today (scribe/setup.py:116-126, TASK-089.09). The scripted --diarize/--no-di...",
+          "Import in install.py the launcher or anything the environment would provide: it may import the standard library and the stdlib-only packaging/buildpayload.py."
         ],
         "exceptions": [
-          "Where everything goes. A release asks one question before the sync: the folder for the environment, the data and the weights, with the free space per volume, what this install downloads and the disk it needs (TASK-089.14). The launcher a...",
-          "The pull into MyScribe's own install. The Must Not on a present Ollama has one carve-out: the pull of the one model that was shown and agreed to before the install, into the Ollama MyScribe installed, while its marker stands - that is, u...",
-          "--hf-token, for now. This one contradicts the first Must Not, and the record says so: the flag puts a secret on a command line. It is tolerated only because it is documented for people's own use in the README (the repository's front page...",
-          "The other documented flags. --status, --provider, --tier and --fetch-models (README.md:224, scribe/setup.py:160-167) keep working as the scripted door; docs/superpowers/specs/2026-09-20-installer-design.md names --fetch-models as where t...",
-          "macOS. The verified .dmg is opened and the person drags the app across; MyScribe waits with \"Check again\". Unverified: nobody in the design run had a Mac. The same holds for the macOS line of the model catalogue: that mlx-whisper loads f..."
+          "Where everything goes. The engine cannot ask where it will live, so a release asks before the sync where the environment, the data and the weights go, with the free space per volume and what this install needs (TASK-089.14). The launcher...",
+          "macOS is unproven, not different: its criteria are bundled per milestone and read \"not run\" until that sitting (G9, Robert's; Open Questions)."
         ],
         "verification": [
-          "The tests named under Confirmation, by task key, once they exist.",
           "grep -n -- \"--hf-token\" packaging/launcher/myscribelauncher.py returns line 476 on 2026-09-20 and nothing after TASK-089.15.",
-          "grep -rn --include=.py \"DEFAULTPROVIDER\" scribe/ returns five lines on 2026-09-20 (scribe/llm/tasks.py:456, scribe/llm/init.py:175, scribe/stages/llmstage.py:94, :271, :345); after TASK-089.07 the same command returns no line in scribe/s...",
-          "/.venv/Scripts/python probeproxyloopback.py (References) fails twice and answers twice on 2026-09-20; the test of TASK-089.05 is what holds after the change.",
-          "adr-judge --dry-run-enforcement ADR-015 on a scratch copy marked Accepted, with a probe diff that adds import scribe to install.py and command += [\"--llm-key\", key] to the launcher: both flagged."
+          "probeproxyloopback.py (References): two failures and two answers on 2026-09-20; TASK-089.05's test is what holds after the change.",
+          "adr-judge --dry-run-enforcement ADR-015, as run under Enforcement."
         ]
       },
       "scope": {
@@ -1005,6 +977,137 @@
           "{packaging/launcher/**,install.py}",
           "scribe/setup.py",
           "install.py"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-016",
+      "title": "A missing provider row selects no provider, and nothing is sent until somebody has chosen",
+      "path": "ADR-016-a-missing-provider-row-selects-no-provider-and-nothing-is-sent-until-somebody-has-chosen.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-21",
+      "decision_summary": "Chosen option: a missing row selects no provider, decided by Robert on 2026-09-20 (R1 in docs/superpowers/specs/2026-...",
+      "topics": [
+        "llm",
+        "privacy"
+      ],
+      "aliases": [
+        "llm_provider",
+        "no provider row"
+      ],
+      "components": [
+        "scribe.llm",
+        "scribe.stages.finalize",
+        "scribe.stages.llm_stage",
+        "scribe.web.ai_ui"
+      ],
+      "symbols": [
+        "default_provider",
+        "queue_speaker_pass",
+        "sweep_speaker_passes"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "defaultprovider() answers \"no provider\" for a missing row or unregistered name, without raising; every caller in Context, and any added, handles it.",
+          "The panel says \"choose a provider\" with a link to Settings > AI providers and preselects nothing; the Settings line says the same.",
+          "queuespeakerpass, sweepspeakerpasses and the bulk action queue nothing without a provider; the sweep marks nothing asked, so the next start catches up.",
+          "A job that names no provider ends in the runner with a sentence; no request.",
+          "Only an answer somebody gave writes the row: in Settings, or in a setup sitting (ADR-015) to a question whose text says it chooses the provider.",
+          "The spec line quoted in Context and CHANGELOG.md each gain a line saying the default was reversed, by whom and why (criterion #8)."
+        ],
+        "must_not": [
+          "Fall back to any provider, cloud or local, when none was named.",
+          "Read a found key, in the environment or the registry, as a choice.",
+          "Change what a machine with a row does, or loosen the private pin (scribe/llm/privacy.py:99-120 already refuses every non-local provider)."
+        ],
+        "exceptions": [
+          "None: a provider named by a request somebody made is a choice, not an exception."
+        ],
+        "verification": [
+          "grep -rnE --include=.py \"(or|else) tasks\\.DEFAULTPROVIDER\" scribe/ returns four lines on 2026-09-20 (scribe/llm/init.py:175 and the three runner lines) and none after TASK-089.07.",
+          "adr-judge --dry-run-enforcement ADR-016, as run under Enforcement."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-017",
+      "title": "MyScribe installs third-party software only when it is absent, shown and agreed to, and leaves an Ollama that is there alone",
+      "path": "ADR-017-myscribe-installs-third-party-software-only-when-it-is-absent-shown-and-agreed-to-and-leaves-an-ollama-that-is-there-alone.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-21",
+      "decision_summary": "Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b...",
+      "topics": [
+        "ollama",
+        "third-party software"
+      ],
+      "aliases": [
+        "Ollama install",
+        "OLLAMA_MODELS",
+        "the Ollama marker"
+      ],
+      "components": [
+        "scribe.ollama_setup",
+        "scribe/ollama_release.json"
+      ],
+      "symbols": [
+        "install_plan"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Offer an install only when the software is absent by MyScribe's own test, in which any doubt, an unreadable state included, reads as present. For Ollama (TASK-089.06): none on the search path or in the known locations, no OLLAMA variable...",
+          "Before the question, show the artifact - its URL (Uniform Resource Locator), size and sha256 - the exact command line and where it installs. The default is No, and a skip is a No.",
+          "Pin the artifact and verify its sha256, and on Windows its Authenticode signer, before anything runs; run exactly what was shown. Ollama's script accepts only a subject carrying O=Ollama Inc. (install.ps1:87); the pinned installer's cert...",
+          "Where the install needs root, show the vendor's commands as download, read, then run, and let the person run them: a root script that can install drivers is not run behind a yes or no.",
+          "Write the marker only after the installer has finished successfully, so that a failed or cancelled download leaves none. Bind it to the version and the path of what was installed - the default path alone is the same for everybody - and d...",
+          "Ask where a new Ollama keeps its models only when the default volume is too small (G8). Its default is Yes, because a No ends the offer. On Windows set OLLAMAMODELS for the user's account before the installer starts; elsewhere show the e...",
+          "Keep the pin under scribe/, which the payload ships (packaging/buildpayload.py:38). Its owner is a step in docs/RELEASING.md that bumps it and hashes the download, and a CI (continuous integration) check that the pinned URL resolves and...",
+          "Say in the installer's welcome text (packaging/windows/myscribe.iss:51) and the readme that an Ollama and a model MyScribe installed survive an uninstall and belong to the user, and how to remove them (M8).",
+          "Keep the setup child's handle and stop that one process on Quit, not its tree; while a third-party installer runs, refuse Quit and say why (M10)."
+        ],
+        "must_not": [
+          "Install over, upgrade, start, stop, pull into or reconfigure an Ollama that is present, whatever its state - except the pull under Exceptions.",
+          "Offer the installer while any Ollama binary exists, marker or not.",
+          "Start an Ollama, the one MyScribe has just installed included.",
+          "Pipe a remote script into a shell, run a script as root on the user's behalf, leave the presence test to a vendor's installer, or fall back to an unpinned download.",
+          "Set OLLAMAMODELS, or any other setting of Ollama's, outside an install MyScribe makes in that sitting.",
+          "Say that Quit is clean before TASK-089.18 has measured it."
+        ],
+        "exceptions": [
+          "The pull into MyScribe's own install (G6). While the marker stands, the unfinished pull of the one model that was shown and agreed to before the install may be offered again: in a sitting somebody opened with --setup, never by a start, a...",
+          "macOS is guided, and unverified. The verified .dmg is opened, the person drags the app across, and MyScribe waits with \"Check again\". Nobody has run that or the presence test's install locations: the Mac's criteria run in one bundled sit..."
+        ],
+        "verification": [
+          "The tests named under Confirmation, once they exist, and adr-judge --dry-run-enforcement ADR-017 as run under Enforcement."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "{scribe/**,packaging/launcher/**,install.py}"
         ]
       },
       "metadata": {
@@ -1199,6 +1302,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-011",
+      "target": "ADR-017",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-012",
       "target": "ADR-001",
       "type": "related",
@@ -1314,12 +1423,6 @@
     },
     {
       "source": "ADR-015",
-      "target": "ADR-009",
-      "type": "related",
-      "resolved": true
-    },
-    {
-      "source": "ADR-015",
       "target": "ADR-011",
       "type": "related",
       "resolved": true
@@ -1333,6 +1436,48 @@
     {
       "source": "ADR-015",
       "target": "ADR-013",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-015",
+      "target": "ADR-016",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-015",
+      "target": "ADR-017",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-016",
+      "target": "ADR-015",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-016",
+      "target": "ADR-017",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-017",
+      "target": "ADR-011",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-017",
+      "target": "ADR-015",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-017",
+      "target": "ADR-016",
       "type": "related",
       "resolved": true
     }

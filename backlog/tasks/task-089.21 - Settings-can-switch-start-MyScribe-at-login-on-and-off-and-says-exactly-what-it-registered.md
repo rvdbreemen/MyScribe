@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-20 21:48'
 labels:
   - settings
   - packaging
@@ -29,7 +30,7 @@ For a release, what is registered is the launcher and not the bare app. Only the
 
 The mechanism per OS is NOT decided here and none has been tried by anybody: a per-user Run entry or the Startup folder on Windows, a LaunchAgent on macOS, an XDG autostart entry on Linux. Nothing needs administrator rights, and nothing machine-wide is touched.
 
-Needs a real machine: A real log-out and log-in on each OS: Robert on Windows. macOS: Robert, if the Mac of TASK-040.07 (a session on 2026-09-19) is still his to use - not confirmed; otherwise reported as not run. Linux needs a desktop login, which WSL is not, and nobody is named for it. No mechanism has been tried by anybody.
+Needs a real machine: A real log-out and log-in on each OS: Robert on Windows. macOS: the Mac is somebody else's (brief: G9, decided by Robert on 2026-09-20); its points are bundled for the Mac's owner in TASK-089 criterion 10, and until that sitting reported as not run. Linux needs a desktop login, which WSL is not, and nobody is named for it. No mechanism has been tried by anybody.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -39,6 +40,6 @@ Needs a real machine: A real log-out and log-in on each OS: Robert on Windows. m
 - [ ] #3 It registers per user only. Nothing needs administrator rights, and nothing under a machine-wide key or folder is written. A test asserts the paths it touches.
 - [ ] #4 A release registers the launcher, not the environment's python, so a start at login still re-syncs after an update. A clone registers the clone's own start command, the existing scripts/start.*. That is a choice, stated so that Robert can overturn it, because R3 declines 'a start script or shortcut for a clone'. The login item is what R3's 'start at login' needs; it creates no desktop or Start-menu entry and no new script. On Windows the Startup-folder mechanism would literally be a shortcut file, while a per-user Run entry is not, and that weighs in the choice of mechanism, which is still open. If Robert reads a login item for a clone as the declined item, start-at-login is restricted to releases and the clone's switch says so. The notes say what each door registers.
 - [ ] #5 A start at login never opens the first-run sitting: nobody is at the screen, and a modal dialog that holds up the watch folders is the opposite of what the entry is for. The entry carries a flag of its own (the design spec proposes `--at-login`), a sitting that is due waits for the next start somebody makes by hand, and a test shows the app starts without one. What else appears at login is decided and said: no browser tab opens (`--no-browser` exists, myscribe_launcher.py:692), and whether the launcher window shows or starts minimised is recorded in the notes.
-- [ ] #6 Needs a real login: on Windows, Robert switches it on, logs out and in, and /health answers without anybody starting MyScribe; then off, log out and in, and it does not. Linux needs a desktop login, which WSL is not; nobody on the project is known to have a Linux desktop, so that box stays unticked and the parent's final summary lists it unless Robert names a machine. macOS needs a real Mac. Robert answers it if the Mac that TASK-040.07 records a session on (2026-09-19) is still his to use; that was not confirmed when these tasks were written, and no Mac was available in the design run. If it is not run, the box stays unticked and the parent's final summary lists it.
+- [ ] #6 Needs a real login: on Windows, Robert switches it on, logs out and in, and /health answers without anybody starting MyScribe; then off, log out and in, and it does not. Linux needs a desktop login, which WSL is not; nobody on the project is known to have a Linux desktop, so that box stays unticked and the parent's final summary lists it unless Robert names a machine. macOS needs a real Mac. The Mac is somebody else's, decided by Robert on 2026-09-20 (brief: G9), so this point is not asked on its own: it goes into the bundled macOS list of TASK-089 criterion 10 with its command and its expected output, and reads 'not run' until that sitting. If it is not run, the box stays unticked and the parent's final summary lists it.
 - [ ] #7 What an uninstall has to remove is written into the notes, for TASK-089.23 to act on.
 <!-- AC:END -->

@@ -4,7 +4,7 @@ This is the key to `2026-09-20-installer-design.md` and to the backlog tasks
 under TASK-089. Both refer to decisions and review findings by short keys -
 R1, W5, M2, U7 - and this file says what each key means. It is a record, not
 a design: the design is in the spec, the work is in the backlog, and the
-durable rules are in ADR-015.
+durable rules are in ADR-015, ADR-016 and ADR-017.
 
 How it came about, all on 2026-09-20. Ten readers mapped the current
 onboarding and returned 112 evidence-backed gaps. Four independent designs
@@ -144,10 +144,77 @@ In his words across the session, translated:
   interface, and a GPU-versus-CPU choice (ADR-012: one lock, a per-platform
   torch source).
 
+## G - what the grill of ADR-015 decided
+
+Robert ran `/adr-kit:grill ADR-015` later on 2026-09-20, one question at a
+time. Each answer is recorded with its question in the record it belongs to;
+this is the short form.
+
+* **G1 - Three records, not one.** adr-kit asks for one decision per record.
+  ADR-015 keeps the engine and its JSON contract. ADR-016 is R1, "a missing
+  provider row selects no provider": it has no open question, so it can be
+  accepted on its own and TASK-089.07 builds under it. ADR-017 is the rule
+  for third-party software and carries the Ollama questions.
+* **G2 - `install.py` shares the launcher's sequence, not its code**, plus one
+  contract test that gives both doors the same lock and stamp and demands the
+  same sync decision. Counted: about 100 of the launcher's 758 lines are
+  plumbing both need. Fetching the tools and checking their sha256 is not in
+  the launcher at all - it copies them out of the payload - so `install.py`
+  shares that part with `packaging/build_payload.py`. This settles M11.
+* **G3 - `--diarize/--no-diarize` stays**, as an explicit choice and nothing
+  else. W6 removed the guard - setup switching the speakers default off by
+  itself - and that stays removed. The flag's removal came from reading
+  "at all" literally; nobody asked for it. Still to fix under TASK-089.09: a
+  tier answer alone writes the diarize row today (`scribe/setup.py:125-136` at d80360a).
+* **G4 - `--hf-token` goes now.** It is still recognised and is refused with a
+  sentence saying where a token belongs - `HF_TOKEN` in the environment or
+  `.env`, or the document piped to `--apply-stdin` - and exit 2. "A secret
+  never rides on a command line" then has no exception.
+* **G5 - `/health` gains two fields**: the source tree the app runs from and
+  the data directory it serves. An answer without them is doubt, and doubt
+  refuses the sync. The same fields tell the proof whether the answering app
+  serves this library. The host check covers the whole app
+  (`scribe/guard.py:110`), so no web page can read it. Blind spot, kept and
+  named: an app on a port nobody mentioned. This settles W2.
+* **G6 - The pull may be offered again later.** While the marker stands, a
+  sitting opened with `--setup` offers the unfinished pull into MyScribe's own
+  Ollama again, as a question whose default is No. Chosen against the agent's
+  recommendation of the narrower rule with no marker at all.
+* **G7 - The marker is bound to version and path, and any doubt drops it.** It
+  fails to the safe side: after Ollama updates itself the marker lapses and
+  somebody types one command. The path alone could not tell MyScribe's Ollama
+  from one the user installed afterwards at the same default path.
+* **G8 - Where a new Ollama keeps its models is asked only when the default
+  volume is too small.** On Windows MyScribe then sets `OLLAMA_MODELS` as a
+  variable of the user's account before the installer starts; on macOS and
+  Linux it stays a sentence with the command. Whether the daemon the silent
+  installer starts inherits it is unverified and belongs to the sandbox run
+  of TASK-089.18. This settles U7.
+* **G9 - The Mac is somebody else's.** macOS criteria are bundled per milestone
+  into one list of commands and expected output, and until that sitting they
+  say "not run". The README's sentence about the M2 gets its date and says
+  whose machine it was.
+
+Established by the agent during the grill, as facts and not decisions:
+OpenRouter checks a key for free - an authenticated request to
+`https://openrouter.ai/api/v1/key` answers 401 for a bad key, per its
+documentation, and an unauthenticated probe got 401 there where a nonsense
+path got 404; no real key was used. The pinned Ollama release v0.34.2 exists,
+is the latest and is not a prerelease; `OllamaSetup.exe` is 1,569,993,232
+bytes and `Ollama.dmg` 197,873,582, digests as recorded in ADR-017; the
+Windows signer's name is still unverified. And one proposal by the agent: how
+a release points at an adopted library is TASK-089.19's to settle, below the
+level of a decision record.
+
+Still open after the grill, and both are measurements: what the silent Ollama
+installer starts and how a tree kill treats it (ADR-017, TASK-089.18), and
+whether the app's own two probes fail behind a proxy the way the library
+defaults did (ADR-015, TASK-089.05).
+
 ## Verified by nobody, as of 2026-09-20
 
 The real Tk window. Anything on macOS. Whether `OllamaSetup.exe /VERYSILENT`
-starts the daemon. An OpenRouter endpoint that checks a key for free.
+starts the daemon.
 mlx-whisper loading from a local folder. Process lineage under `taskkill /T`
 after the Ollama installer exits. The byte counts assumed for 20 GB and 24 GB
 cards behind the 12B threshold.

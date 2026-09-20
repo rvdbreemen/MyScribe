@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-20 21:48'
 labels:
   - packaging
   - ux
@@ -29,7 +30,7 @@ The footprint, as the critic added it up on 2026-09-20 - estimates, not measurem
 
 Because everything hangs off the home, this is the one question that can only be asked BEFORE the sync (brief: M2, M3, U1, U6). It is therefore asked by the launcher itself and not by the engine, which does not exist yet at that moment. One question, before anything is downloaded: where everything goes, with the free space per volume, the total this install will download, and the disk it needs. Skipping keeps today's location.
 
-The answer is persisted in a one-line pointer file next to the default home, which home_dir() reads. That is stdlib-only, so it stays inside ADR-011; ADR-015 records it (TASK-089.02).
+The answer is persisted in a small pointer file - one JSON object - next to the default home, which home_dir() reads. That is stdlib-only, so it stays inside ADR-011; ADR-015 records it (TASK-089.02).
 
 The clone door's free-space check before its own sync is a criterion of TASK-089.17.
 
@@ -41,7 +42,7 @@ Needs a real machine: Robert, at a Windows screen on a machine with two volumes 
 - [ ] #1 On a first run with no pointer file and no environment, the location question appears before the tools are installed and before the sync. A test over the bootstrap order asserts that nothing was downloaded, and nothing written under any home, before it was answered.
 - [ ] #2 It shows the default home, the free space on each local volume, the total this install will download and the disk it needs. The total is computed, not a literal: the environment's size for this platform with the date it was measured, the weights from the catalogue for this platform, and Ollama with its model only as 'up to' figures. Each number names its source. The source for the Ollama figures, scribe/ollama_release.json, is created in TASK-089.18, which is built after this task. Until it lands they are labelled literals that carry their date and say they were read from Ollama's release page, not measured; TASK-089.18 criterion 4 switches them to the pin file. The '3 GB' in the launcher (:434-435) and in packaging/windows/myscribe.iss:51 agree with it or are gone.
 - [ ] #3 The numbers come from files in the payload, read as data. The launcher imports nothing from the app (ADR-011), and the stdlib-only test stays green.
-- [ ] #4 The answer is stored in a one-line pointer file next to the default home: beside that folder, not inside it, so that a moved install leaves nothing under the default home. home_dir() honours it after MYSCRIBE_HOME and `--home`, which keep winning. Tests cover: no file; a file; an unreadable file; and a file naming a folder that no longer exists, which gives one sentence and the question again - never a silent fall-back to the default, which would look like an empty library.
+- [ ] #4 The answer is stored in a small pointer file, one JSON object, next to the default home: beside that folder, not inside it, so that a moved install leaves nothing under the default home. home_dir() honours it after MYSCRIBE_HOME and `--home`, which keep winning. Tests cover: no file; a file; an unreadable file; and a file naming a folder that no longer exists, which gives one sentence and the question again - never a silent fall-back to the default, which would look like an empty library. No test pins that the file holds one line or one fact: TASK-089.19 criterion 8 may add a second fact to it (ADR-015, Open Questions).
 - [ ] #5 Skipping keeps today's location and writes no pointer file. The question belongs to a first run only: once an environment exists under the home it is not asked again, and a test shows it.
 - [ ] #6 Red first: with less free space on the chosen volume than the install needs, today the sync starts anyway. After the change one sentence gives both numbers and no download is attempted. This check also runs when the question was skipped.
 - [ ] #7 A home that already holds an environment is never moved by this question. Moving an existing install is out of scope, and the sitting says so rather than half-doing it.

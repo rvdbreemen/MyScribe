@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-20 21:47'
 labels:
   - llm
   - settings
@@ -30,13 +31,13 @@ OllamaProvider(conn) also ignores the saved llm_model_ollama: `conn` is 'accepte
 
 Detection only. Nothing here installs, starts, pulls or configures anything; that is TASK-089.18. It comes early and depends on nothing heavy (brief: M9). It does follow TASK-089.05: the 'no API answer' leg is only trustworthy once a proxy cannot sit in front of the loopback probe.
 
-Needs a real machine: Robert's machine for the ready state, and his WSL for the Linux install locations. The macOS locations need a real Mac: Robert, if the Mac of TASK-040.07 (a session on 2026-09-19) is still his to use - not confirmed; otherwise they are reported as not verified.
+Needs a real machine: Robert's machine for the ready state, and his WSL for the Linux install locations. The macOS locations need a real Mac: the Mac is somebody else's (brief: G9, decided by Robert on 2026-09-20); its points are bundled for the Mac's owner in TASK-089 criterion 10, and until that sitting they are reported as not verified.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 scribe/ollama_setup.state() returns absent, installed_not_running, running_no_chat_model, ready or unknown (criterion 3), with the binary path, the version and the chat model names. It reuses OllamaProvider's GET /api/tags, which now returns the payload. There is no second HTTP client.
-- [ ] #2 'absent' requires ALL of these: no `ollama` through shutil.which; none in the known install locations; no answer at 127.0.0.1:11434; and no OLLAMA_* variable in the process environment, `.env` or the registry. Any doubt reports present. The task notes say which macOS and Linux locations were verified against Ollama's own docs and which were not. On a real machine, Linux is checked by Robert in WSL. macOS needs a real Mac. Robert answers it if the Mac that TASK-040.07 records a session on (2026-09-19) is still his to use; that was not confirmed when these tasks were written, and no Mac was available in the design run. If it is not run, the box stays unticked and the parent's final summary lists it.
+- [ ] #2 'absent' requires ALL of these: no `ollama` through shutil.which; none in the known install locations; no answer at 127.0.0.1:11434; and no OLLAMA_* variable in the process environment, `.env` or the registry. Any doubt reports present. The task notes say which macOS and Linux locations were verified against Ollama's own docs and which were not. On a real machine, Linux is checked by Robert in WSL. macOS needs a real Mac. The Mac is somebody else's, decided by Robert on 2026-09-20 (brief: G9), so this point is not asked on its own: it goes into the bundled macOS list of TASK-089 criterion 10 with its command and its expected output, and reads 'not run' until that sitting. If it is not run, the box stays unticked and the parent's final summary lists it.
 - [ ] #3 Chat-capable means 'completion' is in capabilities, and ['tools', 'embedding'] is not chat-capable. If the key is absent it falls back to POST /api/show. If neither answers the result is 'unknown': never 'ready', never 'absent', and treated as present wherever the state is used. MockTransport tests cover: five embedders only gives running_no_chat_model; the missing-key case; and a refused connection with a stripped PATH and empty fake directories gives absent.
 - [ ] #4 Red first: with llm_model_ollama saved as gemma4:12b, OllamaProvider(conn).model is that tag. It is qwen3.5:4b today. The Settings readiness line tests the saved model.
 - [ ] #5 Settings' model refresh stores chat-capable models only, so an embedder cannot be picked as the chat model.
