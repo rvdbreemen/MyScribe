@@ -362,4 +362,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # `.env` may name the data directory, and this module imported
+    # scribe.paths before anybody read the file: see paths.refresh(). Here and
+    # not in main(), which a caller may run against paths of their own.
+    from scribe import env
+
+    env.bootstrap()
+    paths.refresh()
     raise SystemExit(main())

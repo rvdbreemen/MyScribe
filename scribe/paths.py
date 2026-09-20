@@ -40,6 +40,31 @@ WORK_DIR = DATA_DIR / "work"
 MODELS_DIR = DATA_DIR / "models"
 
 
+def refresh() -> None:
+    """Work out DATA_DIR, and every constant above, again from the environment.
+
+    For a command that reads `.env` itself. `python -m scribe.setup` has
+    imported this module - and fixed DATA_DIR - before its first line runs, so
+    a SCRIBE_DATA_DIR that only the file names arrives too late for the
+    assignments above. `python -m scribe` gets round that by importing the app
+    after it has read the file; setup, models and the doctor cannot, because
+    their own functions use what they import. They call env.bootstrap() and
+    then this, once, before main().
+
+    A reload rather than a second list of assignments: two spellings of where
+    the media lives is how they come to disagree, and a constant added above
+    later is picked up without anybody remembering this function.
+
+    It only works while nobody copies a constant out of this module at import
+    - `from scribe.paths import DATA_DIR`, a default argument - and nobody
+    does: every reader says `paths.DATA_DIR` at the moment it needs it.
+    """
+    import importlib
+    import sys
+
+    importlib.reload(sys.modules[__name__])
+
+
 def ensure_dirs() -> None:
     for p in (DATA_DIR, MEDIA_DIR, LOGS_DIR, WORK_DIR, MODELS_DIR):
         p.mkdir(parents=True, exist_ok=True)

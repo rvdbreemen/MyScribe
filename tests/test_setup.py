@@ -52,6 +52,34 @@ def test_a_second_run_replaces_the_token_rather_than_appending(tmp_path, conn):
     assert lines == ["HF_TOKEN=second"]
 
 
+def token_lines(env_file: Path) -> list[str]:
+    """Every line that defines HF_TOKEN, read the way the app reads the file."""
+    text = env_file.read_text(encoding="utf-8-sig")
+    return [line for line in text.splitlines() if line.partition("=")[0].strip() == "HF_TOKEN"]
+
+
+def test_a_file_saved_with_a_bom_still_ends_up_with_one_token_line(tmp_path):
+    """Notepad leaves a BOM. The app reads past it (utf-8-sig); the writer
+    read plain utf-8, saw a first key it did not know, and added a second."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("HF_TOKEN=old\nOPENAI_API_KEY=sk-keep\n", encoding="utf-8-sig")
+
+    setup.write_token("new", env_file=env_file)
+
+    assert token_lines(env_file) == ["HF_TOKEN=new"]
+
+
+def test_a_token_line_written_with_spaces_is_replaced_not_joined(tmp_path):
+    """`HF_TOKEN = old` is a line the app reads, so it is a line the writer
+    has to recognise."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("HF_TOKEN = old\n", encoding="utf-8")
+
+    setup.write_token("new", env_file=env_file)
+
+    assert token_lines(env_file) == ["HF_TOKEN=new"]
+
+
 def test_the_provider_and_tier_are_saved_where_settings_reads_them(tmp_path, conn):
     setup.apply(setup.Answers(provider="ollama", tier="max", diarize=False), conn, env_file=tmp_path / ".env")
 

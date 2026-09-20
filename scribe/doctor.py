@@ -827,4 +827,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # `.env` may name the data directory, and this module imported
+    # scribe.paths before anybody read the file: see paths.refresh(). Here and
+    # not in main() - tests/test_doctor.py runs main() against paths of its
+    # own, and a refresh in there would send it to the developer's library.
+    env.bootstrap()
+    paths.refresh()
     raise SystemExit(main())

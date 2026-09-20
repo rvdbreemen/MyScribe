@@ -65,4 +65,7 @@ docs/adr/.adr-kit.local.json
 
 # Packaging: downloaded tools, verified by sha256 (build/ and dist/ are above).
 packaging/.cache/
+# The tools an installer fetches for this clone (TASK-089.17). scribe.env's
+# bootstrap() puts .tools/bin first on PATH when it exists.
+.tools/
 

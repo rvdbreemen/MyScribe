@@ -81,8 +81,10 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     # `.env` first, before anything reads the environment: scribe.paths fixes
     # DATA_DIR from SCRIBE_DATA_DIR the moment it is imported, and importing
-    # the app imports it. Hence the import below the call.
-    env.load_dotenv()
+    # the app imports it. Hence the import below the call. bootstrap() is that
+    # load plus this checkout's own tools on PATH, which the runner children
+    # inherit.
+    env.bootstrap()
     from scribe.app import create_app
 
     app = create_app(start_supervisor=not args.no_supervisor)

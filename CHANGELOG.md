@@ -18,8 +18,42 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
   backing up, how a download is verified on each OS, and why an app that
   binds localhost still needs the two guards in `scribe/guard.py`.
 
+### Added
+
+- `<repo>/.tools/bin` is first on `PATH` for `python -m scribe`,
+  `scribe.setup`, `scribe.models` and `scribe.doctor` when the directory
+  exists, and `.tools/` is gitignored. It is where an installer will put the
+  tools it fetches for a clone; a checkout without it keeps its `PATH`
+  untouched (`env.bootstrap()`, TASK-089.03).
+- `env.write_env(name, value)` sets one line in `.env` - any name, through a
+  temp file and `os.replace`, a new file 0600 on POSIX, an existing one
+  keeping its mode, owner and group - and `env.applied()` says which names
+  `.env` supplied, never their values.
+
 ### Fixed
 
+- A data directory moved through `.env` - the documented way
+  (`.env.example`) - was the app's library and nobody else's.
+  `python -m scribe.setup`, `scribe.models` and `scribe.doctor` import
+  `scribe.paths` before they read the file, so `SCRIBE_DATA_DIR` arrived
+  after `DATA_DIR` was fixed: setup wrote its settings, its stamp and the
+  weights into `./data`, and the app, reading the other directory, behaved as
+  if setup had never run. Run as commands, the three now read `.env` first
+  and then work the paths out again (`paths.refresh()`); imported as
+  libraries they still read no file (TASK-089.03).
+- A blank variable no longer hides a value in `.env`. `load_dotenv` used
+  `os.environ.setdefault`, so an `export HF_TOKEN=` in a shell, a compose file
+  or a service unit kept the real token in the file from ever arriving. A
+  process value that says something still wins. The other way round, a blank
+  line in the file (`HF_TOKEN=`, as `.env.example` ships it) is no longer
+  exported as an empty variable.
+- Saving the Hugging Face token could leave two `HF_TOKEN` lines in `.env`,
+  where the last silently wins: the writer read plain utf-8 and matched only
+  the exact prefix `HF_TOKEN=`, so a file Notepad saved with a BOM, or a line
+  written `HF_TOKEN = old`, was not recognised. It now recognises a line the
+  way the reader does, and collapses a file that already had two. On Windows
+  that includes a line spelled `hf_token`: one variable there, and the line
+  the reader would have gone on filling it from.
 - The README's list of architecture decisions named ADR-007 and ADR-009 as
   accepted. Both were superseded in 56d92e1 - by ADR-014 and ADR-013 - so
   the README had been pointing readers at the retired versions of the

@@ -76,8 +76,9 @@ def dotenv():
     `scribe/__main__.py` calls this before anything touches the environment;
     pytest does not, so without it `OPENAI_API_KEY` - which lives in `.env` on
     this machine - never resolves and the openai case skips for a reason that is
-    an artefact of the test runner rather than a fact about the machine. It uses
-    `os.environ.setdefault`, so a variable that is really set still wins.
+    an artefact of the test runner rather than a fact about the machine. It fills
+    only what the process has no value for, so a variable that is really set
+    still wins.
 
     The snapshot is not ceremony. `load_dotenv` mutates the process
     environment with no way back, and this module is `gpu`-marked rather than

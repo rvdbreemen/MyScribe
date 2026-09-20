@@ -88,22 +88,13 @@ def write_token(token: str, *, env_file: Path | None = None) -> Path:
     launcher's first run happens before there is a browser to type into, and
     `.env` is the file the per-user home already carries (ADR-011).
 
-    Rewritten in place rather than appended: a second run must not leave two
-    `HF_TOKEN=` lines with different values, where the last one silently wins.
+    Replaced where it stands rather than appended: a second run must not leave
+    two `HF_TOKEN=` lines with different values, where the last one silently
+    wins. env.write_env owns how - it recognises a line the way the reader
+    does, which this function's own loop did not for a file with a BOM or a
+    line written `HF_TOKEN = old`.
     """
-    path = env_file or Path(env.os.environ.get(env.PATH_VARIABLE) or env.DEFAULT_PATH)
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    out, replaced = [], False
-    for line in lines:
-        if line.strip().startswith("HF_TOKEN=") and not replaced:
-            out.append(f"HF_TOKEN={token}")
-            replaced = True
-        else:
-            out.append(line)
-    if not replaced:
-        out.append(f"HF_TOKEN={token}")
-    path.write_text("\n".join(out) + "\n", encoding="utf-8")
-    return path
+    return env.write_env("HF_TOKEN", token, env_file)
 
 
 def apply(answers: Answers, conn: sqlite3.Connection, *, env_file: Path | None = None,
@@ -208,4 +199,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Here and not in main(): this module imported scribe.paths before `.env`
+    # was read, so the directory the file names has to be caught up with
+    # (paths.refresh) - and only a command may do that, never a caller of
+    # main() who has pointed paths somewhere of their own.
+    env.bootstrap()
+    paths.refresh()
     raise SystemExit(main())
