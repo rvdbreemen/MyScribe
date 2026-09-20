@@ -299,6 +299,11 @@ subscription polled on a due date, each new episode one `ingest_url` job
 endpoint enforces one (ADR-010); and a per-OS launcher that installs the
 locked environment with uv on first run (ADR-011).
 
-Nothing is Proposed. Every decision in `docs/adr/` is either Accepted or
-superseded by one that is; ADR-002, ADR-006, ADR-007 and ADR-009 are history
-and each names its successor.
+**Proposed:** first-run setup as one engine behind a JSON contract, a skipped
+question that selects nothing, and third-party software installed only when
+it is absent, shown and agreed to (ADR-015). Its design is in
+`docs/superpowers/specs/2026-09-20-installer-design.md` and its work under
+TASK-089; none of it is built yet.
+
+ADR-002, ADR-006, ADR-007 and ADR-009 are history, and each names its
+successor.

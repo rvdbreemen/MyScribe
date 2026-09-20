@@ -20,3 +20,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-012 | Accepted | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |
 | ADR-013 | Accepted | `scribe/**` | Chosen option: SQLite WAL with atomic SQL, one-at-a-time in the claim, because every hard coordination problem is the... |
 | ADR-014 | Accepted | `scribe/**` | Chosen option: one pattern over scribe/, with the one reader marked. |
+| ADR-015 | Proposed | `{packaging/launcher/**,install.py}`, `scribe/setup.py`, `install.py` | Chosen option: one app-side engine behind a versioned JSON contract, because it is the only option in which a questio... |

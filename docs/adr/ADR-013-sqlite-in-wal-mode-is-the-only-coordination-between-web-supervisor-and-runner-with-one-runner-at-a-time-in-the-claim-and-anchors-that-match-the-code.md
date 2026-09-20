@@ -10,6 +10,8 @@ verified_in: []
 supersedes:
   - "ADR-009"
 superseded_by: null
+related:
+  - "ADR-015"
 topics:
   - "storage"
   - "job-orchestration"
@@ -60,6 +62,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: Accepted by Robert van den Breemen in the session of 2026-09-16 (explicit command)
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-20
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-20)
+    reason: Related to ADR-015
     changed_via: adr-kit lifecycle
 ```
 

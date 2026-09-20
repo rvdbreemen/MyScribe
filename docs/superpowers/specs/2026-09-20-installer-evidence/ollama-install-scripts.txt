@@ -1,0 +1,26 @@
+Ollama's install scripts, as served on 2026-09-20
+
+The design spec and ADR-015 quote line numbers in these two scripts. The
+scripts are Ollama's and change over time, so they are not copied into this
+repository; what is recorded is what was fetched, so that a later reader can
+tell whether the script they are looking at is still the one that was read.
+
+  https://ollama.com/install.sh     15,902 bytes
+  sha256  25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f
+
+  https://ollama.com/install.ps1    22,627 bytes
+  sha256  310071580b654bb55de81c65152052771e1143018d7731c8d59b5f49f79c0503
+
+What was read in them, and checked a second time against the fetched copies
+the same day:
+
+  install.sh:62-69     macOS: `pkill -x Ollama`, then
+                       `rm -rf "/Applications/Ollama.app"`, before downloading
+  install.sh:164-167   Linux: `$SUDO rm -rf "$OLLAMA_INSTALL_DIR/lib/ollama"`
+                       ("Cleaning up old version")
+  install.ps1:271      `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES`
+  install.ps1:319-323  the main block runs Invoke-Install unless -Uninstall
+                       was given: there is no "already installed" test
+
+That is why "only when Ollama is missing" is MyScribe's own test and is never
+delegated to these scripts.

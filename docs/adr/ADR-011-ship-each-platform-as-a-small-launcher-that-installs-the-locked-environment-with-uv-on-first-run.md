@@ -9,6 +9,8 @@ documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
+related:
+  - "ADR-015"
 topics:
   - "packaging"
   - "release"
@@ -50,6 +52,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: "Accepted by Robert on 2026-09-19, on the record of two published releases. The launcher decided here is built and started by CI on all three platforms and shipped in v0.5.0 and v0.5.1: run 35447454324 built each artifact on its own runner and proved it starts, and the v0.5.1 release carries the Windows installer, the macOS dmg and the Linux AppImage. The open question about the macOS ffmpeg build was answered by the build script that produced those artifacts."
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-20
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-20)
+    reason: Related to ADR-015
     changed_via: adr-kit lifecycle
 ```
 

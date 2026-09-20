@@ -9,6 +9,8 @@ documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
+related:
+  - "ADR-015"
 topics:
   - "process-architecture"
   - "job-orchestration"
@@ -50,6 +52,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: "Accepted by Robert in an interactive session on 2026-09-03. Claims verified against the code: no model imports in app/supervisor/web, the supervisor spawns the runner child, reconcile runs at startup, and four job types now run in children. The CPU-prework exception was removed in favour of describing what is actually built."
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-20
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-20)
+    reason: Related to ADR-015
     changed_via: adr-kit lifecycle
 ```
 

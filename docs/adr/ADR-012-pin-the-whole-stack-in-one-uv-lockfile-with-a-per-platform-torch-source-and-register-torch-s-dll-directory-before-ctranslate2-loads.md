@@ -10,6 +10,8 @@ verified_in: []
 supersedes:
   - "ADR-006"
 superseded_by: null
+related:
+  - "ADR-015"
 topics:
   - "dependencies"
   - "gpu"
@@ -59,6 +61,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: Robert asked for it on 2026-09-14, after the RTX 3080 run its open question demanded
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-20
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-20)
+    reason: Related to ADR-015
     changed_via: adr-kit lifecycle
 ```
 

@@ -1,0 +1,8 @@
+$ .venv/Scripts/python probe_proxy_loopback.py    # run 2026-09-20 on Robert's Windows machine, Ollama answering
+Windows-11-10.0.26200-SP0 | python 3.12.9 | httpx2 2.12.0
+HTTP_PROXY = http://127.0.0.1:9 | NO_PROXY = None
+urllib default              2.12s  ('FAIL', 'URLError', '<urlopen error [WinError 10061] No connection could be made ')
+urllib ProxyHandler({})     0.00s  ('OK', b'{"version":"0.34.0"}')
+httpx2 default              2.23s  ('FAIL', 'ConnectError', '[WinError 10061] No connection could be made because the tar')
+httpx2 trust_env=False      0.00s  ('OK', '{"version":"0.34.0"}')
+exit 0
