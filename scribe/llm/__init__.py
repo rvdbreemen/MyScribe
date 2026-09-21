@@ -29,6 +29,8 @@ from scribe.llm.base import (
     ContextTooLong,
     LlmError,
     ModelNotFound,
+    MODEL_SETTING_PREFIX,
+    NothingAnswered,
     Provider,
     RateLimited,
     ResolvedKey,
@@ -120,6 +122,7 @@ __all__ = [
     "ContextTooLong",
     "LlmError",
     "ModelNotFound",
+    "NothingAnswered",
     "OllamaProvider",
     "OpenAIProvider",
     "OpenRouterProvider",
@@ -142,7 +145,9 @@ __all__ = [
 # --- what a request opens with -------------------------------------------------------
 
 PROVIDER_SETTING = "llm_provider"
-MODEL_SETTING_PREFIX = "llm_model_"
+# MODEL_SETTING_PREFIX is imported from `base` above rather than spelled here:
+# `OllamaProvider` reads the row it names, and it cannot import this package -
+# the package imports it - so the one spelling lives below both (TASK-089.06).
 
 
 def setting_value(conn, key: str) -> str:

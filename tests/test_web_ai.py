@@ -44,7 +44,7 @@ from fastapi.testclient import TestClient
 from scribe import db, paths
 from scribe import media as scribe_media  # `media` is a fixture name in this file
 from scribe.app import create_app
-from scribe.llm import base, ollama, selftest, tasks
+from scribe.llm import base, ollama, openai_like, selftest, tasks
 from scribe.llm.chat_tool import ASSISTANT, USER
 from scribe.web import ai_ui
 from seed import seed_media, seed_run
@@ -94,11 +94,17 @@ def no_ollama(monkeypatch):
     Ollama's `available()` probes loopback by design (it is the only way to
     tell "not running" from "running, model not pulled"); a test must not, so
     the daemon reports itself down and the row says so.
+
+    `tags` is the seam and not `models`, since TASK-089.06: `models()` and
+    `chat_models()` are both built on it, so stopping the method that makes the
+    request stops every caller. Patching only `models` stopped being enough the
+    moment the model refresh started asking `chat_models()` - and it showed,
+    as this machine's real daemon answering a test.
     """
     def unreachable(self):
-        raise base.Unreachable(f"Ollama is not running at {self.host}")
+        raise base.NothingAnswered(f"Ollama is not running at {self.host}")
 
-    monkeypatch.setattr(ollama.OllamaProvider, "models", unreachable)
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", unreachable)
 
 
 @pytest.fixture
@@ -982,15 +988,86 @@ def test_a_key_typed_into_settings_is_stored_and_can_be_cleared(client, conn, no
         ).fetchone() is None
 
 
+def _tags(*pairs):
+    """`/api/tags` rows as the live daemon sends them, capabilities and all.
+
+    `tags` is the seam these tests patch and not `chat_models`: the filter that
+    keeps an embedder out of the dropdown is the thing under test, so patching
+    the method that does the filtering would leave the test green while proving
+    nothing (TASK-089.06).
+    """
+    return lambda self: [{"name": name, "model": name, "capabilities": list(caps)} for name, caps in pairs]
+
+
 def test_refreshing_a_providers_model_list_remembers_what_it_offered(client, conn, monkeypatch, no_ollama):
     monkeypatch.setattr(
-        ollama.OllamaProvider, "models", lambda self: ["gemma4:12b", "qwen3.5:4b"]
+        ollama.OllamaProvider,
+        "tags",
+        _tags(("gemma4:12b", ["completion"]), ("qwen3.5:4b", ["completion"])),
     )
 
     body = client.post("/settings/llm/ollama/models", headers=HX).text
 
     assert ai_ui.known_models(conn, "ollama") == ["gemma4:12b", "qwen3.5:4b"]
     assert "gemma4:12b" in body
+
+
+def test_a_refresh_stores_the_chat_models_and_never_an_embedder(client, conn, monkeypatch, no_ollama):
+    """Five of the eight models on this machine are embedders, and before this
+    the refresh stored every name it was given - so an embedder could be picked
+    as the chat model, everything showed green, and the first summary failed
+    inside a job (TASK-089.06).
+
+    `qwen3-embedding:0.6b` is the one that makes this a real list: it reports
+    `tools` and `thinking` as well, so no capability but `completion` would
+    sort these eight correctly.
+    """
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        _tags(
+            ("bge-m3:latest", ["embedding"]),
+            ("granite-embedding:278m", ["embedding"]),
+            ("embeddinggemma:latest", ["embedding"]),
+            ("qwen3-embedding:0.6b", ["tools", "thinking", "embedding"]),
+            ("qwen3-embedding:4b", ["tools", "embedding"]),
+            ("qwen3.5:4b", ["completion", "vision", "tools", "thinking"]),
+            ("qwen3.5:9b", ["completion", "vision", "tools", "thinking"]),
+            ("gemma4:12b", ["completion", "vision", "audio", "tools", "thinking"]),
+        ),
+    )
+
+    body = client.post("/settings/llm/ollama/models", headers=HX).text
+
+    assert ai_ui.known_models(conn, "ollama") == ["gemma4:12b", "qwen3.5:4b", "qwen3.5:9b"]
+    assert "3 model(s) offered" in body
+    assert "embedding" not in body
+
+
+def test_a_daemon_that_will_not_say_stores_nothing_and_says_so(client, conn, monkeypatch, no_ollama):
+    """"It would not say" is not "it has none": storing an empty list would
+    leave the dropdown claiming this endpoint offers nothing."""
+    monkeypatch.setattr(ollama.OllamaProvider, "chat_models", lambda self: None)
+
+    body = client.post("/settings/llm/ollama/models", headers=HX).text
+
+    assert ai_ui.known_models(conn, "ollama") == []
+    assert "would not say" in body
+
+
+def test_a_cloud_providers_refresh_still_offers_every_model_it_lists(
+    client, conn, monkeypatch, no_ollama
+):
+    """The base class answers `chat_models()` with the whole list, so nothing
+    changed for a provider that serves no embedders - and there is no
+    `if provider ==` anywhere to make that true."""
+    monkeypatch.setattr(
+        openai_like.OpenAIProvider, "models", lambda self: ["gpt-4o-mini", "gpt-5.6-luna"]
+    )
+
+    client.post("/settings/llm/openai/models", headers=HX)
+
+    assert ai_ui.known_models(conn, "openai") == ["gpt-4o-mini", "gpt-5.6-luna"]
 
 
 def test_an_unreachable_provider_leaves_the_model_field_as_free_text(client, conn, no_ollama):
@@ -1202,8 +1279,12 @@ def test_pressing_test_asks_no_provider_anything_in_the_web_process(client, conn
         raise AssertionError("the web process completed a request")
 
     monkeypatch.setattr(ollama.OllamaProvider, "complete", never)
+    # `tags` and not `models`: it is the method that opens the socket, and
+    # `available()` reads the capability off those rows since TASK-089.06, so
+    # stopping `models` no longer stops the request this test's own render
+    # makes - it reached this machine's daemon instead.
     monkeypatch.setattr(
-        ollama.OllamaProvider, "models", lambda self: (_ for _ in ()).throw(
+        ollama.OllamaProvider, "tags", lambda self: (_ for _ in ()).throw(
             base.Unreachable("not running")
         )
     )

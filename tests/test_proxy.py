@@ -94,10 +94,10 @@ def _no_proxy_from_this_machine(monkeypatch):
 def loopback():
     """A server on 127.0.0.1 that records the path of every request that arrives.
 
-    It answers both probes: `/health` the way the app does and `/api/tags` the
-    way Ollama does. Anything else gets a 404 - or a 403 when the path says
-    "refused" - which is what lets it stand in for a proxy that answers for a
-    host it will not fetch.
+    It answers all three probes: `/health` the way the app does, and
+    `/api/tags` and `/api/version` the way Ollama does. Anything else gets a
+    404 - or a 403 when the path says "refused" - which is what lets it stand
+    in for a proxy that answers for a host it will not fetch.
     """
     arrived: list[str] = []
 
@@ -106,9 +106,12 @@ def loopback():
             arrived.append(self.path)
             body = json.dumps({
                 "ok": True, "version": "test",
-                "models": [{"name": ollama.OllamaProvider.default_model}],
+                "models": [{
+                    "name": ollama.OllamaProvider.default_model,
+                    "capabilities": [ollama.CHAT_CAPABILITY],
+                }],
             }).encode()
-            answered = 200 if self.path in ("/health", "/api/tags") else 404
+            answered = 200 if self.path in ("/health", "/api/tags", "/api/version") else 404
             self.send_response(403 if "refused" in self.path else answered)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -144,6 +147,40 @@ def test_the_ollama_probe_reaches_this_machine_with_a_dead_proxy_configured(loop
         provider.close()
 
     assert loopback.arrived == ["/api/tags"], f"the probe never reached 127.0.0.1; it said {answer!r}"
+
+
+def test_the_ollama_detector_reaches_this_machine_with_a_dead_proxy_configured(
+    loopback, monkeypatch, tmp_path, ollama_state_unstubbed
+):
+    """No acceptance criterion asks for this, and it is the one that would
+    catch the regression that matters (TASK-089.06 guarding TASK-089.05).
+
+    `ollama_setup.state()` is what the install offer is gated on: absent means
+    "no answer at 127.0.0.1", and a proxy in front of the loopback made a
+    running daemon answer nothing at all. So a hand-rolled `httpx.get` or an
+    `import requests` anywhere in that module would put an installer over
+    somebody's working Ollama - and every unit test of the detector uses a mock
+    transport, which never opens a socket and so cannot see a proxy variable.
+    This one opens a real socket.
+
+    The assertion is which requests *arrived*, not what the detector concluded:
+    a stand-in daemon can be read as any state for its own reasons.
+    """
+    from scribe import ollama_setup
+
+    monkeypatch.setenv("HTTP_PROXY", DEAD_PROXY)
+    monkeypatch.setenv("HTTPS_PROXY", DEAD_PROXY)
+    empty = tmp_path / "no-ollama-here"
+    empty.mkdir()
+
+    found = ollama_setup.state(
+        host=loopback.host, locations=(), environ={"PATH": str(empty)}
+    )
+
+    assert loopback.arrived == ["/api/tags", "/api/version"], (
+        f"a request the detector makes never reached 127.0.0.1; it said {found.state!r}"
+    )
+    assert found.state == ollama_setup.READY
 
 
 def test_the_launchers_health_probe_reaches_this_machine_with_a_dead_proxy_configured(loopback, monkeypatch):

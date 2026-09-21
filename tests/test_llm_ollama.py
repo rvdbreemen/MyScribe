@@ -390,6 +390,174 @@ def test_models_lists_the_pulled_names_sorted():
     assert rec.path() == "/api/tags"
 
 
+def capable(*pairs):
+    """An `/api/tags` answer carrying each model's capabilities, as the live
+    daemon sends them at 0.34.2."""
+    return httpx2.Response(
+        200,
+        json={"models": [{"name": name, "model": name, "capabilities": caps} for name, caps in pairs]},
+    )
+
+
+def test_tags_returns_the_payload_rows_and_models_is_built_on_it():
+    """One GET answers both questions, so a settings render still costs one
+    request (`available`)."""
+    rec = Recorder(capable(("gemma4:12b", ["completion"]), ("bge-m3:latest", ["embedding"])))
+    prov = provider(rec)
+
+    rows = prov.tags()
+
+    assert [row["name"] for row in rows] == ["gemma4:12b", "bge-m3:latest"]
+    assert rows[1]["capabilities"] == ["embedding"]
+    assert rec.path() == "/api/tags"
+
+
+def test_chat_models_keeps_only_what_carries_completion():
+    """The eight models this machine really holds, with the capabilities the
+    live daemon reported on 2026-09-21."""
+    rec = Recorder(
+        capable(
+            ("bge-m3:latest", ["embedding"]),
+            ("qwen3-embedding:0.6b", ["tools", "thinking", "embedding"]),
+            ("qwen3-embedding:4b", ["tools", "embedding"]),
+            ("gemma4:12b", ["completion", "vision", "audio", "tools", "thinking"]),
+            ("qwen3.5:4b", ["completion", "vision", "tools", "thinking"]),
+        )
+    )
+    prov = provider(rec)
+
+    assert prov.chat_models() == ["gemma4:12b", "qwen3.5:4b"]
+    # models() still means every pulled name: `available()` prints it as
+    # "pulled: ..." and tasks.suggest_bigger_window walks it.
+    assert len(prov.models()) == 5
+
+
+def test_a_model_that_is_neither_a_chat_model_nor_an_embedder_is_not_offered():
+    """The test is `completion` present, not `embedding` absent, and this is the
+    only case where the two differ.
+
+    On this machine's eight models they agree exactly - every chat model lacks
+    `embedding` and every embedder has it - so nothing measurable here chooses
+    between them, and a mutation that swapped one for the other passed every
+    other test in this suite. It is still the wrong way round: the absence of
+    one known kind accepts every kind nobody has thought of yet, and Ollama's
+    capability list has grown before. A model that says it can do something
+    else entirely is what that costs, so it is written down as a case.
+    """
+    rec = Recorder(
+        capable(
+            ("something-else:1b", ["tools"]),
+            ("says-nothing:1b", []),
+            ("qwen3.5:4b", ["completion"]),
+        )
+    )
+
+    assert provider(rec).chat_models() == ["qwen3.5:4b"]
+
+
+def test_a_row_without_capabilities_is_asked_about_with_api_show():
+    def answer(request):
+        if request.url.path == "/api/show":
+            name = json.loads(request.content)["model"]
+            return httpx2.Response(200, json={"capabilities": ["completion"] if "qwen" in name else ["embedding"]})
+        return httpx2.Response(200, json={"models": [{"name": "qwen3.5:4b"}, {"name": "bge-m3:latest"}]})
+
+    prov = ollama.OllamaProvider(None, client_factory=fake_factory(answer))
+
+    assert prov.chat_models() == ["qwen3.5:4b"]
+
+
+def test_a_row_nobody_could_read_is_unknown_and_not_an_empty_answer():
+    """Some rows answered, none of the readable ones can chat, and one row said
+    nothing: that is "we could not find out", not "it has none".
+
+    The difference is a sentence the user is told. "Has none" ends in
+    `ollama pull qwen3.5:4b`, which on this daemon would download a model that
+    may already be sitting there under the name nobody could read. `unknown` is
+    never ready and never absent (ADR-017), so nothing is lost by admitting it.
+    """
+    def answer(request):
+        if request.url.path == "/api/show":
+            return httpx2.Response(404, json={"error": "model not found"})
+        return httpx2.Response(
+            200,
+            json={
+                "models": [
+                    {"name": "bge-m3:latest", "capabilities": ["embedding"]},
+                    {"name": "an-old-row:1b"},  # no capabilities key, and /api/show 404s
+                ]
+            },
+        )
+
+    assert ollama.OllamaProvider(None, client_factory=fake_factory(answer)).chat_models() is None
+
+
+def test_a_chat_model_that_did_answer_still_counts_when_another_row_did_not():
+    """One unreadable row does not throw away what the daemon did say: a model
+    that reports `completion` can be chatted with whatever the row beside it
+    could not tell us."""
+    def answer(request):
+        if request.url.path == "/api/show":
+            return httpx2.Response(404, json={"error": "model not found"})
+        return httpx2.Response(
+            200,
+            json={
+                "models": [
+                    {"name": "qwen3.5:4b", "capabilities": ["completion"]},
+                    {"name": "an-old-row:1b"},
+                ]
+            },
+        )
+
+    prov = ollama.OllamaProvider(None, client_factory=fake_factory(answer))
+
+    assert prov.chat_models() == ["qwen3.5:4b"]
+
+
+def test_a_daemon_that_will_not_say_answers_none_and_never_an_empty_list():
+    """None is "it would not say" and [] is "it has none". A caller that read
+    the first as the second would turn "we do not know" into "there are none" -
+    and the install offer is gated on exactly that difference (ADR-017)."""
+
+    def answer(request):
+        if request.url.path == "/api/show":
+            return httpx2.Response(404, json={"error": "nope"})
+        return httpx2.Response(200, json={"models": [{"name": "qwen3.5:4b"}]})
+
+    assert ollama.OllamaProvider(None, client_factory=fake_factory(answer)).chat_models() is None
+
+
+def test_a_daemon_with_nothing_pulled_has_no_chat_models_which_is_not_unknown():
+    assert provider(Recorder(tags())).chat_models() == []
+
+
+def test_the_version_is_read_from_the_daemon_and_is_empty_when_it_will_not_say():
+    def answering(request):
+        return httpx2.Response(200, json={"version": "0.34.2"})
+
+    def silent(request):
+        return httpx2.Response(500, text="no")
+
+    assert ollama.OllamaProvider(None, client_factory=fake_factory(answering)).version() == "0.34.2"
+    assert ollama.OllamaProvider(None, client_factory=fake_factory(silent)).version() == ""
+
+
+def test_a_refused_connection_is_nothing_answered_and_a_500_is_not():
+    """Both retry the same way - `NothingAnswered` is an `Unreachable` - but
+    only one of them means the port is silent, and that is the signal an offer
+    to install Ollama is gated on (ADR-017, TASK-089.06)."""
+
+    def refuse(request):
+        raise httpx2.ConnectError("connection refused", request=request)
+
+    with pytest.raises(base.NothingAnswered):
+        provider(Recorder(refuse)).models()
+
+    with pytest.raises(base.Unreachable) as raised:
+        provider(Recorder(httpx2.Response(500, text="the runner died"))).models()
+    assert not isinstance(raised.value, base.NothingAnswered)
+
+
 def test_available_says_not_running_when_nothing_answers():
     def refuse(request):
         raise httpx2.ConnectError("connection refused", request=request)
@@ -416,6 +584,148 @@ def test_available_is_true_when_the_default_model_is_pulled():
 
     assert ok is True
     assert prov.default_model in why
+
+
+def test_an_embedder_saved_as_the_chat_model_is_never_ready():
+    """The false green this whole task is about, at the place the user sees it.
+
+    `available()` used to ask only whether the name was pulled, and every
+    embedder is. Once the readiness row started reporting on the *saved* model
+    (the test above), saving `bge-m3:latest` - by typing it, which the settings
+    page still allows - made that row green for a model the daemon itself says
+    you cannot chat with, and the failure moved to the first summary inside a
+    job.
+
+    The row is already in hand from the one GET, so this costs no second
+    request: `/api/show` is never asked here, and a settings render is still
+    one call (`tags`).
+    """
+    rec = Recorder(capable(("bge-m3:latest", ["embedding"]), ("qwen3.5:4b", ["completion"])))
+
+    ok, why = provider(rec, model="bge-m3:latest").available()
+
+    assert ok is False
+    assert "bge-m3:latest" in why
+    assert "chat" in why.lower()
+    assert "ollama pull" not in why  # it IS pulled; pulling it again fixes nothing
+    assert rec.calls == 1 and rec.lookups == []
+
+
+def test_a_daemon_too_old_to_say_is_taken_at_its_word():
+    """No `capabilities` key is not "cannot chat".
+
+    A daemon older than 0.34 reports nothing about what its models can do, and
+    `available()` may not fan out to `/api/show` per model to find out - that
+    is the request budget of a page render (`chat_models`, and the doctor's
+    check list). So the answer stays exactly what it was before this rule
+    existed: pulled is ready.
+    """
+    rec = Recorder(tags("qwen3.5:4b"))
+
+    ok, why = provider(rec, model="qwen3.5:4b").available()
+
+    assert ok is True
+    assert "ready" in why
+    assert rec.lookups == []
+
+
+def test_the_saved_model_is_the_one_this_provider_reports_on(tmp_path):
+    """A provider built from a connection uses the model the user saved.
+
+    `provider_rows` builds `cls(conn)` and nothing else, so before this the
+    settings row was invisible to the readiness line: pull `gemma4:12b`, save
+    it, and Settings still tested `qwen3.5:4b` and told the user to download a
+    model they do not need (TASK-089.06).
+
+    The row is written under `llm.MODEL_SETTING_PREFIX` - the name the web
+    layer writes it with - and read back through the provider, which is the
+    half of the bug that made it invisible: two spellings of one row name.
+    """
+    from scribe import db, llm
+
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (llm.MODEL_SETTING_PREFIX + ollama.OllamaProvider.name, "gemma4:12b"),
+        )
+        conn.commit()
+
+        prov = ollama.OllamaProvider(conn, client_factory=fake_factory(Recorder(tags("gemma4:12b"))))
+        ok, why = prov.available()
+
+        assert prov.model == "gemma4:12b"
+        assert ok is True
+        assert "gemma4:12b" in why
+    finally:
+        conn.close()
+
+
+def test_a_model_passed_in_still_beats_the_saved_row(tmp_path):
+    """The caller's own model is never second-guessed: `queue_provider_test`
+    resolves the row itself and passes it, and a test harness passes another."""
+    from scribe import db, llm
+
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (llm.MODEL_SETTING_PREFIX + ollama.OllamaProvider.name, "gemma4:12b"),
+        )
+        conn.commit()
+
+        assert ollama.OllamaProvider(conn, model="qwen3.5:9b").model == "qwen3.5:9b"
+    finally:
+        conn.close()
+
+
+def test_a_saved_row_that_is_blank_leaves_the_class_default_standing(tmp_path):
+    """Clearing the dropdown writes "" (TASK-054's "its own default" option),
+    and an empty row is not a model name."""
+    from scribe import db, llm
+
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (llm.MODEL_SETTING_PREFIX + ollama.OllamaProvider.name, "   "),
+        )
+        conn.commit()
+
+        assert ollama.OllamaProvider(conn).model == ollama.OllamaProvider.default_model
+    finally:
+        conn.close()
+
+
+def test_a_connection_this_cannot_read_is_no_saved_model_and_not_a_crash(tmp_path):
+    """A row read is a best answer, never a new way to fail - the standing
+    `ceiling()` has twenty lines above.
+
+    Every connection in the product comes from `db.connect`, which sets
+    `row_factory`, so nothing reaches this today. It is still where the two
+    readers must agree: this one runs in `__init__`, which the settings page
+    render calls, so a connection made some other way would take that page down
+    for a number that has a perfectly good default.
+    """
+    import sqlite3
+
+    from scribe import llm
+
+    conn = sqlite3.connect(tmp_path / "plain.db")  # no row_factory: rows are tuples
+    try:
+        conn.execute("CREATE TABLE setting(key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT INTO setting(key, value) VALUES (?, ?)",
+            (llm.MODEL_SETTING_PREFIX + ollama.OllamaProvider.name, "gemma4:12b"),
+        )
+        conn.commit()
+
+        assert ollama.OllamaProvider(conn).model == ollama.OllamaProvider.default_model
+    finally:
+        conn.close()
 
 
 # --- what makes it the local one ----------------------------------------------------------

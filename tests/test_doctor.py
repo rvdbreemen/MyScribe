@@ -180,6 +180,123 @@ def test_the_web_process_never_runs_it():
     assert doctor.check_diarization not in doctor.WEB_SAFE_CHECKS
 
 
+# --- the ollama line (TASK-089.06) --------------------------------------------------
+
+
+def _absent(monkeypatch):
+    """A machine with no Ollama, without asking this one - which has it."""
+    from scribe import ollama_setup
+
+    monkeypatch.setattr(
+        ollama_setup, "state", lambda **kwargs: ollama_setup.State(state=ollama_setup.ABSENT)
+    )
+    return ollama_setup
+
+
+def test_the_ollama_check_reports_the_state_in_words_and_is_always_optional(monkeypatch):
+    """Four states with four different fixes, and one sentence each. "Not
+    installed" and "installed but stopped" used to be the same sentence, which
+    is the whole reason this task exists."""
+    ollama_setup = _absent(monkeypatch)
+
+    check = doctor.check_ollama()
+
+    assert check.name == "ollama"
+    assert check.optional is True
+    assert check.ok is False
+    assert check.detail == "not installed on this machine"
+
+    monkeypatch.setattr(
+        ollama_setup,
+        "state",
+        lambda **kwargs: ollama_setup.State(
+            state=ollama_setup.READY, version="0.34.2", chat_models=("gemma4:12b",)
+        ),
+    )
+    ready = doctor.check_ollama()
+
+    assert ready.ok is True
+    assert ready.optional is True
+    assert "0.34.2" in ready.detail and "gemma4:12b" in ready.detail
+
+
+def test_only_a_ready_ollama_is_a_tick_and_only_an_absent_one_is_told_to_install(monkeypatch):
+    """Two rules, and they are the same sentence read twice.
+
+    `[OK  ] ollama  installed at C:\\...\\ollama.EXE but not answering` marked a
+    machine that does not work as working, on the one command this project
+    tells you to run before blaming the code. `present` is the right question
+    for the install offer (ADR-017) and the wrong one for the mark, which means
+    "is this working".
+
+    And the hint may not follow the mark: `render()` prints `fix_hint` for
+    every check that is not ok, so flipping the mark without it would tell
+    somebody whose Ollama is merely stopped to install one - advice ADR-017
+    forbids acting on. Absent is the only state with an install in its future.
+    """
+    from scribe import ollama_setup
+
+    monkeypatch.setattr(
+        ollama_setup,
+        "state",
+        lambda **kwargs: ollama_setup.State(
+            state=ollama_setup.INSTALLED_NOT_RUNNING, binary=r"C:\Ollama\ollama.EXE"
+        ),
+    )
+    stopped = doctor.check_ollama()
+
+    assert stopped.ok is False and stopped.optional is True
+    assert "start it" in stopped.detail
+    assert "ollama.com" not in (stopped.fix_hint or "")
+    printed = doctor.render([stopped])
+    assert "[SKIP] ollama" in printed and "ollama.com" not in printed
+
+    absent = _absent(monkeypatch)
+    assert "ollama.com" in doctor.render([doctor.check_ollama()])
+
+    monkeypatch.setattr(
+        absent,
+        "state",
+        lambda **kwargs: ollama_setup.State(
+            state=ollama_setup.RUNNING_NO_CHAT_MODEL, version="0.34.2"
+        ),
+    )
+    no_model = doctor.check_ollama()
+
+    assert no_model.ok is False
+    assert "ollama pull" in no_model.detail  # its own fix, and not an install
+    assert "ollama.com" not in doctor.render([no_model])
+
+
+def test_the_doctor_passes_on_a_machine_with_no_ollama(tmp_path, monkeypatch, capsys):
+    """It never fails the gate: a machine without Ollama is not broken, it just
+    has no local AI - the same standing yt-dlp has."""
+    _absent(monkeypatch)
+    monkeypatch.setattr(doctor.paths, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(doctor.paths, "DB_PATH", tmp_path / "myscribe.db")
+    monkeypatch.setattr(doctor.paths, "MEDIA_DIR", tmp_path / "media")
+    monkeypatch.setattr(doctor.paths, "LOGS_DIR", tmp_path / "logs")
+
+    code = doctor.main(["--no-gpu"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "[SKIP] ollama" in out
+    assert "not installed on this machine" in out
+
+
+def test_the_web_process_never_asks_about_ollama():
+    """Deliberate, not an oversight. The loopback GET itself would be safe -
+    the settings page already makes it through `provider_rows` - but
+    `chat_models()` falls back to one POST /api/show *per model* on a daemon
+    too old to report capabilities, and a page render that quietly became nine
+    requests is what this tuple exists to prevent. The doctor's own command
+    still runs it.
+    """
+    assert doctor.check_ollama in doctor.CPU_CHECKS
+    assert doctor.check_ollama not in doctor.WEB_SAFE_CHECKS
+
+
 def test_the_token_this_check_looks_for_includes_the_one_saved_in_settings(
     tmp_path, monkeypatch, library_db_unstubbed
 ):

@@ -128,6 +128,22 @@ PROBE_TIMEOUT = 2.0
 """The bound on `available()`. See the note on that method - it is the one
 sanctioned network call in a method the base class says makes none."""
 
+CHAT_CAPABILITY = "completion"
+"""The one capability that says a model can hold a conversation (`chat_models`).
+
+Ollama serves embedders and chat models from one endpoint, and nothing else
+separates them. The name does not: `qwen3-embedding:0.6b` is an embedder and
+`bge-m3` does not say so. No other capability does either: measured on this
+machine on 2026-09-21, `qwen3-embedding:0.6b` reports `['tools', 'thinking',
+'embedding']`, so `tools` and `thinking` are both useless as a test.
+
+Asked as a presence and not as "does not say `embedding`". On this machine's
+eight models the two would answer the same - every chat model here lacks
+`embedding` and every embedder has it - so the difference is not measurable
+here, and it is still the right way round: `completion` names the thing being
+asked for, while the absence of one known kind accepts every kind nobody has
+thought of yet. Ollama's capability list has grown before."""
+
 DEFAULT_NUM_CTX = 8192
 """What this plans against when the daemon will not say what a model holds.
 
@@ -229,6 +245,25 @@ def _this_machine_only(host: str) -> str:
     )
 
 
+def _names(rows: list[dict]) -> list[str]:
+    """The model names in `/api/tags` rows, sorted."""
+    return sorted(str(row.get("name")) for row in rows if row.get("name"))
+
+
+def _capabilities_in(rows: list[dict], model: str) -> list[str] | None:
+    """What those rows say `model` can do, or None when they do not say.
+
+    Off the rows a caller already has rather than through `/api/show`: this is
+    what lets `available()` ask the capability question without a second
+    request on every settings render.
+    """
+    for row in rows:
+        if str(row.get("name") or "") == model:
+            found = row.get("capabilities")
+            return found if isinstance(found, list) else None
+    return None
+
+
 class OllamaProvider(base.Provider):
     """A local Ollama daemon, spoken to natively."""
 
@@ -262,12 +297,18 @@ class OllamaProvider(base.Provider):
         (`context_tokens`) rather than assume the floor. A number means the
         caller has a reason, and is never second-guessed.
 
-        `conn` is accepted and unused so `llm.get_provider(name, conn)` builds
-        every provider the same way.
+        `conn` is where the saved model comes from, the way `ceiling()` reads
+        `llm_num_ctx` - it used to be accepted and unused. `provider_rows`
+        builds `cls(conn)` with no model, so the settings page tested the class
+        default: pull `gemma4:12b`, save it, and Settings still said
+        `qwen3.5:4b` was not pulled and offered a download nobody needed
+        (TASK-089.06). An explicit `model` still wins, because a caller that
+        names one - `queue_provider_test` resolves the row itself - has a
+        reason.
         """
         self.conn = conn
         self.host = _this_machine_only(host).rstrip("/")
-        self.model = model or self.default_model
+        self.model = model or self._saved_model() or self.default_model
         self.num_ctx = DEFAULT_NUM_CTX if num_ctx is None else num_ctx
         self._num_ctx_is_mine = num_ctx is None
         self._windows: dict[str, int] = {}
@@ -331,6 +372,34 @@ class OllamaProvider(base.Provider):
             except Exception:  # noqa: BLE001 - a setting that is not a number is not a ceiling
                 pass
         return MAX_NUM_CTX
+
+    def _saved_model(self) -> str:
+        """The model this installation has chosen, or "".
+
+        Read once in `__init__` rather than per call, the way `self.model` has
+        always been a fixed attribute: a provider is short-lived and a model
+        that changed underneath one would make `available()` and the request it
+        reports on disagree. `ceiling()` is the other way round for its own
+        reason, written there.
+
+        A blank row is "" and leaves the class default standing: clearing the
+        dropdown writes one (TASK-054's "its own default" option).
+        """
+        if self.conn is None:
+            return ""
+        try:
+            with db.LOCK:
+                row = self.conn.execute(
+                    "SELECT value FROM setting WHERE key=?",
+                    (base.model_setting_key(self.name),),
+                ).fetchone()
+            # Inside the try with the query, the way `ceiling()` has it: a
+            # connection built without `row_factory` raises here and not there,
+            # and a settings page must not go down over a row that has a
+            # perfectly good default.
+            return "" if row is None else str(row["value"] or "").strip()
+        except Exception:  # noqa: BLE001 - a row we cannot read is no saved model
+            return ""
 
     def _model_window(self, model: str) -> int | None:
         """`<arch>.context_length` from `/api/show`, or None if it cannot be had.
@@ -408,31 +477,152 @@ class OllamaProvider(base.Provider):
         actually asks - "not running" is a different problem, with a different
         fix, from "running, model not pulled" - and a cheaper way than showing
         the user a green tick for a daemon that is not there.
+
+        Three answers, not two, since this row started reporting on the *saved*
+        model: pulled is not the same as "you can talk to it". Every embedder
+        is pulled, so `bge-m3:latest` in `llm_model_ollama` - typed into the
+        field beside the dropdown, which takes any id - showed green here and
+        failed in the first summary inside a job. The capability comes off the
+        row this call already has, so the render still costs one GET: no
+        `/api/show` fan-out here, whatever `chat_models()` may do elsewhere.
         """
         try:
-            names = self.models()
+            rows = self.tags()
         except base.Unreachable:
             return False, f"Ollama is not running at {self.host} (start it, then reload)"
         except base.LlmError as exc:
             return False, f"Ollama at {self.host} answered oddly: {exc}"
 
+        names = _names(rows)
         if self.model not in names:
             pulled = ", ".join(names) if names else "none"
             return False, (
                 f"Ollama is running at {self.host} but {self.model!r} is not pulled: "
                 f"run `ollama pull {self.model}` (pulled: {pulled})"
             )
+
+        # A daemon too old to report capabilities says None, and is taken at
+        # its word: the alternative is one POST per render to second-guess it.
+        capabilities = _capabilities_in(rows, self.model)
+        if capabilities is not None and CHAT_CAPABILITY not in capabilities:
+            reports = ", ".join(capabilities) or "nothing at all"
+            return False, (
+                f"Ollama is running at {self.host} but {self.model!r} is not a model you "
+                f"can chat with: it reports {reports}, not `{CHAT_CAPABILITY}` - pick "
+                f"another in Settings"
+            )
         return True, f"Ollama at {self.host} with {self.model} ready"
 
-    def models(self) -> list[str]:
-        """The model names this daemon has pulled, sorted."""
+    def tags(self) -> list[dict]:
+        """The `/api/tags` rows, as the daemon sends them.
+
+        The payload and not just the names, because what the rows carry is the
+        answer to a question the names cannot settle: at Ollama 0.34.2 each row
+        has a `capabilities` list, and that is the only way to tell an
+        embedding model from one you can talk to (`chat_models`).
+
+        One cheap GET on the one client, bounded by `PROBE_TIMEOUT` - the same
+        call `models()` has always made, in the same place, so a settings
+        render still costs exactly one request (`available`).
+        """
         try:
             response = self.client().get("/api/tags", timeout=PROBE_TIMEOUT)
         except httpx2.HTTPError as exc:
             raise self._unreachable(exc) from None
         self._raise_for_status(response)
         payload = self._json(response)
-        return sorted(str(m.get("name")) for m in payload.get("models", []) if m.get("name"))
+        rows = payload.get("models", [])
+        return [row for row in rows if isinstance(row, dict)]
+
+    def models(self) -> list[str]:
+        """The model names this daemon has pulled, sorted.
+
+        *Every* pulled name, embedders included. That is what `available()`
+        reports as "pulled: ..." and what `tasks.suggest_bigger_window` walks
+        looking for a roomier window, so narrowing it would change two
+        messages that are about what is on the disk. `chat_models()` is the
+        narrower question.
+        """
+        return _names(self.tags())
+
+    def chat_models(self) -> list[str] | None:
+        """The pulled models that can hold a conversation, sorted - or None
+        when this daemon cannot say.
+
+        Measured against the live daemon on this machine on 2026-09-21 (Ollama
+        0.34.2, 8 models). Five of the eight are embedders and three are not,
+        and until this nothing asked: `available()` accepted any pulled name,
+        so an embedder could be saved as the chat model, everything showed
+        green, and the first summary failed inside a job. The test is
+        `CHAT_CAPABILITY` and its reason is written there.
+
+        Every row carried a `capabilities` key at 0.34.2. An older daemon that
+        does not gets one `POST /api/show` per such row, which is why this is
+        never called from a page render (`scribe/doctor.py`'s check list).
+
+        None, never [], whenever a row could not be read and nothing
+        chat-capable was seen anyway: "this daemon does not report
+        capabilities" is not "this daemon has no chat model". The first must
+        never read as ready and never as absent (ADR-017); the second is fixed
+        by one `ollama pull`, and telling somebody to pull a model they may
+        already have under the name nobody could read is the wrong sentence.
+
+        A row that did answer still counts, though, so a daemon with one
+        unreadable row and one chat model is ready and not unknown: what was
+        read is not thrown away by what was not.
+        """
+        found: list[str] = []
+        unreadable = 0
+        for row in self.tags():
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            capabilities = row.get("capabilities")
+            if not isinstance(capabilities, list):
+                capabilities = self.capabilities(name)
+            if capabilities is None:
+                unreadable += 1
+            elif CHAT_CAPABILITY in capabilities:
+                found.append(name)
+        if unreadable and not found:
+            return None
+        return sorted(found)
+
+    def capabilities(self, model: str) -> list[str] | None:
+        """What `POST /api/show` says `model` can do, or None if it will not say.
+
+        The fallback for a daemon whose `/api/tags` rows carry no
+        `capabilities` key. Per model, because that is the only way this
+        endpoint answers - it takes one name.
+        """
+        try:
+            response = self.client().post(
+                "/api/show", json={"model": model}, timeout=PROBE_TIMEOUT
+            )
+            if response.status_code != 200:
+                return None
+            found = (response.json() or {}).get("capabilities")
+        except Exception:  # noqa: BLE001 - a capability we could not read is not a failure
+            return None
+        return found if isinstance(found, list) else None
+
+    def version(self) -> str:
+        """What `GET /api/version` reports, or "" when nothing answers.
+
+        Decoration, deliberately: it names the daemon in a doctor line and it
+        decides nothing. `/api/tags` is the one call that says whether Ollama
+        is answering (`ollama_setup.state`), because that is also the call
+        whose payload the state is built from - asking two endpoints would
+        leave a daemon that answers one and not the other in two states at
+        once.
+        """
+        try:
+            response = self.client().get("/api/version", timeout=PROBE_TIMEOUT)
+            if response.status_code != 200:
+                return ""
+            return str((response.json() or {}).get("version") or "").strip()
+        except Exception:  # noqa: BLE001 - a version we could not read is not a failure
+            return ""
 
     # --- one completion ----------------------------------------------------------
 
@@ -615,7 +805,14 @@ class OllamaProvider(base.Provider):
     # --- failures, translated -----------------------------------------------------------
 
     def _unreachable(self, exc: httpx2.HTTPError) -> base.LlmError:
-        return base.Unreachable(f"ollama at {self.host} did not answer: {exc}")
+        """A transport failure: nothing on that port sent anything back.
+
+        `NothingAnswered` and not plain `Unreachable`, which `_raise_for_status`
+        still raises for an HTTP 500 - both are retryable and every caller sees
+        no change, but only this one means the port is silent, and that is the
+        signal the install offer is gated on (ADR-017).
+        """
+        return base.NothingAnswered(f"ollama at {self.host} did not answer: {exc}")
 
     def _error_text(self, response) -> str:
         try:

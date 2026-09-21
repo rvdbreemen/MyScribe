@@ -592,6 +592,48 @@ def check_models() -> Check:
     )
 
 
+def check_ollama() -> Check:
+    """Is there an Ollama here, and what state is it in?
+
+    Reported, never acted on. This is the detection half of ADR-017: an Ollama
+    that is present is left alone in every state, so this line says what is
+    true and stops - it starts nothing, pulls nothing and installs nothing.
+
+    Optional whatever it finds, so it can never fail the gate: a machine with
+    no Ollama is not broken, it just has no local AI, exactly as a machine with
+    no yt-dlp cannot import from a URL. All five states are worth printing
+    because each ends in a different sentence - "not installed" and "installed
+    but stopped" used to be the same one - and only one of the five is a tick.
+
+    `ollama_setup` is imported here and not at the top, the way `check_models`
+    imports `scribe.models`: it pulls in `scribe.llm`, and the doctor is also a
+    library that `scribe.runner` imports (ADR-001).
+    """
+    from scribe import ollama_setup
+
+    found = ollama_setup.state()
+    return Check(
+        name="ollama",
+        # READY and not `present`: the mark means "is this working", and
+        # `[OK  ] ollama  installed at ... but not answering` contradicted the
+        # sentence beside it. `present` is the right question for the install
+        # offer (ADR-017) and the wrong one here. Optional in every state, so
+        # the other four render [SKIP] and still fail nothing.
+        ok=found.state == ollama_setup.READY,
+        optional=True,
+        detail=ollama_setup.describe(found),
+        # `render()` prints a hint for every check that is not ok, and absent
+        # is the only state where installing one is the answer: an Ollama that
+        # is there is left alone (ADR-017), and the other sentences carry their
+        # own fix - "start it", "ollama pull ..." - in `describe`.
+        fix_hint=(
+            "Install it from ollama.com/download if you want AI that never leaves this machine."
+            if found.state == ollama_setup.ABSENT
+            else ""
+        ),
+    )
+
+
 CPU_CHECKS = (
     check_python,
     check_sqlite,
@@ -604,6 +646,7 @@ CPU_CHECKS = (
     check_accelerators,
     check_diarization,
     check_models,
+    check_ollama,
 )
 
 GPU_CHECKS = (
@@ -626,12 +669,22 @@ GPU_CHECKS = (
 # second and breaks nothing. Naming the real constraint separately keeps both
 # answers right instead of trading one for the other.
 WEB_SAFE_CHECKS = tuple(
-    check for check in CPU_CHECKS if check not in (check_accelerators, check_diarization)
+    check
+    for check in CPU_CHECKS
+    if check not in (check_accelerators, check_diarization, check_ollama)
 )
 # `check_diarization` is out for the same reason as `check_accelerators`: it
 # imports `scribe.stages.diarize`, and that module's import graph is the one
 # ADR-001 keeps out of the web process. It also reaches the network, which a
 # settings page render must not.
+#
+# `check_ollama` is out on a different ground, and the decision is deliberate
+# rather than an oversight (TASK-089.06). Its loopback GET would be safe - the
+# settings page already makes exactly that one, through `provider_rows` - but
+# `chat_models()` falls back to one POST /api/show *per model* on a daemon too
+# old to report capabilities, and a page render that quietly became nine
+# requests is the shape of problem this tuple exists to prevent. The doctor's
+# own command still runs it, which is where the question was asked.
 
 
 # --- the GPU checks as a job ---------------------------------------------------

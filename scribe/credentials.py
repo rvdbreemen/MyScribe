@@ -186,6 +186,43 @@ def registry_hits(name: str) -> tuple[tuple[str, str], ...]:
     return tuple(found)
 
 
+def registry_names(prefix: str) -> tuple[tuple[str, str], ...]:
+    """Every `(hive, name)` the Windows registry holds whose variable name
+    starts with `prefix`, user hive first. Empty everywhere but Windows, and it
+    never raises.
+
+    `registry_hits` asks about one name it already knows; this asks which names
+    are there at all, which is a question only a detector has: "is any OLLAMA_*
+    variable set on this machine" (TASK-089.06) cannot be spelled as a list,
+    because `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE` and
+    `OLLAMA_INSTALL_DIR` are four of roughly thirty Ollama reads, and a machine
+    with any of them has an Ollama somebody configured.
+
+    Names only, never values. A name is what the state reports and a value is
+    what it must not: `OLLAMA_MODELS` is only a folder, but a structure that
+    can carry a value eventually carries one that matters.
+    """
+    if sys.platform != "win32":
+        return ()
+    import winreg
+
+    wanted = prefix.upper()
+    found: list[tuple[str, str]] = []
+    for hive, handle_id, path in (
+        (HKCU, winreg.HKEY_CURRENT_USER, r"Environment"),
+        (HKLM, winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+    ):
+        try:
+            with winreg.OpenKey(handle_id, path) as key:
+                for index in range(winreg.QueryInfoKey(key)[1]):
+                    name, _value, _kind = winreg.EnumValue(key, index)
+                    if str(name).upper().startswith(wanted):
+                        found.append((hive, str(name)))
+        except OSError:
+            continue
+    return tuple(found)
+
+
 def windows_env(name: str) -> str | None:
     """The first registry value for `name`, or None. `base` re-exports this."""
     return next((value for _hive, value in registry_hits(name) if value.strip()), None)

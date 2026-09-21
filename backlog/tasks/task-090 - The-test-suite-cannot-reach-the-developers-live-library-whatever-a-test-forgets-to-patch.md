@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 21:13'
+updated_date: '2026-09-21 23:37'
 labels:
   - tests
   - safety
@@ -42,3 +43,15 @@ Continuous integration runs from a clean checkout and loses nothing; this is abo
 - [ ] #4 Shown on a COPY of the repository with a library beside it, never on the live one: tests/test_doctor.py and tests/test_llm_chat.py are run, and a listing before and after shows that no file under the copy's data/ was created, changed or removed, and that its database's schema version did not move.
 - [ ] #5 The suite is run one file per process and the summed totals are reported, equal to the totals before the change apart from the new test.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Widened on 2026-09-22 by what TASK-089.06's review found.
+
+Two more reaches into this machine, both proven with a tripwire rather than by reading:
+- Six tests in tests/test_doctor.py made real HTTP requests to the live Ollama daemon once check_ollama joined CPU_CHECKS. Fixed inside TASK-089.06 by stubbing it in conftest.
+- Twenty tests that pre-date that task still reach the daemon by rendering the settings page: two in tests/test_web_ai.py (:1487, :1500) and eighteen in tests/test_web_settings.py. Not fixed there, because it is not that task's scope.
+
+So this task's fixture has a second job beside the five paths: a test must not reach a service on this machine either. The daemon is read-only traffic and harmless in itself, but a suite that answers differently depending on whether Ollama happens to be running is a suite that tests the machine and not the code.
+<!-- SECTION:NOTES:END -->

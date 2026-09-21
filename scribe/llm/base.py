@@ -158,6 +158,20 @@ class Unreachable(LlmError):
     """Nothing answered, or the endpoint failed in a way that may pass."""
 
 
+class NothingAnswered(Unreachable):
+    """Narrower: the request never got an HTTP response at all - refused,
+    timed out, no route.
+
+    Every caller that retries on `Unreachable` retries on this too, and every
+    `except Unreachable` still catches it, so nothing about a failed call
+    changes. The distinction exists for one reader: `ollama_setup.state` gates
+    the install offer on "no answer at 127.0.0.1" (ADR-017), and a daemon that
+    replies HTTP 500 has answered. Reading that as "no Ollama here" would put
+    an installer over a working one - the one failure the detector exists to
+    prevent, and a test found this exact case (TASK-089.06).
+    """
+
+
 # --- keys ------------------------------------------------------------------------------
 
 
@@ -169,6 +183,23 @@ settings page says so next to the field."""
 
 def setting_key(provider_name: str) -> str:
     return f"{SETTING_KEY_PREFIX}{provider_name}"
+
+
+MODEL_SETTING_PREFIX = "llm_model_"
+"""One row per provider: model ids are provider-scoped (`retarget`), so a single
+"default model" row would name a model that is a 404 the moment the provider
+changes.
+
+Here, and re-exported by `scribe.llm` and `scribe.web.ai_ui`, because a
+provider now reads the row a settings page writes (TASK-089.06). It was spelled
+out in both of those modules and in neither of these, which is how
+`OllamaProvider(conn)` came to test `qwen3.5:4b` while the user had saved
+`gemma4:12b`. `scribe.llm.ollama` cannot import `scribe.llm` - the package
+imports it - so the shared spelling has to live below both."""
+
+
+def model_setting_key(provider_name: str) -> str:
+    return f"{MODEL_SETTING_PREFIX}{provider_name}"
 
 
 @dataclass(frozen=True)
@@ -306,6 +337,30 @@ class Provider(ABC):
     @abstractmethod
     def models(self) -> list[str]:
         """The model ids this endpoint offers, sorted. May do I/O."""
+
+    def chat_models(self) -> list[str] | None:
+        """The subset of `models()` that can hold a conversation, sorted.
+
+        The whole list, so that no caller needs a branch per provider - and
+        not because every id a cloud provider lists can hold a conversation.
+        It cannot: `openai_like.models()` passes `/v1/models` through
+        unfiltered, embedding, speech and image ids included. No endpoint here
+        but Ollama reports capabilities at all, narrowing a cloud catalogue is
+        nobody's task yet, and so those lists are left exactly as they were.
+
+        The local runtime is where the question bites today: Ollama serves
+        embedding models from the same endpoint, and five of the eight on the
+        machine this was written for are embedders. Store one of those as the
+        chat model and everything shows green until the first summary fails
+        inside a job (TASK-089.06).
+
+        `None` - never an empty list - means "this endpoint cannot say", which
+        is a different answer from "it has none": the first is a state that a
+        `pull` does not fix and that must never be read as ready or as absent
+        (ADR-017). A caller that treats None as [] turns "we do not know" into
+        "there are none". The default here never returns it.
+        """
+        return self.models()
 
     @classmethod
     def window_for_model(cls, model: str | None = None) -> int | None:

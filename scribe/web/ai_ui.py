@@ -70,10 +70,15 @@ hundred cheap reads rather than a thousand."""
 PROVIDER_SETTING = "llm_provider"
 """Which provider a new request opens with."""
 
-MODEL_SETTING_PREFIX = "llm_model_"
+MODEL_SETTING_PREFIX = base.MODEL_SETTING_PREFIX
 """One row per provider: model ids are provider-scoped (`base.retarget`), so a
 single "default model" row would name a model that is a 404 the moment the
-provider changes."""
+provider changes.
+
+Re-exported from `base` rather than spelled again (TASK-089.06): a provider
+reads this row now, and a page that wrote one spelling while a provider read
+another is how Settings came to test `qwen3.5:4b` for a user who had saved
+`gemma4:12b`."""
 
 MODEL_FIELD_PREFIX = "model_"
 """What the settings form calls the same field. Deliberately not the setting

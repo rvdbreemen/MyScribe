@@ -961,8 +961,17 @@ async def refresh_llm_models(provider: str, request: Request) -> Response:
     field as free text and the reason in the flash, which is the honest state -
     this app does not know what that endpoint has.
 
+    Only the models you can hold a conversation with are stored (TASK-089.06).
+    Ollama serves embedding models from the same endpoint - five of the eight
+    on the machine this was written for - and an embedder saved as the chat
+    model shows green everywhere until the first summary fails inside a job.
+    `chat_models()` is asked rather than `models()`, and every provider answers
+    it: the base class returns the whole list, so there is no `if provider ==`
+    here and nothing changes for a cloud provider.
+
     In a thread, because for a cloud provider this is a request over the
-    network and the event loop has a jobs board to keep answering.
+    network and the event loop has a jobs board to keep answering - and because
+    for a daemon too old to report capabilities this asks once per model.
     """
     conn = request.app.state.conn
     if provider not in ai_ui.llm.PROVIDERS:
@@ -970,9 +979,17 @@ async def refresh_llm_models(provider: str, request: Request) -> Response:
 
     instance = ai_ui.llm.PROVIDERS[provider](conn)
     try:
-        found = await run_in_threadpool(instance.models)
+        found = await run_in_threadpool(instance.chat_models)
     except llm_base.LlmError as exc:
         return _llm_answer(request, conn, flash=f"{provider}: {exc}")
+    if found is None:
+        # "It would not say" is not "it has none", and storing an empty list
+        # would leave the dropdown claiming this endpoint offers nothing.
+        return _llm_answer(
+            request,
+            conn,
+            flash=f"{provider}: answered, but would not say which models can chat; field left as free text.",
+        )
     ai_ui.remember_models(conn, provider, found)
     return _llm_answer(request, conn, flash=f"{provider}: {len(found)} model(s) offered.")
 

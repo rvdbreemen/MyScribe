@@ -578,3 +578,34 @@ def test_the_autouse_fixture_hides_this_machine_s_registry_and_login_file():
     assert credentials.dotenv_values()[0] == {}
     with credentials.library_db() as conn:
         assert conn is None, "a test opened this machine's own library"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="there is no registry to read anywhere else")
+def test_the_shipped_registry_enumerator_really_reads_this_machines_hives(registry_names_unstubbed):
+    """The one test that runs `registry_names` itself, against the real hives.
+
+    Everything else in the suite sees the stub from tests/conftest.py, which is
+    there so this machine's four `OLLAMA_*` names cannot make `absent`
+    unreachable - and that left 37 lines of enumeration, two hives and a prefix
+    filter asserted by nothing: a version returning `()` unconditionally passed
+    every file that names it. It is a leg the install offer stands on
+    (ADR-017): no names found reads as "nobody configured an Ollama here".
+
+    Read-only and names only. A prefix is taken from what the machine happens
+    to hold rather than written down, so this asserts the filter without
+    asserting that any particular variable is set, and no value is read, named
+    or printed - not even in a failure message.
+    """
+    every = credentials.registry_names("")
+
+    assert every, "the enumerator found no variable at all in either hive"
+    assert all(isinstance(hive, str) and isinstance(name, str) for hive, name in every)
+    assert all(hive in (credentials.HKCU, credentials.HKLM) for hive, _name in every)
+
+    first = every[0][1]
+    prefix = first[:3]
+    narrowed = credentials.registry_names(prefix)
+
+    assert first in [name for _hive, name in narrowed]
+    assert all(name.upper().startswith(prefix.upper()) for _hive, name in narrowed)
+    assert credentials.registry_names("ZZ_NOT_A_REAL_PREFIX_") == ()
