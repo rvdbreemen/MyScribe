@@ -7,6 +7,19 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
 
 ## [Unreleased]
 
+### Changed
+
+- ADR-016 is Accepted: a missing `llm_provider` row selects no provider, and
+  nothing is sent until somebody has chosen. Today a missing row falls through
+  to OpenRouter, and the widest path there is not a button but the sweep that
+  runs at every app start over the whole back catalogue with no ceiling. It
+  reverses the recorded decision "Defaults: commercial providers", which was
+  safe while choosing was something a person did; every setup question is
+  skippable now, so the skip is what most installs get. A machine whose row
+  exists behaves exactly as before. Nothing is built yet - TASK-089.07 owes
+  the evidence - and the record's tripwire only flags a fall-through somebody
+  adds, never the four that stand today.
+
 ### Documentation
 
 - The README lists two things it did not before: every command the app has

@@ -993,7 +993,7 @@
       "title": "A missing provider row selects no provider, and nothing is sent until somebody has chosen",
       "path": "ADR-016-a-missing-provider-row-selects-no-provider-and-nothing-is-sent-until-somebody-has-chosen.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-09-21",
       "decision_summary": "Chosen option: a missing row selects no provider, decided by Robert on 2026-09-20 (R1 in docs/superpowers/specs/2026-...",
       "topics": [

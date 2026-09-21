@@ -1,8 +1,8 @@
 ---
 id: "ADR-016"
 title: "A missing provider row selects no provider, and nothing is sent until somebody has chosen"
-status: "Proposed"
-date: "2026-09-20"
+status: "Accepted"
+date: "2026-09-21"
 binding: false
 gate: null
 documents_shipped: false
@@ -37,7 +37,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-09-20.
+Accepted, 2026-09-21.
 
 ## Status History
 
@@ -57,6 +57,11 @@ status_history:
     status: Proposed
     changed_by: Claude (agent, session 2026-09-20)
     reason: Related to ADR-017
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-21
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: "Accepted by Robert on 2026-09-21, asked for in the session and given as 'Accept ADR 016' after the packet was put to him: what it reverses (the recorded 'Defaults: commercial providers'), what it costs (eleven places, the speaker pass of TASK-024 waiting, jobs the fall-through already queued keeping openrouter in their parameters), and what it leaves alone (a machine whose row exists). That yes also confirms the two things the packet flagged as the agent's and not his: the definition of 'somebody has chosen' - the row, or a request somebody made that names a provider - and the one Enforcement tripwire over scribe/, which leaves today's four fall-through lines unflagged because the judge reads only added lines. Nothing is built yet; TASK-089.07 owes the evidence, red first."
     changed_via: adr-kit lifecycle
 ```
 
