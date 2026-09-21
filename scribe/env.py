@@ -76,7 +76,14 @@ def parse(text: str) -> dict[str, str]:
     return values
 
 
-def _file(path: str | Path | None) -> Path:
+def dotenv_path(path: str | Path | None = None) -> Path:
+    """Which `.env` file this process means: ``path``, else the file
+    `SCRIBE_ENV_FILE` names, else the repository's.
+
+    Public because `credentials` has to name the file it read, and a resolver
+    that named a different file than `load_dotenv` reads would make the found
+    table lie.
+    """
     return Path(path if path is not None else os.environ.get(PATH_VARIABLE) or DEFAULT_PATH)
 
 
@@ -89,7 +96,7 @@ def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
     environment has a non-blank value for is not touched, and a blank value in
     the file is not exported.
     """
-    path = _file(path)
+    path = dotenv_path(path)
     try:
         # utf-8-sig: Notepad likes to leave a BOM, and a BOM in front of the
         # first key would turn `HF_TOKEN` into `﻿HF_TOKEN`.
@@ -146,7 +153,7 @@ def write_env(name: str, value: str, path: str | Path | None = None) -> Path:
         raise ValueError(f"not a variable name: {name!r}")
     if value.splitlines() not in ([], [value]):
         raise ValueError(f"the value for {name} contains a line break")
-    path = _file(path)
+    path = dotenv_path(path)
     # Through a symlink to the file itself: replacing the link would swap it
     # for a regular file and leave the real one stale.
     target = Path(os.path.realpath(path))

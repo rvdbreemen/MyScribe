@@ -28,12 +28,11 @@ message, an `llm_output` row or a commit.
 from __future__ import annotations
 
 import sqlite3
-import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
-from scribe import db
+from scribe import credentials
 
 # --- what a call looks like ---------------------------------------------------------
 
@@ -191,35 +190,14 @@ class ResolvedKey:
     __str__ = __repr__
 
 
-def windows_env(name: str) -> str | None:
-    """A machine- or user-wide environment variable, read from the registry.
+windows_env = credentials.windows_env
+"""A machine- or user-wide environment variable, read from the registry.
 
-    Windows sets `setx`/System-Properties variables in the registry and only
-    broadcasts them to *new* processes. A shell (or an app launched from one)
-    that started before the variable was set has no such variable in
-    `os.environ` and never will - which is exactly the state this machine is
-    in for `OPENROUTER_TOKEN`, set machine-wide under HKLM. Reading the
-    registry is what makes "the key is set on this machine" true from a
-    process that predates it.
-
-    Never raises, and answers None everywhere but Windows.
-    """
-    if sys.platform != "win32":
-        return None
-    import winreg
-
-    for hive, path in (
-        (winreg.HKEY_CURRENT_USER, r"Environment"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
-    ):
-        try:
-            with winreg.OpenKey(hive, path) as handle:
-                value, _kind = winreg.QueryValueEx(handle, name)
-        except OSError:
-            continue
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
+It lives in `scribe.credentials` now, with every other place a credential can
+hide, and is re-exported here because this is where it was written and where
+its reason is recorded: Windows only broadcasts a `setx` variable to *new*
+processes, so a shell that started before the variable was set never sees it.
+"""
 
 
 def api_key(
@@ -231,41 +209,30 @@ def api_key(
 ) -> ResolvedKey:
     """The key for `provider`, and the name of where it came from.
 
+    The lookup itself is `scribe.credentials` (TASK-089.04), which is also
+    what the Hugging Face token and the setup sitting ask; what stays here is
+    the vocabulary. The settings page prints this `source` next to the masked
+    field (`_settings_llm.html`), so it keeps the two strings it has always
+    had - the bare variable name, and `<NAME> (Windows registry)`. The fuller
+    wording the resolver can produce - which hive, which `.env` file - belongs
+    to `credentials.find_all` and the found table.
+
     The order is fixed (Global Constraints): the `setting` row the user typed
     in the app, then the provider's environment variables in the order it
-    lists them. First non-empty wins.
-
-    The registry fallback is per *variable*, not appended after all of them:
-    `OPENROUTER_TOKEN` outranks `OPENROUTER_API_KEY` wherever each is found,
-    because the constraint fixes the order of the variables and not of the two
-    places a variable can live. Checking every environment variable first
-    would let a leftover `OPENROUTER_API_KEY` in the shell beat the machine's
-    real `OPENROUTER_TOKEN`.
+    lists them. First non-empty wins. The registry fallback is per *variable*,
+    not appended after all of them: `OPENROUTER_TOKEN` outranks
+    `OPENROUTER_API_KEY` wherever each is found, because the constraint fixes
+    the order of the variables and not of the places a variable can live.
     """
-    if environ is None:
-        import os
-
-        environ = os.environ
-    if registry is None:
-        registry = windows_env
-
-    if conn is not None:
-        with db.LOCK:
-            row = conn.execute(
-                "SELECT value FROM setting WHERE key=?", (setting_key(provider.name),)
-            ).fetchone()
-        if row is not None and (row["value"] or "").strip():
-            return ResolvedKey(row["value"].strip(), "settings")
-
-    for name in provider.key_env_vars:
-        value = (environ.get(name) or "").strip()
-        if value:
-            return ResolvedKey(value, name)
-        from_registry = (registry(name) or "").strip()
-        if from_registry:
-            return ResolvedKey(from_registry, f"{name} (Windows registry)")
-
-    return ResolvedKey(None, "")
+    if credentials.credential(provider.name) is None:
+        return ResolvedKey(None, "")  # Ollama: loopback, nothing to resolve
+    resolved = credentials.resolve(
+        conn,
+        provider.name,
+        environ=environ,
+        registry=None if registry is None else credentials.one_hive(registry),
+    )
+    return ResolvedKey(resolved.value, credentials.short_source(resolved.source))
 
 
 def redact(text: str, secret: str | None) -> str:

@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import urllib.error
 import urllib.request
@@ -34,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from scribe import paths
+from scribe import credentials, paths
 
 HERE = Path(__file__).resolve().parent
 HUB = "https://huggingface.co"
@@ -305,11 +304,18 @@ def write_credit(model: Model, base: Path) -> Path:
 
 
 def default_token() -> str | None:
-    for name in ("HF_TOKEN", "HUGGINGFACE_TOKEN"):
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    return None
+    """The Hugging Face token this machine has, wherever it keeps it.
+
+    Including the settings row, which is the whole of TASK-089.04 for this
+    command: `python -m scribe.models --fetch` is what the doctor's message
+    tells the user to run *after* saving the token in Settings, and it used to
+    read the environment only - so it answered "no Hugging Face token is set"
+    at the token they had just saved. The library's database is opened here
+    because this command has no connection of its own; not having one is
+    simply no row.
+    """
+    with credentials.library_db() as conn:
+        return credentials.resolve(conn, credentials.HUGGINGFACE).value
 
 
 def human(size: int) -> str:

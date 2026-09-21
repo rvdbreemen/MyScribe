@@ -1,6 +1,7 @@
 """Tests for the environment gate (plan Task 7)."""
 
 import shutil
+import sqlite3
 
 import pytest
 
@@ -177,3 +178,44 @@ def test_the_web_process_never_runs_it():
     """ADR-001: it imports the diarize stage and reaches the network, neither of
     which belongs in a request that renders the settings page."""
     assert doctor.check_diarization not in doctor.WEB_SAFE_CHECKS
+
+
+def test_the_token_this_check_looks_for_includes_the_one_saved_in_settings(
+    tmp_path, monkeypatch, library_db_unstubbed
+):
+    """The loop TASK-089.04 closes: this check's own fix hint says to store
+    the token as the `hf_token` setting, and until now the check called
+    `hf_token(None)` and so could never see the row it had just recommended.
+
+    `_diarization_token` and not `check_diarization`: with a token found the
+    check asks the hub whether the conditions are accepted, and what this test
+    is about is the lookup, not the network.
+    """
+    from scribe import credentials, db
+
+    database = tmp_path / "myscribe.db"
+    conn = db.connect(database)
+    db.migrate(conn)
+    conn.execute("INSERT INTO setting(key, value) VALUES ('hf_token', 'saved-in-settings')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(doctor.paths, "DB_PATH", database)
+    for name in credentials.HUGGINGFACE.env_vars + credentials.HUGGINGFACE.legacy_env_vars:
+        monkeypatch.delenv(name, raising=False)
+
+    assert doctor._diarization_token() == "saved-in-settings"
+
+
+def test_a_database_that_will_not_open_does_not_hide_a_token_in_the_environment(monkeypatch):
+    """The check used to fall back to the environment outside its own `try`.
+    A broken database must not turn a machine with HF_TOKEN plainly set into
+    "no local pipeline and no Hugging Face token"."""
+    from scribe import credentials
+
+    def refuse():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(credentials, "library_db", refuse)
+    monkeypatch.setenv("HF_TOKEN", "hf_from_the_environment")
+
+    assert doctor._diarization_token() == "hf_from_the_environment"

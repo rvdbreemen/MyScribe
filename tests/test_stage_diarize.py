@@ -517,8 +517,11 @@ def test_the_environment_is_the_fallback_for_the_token(conn, monkeypatch):
 
 def test_no_token_anywhere_is_none_not_an_empty_string(conn, monkeypatch):
     # Hugging Face treats "" as a token and answers 401; None means anonymous.
+    # All three names the resolver looks for: the hub's own spelling is one a
+    # developer's machine may well have, and this test is about the absence.
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
     with db.LOCK:
         conn.execute("INSERT INTO setting(key, value) VALUES ('hf_token', '  ')")
         conn.commit()

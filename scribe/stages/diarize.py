@@ -54,7 +54,7 @@ import wave
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
-from scribe import accel, cuda_setup, db, jobs, paths
+from scribe import accel, credentials, cuda_setup, db, jobs, paths
 from scribe.stages.attribute import Turn, turns_from_diarization
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
@@ -67,8 +67,9 @@ DEFAULT_PIPELINE = "pyannote/speaker-diarization-community-1"
 WEIGHTS_SUBDIR = "pyannote"
 """Where a re-hosted copy of the pipeline lives under MODELS_DIR."""
 
-SETTING_TOKEN = "hf_token"
-"""The settings key holding a Hugging Face token, when one is needed at all."""
+SETTING_TOKEN = credentials.HUGGINGFACE.setting_key
+"""The settings key holding a Hugging Face token, when one is needed at all.
+Named there because the resolver has to read the same row this stage does."""
 
 # What runs when the shipped default is gated for this token. Measured here on
 # 2026-09-02: both pipeline configs (community-1 and 3.1) answer 403 for a
@@ -256,24 +257,20 @@ def local_weights_dir() -> Path:
 
 
 def hf_token(conn: sqlite3.Connection | None = None) -> str | None:
-    """The Hugging Face token, from this library's settings or the environment.
+    """The Hugging Face token, from wherever this machine keeps it.
+
+    Every place it may live is `scribe.credentials` (TASK-089.04): the
+    settings row, the environment, `.env`, the Windows registry and Hugging
+    Face's own login file. It used to be this function's own two-line lookup,
+    and the doctor, `python -m scribe.models` and the settings page each had a
+    different one - so a token saved in Settings was invisible to the very
+    command the error message told the user to run.
 
     None rather than "" when there is none: an empty string is a token as far
     as Hugging Face is concerned, and it answers 401 instead of serving the
     public copy anonymously.
     """
-    if conn is not None:
-        with db.LOCK:
-            row = conn.execute(
-                "SELECT value FROM setting WHERE key=?", (SETTING_TOKEN,)
-            ).fetchone()
-        if row is not None and (row["value"] or "").strip():
-            return row["value"].strip()
-    for name in ("HF_TOKEN", "HUGGINGFACE_TOKEN"):
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    return None
+    return credentials.resolve(conn, credentials.HUGGINGFACE).value
 
 
 def open_pipeline(source: str | Path, *, device: str, token: str | None) -> Any | None:

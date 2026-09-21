@@ -103,6 +103,39 @@ def test_a_gated_model_without_a_token_says_so_before_asking_the_hub(tmp_path, m
     assert "hf.co/pyannote/demo" in str(exc.value)
 
 
+def test_the_default_token_includes_the_one_saved_in_settings(tmp_path, monkeypatch, library_db_unstubbed):
+    """`python -m scribe.models --fetch` is the command the doctor's message
+    tells the user to run *after* saving the token in Settings, and it read
+    the environment only - so it answered "no Hugging Face token is set" at
+    the token they had just saved (TASK-089.04)."""
+    from scribe import credentials, db, paths
+
+    database = tmp_path / "myscribe.db"
+    conn = db.connect(database)
+    db.migrate(conn)
+    conn.execute("INSERT INTO setting(key, value) VALUES ('hf_token', 'saved-in-settings')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(paths, "DB_PATH", database)
+    for name in credentials.HUGGINGFACE.env_vars + credentials.HUGGINGFACE.legacy_env_vars:
+        monkeypatch.delenv(name, raising=False)
+
+    assert models.default_token() == "saved-in-settings"
+
+
+def test_no_token_anywhere_is_none_rather_than_an_empty_string(tmp_path, monkeypatch, library_db_unstubbed):
+    """`token=None` means "use the default"; the default being "" would send
+    Hugging Face an empty token, which it answers with 401 instead of serving
+    the public copy anonymously."""
+    from scribe import credentials, paths
+
+    monkeypatch.setattr(paths, "DB_PATH", tmp_path / "no-library" / "myscribe.db")
+    for name in credentials.HUGGINGFACE.env_vars + credentials.HUGGINGFACE.legacy_env_vars:
+        monkeypatch.delenv(name, raising=False)
+
+    assert models.default_token() is None
+
+
 def test_progress_is_reported_as_bytes_arrive(tmp_path, one_model, monkeypatch):
     """A 1.6 GB download has to look like something happening."""
     seen: list = []

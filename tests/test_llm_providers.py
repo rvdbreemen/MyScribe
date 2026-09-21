@@ -747,6 +747,23 @@ def test_the_variable_order_holds_across_the_registry_fallback(conn):
     assert (resolved.value, resolved.source) == ("first", "OPENROUTER_TOKEN (Windows registry)")
 
 
+def test_a_provider_with_no_variables_to_look_for_resolves_to_nothing(conn):
+    """Ollama is loopback and needs no key, so it has no row in
+    `credentials.CREDENTIALS` and `api_key` says so before looking anywhere -
+    a settings row against it included. Pinned because it is a change: the
+    lookup used to read that row for any provider. The second edit a new
+    provider needs is the table, and tests/test_credentials.py:89 is what
+    holds the two together."""
+    from scribe.llm import ollama
+
+    conn.execute("INSERT INTO setting(key, value) VALUES (?, ?)", (base.setting_key("ollama"), "a-key"))
+    conn.commit()
+
+    resolved = base.api_key(conn, ollama.OllamaProvider, environ={}, registry={}.get)
+
+    assert (resolved.value, resolved.source) == (None, "")
+
+
 def test_a_blank_value_is_no_key_at_all(conn):
     conn.execute("INSERT INTO setting(key, value) VALUES (?, ?)", (base.setting_key("openai"), "   "))
     conn.commit()

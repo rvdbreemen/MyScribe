@@ -33,7 +33,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
-from scribe import accel, cuda_setup, db, jobs, paths
+from scribe import accel, credentials, cuda_setup, db, jobs, paths
 from scribe.ingest import urls  # version and age only; nothing here fetches a URL
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
@@ -477,12 +477,7 @@ def check_diarization() -> Check:
     if (local / "config.yaml").exists():
         return Check(name="diarization", ok=True, detail=f"local pipeline at {local}")
 
-    token = None
-    try:
-        token = diarize.hf_token(None)
-    except Exception:  # noqa: BLE001 - no database here is not an answer about the token
-        token = None
-    token = token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    token = _diarization_token()
     if not token:
         return Check(
             name="diarization",
@@ -502,6 +497,33 @@ def check_diarization() -> Check:
         detail=f"{diarize.DEFAULT_PIPELINE}: {why}",
         fix_hint=_diarization_hint(local),
     )
+
+
+def _diarization_token() -> str | None:
+    """The token the diarize stage would use, the settings row included.
+
+    `hf_token(None)` was this whole lookup, and None there means "no
+    database": somebody who saved the token where this check's own fix hint
+    told them to was then told by this check that there was no token. The
+    library's database is opened for the question and closed again, the way
+    `check_database` opens one; not having a database is no row and never an
+    error, because this is a question about a credential.
+
+    A database that will not open is not an answer about the token either:
+    the environment is asked again without it, so a machine with HF_TOKEN
+    plainly set is never told by this check that it has no token.
+    """
+    from scribe.stages import diarize
+
+    try:
+        with credentials.library_db() as conn:
+            return diarize.hf_token(conn)
+    except Exception:  # noqa: BLE001 - a credential lookup never fails a check
+        pass
+    try:
+        return diarize.hf_token(None)
+    except Exception:  # noqa: BLE001 - nor does the lookup without it
+        return None
 
 
 def _diarization_hint(local: "Path") -> str:

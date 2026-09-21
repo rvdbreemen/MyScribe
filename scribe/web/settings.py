@@ -68,7 +68,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 
-from scribe import db, doctor, fsbrowse, glossary, jobs, paths
+from scribe import credentials, db, doctor, fsbrowse, glossary, jobs, paths
 from scribe.exports.options import PRESETS
 from scribe.ingest import watching
 from scribe.llm import base as llm_base
@@ -220,23 +220,22 @@ def hf_token_context(conn: sqlite3.Connection) -> dict:
     It lives beside "Recognise speakers" rather than with the AI providers
     because that is what it buys: `diarize.hf_token` is read by the diarize
     stage, not by anything that answers questions about a transcript.
+
+    The lookup is `scribe.credentials`, so this page cannot disagree with the
+    stage about whether a token is set - it once could, and did. The source is
+    the short one a provider key prints (`credentials.short_source`); the
+    hive and the `.env` path belong to the found table, not to a page whose
+    wording is already fixed by the tests around it.
     """
     from scribe.stages import diarize
 
-    row = None
-    with db.LOCK:
-        found = conn.execute("SELECT value FROM setting WHERE key=?", (diarize.SETTING_TOKEN,)).fetchone()
-    if found is not None and (found["value"] or "").strip():
-        row = "settings"
-    source = row or next(
-        (name for name in ("HF_TOKEN", "HUGGINGFACE_TOKEN") if (os.environ.get(name) or "").strip()),
-        "",
-    )
+    resolved = credentials.resolve(conn, credentials.HUGGINGFACE)
+    source = credentials.short_source(resolved.source)
     return {
-        "found": bool(source),
+        "found": resolved.found,
         "source": source,
-        "mask": ai_ui.KEY_MASK if source else "",
-        "stored_here": row == "settings",
+        "mask": ai_ui.KEY_MASK if resolved.found else "",
+        "stored_here": source == credentials.SETTINGS,
         "conditions_url": f"https://hf.co/{diarize.DEFAULT_PIPELINE}",
         "setting_key": diarize.SETTING_TOKEN,
     }
