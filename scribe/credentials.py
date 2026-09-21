@@ -27,6 +27,11 @@ Two manners, because these are secrets.
   written into `.env` would go stale and then outrank the real one, and
   `.env` is the less protected of the two files.
 
+A proxy lives here too (TASK-089.05), and not because it is a credential: it
+is the other thing this machine can have configured that must be *reported*
+without reporting what is inside it. A proxy URL can carry `user:password@`,
+and the two manners above are the ones that keep it out of a log line.
+
 This module imports nothing from `scribe.llm` or `scribe.stages`: both of
 them import it, and `huggingface_hub` is imported inside the login-file
 reader so that asking about a token stays cheap (ADR-001).
@@ -36,11 +41,13 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Mapping
+from urllib.parse import urlsplit
 
 from scribe import db, env, paths
 
@@ -51,6 +58,7 @@ ENVIRONMENT = "environment"
 DOTENV = "dotenv"
 REGISTRY = "registry"
 LOGIN_FILE = "login-file"
+SYSTEM = "system"
 
 HKCU = "HKEY_CURRENT_USER"
 HKLM = "HKEY_LOCAL_MACHINE"
@@ -84,6 +92,8 @@ class Source:
             return f"{self.name} (Windows registry{hive})"
         if self.kind == LOGIN_FILE:
             return f"the Hugging Face login file ({self.where})"
+        if self.kind == SYSTEM:
+            return f"{self.name} (Windows system proxy)"
         return self.kind
 
 
@@ -493,6 +503,197 @@ def find_all(
             )
         )
     return rows
+
+
+# --- the proxy this machine has configured ------------------------------------
+#
+# Detection and never a question (M6, U8): nothing below writes anything, and
+# no question asks about a proxy. It lives in this module because a proxy URL
+# can carry `user:password@` - so it needs the same manner as a credential -
+# and because the seams a test controls are the same ones.
+
+PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+"""The four the standard library and httpx read, in the order they are shown.
+Both spellings of each are looked at: lower case is the conventional one on
+Linux and macOS, and on Windows one variable answers to both."""
+
+NOT_A_HOST = "an address that could not be read"
+"""What a proxy value that does not parse as a host is shown as. Never the
+value itself and never `netloc`: both of those carry the userinfo."""
+
+_HOST_CHARACTERS = re.compile(r"^[A-Za-z0-9._:*-]+$")
+"""The characters a host, an address or a NO_PROXY pattern is made of. A
+space or an `@` means `urlsplit` returned something that is not a host, and
+it is not shown. A slash never reaches this: a candidate with a path is
+refused one step earlier."""
+
+
+def system_proxies() -> dict[str, str]:
+    """What Windows' own internet settings hold, per scheme. Empty elsewhere.
+
+    `urllib.request.getproxies_registry` is defined inside CPython's
+    `if sys.platform == "win32"` block, so off Windows there is no such
+    function to call - the same guard `registry_hits` keeps, for the same
+    reason. It reads the registry only; `getproxies()` would answer with the
+    environment first and this module reports the two apart.
+
+    A module-level function so a test can stub it: this machine has no system
+    proxy configured today, which would make a test that read it pass for a
+    reason that is true only here.
+
+    `urllib.request` is imported here and not at the top, for `registry_hits`'
+    reason one line up and `login_file`'s: it costs about a tenth of a second
+    on a cold start, and every command that asks "is a token set" would pay it
+    (ADR-001).
+    """
+    if sys.platform != "win32":
+        return {}
+    import urllib.request
+
+    try:
+        return dict(urllib.request.getproxies_registry())
+    except Exception:  # noqa: BLE001 - a registry that will not answer is "none configured"
+        return {}
+
+
+@dataclass(frozen=True)
+class Proxy:
+    """One configured proxy: the name it is configured under, where that was,
+    and which host it points at.
+
+    `host` is `urlsplit(...).hostname` with its port. Three rules keep a
+    password out of it, and it took all three: `hostname` is what is left of
+    an authority *after* the `user:password@`; `_HOST_CHARACTERS` refuses
+    whatever comes back with an `@` or a space still in it; and a candidate
+    with a path, a query or a fragment is refused outright, because that is
+    how a `/` inside a password ends the authority early and turns the user
+    name into the host.
+    """
+
+    name: str
+    source: str
+    host: str
+
+
+def _host_and_port(value: str) -> str:
+    """`host:port` for one proxy value, or `NOT_A_HOST`.
+
+    Two spellings are in use and only one of them is a URL. `http://h:3128`
+    parses as one; a bare `h:3128` parses as the *scheme* `h` with an empty
+    authority - measured with `urlsplit` on CPython 3.12.9 - and it is the
+    authority form, so it is retried as `//h:3128`. The retry is skipped for
+    anything that already has a scheme, or a half-written URL would come back
+    with its scheme reported as the host.
+
+    A proxy URL has no path, and refusing one is a safety rule rather than
+    tidiness: `urlsplit` ends the authority at the first `/`, `?` or `#`, so
+    `http://user:123/pw@proxy.corp` parses as the host `user` on port 123 and
+    reported a name and the front of a password.
+    """
+    candidates = (value,) if "://" in value else (value, f"//{value}")
+    for candidate in candidates:
+        try:
+            parts = urlsplit(candidate)
+            if parts.path not in ("", "/") or parts.query or parts.fragment:
+                continue
+            host, port = parts.hostname, parts.port
+        except ValueError:  # a port that is not a number, or brackets that do not close
+            continue
+        if host and _HOST_CHARACTERS.match(host):
+            # An IPv6 address needs its brackets back, or `::1:3128` is not a
+            # form anybody can paste anywhere.
+            shown = f"[{host}]" if ":" in host else host
+            return f"{shown}:{port}" if port else shown
+    return NOT_A_HOST
+
+
+def _no_proxy_entry(entry: str) -> str:
+    """One NO_PROXY entry: a host pattern, or a CIDR block with its prefix.
+
+    A CIDR block is an ordinary entry on a corporate machine and it is not a
+    URL: `urlsplit` ends the authority at the `/`, so `10.0.0.0/8` came back
+    as `10.0.0.0` - a row claiming a configuration the machine does not have.
+    The prefix length is put back when it is digits, and the part in front of
+    it still goes through `_host_and_port`, so the rules that keep a password
+    out of a row are all still on it.
+    """
+    host, slash, prefix = entry.partition("/")
+    if not slash:
+        return _host_and_port(entry)
+    if not prefix.isdigit():
+        return NOT_A_HOST
+    shown = _host_and_port(host)
+    return shown if shown == NOT_A_HOST else f"{shown}/{prefix}"
+
+
+def _shown(name: str, value: str) -> str:
+    """What is printed for one variable's value.
+
+    NO_PROXY is a list of host patterns rather than one URL, so each entry
+    goes through `_no_proxy_entry` and they are joined again: it is shown as
+    itself, and an entry that is not a pattern is not shown there either.
+    """
+    if name.upper() == "NO_PROXY":
+        return ",".join(_no_proxy_entry(entry.strip()) for entry in value.split(",") if entry.strip())
+    return _host_and_port(value)
+
+
+def proxies(
+    *,
+    environ: Mapping[str, str] | None = None,
+    system: Mapping[str, str] | None = None,
+) -> list[Proxy]:
+    """Every proxy this machine has configured, as rows a setup engine can show.
+
+    Both seams are resolved here and not as default arguments, the way
+    `resolve` resolves its registry: a default argument binds at import, which
+    is before a test can stub it.
+
+    What this is *for*: a user behind a corporate proxy whose download failed
+    is otherwise told only that the hub could not be reached (`proxy_note`),
+    and a found proxy is worth showing rather than asking about.
+    """
+    found = os.environ if environ is None else environ
+    from_system = system_proxies() if system is None else system
+
+    rows: list[Proxy] = []
+    for name in PROXY_VARIABLES:
+        seen: set[str] = set()
+        for spelling in (name, name.lower()):
+            value = (found.get(spelling) or "").strip()
+            # One variable answers to both spellings on Windows, where
+            # `os.environ` is case-insensitive; two spellings that hold
+            # different values are two rows, because they disagree.
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            rows.append(Proxy(spelling, str(Source(ENVIRONMENT, spelling)), _shown(name, value)))
+
+    for scheme, value in sorted(from_system.items()):
+        if (value or "").strip():
+            rows.append(Proxy(scheme, str(Source(SYSTEM, scheme)), _shown(scheme, value.strip())))
+    return rows
+
+
+def proxy_note(
+    *,
+    environ: Mapping[str, str] | None = None,
+    system: Mapping[str, str] | None = None,
+) -> str:
+    """The clause a failed download adds when a proxy is configured, or "".
+
+    The launcher keeps a copy of this sentence word for word: it may import
+    nothing from `scribe` (ADR-011) and it prints the same failure for
+    `uv sync`. A test feeds both the same environment and compares the two
+    strings, which is what stops the copies drifting.
+
+    NO_PROXY is not a proxy - it is the list of places that bypass one - so it
+    never names the host here.
+    """
+    named = [row for row in proxies(environ=environ, system=system) if row.name.upper() != "NO_PROXY"]
+    if not named:
+        return ""
+    return f"; a proxy is configured at {named[0].host}, and the download did not get through it"
 
 
 @contextlib.contextmanager

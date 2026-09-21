@@ -166,8 +166,24 @@ free again well before the next transcription needs it."""
 
 def default_client_factory(*, base_url: str, timeout: float):
     """The real HTTP client. Named to match `openai_like.default_client_factory`
-    so both providers' transport seams read the same way."""
-    return httpx2.Client(base_url=base_url, timeout=timeout)
+    so both providers' transport seams read the same way.
+
+    **`trust_env=False`, unconditionally** (TASK-089.05). httpx reads
+    HTTP(S)_PROXY when a client is *built*, and measured here on 2026-09-21
+    with a running daemon: with those variables at a closed port and no
+    NO_PROXY, `available()` spent its whole 2 s budget and answered "Ollama is
+    not running" for an Ollama that was running. A proxy has no business
+    between this process and this machine, and a running daemon reading as
+    absent is what an offer to install one would be gated on (ADR-017).
+
+    Unconditional because `__init__` pins the host through `_this_machine_only`:
+    there is no instance of this client that talks anywhere else. The flag also
+    switches off `.netrc` and the SSL_CERT_* variables, which is no loss over
+    plain HTTP to 127.0.0.1. The cloud providers keep trusting the environment
+    - somebody behind a corporate proxy needs it for OpenAI and OpenRouter -
+    and `tests/test_proxy.py` pins that the hub download still goes through one.
+    """
+    return httpx2.Client(base_url=base_url, timeout=timeout, trust_env=False)
 
 
 LOOPBACK_NAME = "localhost"

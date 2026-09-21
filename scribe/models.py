@@ -215,16 +215,26 @@ def fetch_file(model: Model, rel: str, dest: Path, token: str | None, on_bytes: 
                 on_bytes(len(block))
     except urllib.error.HTTPError as exc:
         part.unlink(missing_ok=True)
+        # Every HTTP failure names a configured proxy, the gated one included:
+        # a proxy that refuses a request answers HTTP too, and 403 is what it
+        # commonly answers for a host it blocks - the same status the hub uses
+        # for conditions that were not accepted. This side cannot tell which
+        # of the two answered, so somebody sent to go and accept conditions is
+        # told a proxy stood in the way as well.
         if exc.code in (401, 403):
             raise ModelError(
                 f"{model.repo} is gated: accept the conditions at https://hf.co/{model.repo} "
-                "with the same account, and give MyScribe that account's token",
+                f"with the same account, and give MyScribe that account's token{credentials.proxy_note()}",
                 reason="token",
             ) from exc
-        raise ModelError(f"{model.repo}: the hub answered HTTP {exc.code}", reason="offline") from exc
+        raise ModelError(
+            f"{model.repo}: the hub answered HTTP {exc.code}{credentials.proxy_note()}", reason="offline"
+        ) from exc
     except OSError as exc:
         part.unlink(missing_ok=True)
-        raise ModelError(f"{model.repo}: could not be downloaded ({exc})", reason="offline") from exc
+        raise ModelError(
+            f"{model.repo}: could not be downloaded ({exc}){credentials.proxy_note()}", reason="offline"
+        ) from exc
     part.replace(dest)
 
 

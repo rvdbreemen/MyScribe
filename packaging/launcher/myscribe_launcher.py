@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -286,11 +287,92 @@ def run_streaming(command: list[str], *, env: dict, cwd: Path | None, on_line: C
     return proc.wait()
 
 
+# --- the proxy this machine has configured ----------------------------------------
+#
+# The launcher says the same sentence about a proxy as the app does, and has
+# to have its own copy of it: it may import nothing from `scribe` (ADR-011).
+# `scribe/credentials.py` holds the other copy, and tests/test_proxy.py feeds
+# both the same environment and compares what they say - the duplication is
+# deliberate, and that test is what stops it drifting.
+#
+# This copy reads the environment only, which is what a child process
+# inherits; the app's copy also looks at the Windows system proxy, because the
+# setup engine shows a table and this prints one line.
+
+PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+NOT_A_HOST = "an address that could not be read"
+HOST_CHARACTERS = re.compile(r"^[A-Za-z0-9._:*-]+$")
+
+
+def proxy_host(environ: dict | None = None) -> str:
+    """The host of the first proxy this machine has configured, or "".
+
+    Only the parsed hostname and port are ever returned - never the value and
+    never the authority, because both of those carry the `user:password@` that
+    somebody may have put in a proxy URL. A bare `host:3128` parses as a
+    *scheme*, so a value with no scheme is retried as the authority it is. A
+    candidate with a path, a query or a fragment is refused: `urlsplit` ends
+    the authority at the first `/`, `?` or `#`, so a password containing one
+    would otherwise be read as a port and reported.
+    """
+    found = os.environ if environ is None else environ
+    for name in PROXY_VARIABLES:
+        for spelling in (name, name.lower()):
+            value = (found.get(spelling) or "").strip()
+            if not value:
+                continue
+            for candidate in ((value,) if "://" in value else (value, f"//{value}")):
+                try:
+                    parts = urllib.parse.urlsplit(candidate)
+                    if parts.path not in ("", "/") or parts.query or parts.fragment:
+                        continue
+                    host, port = parts.hostname, parts.port
+                except ValueError:  # a port that is not a number, or brackets that do not close
+                    continue
+                if host and HOST_CHARACTERS.match(host):
+                    shown = f"[{host}]" if ":" in host else host  # an IPv6 address keeps its brackets
+                    return f"{shown}:{port}" if port else shown
+            return NOT_A_HOST
+    return ""
+
+
+def proxy_note(environ: dict | None = None) -> str:
+    """The clause a failed download adds when a proxy is configured, or "".
+
+    Word for word `scribe.credentials.proxy_note`'s: somebody behind a
+    corporate proxy whose `uv sync` failed is otherwise told an exit code and
+    nothing else.
+    """
+    host = proxy_host(environ)
+    return f"; a proxy is configured at {host}, and the download did not get through it" if host else ""
+
+
+def loopback_opener() -> urllib.request.OpenerDirector:
+    """A urllib opener that ignores whatever proxy this machine has configured.
+
+    Measured on 2026-09-21 (`docs/superpowers/specs/2026-09-20-installer-evidence/`
+    `probe_product_proxy.output-2026-09-21.txt`): with HTTP_PROXY and
+    HTTPS_PROXY at a closed port and no NO_PROXY, `running_instance` answered
+    False after 1.08 s for an app that was answering - a second launch would
+    have started a second app on a taken port.
+
+    Built per call and never installed: `install_opener` is module-global
+    state, and this process has requests that must keep using the proxy.
+    """
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def sync(layout: Layout, on_line: Callable[[str], None], base: dict | None = None) -> bool:
-    """Sync the environment; write the stamp only when uv succeeded."""
-    code = run_streaming(sync_command(layout), env=sync_environment(layout, base), cwd=layout.home, on_line=on_line)
+    """Sync the environment; write the stamp only when uv succeeded.
+
+    The proxy named on the failure is the one the child was given, not this
+    process's: a caller that hands `sync` a different environment would
+    otherwise be told about the launcher's own.
+    """
+    env = sync_environment(layout, base)
+    code = run_streaming(sync_command(layout), env=env, cwd=layout.home, on_line=on_line)
     if code != 0:
-        on_line(f"uv sync failed with exit code {code}")
+        on_line(f"uv sync failed with exit code {code}{proxy_note(env)}")
         return False
     write_stamp(layout)
     return True
@@ -306,7 +388,7 @@ def health_url(port: int) -> str:
 def running_instance(port: int, timeout: float = 1.0) -> bool:
     """Whether MyScribe already answers on ``port``."""
     try:
-        with urllib.request.urlopen(health_url(port), timeout=timeout) as response:
+        with loopback_opener().open(health_url(port), timeout=timeout) as response:
             return bool(json.loads(response.read().decode("utf-8")).get("ok"))
     except (OSError, ValueError):
         return False
@@ -745,7 +827,7 @@ def smoke(layout: Layout, port: int) -> int:
             print(f"smoke: app did not answer {health_url(port)}", flush=True)
             print((layout.logs_dir / "app.log").read_text(encoding="utf-8", errors="replace")[-4000:])
             return 1
-        with urllib.request.urlopen(f"http://{HOST}:{port}/", timeout=10) as response:
+        with loopback_opener().open(f"http://{HOST}:{port}/", timeout=10) as response:
             ok = response.status == 200 and b"MyScribe" in response.read()
         print(f"smoke: /health ok, / {'ok' if ok else 'unexpected'}", flush=True)
         return 0 if ok else 1

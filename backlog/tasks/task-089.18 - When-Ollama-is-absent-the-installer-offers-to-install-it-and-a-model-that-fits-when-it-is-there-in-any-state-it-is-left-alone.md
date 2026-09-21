@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-20 21:49'
+updated_date: '2026-09-21 21:37'
 labels:
   - llm
   - packaging
@@ -58,4 +58,5 @@ Needs a real machine: A machine WITHOUT Ollama, which Robert's is not. Robert: W
 - [ ] #14 While the third-party installer runs, Ctrl-C in the console waits for it to finish, and the Tk window refuses Quit with a sentence saying why.
 - [ ] #15 The pin has an owner (brief: M7). docs/RELEASING.md gains a step in its short version: bump the Ollama pin and re-verify it. A CI check confirms that the pinned URL still resolves and that its digest still matches, without downloading the installer on every run; how it reads the digest is in the notes. A probe with a deliberately wrong digest turns it red, and the log is shown.
 - [ ] #16 One recorded real run per path on a machine without Ollama. Robert runs the Windows path in Windows Sandbox or a VM, and the guided Linux path in a WSL distribution that has no Ollama. The dmg path needs a real Mac without Ollama. The Mac is somebody else's, decided by Robert on 2026-09-20 (brief: G9), so this point is not asked on its own: it goes into the bundled macOS list of TASK-089 criterion 10 with its command and its expected output, and reads 'not run' until that sitting. If it is not run, the box stays unticked and the parent's final summary lists it. Any path not run is reported as 'not run' and its box stays unticked. Robert's machine proves only the first two criteria.
+- [ ] #17 A download that fails while a proxy is configured says so in its one sentence, the way the two downloads that existed before this task already do (TASK-089.05 built `credentials.proxy_note()`; the installer's own download and the model pull use the same clause). A test plants a proxy and asserts the clause; without one the sentence is unchanged.
 <!-- AC:END -->

@@ -147,7 +147,16 @@ def test_a_successful_sync_is_stamped(layout, tmp_path, monkeypatch):
     assert launcher.needs_sync(layout) is False
 
 
+def _no_proxy_configured(monkeypatch) -> None:
+    """The sync failure line names a proxy when one is configured (TASK-089.05),
+    so a test that pins that line exactly has to say which machine it is on."""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
 def test_a_failed_sync_is_not_stamped(layout, tmp_path, monkeypatch):
+    _no_proxy_configured(monkeypatch)
     monkeypatch.setattr(launcher, "uv_command", lambda _layout: _fake_uv(tmp_path, 2))
     launcher.prepare_home(layout)
     lines: list[str] = []
@@ -155,6 +164,41 @@ def test_a_failed_sync_is_not_stamped(layout, tmp_path, monkeypatch):
     assert launcher.sync(layout, lines.append) is False
     assert lines[-1] == "uv sync failed with exit code 2"
     assert not layout.stamp_file.exists()
+
+
+def test_a_failed_sync_names_a_proxy_that_is_configured(layout, tmp_path, monkeypatch):
+    """Somebody behind a corporate proxy is otherwise told an exit code and
+    nothing else. The host, never the `user:password@` a proxy URL can carry."""
+    _no_proxy_configured(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:secret@proxy.corp:3128")
+    monkeypatch.setattr(launcher, "uv_command", lambda _layout: _fake_uv(tmp_path, 2))
+    launcher.prepare_home(layout)
+    lines: list[str] = []
+
+    assert launcher.sync(layout, lines.append) is False
+    assert lines[-1] == (
+        "uv sync failed with exit code 2; a proxy is configured at proxy.corp:3128, "
+        "and the download did not get through it"
+    )
+    assert "secret" not in lines[-1]
+
+
+def test_a_failed_sync_names_the_proxy_the_child_was_given(layout, tmp_path, monkeypatch):
+    """`sync` builds the environment uv runs in, and the sentence has to be
+    about that one: a caller that hands the child a different proxy would
+    otherwise be told about the launcher's own."""
+    _no_proxy_configured(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "http://launchers-own.corp:3128")
+    monkeypatch.setattr(launcher, "uv_command", lambda _layout: _fake_uv(tmp_path, 2))
+    launcher.prepare_home(layout)
+    lines: list[str] = []
+    child = {**os.environ, "HTTPS_PROXY": "http://the-childs.corp:3128"}
+
+    assert launcher.sync(layout, lines.append, child) is False
+    assert lines[-1] == (
+        "uv sync failed with exit code 2; a proxy is configured at the-childs.corp:3128, "
+        "and the download did not get through it"
+    )
 
 
 # --- the child environment --------------------------------------------------------
