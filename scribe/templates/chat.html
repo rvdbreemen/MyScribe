@@ -68,6 +68,15 @@
   <p class="hint working" aria-live="polite">Thinking… <a href="/jobs/{{ job.id }}">job {{ job.id }}</a></p>
   {% endif %}
 
+  {# The same sentence the transcript panel carries, and outside the form for
+     the same reason (ADR-016): with nobody chosen the page asks rather than
+     picking a provider on the reader's behalf. #}
+  {% if not provider %}
+  <p class="warn no-provider">No provider is chosen yet, so nothing is sent anywhere.
+    <a href="/settings#llm-providers">Choose a provider in Settings &gt; AI providers</a>,
+    or pick one below for this question.</p>
+  {% endif %}
+
   <form class="chat-ask" method="post" action="/media/{{ media.id }}/chat"
         hx-post="/media/{{ media.id }}/chat" hx-target="#chat-panel" hx-select="#chat-panel" hx-swap="outerHTML">
     <label class="field">Question
@@ -77,6 +86,7 @@
     <div class="chat-controls">
       <label class="field">Provider
         <select name="provider">
+          {% if not provider %}<option value="" selected>Choose a provider</option>{% endif %}
           {% for p in providers %}
           <option value="{{ p.name }}"{% if p.selected %} selected{% endif %}{% if p.disabled %} disabled{% endif %}>{{ p.label }}{% if not p.local %} · leaves your machine{% endif %}</option>
           {% endfor %}

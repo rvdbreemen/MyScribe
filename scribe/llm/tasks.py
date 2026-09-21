@@ -63,7 +63,7 @@ from pydantic import BaseModel, BeforeValidator, ValidationError
 
 from scribe import db, glossary, llm, render
 from scribe.exports import doc as docs
-from scribe.llm import base, chunking, ollama, openai_like, privacy
+from scribe.llm import base, chunking, ollama, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
@@ -452,11 +452,6 @@ the rail gives it the question field."""
 KINDS: tuple[str, ...] = tuple(TASKS)
 
 CHUNK_KIND_SEPARATOR = ":chunk:"
-
-DEFAULT_PROVIDER = openai_like.OpenRouterProvider.name
-"""What an `llm` job uses when its params name no provider. The shipped default
-is commercial (spec §6) and the private-mode pin is what makes that safe;
-Task 6's settings page will store the user's own choice and pass it explicitly."""
 
 LOCAL_CONTEXT_TOKENS = ollama.DEFAULT_NUM_CTX
 """The window a local call actually gets. Not a guess: `OllamaProvider` asks

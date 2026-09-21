@@ -628,6 +628,13 @@ def test_a_re_transcription_asks_who_is_speaking_again(conn, data_dir):
     (llm.tasks.apply_speakers). Until then finalize asked only about clusters
     left without a name, and a run whose names all carried over asked nothing."""
     voices = [{"idx": i, "speaker": "SPEAKER_00" if i < 3 else "SPEAKER_01"} for i in range(6)]
+    # Somebody has chosen a provider. Since ADR-016 a missing `llm_provider`
+    # row queues no pass at all, and what this test is about is the pass being
+    # asked again after a re-transcription rather than what a machine with no
+    # answer does - `test_stage_finalize` owns that.
+    with db.LOCK:
+        conn.execute("INSERT INTO setting(key, value) VALUES ('llm_provider', 'ollama')")
+        conn.commit()
     job_a, run_a, media_id = a_finished_run(conn, words=6)
     finalize.run(finalize_ctx(conn, job_a, run_a, words=voices))
     with db.LOCK:

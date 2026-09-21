@@ -35,7 +35,7 @@ from dataclasses import replace
 import pytest
 
 from scribe import db, jobs, llm, paths, runner
-from scribe.llm import base, tasks
+from scribe.llm import base, chat_tool, selftest, tasks
 from scribe.stages import llm_stage
 from tests.seed import seed_media, seed_run
 
@@ -1776,3 +1776,112 @@ def test_the_suggestion_survives_a_daemon_that_is_down(monkeypatch):
     said = tasks.suggest_bigger_window(8192)
 
     assert "bigger window" in said
+
+
+# --- ADR-016: nothing is sent until somebody has chosen -------------------------------
+#
+# The row is `llm_provider`. What these assert is that a row that is not there
+# reads as "nobody chose", everywhere - in the answer `default_provider` gives
+# and in what the runner does with a job whose params name no provider.
+
+
+def _store_provider(conn, name: str) -> None:
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO setting(key, value) VALUES ('llm_provider', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (name,),
+        )
+        conn.commit()
+
+
+def _job_row(conn, job_id: int) -> dict:
+    return dict(conn.execute("SELECT * FROM job WHERE id=?", (job_id,)).fetchone())
+
+
+def _nothing_leaves_the_machine(monkeypatch, script) -> list:
+    """Register a fake under the name the fall-through picks, for the red run.
+
+    These three are red against code that still falls through, and that
+    fall-through *sends*: a key resolves from this machine's registry without
+    anybody having typed one, which is the fact ADR-016 exists for. So the name
+    it picks answers from a script here, and what the red state proves is that
+    the job was not refused - never that a request went out.
+    """
+    provider, calls = fake_provider(script, name="openrouter")
+    register(monkeypatch, provider)
+    return calls
+
+
+def test_a_missing_provider_row_means_no_provider_is_chosen(conn):
+    """An install where every question was skipped has no row, and a row that
+    is not there is not a choice of whatever this version happens to ship."""
+    assert llm.default_provider(conn) == ""
+
+
+def test_a_stored_name_this_version_no_longer_has_is_no_provider_either(conn):
+    """A provider a later version removed leaves its row behind. That row has
+    stopped naming anything, and reading it must not raise: every transcript
+    page asks this question."""
+    _store_provider(conn, "a-provider-this-version-does-not-have")
+
+    assert llm.default_provider(conn) == ""
+
+
+def test_a_stored_name_that_is_registered_is_still_what_a_request_opens_with(conn):
+    """The other half of ADR-016: a machine whose row exists does not notice."""
+    _store_provider(conn, "ollama")
+
+    assert llm.default_provider(conn) == "ollama"
+
+
+def test_a_preset_job_that_names_no_provider_dies_in_the_runner_with_a_sentence(
+    conn, media, monkeypatch
+):
+    """`task_prepare`. The params are the request, and a request that names
+    nobody is refused where `_kind` and `_media_id` are - before a token."""
+    _nothing_leaves_the_machine(monkeypatch, answer_for("summary"))
+    job_id = jobs.enqueue(conn, llm_stage.JOB_TYPE, media, {"media_id": media, "kind": "summary"})
+    jobs.claim_next(conn)
+
+    assert runner.main([str(job_id)]) == 1
+
+    row = _job_row(conn, job_id)
+    assert row["status"] == "failed"
+    assert "needs a provider" in (row["error_detail"] or "")
+
+
+def test_a_chat_job_that_names_no_provider_dies_in_the_runner_with_a_sentence(
+    conn, media, monkeypatch
+):
+    """`chat_prepare`, the same refusal through the other door."""
+    _nothing_leaves_the_machine(monkeypatch, ["Arthur and Ford."])
+    job_id = jobs.enqueue(
+        conn,
+        llm_stage.JOB_TYPE,
+        media,
+        {"media_id": media, "kind": chat_tool.CHAT_KIND, "question": "Who said what?"},
+    )
+    jobs.claim_next(conn)
+
+    assert runner.main([str(job_id)]) == 1
+
+    row = _job_row(conn, job_id)
+    assert row["status"] == "failed"
+    assert "needs a provider" in (row["error_detail"] or "")
+
+
+def test_a_provider_test_that_names_no_provider_dies_in_the_runner_with_a_sentence(
+    conn, monkeypatch
+):
+    """`probe_prepare`. A provider test with no provider is the emptiest case
+    of all, and it used to test OpenRouter."""
+    _nothing_leaves_the_machine(monkeypatch, ["ok"])
+    job_id = jobs.enqueue(conn, llm_stage.JOB_TYPE, None, {"kind": selftest.KIND})
+    jobs.claim_next(conn)
+
+    assert runner.main([str(job_id)]) == 1
+
+    row = _job_row(conn, job_id)
+    assert row["status"] == "failed"
+    assert "needs a provider" in (row["error_detail"] or "")

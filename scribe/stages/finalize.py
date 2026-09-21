@@ -435,6 +435,14 @@ def queue_speaker_pass(
     from scribe.stages import llm_stage
 
     provider_name = llm.default_provider(conn)
+    if not provider_name:
+        # Nobody has chosen one, so there is nowhere to send this (ADR-016).
+        # Before `provider_class`, which raises on "": this runs from the
+        # startup sweep, whose loop has no try/except and which the app's
+        # lifespan calls - the other order would turn "nothing to send" into
+        # "this machine has no app". Nothing is marked asked, so the first
+        # start after somebody chooses catches this recording up.
+        return None
     if not llm.provider_class(provider_name).is_local and privacy.is_private(conn, media_id):
         return None
 

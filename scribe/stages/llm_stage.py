@@ -83,6 +83,26 @@ def _kind(ctx: "RunnerContext") -> str:
     return kind
 
 
+def _provider(ctx: "RunnerContext") -> str:
+    """Which provider this job names.
+
+    Refused here rather than answered from the settings row, for the same
+    reason `_kind` and `_media_id` are refused here: the params are the
+    request, and a request that names nobody is not one this stage may decide
+    on somebody's behalf (ADR-016). Reading the row instead would be the same
+    fall-through through another door - by the time a job runs, whoever made
+    it is long gone. A job written before that rule still carries the name it
+    was given and runs unchanged.
+    """
+    provider_name = (ctx.params.get("provider") or "").strip()
+    if not provider_name:
+        raise ValueError(
+            "an llm job needs a provider in its params; nothing is sent until somebody "
+            "has chosen one in Settings > AI providers (/settings#llm-providers)"
+        )
+    return provider_name
+
+
 def task_prepare(ctx: "RunnerContext") -> None:
     """Work out what to ask, of whom - and refuse now if it cannot be asked."""
     kind = _kind(ctx)
@@ -91,7 +111,7 @@ def task_prepare(ctx: "RunnerContext") -> None:
         ctx.conn,
         media_id=_media_id(ctx),
         kind=kind,
-        provider_name=(ctx.params.get("provider") or tasks.DEFAULT_PROVIDER).strip(),
+        provider_name=_provider(ctx),
         model=ctx.params.get("model"),
         custom_prompt=ctx.params.get("prompt"),
         run_id=ctx.params.get("run_id"),
@@ -268,7 +288,7 @@ def chat_prepare(ctx: "RunnerContext") -> None:
         ctx.conn,
         media_id=media_id,
         question=question,
-        provider_name=(ctx.params.get("provider") or tasks.DEFAULT_PROVIDER).strip(),
+        provider_name=_provider(ctx),
         model=ctx.params.get("model"),
         history=history,
         run_id=ctx.params.get("run_id"),
@@ -342,7 +362,7 @@ def probe_prepare(ctx: "RunnerContext") -> None:
     to make and no media row to find - a job that needed one could not run
     before a single file had been added.
     """
-    provider_name = (ctx.params.get("provider") or tasks.DEFAULT_PROVIDER).strip()
+    provider_name = _provider(ctx)
     cls = llm.provider_class(provider_name)  # an unknown name fails for free, here
     model = (ctx.params.get("model") or "").strip() or cls.default_model
 

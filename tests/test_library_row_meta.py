@@ -31,6 +31,7 @@ from scribe.web import library as web_library
 from scribe.web.library import State
 
 from tests.test_web_library import (  # noqa: F401  (fixtures)
+    _set_provider,
     client,
     conn,
     data_dir,
@@ -276,6 +277,9 @@ def test_the_bulk_bar_offers_labelling(client):  # noqa: F811
 
 
 def test_labelling_a_selection_queues_one_job_per_file(conn, client):  # noqa: F811
+    # Somebody chose one: with no `llm_provider` row this queues nothing at all
+    # and says why (ADR-016), which is the subject of its own test next door.
+    _set_provider(conn, "ollama")
     ids = []
     for n in range(3):
         media_id = seed_media(conn, title=f"Talk {n}")
@@ -296,6 +300,7 @@ def test_labelling_a_selection_queues_one_job_per_file(conn, client):  # noqa: F
 def test_a_file_without_a_transcript_is_skipped_and_said_so(conn, client):  # noqa: F811
     """AC3: there is nothing for the pass to read, and a person who ticked
     forty rows should not have to count the jobs to find that out."""
+    _set_provider(conn, "ollama")  # as above (ADR-016)
     with_words = seed_media(conn, title="Has words")
     seed_run(conn, with_words, words=[{"start": 0.0, "end": 1.0, "text": "hello"}])
     seed_media(conn, title="Silent so far")

@@ -162,17 +162,23 @@ def setting_value(conn, key: str) -> str:
 
 
 def default_provider(conn) -> str:
-    """The provider a new request opens with.
+    """The provider a new request opens with, or "" when nobody has chosen.
 
-    A stored name that is no longer registered falls back to the shipped
-    default rather than raising: a provider can be removed from `PROVIDERS` by
-    a later version, and a settings row from before that must not break every
-    transcript page.
+    A missing row and a stored name this version no longer registers answer
+    the same way, and neither raises: a provider can be removed from
+    `PROVIDERS` by a later version, and a settings row from before that must
+    not break every transcript page.
+
+    "" rather than the shipped default (ADR-016, decided by Robert on
+    2026-09-20). This row is the only place a choice is recorded, so a row
+    that is not there means nobody chose - and the paths that act on that
+    answer by themselves, the startup sweep above all, run with nobody at the
+    screen to read a warning. Every caller handles "": it is what
+    `setting_value` already answers, and `default_model(conn, "")` already
+    degrades to "" as well.
     """
-    from scribe.llm import tasks
-
     stored = setting_value(conn, PROVIDER_SETTING).strip()
-    return stored if stored in PROVIDERS else tasks.DEFAULT_PROVIDER
+    return stored if stored in PROVIDERS else ""
 
 
 def default_model(conn, provider_name: str) -> str:

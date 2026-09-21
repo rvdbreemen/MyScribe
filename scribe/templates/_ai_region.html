@@ -65,6 +65,15 @@
   <p class="warn leaves">⚠ {{ p.label }} is not on this machine: the transcript is sent to it.</p>
   {% endif %}{% endfor %}
 
+  {# And out here for the same reason (ADR-016): with no provider chosen this
+     page asks instead of picking one, and an unanswered question folded away
+     inside the block below is one nobody answers. #}
+  {% if not ai.provider %}
+  <p class="warn no-provider">No provider is chosen yet, so nothing is sent anywhere.
+    <a href="/settings#llm-providers">Choose a provider in Settings &gt; AI providers</a>,
+    or pick one below for this question.</p>
+  {% endif %}
+
   <form class="ai-ask" method="post" action="/media/{{ ai.media_id }}/ai/summary">
     {# One form, eight buttons: each carries its own formaction and hx-post, so
        the provider, the model and the custom prompt are posted once from one
@@ -100,6 +109,10 @@
 
       <label class="field">Provider
         <select id="ai-provider" name="provider">
+          {# Marked selected, not merely added: a browser shows the first
+             option when none carries the attribute, so a placeholder that
+             did not would leave a real provider looking chosen. #}
+          {% if not ai.provider %}<option value="" selected>Choose a provider</option>{% endif %}
           {% for p in ai.providers %}
           <option value="{{ p.name }}"{% if p.selected %} selected{% endif %}{% if p.disabled %} disabled{% endif %}>{{ p.label }}{% if not p.local %} · leaves your machine{% endif %}</option>
           {% endfor %}

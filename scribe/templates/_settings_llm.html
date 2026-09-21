@@ -40,6 +40,17 @@
      has always shown a default and a model per provider and never the sum, so
      "is this leaving my machine?" could not be answered by looking. The window
      is the planned one: an 8192 there is why a kind can be refused outright. #}
+  {# Two sentences, not one with the label swapped (ADR-016): every clause
+     below says where the text goes, and with nobody chosen it goes nowhere.
+     "answered by no provider chosen. This sends transcript text off this
+     machine." would be false, and false in the direction that matters. #}
+  {% if not llm_effective.provider %}
+  <p class="effective">
+    <strong>In effect now:</strong> No provider is chosen, so nothing is sent anywhere and
+    no question can be answered. Choose one below; the automatic speaker pass waits until
+    you have.
+  </p>
+  {% else %}
   <p class="effective">
     <strong>In effect now:</strong> questions are answered by {{ llm_effective.label }}
     {%- if llm_effective.model %} using <code>{{ llm_effective.model }}</code>{% endif %}
@@ -47,10 +58,12 @@
     {% if llm_effective.local %}Nothing leaves this machine.{% else %}This sends transcript text off this machine.{% endif %}
     <span class="muted">A single question can still override it below.</span>
   </p>
+  {% endif %}
 
   <form method="post" action="/settings/llm" hx-post="/settings/llm" hx-target="#llm-providers" hx-swap="outerHTML">
     <label class="field">Default provider
       <select name="provider">
+        {% if not llm_provider %}<option value="" selected>Choose a provider</option>{% endif %}
         {% for p in llm_providers %}
         <option value="{{ p.name }}"{% if p.name == llm_provider %} selected{% endif %}>{{ p.label }}{% if not p.local %} · leaves your machine{% endif %}</option>
         {% endfor %}

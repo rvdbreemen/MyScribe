@@ -219,6 +219,13 @@ One `chat()` seam (`scribe/llm.py`):
 - **Defaults**: commercial providers (user decision). **Private-mode pin**: a
   per-file/per-folder flag forces Ollama and the UI always shows which text
   leaves the machine before it does.
+  - **Reversed by Robert on 2026-09-20** (ADR-016, built in TASK-089.07): a
+    missing `llm_provider` row now selects **no provider**, and nothing is
+    sent until somebody has chosen. The default above was safe while choosing
+    was something a person did; once every setup question can be skipped, the
+    skip is what most installs get, and the widest path is not a button but
+    the speaker sweep that runs at every app start over the whole back
+    catalogue. The private-mode pin is unchanged.
 - Robustness rules (from millet's measured failures): never carry a model name
   across providers on fallback; treat a 200 OK whose body is an error envelope
   as a failure; clamp per-model quirks (e.g. OpenRouter reasoning burn).

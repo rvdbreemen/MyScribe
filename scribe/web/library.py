@@ -992,6 +992,12 @@ def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> str:
     from scribe.web import ai_ui
 
     provider_name = ai_ui.default_provider(conn)
+    if not provider_name:
+        # Nobody has chosen one (ADR-016), so there is nowhere to send forty
+        # recordings. Before `provider_class`, which raises on "" and would
+        # make a bulk button a 500. Nothing queued, and said out loud: the
+        # rule below about silent skips holds hardest for the whole batch.
+        return f"Nothing was queued. {ai_ui.NO_PROVIDER_YET}"
     model = ai_ui.default_model(conn, provider_name)
     external = not llm.provider_class(provider_name).is_local
 

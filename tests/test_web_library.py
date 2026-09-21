@@ -1304,3 +1304,27 @@ def test_bulk_label_of_a_private_recording_is_fine_on_a_local_provider(client, c
 
     assert resp.status_code == 200
     assert [p["media_id"] for p in _llm_jobs(conn)] == [library["gamma"]]
+
+
+def test_bulk_label_queues_nothing_and_says_why_when_nobody_has_chosen(client, conn, library):
+    """ADR-016. The bulk pass asks `default_provider` and then reads the
+    class: with no row that used to be OpenRouter, and it must now be a
+    sentence and an empty queue rather than a provider nobody picked."""
+    seed_run(conn, library["alpha"])
+    seed_run(conn, library["gamma"])
+
+    resp = client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["gamma"]]},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    assert _llm_jobs(conn) == []
+    notice = json.loads(resp.headers["HX-Trigger"])["scribe-notice"]
+    assert "choose a provider" in notice.lower()
+    assert "/settings#llm-providers" in notice
+    # The library page posts `action` and `ids` and nothing else: there is no
+    # provider select on this screen, so the notice must not send a person
+    # looking for one. The panel and the chat form get that clause; this does not.
+    assert "for this request" not in notice.lower()

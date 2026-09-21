@@ -276,8 +276,13 @@ def test_the_five_canned_questions_are_in_view_and_the_custom_one_is_beside_its_
     assert 'name="provider"' in collapsed and 'name="model"' in collapsed
 
 
-def test_the_collapsed_block_says_who_will_answer_and_whether_it_leaves(client, media):
+def test_the_collapsed_block_says_who_will_answer_and_whether_it_leaves(client, conn, media):
     """Collapsed is only honest when closed means answered rather than hidden."""
+    # The row is written rather than assumed: since ADR-016 a missing one
+    # selects no provider, and this test is about what the summary says when
+    # somebody *has* chosen a cloud one.
+    ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "openrouter")
+
     body = client.get(f"/media/{media}").text
 
     line = re.search(r'<span class="summary-line">([^<]*)</span>', body).group(1)
@@ -285,9 +290,11 @@ def test_the_collapsed_block_says_who_will_answer_and_whether_it_leaves(client, 
     assert "leaves your machine" in line
 
 
-def test_the_privacy_warning_stays_out_of_the_collapsed_block(client, media):
+def test_the_privacy_warning_stays_out_of_the_collapsed_block(client, conn, media):
     """Which provider is selected is a privacy fact, and a fact that only shows
     when you go looking is not a warning."""
+    ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "openrouter")  # as above (ADR-016)
+
     body = client.get(f"/media/{media}").text
 
     region = re.search(r'<section id="ai-region".*?</section>', body, re.DOTALL).group(0)
@@ -1434,3 +1441,119 @@ def test_a_window_that_cannot_be_worked_out_is_simply_not_shown(conn, monkeypatc
     row = ai_ui.effective_llm(conn)
 
     assert row["window"] is None and row["provider"] == "ollama"
+
+
+# --- ADR-016: with nobody chosen, the panel asks instead of picking -------------------
+#
+# The row is `llm_provider` and none of these write it. What they assert is
+# what a machine where nobody answered the provider question actually shows and
+# actually sends: a placeholder rather than a provider, a sentence a reader can
+# see without opening anything, and no `job` row.
+
+SETTINGS_LINK = "/settings#llm-providers"
+
+
+def test_the_panel_preselects_no_provider_when_nobody_has_chosen(client, conn, media):
+    """The assertion is that the placeholder carries `selected`, not that
+    openrouter does not: a browser picks the first option when none is marked,
+    so "openrouter is not selected" would pass on a page that still shows a
+    chosen provider."""
+    body = client.get(f"/media/{media}").text
+
+    assert "selected" in option_of(body, "provider", "")
+    assert "selected" not in option_of(body, "provider", "openrouter")
+
+
+def test_the_panel_says_choose_a_provider_where_a_reader_can_see_it(client, conn, media):
+    """Outside `<details class="options">`, which arrives closed: a sentence
+    that only shows when you go looking is not a sentence anybody reads."""
+    body = client.get(f"/media/{media}").text
+    above_the_fold = body.split('<details class="options"')[0]
+
+    assert "choose a provider" in above_the_fold.lower()
+    assert SETTINGS_LINK in above_the_fold
+
+
+def test_a_transcript_page_still_renders_when_the_stored_provider_is_gone(client, conn, media):
+    """A provider a later version removed leaves its row behind."""
+    ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "a-provider-this-version-does-not-have")
+
+    resp = client.get(f"/media/{media}")
+
+    assert resp.status_code == 200
+    assert "selected" in option_of(resp.text, "provider", "")
+
+
+def test_asking_with_nobody_chosen_writes_no_job_and_says_where_to_choose(client, conn, media):
+    resp = client.post(f"/media/{media}/ai/summary", headers=HX)
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "choose a provider" in detail.lower()
+    assert SETTINGS_LINK in detail
+    # This screen does carry a select, so the refusal names the second way out.
+    # The bulk action's notice must not: see tests/test_web_library.py.
+    assert "for this request" in detail.lower()
+    assert jobs_of(conn) == []
+
+
+def test_a_provider_picked_in_the_panel_is_somebody_choosing(client, conn, media, no_ollama):
+    """The request names one, so this request has an answer even though the
+    row does not (ADR-016: the panel's select for that one request)."""
+    resp = client.post(f"/media/{media}/ai/summary", data={"provider": "ollama"}, headers=HX)
+
+    assert resp.status_code == 200
+    (job,) = jobs_of(conn)
+    assert json.loads(job["params_json"])["provider"] == "ollama"
+
+
+def test_the_chat_page_preselects_no_provider_and_says_where_to_choose(client, conn, media):
+    body = client.get(f"/media/{media}/chat").text
+
+    assert "selected" in option_of(body, "provider", "")
+    assert "choose a provider" in body.lower()
+    assert SETTINGS_LINK in body
+
+
+def test_a_chat_turn_with_nobody_chosen_writes_no_job_and_says_where_to_choose(
+    client, conn, media
+):
+    resp = client.post(f"/media/{media}/chat", data={"question": "Who is speaking?"}, headers=HX)
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "choose a provider" in detail.lower()
+    assert SETTINGS_LINK in detail
+    assert "for this request" in detail.lower()
+    assert jobs_of(conn) == []
+
+
+def test_a_chat_turn_that_names_a_provider_is_somebody_choosing(client, conn, media, no_ollama):
+    resp = client.post(
+        f"/media/{media}/chat",
+        data={"question": "Who is speaking?", "provider": "ollama"},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    (job,) = jobs_of(conn)
+    assert json.loads(job["params_json"])["provider"] == "ollama"
+
+
+def test_the_settings_page_preselects_no_provider_and_says_nothing_is_sent(
+    client, conn, no_ollama
+):
+    body = client.get("/settings").text
+
+    assert "selected" in option_of(body, "provider", "")
+    assert "No provider is chosen" in body
+
+
+def test_the_effective_line_says_no_provider_rather_than_an_empty_label(conn):
+    """`effective_llm` answers the settings page's "is this leaving my
+    machine?" line, and an empty label there reads as a provider with no name."""
+    row = ai_ui.effective_llm(conn)
+
+    assert row["provider"] == ""
+    assert "no provider chosen" in row["label"].lower()
+    assert row["local"] is False

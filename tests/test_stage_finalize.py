@@ -9,8 +9,10 @@ from __future__ import annotations
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
-from scribe import db
+from scribe import db, paths
+from scribe.app import create_app
 from scribe.stages import finalize
 from tests.seed import default_words, seed_media, seed_run
 from tests.test_llm_tasks import conn  # noqa: F401  (fixture)
@@ -477,3 +479,92 @@ def test_a_trashed_recording_is_left_alone(conn):
     _set_provider(conn, "ollama")
 
     assert finalize.sweep_speaker_passes(conn) == []
+
+
+# --- ADR-016: with nobody chosen the sweep queues nothing and waits -------------------
+#
+# The sweep is the widest path in the app: it runs from the lifespan
+# (`scribe/app.py:261`) over the whole back catalogue, with nobody at the
+# screen. These drive it through a real app start on a scratch database, and
+# count `job` rows, because "queued nothing" is a fact about rows.
+
+
+@pytest.fixture
+def scratch_paths(tmp_path, monkeypatch):
+    """Everything an app start writes to, pointed at tmp_path.
+
+    The lifespan also sweeps the recorder's chunks and the stderr files; a test
+    that only moved the database would still walk the real library's folders.
+    """
+    data = tmp_path / "data"
+    monkeypatch.setattr(paths, "DATA_DIR", data)
+    monkeypatch.setattr(paths, "MEDIA_DIR", data / "media")
+    monkeypatch.setattr(paths, "LOGS_DIR", data / "logs")
+    monkeypatch.setattr(paths, "WORK_DIR", data / "work")
+    monkeypatch.setattr(paths, "MODELS_DIR", data / "models")
+    return data
+
+
+def _seed_diarized(conn, n: int) -> list[int]:
+    """`n` recordings the sweep would ask about: diarized, never asked, not private."""
+    ids = []
+    for i in range(n):
+        media_id = seed_media(conn, title=f"Episode {i}")
+        seed_run(conn, media_id)
+        ids.append(media_id)
+    return ids
+
+
+def _start_the_app_once(db_path) -> None:
+    """One lifespan, start to stop - which is what runs the sweep."""
+    app = create_app(db_path=db_path, start_supervisor=False)
+    with TestClient(app, base_url="http://127.0.0.1"):
+        pass
+
+
+def _queued_media(conn) -> list[int]:
+    return sorted(int(params["media_id"]) for params in _queued(conn))
+
+
+def test_no_provider_chosen_means_the_speaker_pass_is_not_queued(conn, recording):
+    """The pass is queued by the pipeline, with nobody there to choose."""
+    media_id, run_id = recording
+
+    assert finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00", "SPEAKER_01"]) is None
+    assert _queued(conn) == []
+
+
+def test_the_sweep_does_not_raise_when_nobody_has_chosen(conn):
+    """Its loop has no try/except and it runs from the lifespan, so a guard
+    written after `llm.provider_class()` instead of before it would turn
+    "nothing to send" into "this machine has no app"."""
+    _seed_diarized(conn, 1)
+
+    assert finalize.sweep_speaker_passes(conn) == []
+
+
+def test_an_app_start_with_no_provider_row_queues_nothing_for_a_back_catalogue(
+    conn, tmp_path, scratch_paths
+):
+    """Point MyScribe at an existing library and skip the provider question:
+    the first start used to queue one cloud job per diarized recording."""
+    _seed_diarized(conn, 3)
+
+    _start_the_app_once(tmp_path / "test.db")
+
+    assert _queued(conn) == []
+
+
+def test_the_pass_waits_and_catches_up_at_the_first_start_after_somebody_chose(
+    conn, tmp_path, scratch_paths
+):
+    """Nothing is lost by waiting: the sweep marks nothing asked, so the four
+    conditions still hold the next time the app starts."""
+    ids = _seed_diarized(conn, 3)
+    _start_the_app_once(tmp_path / "test.db")
+    assert _queued(conn) == []
+
+    _set_provider(conn, "ollama")
+    _start_the_app_once(tmp_path / "test.db")
+
+    assert _queued_media(conn) == sorted(ids)

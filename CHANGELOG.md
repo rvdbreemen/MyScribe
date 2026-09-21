@@ -16,9 +16,17 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
   reverses the recorded decision "Defaults: commercial providers", which was
   safe while choosing was something a person did; every setup question is
   skippable now, so the skip is what most installs get. A machine whose row
-  exists behaves exactly as before. Nothing is built yet - TASK-089.07 owes
-  the evidence - and the record's tripwire only flags a fall-through somebody
-  adds, never the four that stand today.
+  exists behaves exactly as before. The record's tripwire only flags a
+  fall-through somebody adds, never the four that stood on 2026-09-20.
+- ADR-016 is built (TASK-089.07). `default_provider()` answers `""` for a
+  missing row and for a stored name this version no longer registers;
+  `DEFAULT_PROVIDER` is gone and the runner refuses a job whose params name
+  no provider, with a sentence, instead of sending it to OpenRouter. The AI
+  panel, the chat page and the Settings line preselect nothing and say where
+  to choose; the bulk labels pass and the startup sweep queue nothing. The
+  sweep marks nothing asked, so the recordings it skipped are queued at the
+  first start after somebody chose. Jobs the fall-through queued before this
+  keep `openrouter` in their parameters and are not recalled.
 
 ### Documentation
 

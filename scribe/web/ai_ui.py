@@ -143,6 +143,27 @@ def setting_drop(conn: sqlite3.Connection, key: str) -> None:
 default_provider = llm.default_provider
 default_model = llm.default_model
 
+SETTINGS_ANCHOR = "/settings#llm-providers"
+"""Where the provider is chosen, in one place: the panel's sentence, the
+settings line and the bulk action's notice all point at this."""
+
+_NO_PROVIDER_LEAD = (
+    "Nothing is sent until somebody has chosen: choose a provider in "
+    f"Settings > AI providers ({SETTINGS_ANCHOR})"
+)
+"""The half of the sentence that is true on every screen (ADR-016). One
+spelling, because the panel, the chat page and the bulk pass all have to say
+it and three wordings would be three answers to the same question."""
+
+NO_PROVIDER_YET = f"{_NO_PROVIDER_LEAD}."
+"""What a screen with no provider select is told: the library's bulk action,
+which posts an action and a list of ids and carries nowhere to pick one."""
+
+NO_PROVIDER_FOR_REQUEST = f"{_NO_PROVIDER_LEAD}, or pick one for this request."
+"""What the panel and the chat form are told. They each carry a select, so the
+second way out is real there - and only there, or the sentence sends a person
+who ticked forty rows looking for a control that screen does not have."""
+
 
 def known_models(conn: sqlite3.Connection, provider_name: str) -> list[str]:
     """The model ids this provider offered the last time it was asked.
@@ -718,6 +739,21 @@ def _provider(name: str) -> str:
     return name
 
 
+def _chosen_provider(conn: sqlite3.Connection, asked: str) -> str:
+    """Who answers this one request: the form's pick, else the stored choice.
+
+    Somebody has chosen when this request names a provider or the row does
+    (ADR-016); with neither, the request is refused rather than sent to
+    whichever provider the app happens to ship with. Before `_provider`,
+    which would turn "" into an unknown-provider message that names every
+    provider except the missing choice.
+    """
+    name = (asked or "").strip() or default_provider(conn)
+    if not name:
+        raise HTTPException(status_code=400, detail=NO_PROVIDER_FOR_REQUEST)
+    return _provider(name)
+
+
 def _refuse_if_private(conn: sqlite3.Connection, media_id: int, provider_name: str) -> None:
     """The control, not the courtesy.
 
@@ -834,7 +870,7 @@ def ai_run(
     spec = _spec(kind)
     _require_transcript(conn, media_id)
 
-    provider_name = _provider((provider or "").strip() or default_provider(conn))
+    provider_name = _chosen_provider(conn, provider)
     _refuse_if_private(conn, media_id, provider_name)
 
     asked = (prompt or "").strip()
@@ -1013,7 +1049,7 @@ def chat_ask(
             status_code=400, detail="a chat turn needs a question; there is nothing to answer"
         )
 
-    provider_name = _provider((provider or "").strip() or default_provider(conn))
+    provider_name = _chosen_provider(conn, provider)
     _refuse_if_private(conn, media_id, provider_name)
 
     jobs.enqueue(
@@ -1202,6 +1238,12 @@ def effective_llm(conn: sqlite3.Connection) -> dict:
     name = default_provider(conn)
     model = default_model(conn, name)
     row = {"provider": name, "label": provider_label(name), "model": model, "local": False, "window": None}
+    if not name:
+        # Nobody has chosen (ADR-016). An empty label here would render as a
+        # provider whose name the page forgot; the template reads `provider`
+        # and says what is true instead - that nothing is sent anywhere yet.
+        row["label"] = "no provider chosen"
+        return row
     try:
         provider_cls = llm.provider_class(name)
     except Exception:  # noqa: BLE001 - a provider that no longer exists is not a crash here
