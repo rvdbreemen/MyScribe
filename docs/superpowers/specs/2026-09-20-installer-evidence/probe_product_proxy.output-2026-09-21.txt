@@ -1,0 +1,13 @@
+python 3.12.9 | httpx2 2.12.0 | a /health server of this script's own on 127.0.0.1:62135
+
+no proxy variable set:
+  OllamaProvider.available()            0.11s  OK    (True, 'Ollama at http://127.0.0.1:11434 with qwen3.5:4b ready')
+  launcher.running_instance(62135)      0.06s  OK    True
+
+HTTP_PROXY and HTTPS_PROXY at a closed port (http://127.0.0.1:9), NO_PROXY unset:
+  OllamaProvider.available()            2.01s  OK    (False, 'Ollama is not running at http://127.0.0.1:11434 (start it, 
+  launcher.running_instance(62135)      1.08s  OK    False
+
+the same, plus NO_PROXY=127.0.0.1 (the bypass a fix would set):
+  OllamaProvider.available()            0.01s  OK    (True, 'Ollama at http://127.0.0.1:11434 with qwen3.5:4b ready')
+  launcher.running_instance(62135)      0.06s  OK    True

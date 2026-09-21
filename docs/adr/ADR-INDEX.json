@@ -917,7 +917,7 @@
       "title": "First-run setup is one app-side engine behind a JSON contract, and every front-end only renders it",
       "path": "ADR-015-first-run-setup-is-one-app-side-engine-behind-a-json-contract-and-every-front-end-only-renders-it.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-09-21",
       "decision_summary": "Chosen option: one app-side engine behind a versioned JSON contract: only there does a question exist once, does dete...",
       "topics": [
@@ -1057,7 +1057,7 @@
       "title": "MyScribe installs third-party software only when it is absent, shown and agreed to, and leaves an Ollama that is there alone",
       "path": "ADR-017-myscribe-installs-third-party-software-only-when-it-is-absent-shown-and-agreed-to-and-leaves-an-ollama-that-is-there-alone.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-09-21",
       "decision_summary": "Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b...",
       "topics": [

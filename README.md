@@ -297,17 +297,17 @@ it to decide (ADR-014, superseding ADR-007); a feed or channel as a
 subscription polled on a due date, each new episode one `ingest_url` job
 (ADR-008); reasoning as a per-kind hint, bounded by the cap only where the
 endpoint enforces one (ADR-010); a per-OS launcher that installs the locked
-environment with uv on first run (ADR-011); and a missing provider row
-selecting no provider, so nothing is sent until somebody has chosen
-(ADR-016).
+environment with uv on first run (ADR-011); a missing provider row selecting
+no provider, so nothing is sent until somebody has chosen (ADR-016);
+first-run setup as one engine behind a JSON contract that every front-end
+only renders (ADR-015); and third-party software installed only when it is
+absent, shown and agreed to, leaving an Ollama that is there alone (ADR-017).
 
-**Proposed:** first-run setup as one engine behind a JSON contract that every
-front-end only renders (ADR-015), and third-party software installed only
-when it is absent, shown and agreed to, leaving an Ollama that is there alone
-(ADR-017). Each waits on a measurement nobody has run. Their design is in
-`docs/superpowers/specs/2026-09-20-installer-design.md`, what the short keys
-in it mean in `2026-09-20-installer-decisions.md`, and the work under
-TASK-089; none of it is built yet.
+Nothing is Proposed. The installer's three records were accepted on
+2026-09-21; their design is in
+`docs/superpowers/specs/2026-09-20-installer-design.md`, what the short
+keys in it mean in `2026-09-20-installer-decisions.md`, and the work
+under TASK-089, which is under way.
 
 ADR-002, ADR-006, ADR-007 and ADR-009 are history, and each names its
 successor.

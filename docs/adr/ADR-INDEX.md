@@ -20,6 +20,6 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-012 | Accepted | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |
 | ADR-013 | Accepted | `scribe/**` | Chosen option: SQLite WAL with atomic SQL, one-at-a-time in the claim, because every hard coordination problem is the... |
 | ADR-014 | Accepted | `scribe/**` | Chosen option: one pattern over scribe/, with the one reader marked. |
-| ADR-015 | Proposed | `{packaging/launcher/**,install.py}`, `scribe/setup.py`, `install.py` | Chosen option: one app-side engine behind a versioned JSON contract: only there does a question exist once, does dete... |
+| ADR-015 | Accepted | `{packaging/launcher/**,install.py}`, `scribe/setup.py`, `install.py` | Chosen option: one app-side engine behind a versioned JSON contract: only there does a question exist once, does dete... |
 | ADR-016 | Accepted | `scribe/**` | Chosen option: a missing row selects no provider, decided by Robert on 2026-09-20 (R1 in docs/superpowers/specs/2026-... |
-| ADR-017 | Proposed | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b... |
+| ADR-017 | Accepted | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b... |

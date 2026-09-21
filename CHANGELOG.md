@@ -1,13 +1,16 @@
-# Changelog
-
-What changed in MyScribe, newest first. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the
-ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
-2026-09-19 was the first one built and published by CI.
-
 ## [Unreleased]
 
 ### Changed
+
+- ADR-015 and ADR-017 are Accepted, so every decision behind the installer is
+  settled: setup is one engine behind a JSON contract that the launcher, a
+  clone's installer and the console only render, and third-party software is
+  installed only when it is absent, shown and agreed to, with an Ollama that
+  is already there left alone. ADR-015's open question was measured first
+  rather than waved through, and the measurement found a defect that stands
+  today (see Fixed). ADR-017's is recorded as deferred and not as answered:
+  it needs a Windows machine without Ollama, and the rule it bears on is
+  written the safe way whichever the answer.
 
 - ADR-016 is Accepted: a missing `llm_provider` row selects no provider, and
   nothing is sent until somebody has chosen. Today a missing row falls through
@@ -18,6 +21,7 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
   skippable now, so the skip is what most installs get. A machine whose row
   exists behaves exactly as before. The record's tripwire only flags a
   fall-through somebody adds, never the four that stood on 2026-09-20.
+
 - ADR-016 is built (TASK-089.07). `default_provider()` answers `""` for a
   missing row and for a stored name this version no longer registers;
   `DEFAULT_PROVIDER` is gone and the runner refuses a job whose params name
@@ -28,30 +32,15 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
   first start after somebody chose. Jobs the fall-through queued before this
   keep `openrouter` in their parameters and are not recalled.
 
-### Documentation
-
-- The README lists two things it did not before: every command the app has
-  outside the browser (`scribe.setup`, `scribe.models`, `scribe.export`,
-  `scribe.proxies`, each verified against its own `--help`), and a table of
-  what goes wrong with what to do about it - SmartScreen, Gatekeeper, a CPU
-  torch where CUDA was meant, a diarization fallback, the Windows suite
-  stall. It also says what the data directory holds and what of it is worth
-  backing up, how a download is verified on each OS, and why an app that
-  binds localhost still needs the two guards in `scribe/guard.py`.
-
-### Added
-
-- `<repo>/.tools/bin` is first on `PATH` for `python -m scribe`,
-  `scribe.setup`, `scribe.models` and `scribe.doctor` when the directory
-  exists, and `.tools/` is gitignored. It is where an installer will put the
-  tools it fetches for a clone; a checkout without it keeps its `PATH`
-  untouched (`env.bootstrap()`, TASK-089.03).
-- `env.write_env(name, value)` sets one line in `.env` - any name, through a
-  temp file and `os.replace`, a new file 0600 on POSIX, an existing one
-  keeping its mode, owner and group - and `env.applied()` says which names
-  `.env` supplied, never their values.
-
 ### Fixed
+
+- Behind an `HTTP_PROXY` variable, MyScribe cannot see what runs on this
+  machine. Measured on 2026-09-21: `OllamaProvider.available()` spends its
+  two seconds and reports a running Ollama as "not running at
+  http://127.0.0.1:11434 (start it ...)", and the launcher's single-instance
+  probe reports a MyScribe that is answering as absent, so it would start a
+  second one. `NO_PROXY=127.0.0.1,localhost` restores both. TASK-089.05 owns
+  the fix; the probe and its output are in the installer evidence folder.
 
 - A data directory moved through `.env` - the documented way
   (`.env.example`) - was the app's library and nobody else's.
@@ -92,6 +81,29 @@ ones in `pyproject.toml`. Releases are tagged `v<version>`; v0.5.0 on
   `effort: low` stands as the cautious default with its single-sample basis
   now stated in the record, and a cleaned part that came back a copy of its
   source is refused, with the reuse path fixed in the same change (TASK-088).
+
+### Documentation
+
+- The README lists two things it did not before: every command the app has
+  outside the browser (`scribe.setup`, `scribe.models`, `scribe.export`,
+  `scribe.proxies`, each verified against its own `--help`), and a table of
+  what goes wrong with what to do about it - SmartScreen, Gatekeeper, a CPU
+  torch where CUDA was meant, a diarization fallback, the Windows suite
+  stall. It also says what the data directory holds and what of it is worth
+  backing up, how a download is verified on each OS, and why an app that
+  binds localhost still needs the two guards in `scribe/guard.py`.
+
+### Added
+
+- `<repo>/.tools/bin` is first on `PATH` for `python -m scribe`,
+  `scribe.setup`, `scribe.models` and `scribe.doctor` when the directory
+  exists, and `.tools/` is gitignored. It is where an installer will put the
+  tools it fetches for a clone; a checkout without it keeps its `PATH`
+  untouched (`env.bootstrap()`, TASK-089.03).
+- `env.write_env(name, value)` sets one line in `.env` - any name, through a
+  temp file and `os.replace`, a new file 0600 on POSIX, an existing one
+  keeping its mode, owner and group - and `env.applied()` says which names
+  `.env` supplied, never their values.
 
 ## [0.5.1] - 2026-09-19
 
