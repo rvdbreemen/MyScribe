@@ -48,4 +48,7 @@ Filename: "{app}\{#MyAppExe}"; Description: "Start {#MyAppName}"; Flags: nowait 
 SetupAppTitle={#MyAppName}
 
 ; The one thing a user has to know before the first start.
-WelcomeLabel2=This installs [name/ver] for your account only.%n%nThe first start downloads the speech engine (about 3 GB) and shows its progress. Later starts skip that. Your recordings, transcripts and models are kept in %LOCALAPPDATA%\MyScribe and are left alone when you uninstall.
+; No size in gigabytes here: this text cannot read scribe/footprint.json, so a
+; number in it would be one nobody updates, and the first start already shows
+; the size it is about to download - per platform, per model (TASK-089.14).
+WelcomeLabel2=This installs [name/ver] for your account only.%n%nThe first start asks where everything should go, then downloads the speech engine and shows its progress. Later starts skip that. Your recordings, transcripts and models are kept in %LOCALAPPDATA%\MyScribe unless you choose another folder, and are left alone when you uninstall.

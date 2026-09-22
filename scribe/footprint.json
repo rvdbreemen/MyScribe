@@ -1,0 +1,40 @@
+{
+  "_comment": "What installing MyScribe costs on disk, for the one question the launcher asks before anything is downloaded (TASK-089.14). Read as data by packaging/launcher/myscribe_launcher.py, which may import nothing from this package (ADR-011). The speech weights are deliberately not here: they are real bytes, per file, in models.json. Every number in this file carries what it measured, the date, and where it came from. A figure in GB is an estimate and says so; a GB here is 2**30 bytes, and the difference between that and 10**9 is far below the error of an estimate. A null is not a zero: it means nobody has measured it, and the question says so rather than showing a number somebody guessed.",
+
+  "environment": {
+    "win32": {
+      "download_gb": 3.2,
+      "unpacked_gb": 5.1,
+      "measured": "an estimate, not a measurement of a release install",
+      "date": "2026-09-11 (download) and 2026-09-22 (unpacked)",
+      "source": "The download is ADR-011's 'about 3.2 GB on Windows' (2026-09-11). The unpacked figure is this repository's own .venv on 2026-09-22: 5,459,898,687 bytes over 47,416 files. It is not a release install of the same thing - it includes the dev group that `uv sync --no-dev` leaves out, and it excludes uv's cache and the managed Python, which a release keeps under the same home. Replacing it with a real figure needs `uv sync --no-dev` into a fresh home and a measurement of that home."
+    },
+    "darwin": {
+      "download_gb": null,
+      "unpacked_gb": null,
+      "measured": "nobody has measured this platform",
+      "date": "",
+      "source": "The Mac belongs to somebody else (ADR-015, Open Questions, 2026-09-20). A Mac installs neither CUDA torch nor the CTranslate2 build Windows and Linux use, so the Windows figure is not an estimate of it and is not offered as one."
+    },
+    "linux": {
+      "download_gb": null,
+      "unpacked_gb": null,
+      "measured": "nobody has measured this platform",
+      "date": "",
+      "source": "No Linux install has been measured here. The lock resolves a different torch wheel per platform (ADR-012), so the Windows figure is not an estimate of it and is not offered as one."
+    }
+  },
+
+  "ollama": {
+    "model": "qwen3.5:4b",
+    "model_bytes": 3389983735,
+    "installer_bytes": {
+      "win32": 1569993232,
+      "darwin": 197873582,
+      "linux": null
+    },
+    "measured": "read from Ollama's own release, not measured here",
+    "date": "2026-09-20",
+    "source": "The installer sizes are the size fields of OllamaSetup.exe and Ollama.dmg in Ollama's own release v0.34.2, read through the GitHub API on 2026-09-20 (docs/superpowers/specs/2026-09-20-installer-design.md, section 0). Linux installs through a script that downloads a tarball and no figure for it was read. The model size is what this machine's Ollama reported for qwen3.5:4b on the same day (same spec, section 3.3). TASK-089.18 replaces all of it with scribe/ollama_release.json, which pins the release this installation would actually fetch."
+  }
+}

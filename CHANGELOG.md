@@ -2,6 +2,28 @@
 
 ### Changed
 
+- A release install asks where everything should go, before it writes anything
+  or downloads a byte. Everything hung off one home that only `MYSCRIBE_HOME`
+  or `--home` could move and nothing remembered, so 12 to 15 GB landed on the
+  system drive whether it fitted or not. The first start now shows the default
+  folder, the free space on each drive, what this install will download and the
+  disk it needs, and keeps the answer in a small `MyScribe.location` file beside
+  the default home. Skipping keeps today's location. A folder inside the install
+  directory is refused, because the uninstaller owns that folder and the welcome
+  text promises your recordings are left alone. A pointer naming a folder that is
+  gone says so and asks again instead of quietly falling back to the default,
+  which would have looked like an empty library (TASK-089.14).
+
+- Nothing is downloaded onto a volume that cannot hold it. The sync used to
+  start regardless and leave a half-built environment when the disk ran out.
+  The sizes are computed rather than written down: the weights are real bytes
+  from `scribe/models.json`, and the rest comes from a new
+  `scribe/footprint.json` where every figure carries what it measured, when,
+  and where it came from - with a null, and a sentence, where nobody has
+  measured yet. `--smoke`, `--sync-only` and `--doctor` are asked only for the
+  install they make, not for the room MyScribe keeps free to run with a library
+  of recordings, because they install and then stop (TASK-089.14).
+
 - The weights MyScribe offers to download are the ones this machine would
   actually load. The catalogue pinned only the Apple MLX conversion of Whisper,
   so on Windows and Linux the doctor demanded 1.6 GB for ever - on a machine

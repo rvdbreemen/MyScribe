@@ -89,10 +89,13 @@ Nothing is signed yet, so each OS will say so the first time:
   `%LOCALAPPDATA%\MyScribe`, and leaves your recordings there on uninstall.
 * **Linux** - make the AppImage executable (`chmod +x`) and run it.
 
-The first start downloads the speech engine - about 3 GB on Windows and Linux,
-less on a Mac - and shows its progress. Later starts skip it. The model
-weights are a separate download the app makes for itself; `Settings` says what
-is still missing and how big it is.
+The first start asks where everything should go, shows the free space on each
+drive and what this install will download, and then fetches the speech engine
+with its progress. Later starts skip it. The model weights are a separate
+download the app makes for itself; `Settings` says what is still missing and
+how big it is. The sizes come from `scribe/footprint.json` and
+`scribe/models.json`, which carry what each number measured and when, so this
+page does not repeat a figure that would go stale.
 
 Verify a download against `SHA256SUMS`, published beside the artifacts:
 
@@ -116,7 +119,8 @@ Clone, then one command on every OS. `pyproject.toml` holds the pins and
 `uv.lock` the exact, hashed set for each platform (ADR-012): Windows gets
 torch built for CUDA 12.8 from PyTorch's index, Linux PyPI's torch with its
 CUDA wheels, an Apple Silicon Mac PyPI's CPU + MPS torch plus `mlx-whisper`.
-The first sync downloads about 3 GB on Windows and Linux.
+The first sync's size per platform is in `scribe/footprint.json`, with the
+date and the source of every figure; the launcher shows it before it starts.
 
 ```sh
 uv sync                                    # makes .venv from uv.lock

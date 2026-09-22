@@ -25,6 +25,10 @@ import argparse
 import hashlib
 import json
 import os
+# Under a name of its own: `platform` is a parameter in half the functions
+# below, and `platform.machine()` inside one of them would be an AttributeError
+# on a string.
+import platform as platform_info
 import queue
 import re
 import shutil
@@ -60,12 +64,11 @@ NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 # --- where things live ------------------------------------------------------------
 
 
-def home_dir(platform: str = sys.platform, environ: dict | None = None) -> Path:
-    """The per-user MyScribe folder. Never the install directory: Program
-    Files, a ``.app`` and an AppImage are read-only or replaced on update."""
+def default_home(platform: str = sys.platform, environ: dict | None = None) -> Path:
+    """The per-user MyScribe folder as it ships. Never the install directory:
+    Program Files, a ``.app`` and an AppImage are read-only or replaced on
+    update."""
     environ = os.environ if environ is None else environ
-    if environ.get(HOME_VARIABLE):
-        return Path(environ[HOME_VARIABLE])
     if platform == "win32":
         base = environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / APP_NAME
@@ -73,6 +76,118 @@ def home_dir(platform: str = sys.platform, environ: dict | None = None) -> Path:
         return Path.home() / "Library" / "Application Support" / APP_NAME
     base = environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / APP_NAME
+
+
+def pointer_path(platform: str = sys.platform, environ: dict | None = None) -> Path:
+    """Where the answer to "where should MyScribe keep everything?" is kept:
+    ``MyScribe.location``, *beside* the default home and not inside it.
+
+    Beside, so that a home somebody moved leaves nothing at all under the
+    default one - an empty ``MyScribe`` folder on C: is exactly the "did it
+    install twice?" that moving it was meant to avoid.
+
+    A module-level function and not only a parameter, because
+    ``build_parser()`` asks ``home_dir()`` for the ``--home`` help text before
+    any argument is read: with a parameter alone, a test would read the
+    pointer file of whoever is running it.
+    """
+    default = default_home(platform, environ)
+    return default.with_name(default.name + ".location")
+
+
+def read_pointer(path: Path) -> tuple[dict, str]:
+    """The pointer's object, and what is wrong with it - ``""`` when nothing is.
+
+    One reader for both callers, so ``home_dir`` and ``locate_home`` can never
+    disagree about what a file says. No file at all is not a problem: it is
+    what every machine that never moved its home looks like. A file that
+    cannot be read, or that is not a JSON object, *is* a problem and is never
+    quietly treated as absent - that would move somebody's library back to C:
+    without a word.
+
+    Unknown keys are kept and ignored: TASK-089.19 may add a second fact to
+    this file, and nothing here pins that it holds one.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}, ""
+    except OSError as error:
+        return {}, f"{path} cannot be read ({error})."
+    except ValueError:
+        return {}, f"{path} is not readable as JSON."
+    if not isinstance(document, dict):
+        return {}, f"{path} does not hold a JSON object."
+    return document, ""
+
+
+def home_dir(platform: str = sys.platform, environ: dict | None = None,
+             pointer: Path | None = None) -> Path:
+    """The home in force: ``MYSCRIBE_HOME``, then the pointer file, then the
+    per-OS default. ``--home`` outranks all three, in ``main``.
+
+    Pure, and it never raises: ``build_parser()`` calls it for a help string
+    before any argument is read, so a refusal in here would also stop
+    ``--version``, ``--smoke`` and ``--home X``. A pointer that is broken or
+    names a folder that is gone is not answered here but in ``locate_home``,
+    which has somebody to tell.
+    """
+    environ = os.environ if environ is None else environ
+    if environ.get(HOME_VARIABLE):
+        return Path(environ[HOME_VARIABLE])
+    document, problem = read_pointer(pointer_path(platform, environ) if pointer is None else Path(pointer))
+    named = document.get("home")
+    if not problem and isinstance(named, str) and named.strip():
+        return Path(named.strip())
+    return default_home(platform, environ)
+
+
+def home_source(home_flag: Path | None = None, platform: str = sys.platform,
+                environ: dict | None = None, pointer: Path | None = None) -> str:
+    """Which of the four sources supplied the home in force, in words.
+
+    Separate from ``home_dir`` on purpose: that one returns a ``Path`` and two
+    tests compare it to one, and ``--setup`` needs to say where the path came
+    from as well as what it is.
+    """
+    environ = os.environ if environ is None else environ
+    pointer = pointer_path(platform, environ) if pointer is None else Path(pointer)
+    if home_flag is not None:
+        return "the --home option"
+    if environ.get(HOME_VARIABLE):
+        return f"the {HOME_VARIABLE} variable"
+    document, problem = read_pointer(pointer)
+    named = document.get("home")
+    if not problem and isinstance(named, str) and named.strip():
+        return f"the pointer file {pointer}"
+    return "the default for this computer"
+
+
+def write_pointer(path: Path, home: Path) -> str:
+    """Record where everything goes; return what went wrong, ``""`` when
+    nothing did.
+
+    Read first and merged, rather than overwritten: the launcher is not the
+    only writer this file may get (ADR-015, TASK-089.19), and a writer that
+    threw away what it did not understand would be the one that loses it.
+
+    Never raises, for the same reason ``read_pointer`` does not: the one
+    moment this is called is straight after somebody answered the question,
+    and a file that cannot be read is usually a file that cannot be written
+    either. A raise here would end a ``--windowed`` build with no console and
+    no window, moments after the answer.
+    """
+    document, problem = read_pointer(path)
+    document = {} if problem else document
+    document["home"] = str(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    except OSError as error:
+        return (f"{home} could not be saved in {path} ({error}). MyScribe uses it for this "
+                f"sitting; to keep it, start MyScribe with --home {home} or set "
+                f"{HOME_VARIABLE}.")
+    return ""
 
 
 def payload_dir(environ: dict | None = None) -> Path:
@@ -427,6 +542,559 @@ def sync(layout: Layout, on_line: Callable[[str], None], base: dict | None = Non
     return True
 
 
+# --- what this install costs, and whether it fits ---------------------------------
+#
+# Every number comes out of the payload as data, because the launcher may
+# import nothing from the app (ADR-011): the weights out of `models.json` as
+# real bytes, the rest out of `footprint.json` as estimates that carry their
+# date, and the app's own disk floor out of `doctor.py` as text - the way
+# `app_version` reads the version and `setup_contract` the contract number.
+
+GB = 2 ** 30
+TIER = "turbo"
+"""Which weights an install fetches by default. `scribe.models.DEFAULT_TIER`
+is the same word; the drift test below is what keeps them the same."""
+
+DRIVE_FIXED = 3  # DRIVE_FIXED from winbase.h, for GetDriveTypeW
+
+
+def this_machine() -> str:
+    """The processor this is running on - ``arm64`` on an Apple Silicon Mac."""
+    return platform_info.machine()
+
+
+def platform_key(platform: str) -> str:
+    """How ``footprint.json`` spells this platform. Anything that is not
+    Windows or macOS is read as Linux, which is what the rest of this file
+    already assumes."""
+    if platform == "win32":
+        return "win32"
+    if platform == "darwin":
+        return "darwin"
+    return "linux"
+
+
+def mlx_here(platform: str, machine: str) -> bool:
+    """Whether this machine loads the Apple conversions of the weights.
+
+    `scribe.models.backend_here` answers this with `accel.mlx_available()`,
+    which the launcher cannot call. It does not have to: mlx-whisper exists on
+    Apple Silicon alone, so the platform and the processor answer it.
+    """
+    return platform == "darwin" and machine.lower() in ("arm64", "aarch64")
+
+
+def _mapping(value) -> dict:
+    """``value`` when it is an object, and an empty one when it is anything
+    else. A file that says something unexpected is read as a file that says
+    nothing, never as a crash before the first window."""
+    return value if isinstance(value, dict) else {}
+
+
+def _number(value) -> float | None:
+    """``value`` when it is a number, None when it is anything else.
+
+    What ``_mapping`` does one level up: the objects were made safe to read
+    and the scalars inside them went straight into arithmetic, so a
+    hand-edited ``"3.2"`` was still a TypeError with no window behind it.
+    ``True`` is an int in Python and is not a size, so it is refused too."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def footprint(layout: Layout) -> dict:
+    """``scribe/footprint.json`` as it ships, or ``{}`` when it cannot be read.
+
+    Never raises: a question that cannot add every number up is still worth
+    asking, and it says which part it could not read rather than showing a
+    total that is quietly too low.
+    """
+    try:
+        return _mapping(json.loads((layout.app_dir / "scribe" / "footprint.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return {}
+
+
+def weights_bytes(layout: Layout, platform: str, machine: str) -> int:
+    """What the speech weights cost this machine, from the catalogue that ships.
+
+    Real bytes and not an estimate: ``models.json`` carries a size per file
+    since TASK-089.16. Which rows this machine downloads is decided here the
+    way ``scribe.models.wanted_here`` decides it - a row without a ``backends``
+    key (the diarization pipeline) is fetched everywhere, the mlx conversions
+    only on Apple Silicon, the rest everywhere else - and a drift test holds
+    the two answers against each other per platform.
+    """
+    try:
+        rows = json.loads((layout.app_dir / "scribe" / "models.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    mlx = mlx_here(platform, machine)
+    total = 0
+    for name, spec in rows.items():
+        if name.startswith("_") or not isinstance(spec, dict):
+            continue
+        backends = spec.get("backends")
+        if backends and ("mlx" in backends) != mlx:
+            continue
+        if spec.get("tier") not in (None, TIER):
+            continue
+        total += sum(int(f.get("size") or 0) for f in (spec.get("files") or {}).values())
+    return total
+
+
+def disk_floor_gb(layout: Layout) -> int:
+    """``scribe.doctor.DISK_FLOOR_GB`` read as text (ADR-011).
+
+    The number lives in the file whose change should move it, which is the
+    reason TASK-089.11 reads the contract number the same way. 0 when it
+    cannot be read: a refusal built on a number nobody could find is a refusal
+    nobody can explain.
+    """
+    source = layout.app_dir / "scribe" / "doctor.py"
+    try:
+        match = re.search(r"^DISK_FLOOR_GB\s*=\s*(\d+)\s*$", source.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return 0
+    return int(match.group(1)) if match else 0
+
+
+def install_size(layout: Layout, platform: str | None = None, machine: str | None = None) -> dict:
+    """What this install costs, in GB, with every part that could be read.
+
+    Two kinds of number, and the question says which is which: the weights are
+    measured bytes, the environment is a dated estimate from another machine.
+    A part that could not be read is ``None`` and is left out of the totals,
+    so a missing ``footprint.json`` makes the question smaller and never makes
+    the refusal below wrong.
+
+    ``needed_gb`` is what the volume must have free: the unpacked install plus
+    the floor the app already enforces. An install that only just fits leaves
+    a machine that refuses its first URL import (``doctor.DISK_FLOOR_GB``).
+    """
+    platform = sys.platform if platform is None else platform
+    machine = this_machine() if machine is None else machine
+    paper = footprint(layout)
+    environment = _mapping(_mapping(paper.get("environment")).get(platform_key(platform)))
+    ollama = _mapping(paper.get("ollama"))
+    weights = weights_bytes(layout, platform, machine) / GB
+    download = _number(environment.get("download_gb"))
+    unpacked = _number(environment.get("unpacked_gb"))
+    floor = disk_floor_gb(layout)
+    installer = _number(_mapping(ollama.get("installer_bytes")).get(platform_key(platform)))
+    model = _number(ollama.get("model_bytes"))
+    return {
+        # The weights are their own download, so their bytes are their size on
+        # disk as well - no archive is unpacked.
+        "weights_gb": weights,
+        "environment_gb": download,
+        "environment_note": ", ".join(part for part in (environment.get("measured"), environment.get("date")) if part),
+        "floor_gb": floor,
+        "download_gb": weights + (download or 0),
+        "needed_gb": weights + (unpacked or 0) + floor,
+        "complete": bool(download and unpacked),
+        "ollama_gb": ((installer or 0) + model) / GB if model else None,
+        "ollama_model": ollama.get("model") or "",
+        "ollama_note": ", ".join(part for part in (ollama.get("measured"), ollama.get("date")) if part),
+    }
+
+
+def download_note(layout: Layout) -> str:
+    """What the first start is about to fetch, from the payload's own numbers.
+
+    A sentence and not a literal: the "about 3 GB" this replaced was written
+    once and agreed with nothing afterwards.
+    """
+    size = install_size(layout)
+    if not size["complete"]:
+        return ("The first start downloads the speech engine and its models and shows its "
+                "progress; how much that is has not been measured on this platform.")
+    return f"The first start downloads about {size['download_gb']:.0f} GB and shows its progress."
+
+
+def disk_probe_path(layout: Layout) -> Path:
+    """Where free space is measured: the data directory, or the nearest parent
+    that exists.
+
+    ``scribe.doctor.disk_probe_path`` measures the same place for the app's own
+    floor, so the launcher's refusal and the doctor's can never be about two
+    different volumes. It walks further up than the doctor's one level,
+    because before a first run neither ``D:\\MyScribe\\data`` nor
+    ``D:\\MyScribe`` exists and ``shutil.disk_usage`` raises on a path that is
+    not there.
+    """
+    for candidate in (layout.data_dir, *layout.data_dir.parents):
+        if candidate.exists():
+            return candidate
+    return layout.data_dir
+
+
+def free_gb(path: Path) -> float | None:
+    """Free GB at ``path``, or None when it cannot be measured.
+
+    Through the module, never ``from shutil import disk_usage``: the test
+    suite replaces ``shutil.disk_usage`` for every test, and a name bound at
+    import would not see it.
+    """
+    try:
+        return shutil.disk_usage(path).free / GB
+    except OSError:
+        return None
+
+
+def local_volumes(platform: str | None = None) -> list[Path]:
+    """The volumes the question shows free space for.
+
+    Only the Windows answer has been seen to be true here, the way
+    ``launcher_path`` says of its own: ``GetLogicalDrives`` names the letters
+    in use and ``GetDriveTypeW`` keeps the fixed ones, so a DVD drive, a card
+    reader and a network drive are left out. macOS is the root plus what is
+    mounted under ``/Volumes``, Linux the root plus ``/mnt`` and ``/media``,
+    both deduplicated by device - the platforms' convention and nobody's
+    measurement.
+
+    Never raises, and an empty list is an answer: ``location_question`` adds
+    the volume the default home is on, so a question with no disk space on it
+    is not a thing that can happen.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            mask = kernel32.GetLogicalDrives()
+            letters = (f"{chr(ord('A') + index)}:\\" for index in range(26) if mask & (1 << index))
+            return [Path(root) for root in letters if kernel32.GetDriveTypeW(root) == DRIVE_FIXED]
+        except (AttributeError, OSError):
+            return []
+    roots = [Path("/")]
+    for base in (Path("/Volumes"),) if platform == "darwin" else (Path("/mnt"), Path("/media")):
+        try:
+            roots += sorted(entry for entry in base.iterdir() if entry.is_dir())
+        except OSError:
+            continue
+    seen: set = set()
+    found = []
+    for root in roots:
+        try:
+            device = root.stat().st_dev
+        except OSError:
+            continue
+        if device not in seen:
+            seen.add(device)
+            found.append(root)
+    return found
+
+
+def enough_disk(layout: Layout, report: Callable[[str, str], None], *, floor: bool = True) -> bool:
+    """False, with both numbers, when this volume cannot hold the install.
+
+    Checked before the sync and not after it: a disk that runs out halfway
+    through a 3 GB download leaves a half-built environment and a person who
+    has to work out what happened. A volume that cannot be measured does not
+    refuse - "we do not know" must not become "nothing may be installed here",
+    which is the rule ``doctor.require_disk_headroom`` already follows.
+
+    ``floor=False`` drops ``doctor.DISK_FLOOR_GB`` from what is required. That
+    figure is the room MyScribe keeps free to *run* with a library of
+    recordings, and it is right for a person installing this. It is wrong for
+    ``--smoke``, which syncs, answers ``/health``, serves a page and quits with
+    no library at all: on Windows the floor is 10 of the 16.6 GB, and a hosted
+    runner arrives with less than that (the Linux job already clears disk to
+    get near it, and no such step exists for Windows). So CI is asked for the
+    install it actually makes, 6.6 GB, and a person is still asked for all of
+    it. Decided by Robert on 2026-09-22, knowing the cost: a future smoke that
+    does need the working room would no longer be covered here.
+    """
+    size = install_size(layout)
+    needed = size["needed_gb"]
+    if not floor:
+        needed = needed - size["floor_gb"] if needed else needed
+    probe = disk_probe_path(layout)
+    free = free_gb(probe)
+    if not needed or free is None or free >= needed:
+        return True
+    floor = size["floor_gb"]
+    keeps = (f", plus the {floor} GB MyScribe keeps free for your recordings" if floor else "")
+    report("error", f"There is not enough room: MyScribe needs about {needed:.0f} GB for this "
+                    f"install{keeps}, and {probe} has {free:.1f} GB free. Nothing was downloaded. "
+                    "Free up space, or start MyScribe again and put it on another drive.")
+    return False
+
+
+# --- where everything goes: the one question the launcher asks itself --------------
+#
+# Every other question belongs to `scribe.setup` and is asked by a front-end
+# that only renders it (ADR-015). This one cannot: `env/`, `python/`, `cache/`,
+# `data/` and the models all hang off the home, so where they go has to be
+# settled before the environment that would answer it exists.
+
+
+def wants_location(default: Path, payload: Path, pointer: Path,
+                   home_flag: Path | None = None, environ: dict | None = None) -> bool:
+    """Whether to ask where everything goes - a pure predicate, like ``wants_setup``.
+
+    Only on a first run, and only when nobody has already said where: a
+    pointer file, ``MYSCRIBE_HOME`` and ``--home`` are all answers. A home that
+    already holds an environment is an install, and an install is not moved by
+    a question (AC #7): moving one means quitting, moving the folder by hand
+    and writing its new path into the pointer file.
+    """
+    environ = os.environ if environ is None else environ
+    if home_flag is not None or environ.get(HOME_VARIABLE):
+        return False
+    # Whether the file names a home, never whether the file is there: another
+    # writer may put its own fact in it (ADR-015, TASK-089.19) before anybody
+    # was ever asked this, and a file that answers a different question is no
+    # answer to this one.
+    document, problem = read_pointer(pointer)
+    named = document.get("home")
+    if not problem and isinstance(named, str) and named.strip():
+        return False
+    return not Layout(default, payload).env_python.exists()
+
+
+def install_dir() -> Path | None:
+    """The folder this launcher was installed into, or None when nothing was
+    frozen.
+
+    On Windows the installer owns it - ``%LOCALAPPDATA%\\Programs\\MyScribe``
+    (``packaging/windows/myscribe.iss``) - and an uninstall takes it with
+    everything inside it. On macOS the install *is* the ``.app`` bundle, so
+    that is what a home must stay out of, not the whole of ``/Applications``.
+    """
+    launcher = this_launcher()
+    if launcher is None:
+        return None
+    return launcher if launcher.suffix == ".app" else launcher.parent
+
+
+def _inside(child: Path, parent: Path) -> bool:
+    """Is ``child`` ``parent`` itself, or under it?
+
+    Compared part by part after ``normcase`` and never as strings:
+    ``D:\\MyScribeData`` starts with ``D:\\MyScribe`` and is not inside it.
+    ``child`` is resolved by the caller and ``parent`` here, so a symlink or a
+    junction that points into the install directory is caught.
+    """
+    try:
+        wanted = [os.path.normcase(part) for part in parent.resolve().parts]
+    except OSError:
+        return False
+    return [os.path.normcase(part) for part in child.parts][:len(wanted)] == wanted
+
+
+def refuse_location(chosen: str, install: Path | None = None, payload: Path | None = None) -> str:
+    """Why this folder cannot hold MyScribe, or ``""`` when it can.
+
+    The order is the point, because ``resolve()`` would mask two of them: a UNC
+    path is absolute and resolves to itself, and a path that cannot be
+    resolved at all would raise before anything read it. So: a share first,
+    then a path that is not absolute, then the two folders ADR-011 forbids,
+    and only then the one check that touches the disk - which leaves it as it
+    found it: a question that is still open may not create folders.
+
+    Covered: a relative path, ``..``, a symlink or junction into the install
+    directory (``resolve`` follows it), a UNC path, the install directory, the
+    payload, and a folder that cannot be written. Not covered, and the share
+    refusal says so: a mapped drive letter, which is a share with a letter in
+    front of it and looks like a disk from here.
+    """
+    text = str(chosen).strip().strip('"')
+    if not text:
+        return "Nothing was typed. Choose a folder, or keep the default."
+    if text.startswith("\\\\") or text.startswith("//"):
+        return ("A folder on a network share cannot hold the library: MyScribe keeps it in "
+                "SQLite with a write-ahead log, and SQLite's own documentation says that does "
+                "not work over a network filesystem. Choose a folder on a disk in this machine. "
+                "A mapped drive letter is the same share with a letter in front of it, and "
+                "MyScribe cannot tell one from a real disk - so do not use one either.")
+    path = Path(text)
+    if not path.is_absolute():
+        return (f"{text} is not a full path. Give the whole path, the drive or the mount point "
+                "included, for example D:\\MyScribe or /Volumes/Data/MyScribe.")
+    try:
+        resolved = path.resolve()
+    except OSError as error:
+        return f"{text} cannot be read as a folder ({error})."
+    for forbidden in (install, payload):
+        if forbidden is not None and _inside(resolved, forbidden):
+            return (f"{resolved} is inside {forbidden}, which belongs to the installer. The next "
+                    "update or uninstall deletes that folder and everything in it, and your "
+                    "recordings with it. Choose a folder outside it.")
+    # In the nearest folder that already exists, and nothing is created: a
+    # path with a typo in it would otherwise leave an empty tree behind on a
+    # disk nobody meant to touch, written while the question is still open.
+    # `exists` and not `is_dir`, so a file where a folder should be stops the
+    # walk and fails the probe, which is the answer.
+    here = next((candidate for candidate in (resolved, *resolved.parents) if candidate.exists()),
+                resolved)
+    probe = here / ".myscribe-write-test"
+    try:
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as error:
+        return (f"MyScribe cannot write in {resolved} ({error}). Choose a folder you can write "
+                "to, or make that one writable first.")
+    return ""
+
+
+ROUTES_LATER = (
+    "There is no Settings page for this one: the folder holds the environment MyScribe itself "
+    "runs from, so the running app cannot move it. It can be answered later in three ways: set "
+    "{variable}, start MyScribe with --home PATH, or quit, move the folder by hand and write its "
+    "new path into {pointer}. Nothing is ever moved for you."
+)
+
+
+def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | None = None,
+                      platform: str | None = None, machine: str | None = None) -> str:
+    """The question itself, as text: the default home, the free space per
+    volume, what this install downloads and the room it needs.
+
+    ``layout.home`` is the default home, and the volumes are handed in so a
+    test can put two of them on a machine that has one.
+    """
+    platform = sys.platform if platform is None else platform
+    size = install_size(layout, platform, machine)
+    volumes = local_volumes(platform) if volumes is None else list(volumes)
+    # The disk the default home is on is always one of them, whatever the
+    # enumerator found: a question about disk space with no disk space under
+    # it would be the one rendering nobody ever sees in a test.
+    anchor = Path(layout.home.anchor) if layout.home.anchor else None
+    if anchor is not None and anchor not in volumes:
+        volumes.append(anchor)
+    lines = [
+        f"Where should {APP_NAME} keep everything?",
+        "",
+        f"{APP_NAME} keeps the speech engine, the models, your recordings and its database in "
+        f"one folder. The default is {layout.home}.",
+        "",
+    ]
+    parts = [f"{size['weights_gb']:.1f} GB of speech models for this machine (measured, from the "
+             "catalogue that ships)"]
+    if size["environment_gb"]:
+        parts.insert(0, f"about {size['environment_gb']:.1f} GB of speech engine "
+                        f"({size['environment_note']})")
+    else:
+        parts.insert(0, "the speech engine, whose size nobody has measured on this platform")
+    lines.append("This install downloads " + ", and ".join(parts) + ".")
+    floor = size["floor_gb"]
+    needs = f"It needs about {size['needed_gb']:.0f} GB free where it lands"
+    lines.append(needs + (f" - the install unpacked, plus the {floor} GB {APP_NAME} keeps free so "
+                          "that importing a recording is never refused for want of room."
+                          if floor else "."))
+    if size["ollama_gb"]:
+        lines.append(f"Up to {size['ollama_gb']:.1f} GB more if you later say yes to Ollama - its "
+                     f"installer and the {size['ollama_model']} model ({size['ollama_note']}).")
+    lines.append("")
+    lines.append("Free space now:")
+    for volume in volumes:
+        free = free_gb(volume)
+        lines.append(f"  {volume}  {free:.1f} GB free" if free is not None
+                     else f"  {volume}  could not be measured")
+    lines += [
+        "",
+        f"Keep the default, or give a folder on another disk. {APP_NAME} does not move an "
+        "install that is already there: this question is asked once, before anything is "
+        "downloaded.",
+        "",
+        ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer),
+        "",
+        "Not a folder on a network share: the library is SQLite with a write-ahead log, which "
+        "does not work over a network filesystem. A mapped drive letter hides the same problem "
+        f"and {APP_NAME} cannot detect it.",
+    ]
+    return "\n".join(lines)
+
+
+def location_note(home: Path, pointer: Path, source: str) -> str:
+    """What ``--setup`` says about where everything is, and how to move it."""
+    return (f"{APP_NAME} keeps everything in {home}, which came from {source}. "
+            + ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer))
+
+
+def locate_home(home_flag: Path | None, ask: Callable[[str], str | None] | None,
+                report: Callable[[str, str], None], payload: Path,
+                platform: str | None = None, environ: dict | None = None,
+                pointer: Path | None = None, install: Path | None = None,
+                volumes: Iterable[Path] | None = None) -> Path | None:
+    """Where everything goes, settled before anything is written or downloaded.
+
+    Returns the home, or None when the launcher must stop - which is what a
+    pointer naming a folder that is not there does on a door that cannot ask.
+    Falling back to the default home there would build a second, empty library
+    on C: and look to its owner as though the recordings were gone.
+
+    ``ask`` is None for every door where nobody is at the screen: the console,
+    a start at login, ``--sync-only``, ``--doctor`` and ``--smoke``. They keep
+    today's location, say in one line how to change it, and are still refused
+    a sync that does not fit.
+    """
+    platform = sys.platform if platform is None else platform
+    environ = os.environ if environ is None else environ
+    pointer = pointer_path(platform, environ) if pointer is None else Path(pointer)
+    default = default_home(platform, environ)
+    install = install_dir() if install is None else install
+
+    if home_flag is not None:
+        return Path(home_flag)
+    if environ.get(HOME_VARIABLE):
+        return Path(environ[HOME_VARIABLE])
+
+    document, problem = read_pointer(pointer)
+    named = document.get("home")
+    if not problem and isinstance(named, str) and named.strip():
+        home = Path(named.strip())
+        if home.exists():
+            return home
+        problem = (f"{pointer} says {APP_NAME} keeps everything in {home}, and that folder is not "
+                   "there. If it is on a drive that is not plugged in, quit, plug it in and start "
+                   f"{APP_NAME} again: nothing has been moved and nothing is lost.")
+
+    if not problem and not wants_location(default, payload, pointer, home_flag, environ):
+        return default  # answered already, or an install nothing here moves
+
+    if ask is None:
+        if problem:
+            report("error", f"{problem} {APP_NAME} cannot start until {pointer} names a folder "
+                            "that is there; it will not quietly start a second, empty library "
+                            "somewhere else.")
+            return None
+        report("status", f"{APP_NAME} keeps everything in {default}; nothing was asked, because "
+                         "nobody is at the screen. "
+                         + ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer))
+        return default
+
+    if problem:
+        # Said out loud as well as shown on the question: the console and the
+        # log are where somebody looks afterwards for why they were asked.
+        report("error", problem)
+    question = location_question(Layout(default, payload), pointer, volumes, platform)
+    message = f"{problem}\n\n{question}" if problem else question
+    while True:
+        answer = ask(message)
+        if answer is None:
+            if problem:
+                report("error", f"Nothing was chosen, and {pointer} still names a folder that is "
+                                f"not there. {APP_NAME} cannot start.")
+                return None
+            return default
+        refusal = refuse_location(str(answer), install=install, payload=payload)
+        if refusal:
+            report("error", refusal)
+            message = f"{refusal}\n\n{question}"
+            continue
+        home = Path(str(answer).strip().strip('"')).resolve()
+        # A pointer that could not be written is worth one sentence and not a
+        # stop: the folder they chose is usable now, and the sentence says how
+        # to keep it for the next start.
+        saved = write_pointer(pointer, home)
+        if saved:
+            report("error", saved)
+        return home
+
+
 # --- one instance -----------------------------------------------------------------
 
 
@@ -568,12 +1236,21 @@ class Launch:
         if port_taken(self.port):
             self.report("error", f"Port {self.port} is used by another program; MyScribe cannot start.")
             return False
+        # Before anything is written and not only before the download: this is
+        # the one place every door with a window passes through, and
+        # `install_tools` copies hundreds of MB of uv and ffmpeg into the home.
+        # A volume that cannot hold the install is a sentence here rather than
+        # a half-built environment and a disk-full nobody can read
+        # (TASK-089.14). Neither `needs_sync` nor the probe needs the home to
+        # exist: the probe walks up to the nearest folder that does.
+        if needs_sync(self.layout) and not enough_disk(self.layout, self.report):
+            return False
         prepare_home(self.layout)
         install_tools(self.layout)
         _release_frozen_dll_directory()
         if needs_sync(self.layout):
-            self.report("status", "Installing the speech engine. The first start downloads about "
-                                "3 GB on Windows and Linux and less on a Mac; later starts skip this.")
+            self.report("status", "Installing the speech engine. " + download_note(self.layout)
+                        + " Later starts skip this.")
             if not sync(self.layout, lambda line: self.report("busy", line)):
                 self.report("error", "Installing failed; the lines above say why. Check the "
                                      "internet connection and start MyScribe again.")
@@ -790,6 +1467,65 @@ def run_headless(launch: Launch) -> int:
     finally:
         launch.stop()
     return 0
+
+
+def ask_location(message: str) -> str | None:
+    """The location question, in a window of its own.
+
+    Its own root, and not the launcher's: this is answered in ``main``, before
+    there is a home to build a window from. ``run_window`` puts the home in its
+    title, in its "Open data folder" button and in the path it names when the
+    app stops, all before the worker thread starts - so a home settled on that
+    thread would leave three widgets pointing at a folder nothing uses.
+
+    Returns the folder, or None for "keep the default", which is also what
+    closing the window means. "Use this folder" over an empty box returns the
+    empty string and not None, so that it is answered with "nothing was typed"
+    and the question again, rather than silently meaning the default. Nothing
+    is refused here: the refusals are ``refuse_location``'s and this window
+    shows them and asks again.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.title(f"Where should {APP_NAME} keep everything?")
+    chosen: dict = {}
+
+    tk.Label(root, text=message, justify="left", anchor="w").pack(
+        fill="both", expand=True, padx=12, pady=12)
+
+    entry = tk.Entry(root, width=60)
+    entry.pack(fill="x", padx=12)
+
+    def browse() -> None:
+        picked = filedialog.askdirectory(parent=root, mustexist=False)
+        if picked:
+            entry.delete(0, "end")
+            entry.insert(0, picked)
+
+    def use() -> None:
+        chosen["home"] = entry.get().strip()
+        root.destroy()
+
+    buttons = tk.Frame(root)
+    buttons.pack(fill="x", padx=12, pady=12)
+    tk.Button(buttons, text="Browse...", command=browse).pack(side="left")
+    tk.Button(buttons, text="Use this folder", command=use, default="active").pack(side="right")
+    tk.Button(buttons, text="Keep the default", command=root.destroy).pack(side="right", padx=8)
+
+    root.mainloop()
+    try:
+        # Closing the window with its X ends the mainloop without destroying
+        # the interpreter, and `run_window` creates a second Tk in this same
+        # process a moment later.
+        root.destroy()
+    except tk.TclError:
+        pass
+    # Not `or None`: that turned an empty box into "keep the default" and made
+    # the "nothing was typed" refusal unreachable from the one door that has a
+    # window.
+    return chosen["home"] if "home" in chosen else None
 
 
 def ask_setup(root, layout: Layout) -> dict | None:
@@ -1058,22 +1794,90 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def show_error(message: str) -> None:
+    """One sentence in a window, for the doors that have a screen and no console.
+
+    Plain widgets and not ``tkinter.messagebox``: ``run_window`` and
+    ``ask_location`` already prove that ``tkinter`` itself survives the freeze,
+    and a submodule only this path imports would be missing exactly where
+    nobody could see it - behind ``--windowed``, where failing to show the
+    window is as silent as the ``print`` this replaces.
+
+    Tk is imported in here and never at the top of the file, the way
+    ``ask_location`` does it: ``test_the_sequence_is_free_of_tk`` holds that
+    line, and a build without Tk must still reach ``main``. A window that
+    cannot be put up is not worth an exception - whoever has a console was
+    told the same sentence there.
+    """
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.title(APP_NAME)
+        tk.Label(root, text=message, justify="left", anchor="w", wraplength=520).pack(
+            fill="both", expand=True, padx=12, pady=12)
+        tk.Button(root, text="Close", command=root.destroy, default="active").pack(pady=(0, 12))
+        root.mainloop()
+    except Exception:  # every way Tk has of not being there, including TclError
+        pass
+
+
+def tkinter_present() -> bool:
+    """Whether this build has Tk at all; without it every door is the console."""
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(list(sys.argv[1:] if argv is None else argv))
-    layout = Layout(args.home or home_dir(), args.payload or payload_dir())
-    if args.version:
-        print(app_version(layout))
+    payload = args.payload or payload_dir()
+    if args.version:  # before the location, which must not open a window for a version
+        print(app_version(Layout(args.home or home_dir(), payload)))
         return 0
 
+    problems: list[str] = []
+
     def console(state: str, text: str) -> None:
+        if state == "error":
+            problems.append(text)
         print(text, flush=True)
 
-    if args.sync_only or args.doctor is not None or args.smoke:
+    quiet = args.sync_only or args.doctor is not None or args.smoke
+    windowed = not quiet and not args.headless and tkinter_present()
+    # Where everything goes is settled here, before a Layout exists: nothing
+    # may be written under any home, and nothing downloaded, until it is
+    # answered (TASK-089.14). Only a door with a window and somebody in front
+    # of it asks; the rest keep today's location and say how to change it.
+    home = locate_home(args.home, ask_location if windowed and not args.at_login else None,
+                       console, payload)
+    if home is None:
+        # `console` is `print`, and behind PyInstaller's --windowed there is no
+        # stdout to print to: CPython's `print` returns without a word. A start
+        # at login over a drive that is not plugged in would exit 1 in complete
+        # silence, so the last sentence gets a window of its own.
+        if windowed and problems:
+            show_error(problems[-1])
+        return 1
+    layout = Layout(home, payload)
+    if args.setup:  # where everything is, and the three ways to move it (ADR-015)
+        pointer = pointer_path()
+        console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer)))
+
+    if quiet:
+        # `floor=False`: --smoke, --sync-only and --doctor install and then
+        # stop; none of them keeps a library, so the room the app keeps free
+        # to run with one is not theirs to demand (TASK-089.14).
+        if needs_sync(layout) and not enough_disk(layout, console, floor=False):
+            return 1  # before the tools are unpacked into it, as in `Launch.prepare`
         prepare_home(layout)
         install_tools(layout)
         _release_frozen_dll_directory()
-        if needs_sync(layout) and not sync(layout, lambda line: print(line, flush=True)):
-            return 1
+        if needs_sync(layout):
+            if not sync(layout, lambda line: print(line, flush=True)):
+                return 1
         if args.doctor is not None:
             command = [str(layout.env_python), "-m", "scribe.doctor", *args.doctor]
             return subprocess.call(command, cwd=str(layout.app_dir), env=app_environment(layout))
@@ -1081,11 +1885,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             return smoke(layout, args.port)
         return 0
 
-    if args.headless:
-        return run_headless(Launch(layout, args.port, not args.no_browser, console))
-    try:
-        import tkinter  # noqa: F401
-    except ImportError:
+    if not windowed:
         return run_headless(Launch(layout, args.port, not args.no_browser, console))
     return run_window(
         layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login

@@ -453,7 +453,14 @@ with the date they were measured, plus the byte counts already in
 `models.json` and the Ollama pin. The floor is read as data too - copied
 into `footprint.json` with a test that it equals `doctor.DISK_FLOOR_GB`, or
 read as text the way `app_version` reads the version (`:119-126`); which
-of the two is TASK-089.14's to settle.
+of the two is TASK-089.14's to settle. **Settled (TASK-089.14, 2026-09-22):
+read as text**, `^DISK_FLOOR_GB\s*=\s*(\d+)$` out of the `doctor.py` that
+ships, so the number stays in the file whose change should move it - the
+reason TASK-089.11 gives for the contract number. A copy in
+`footprint.json` would be a second number waiting to drift, which is what
+TASK-043 already refused once. `footprint.json` holds what the doctor does
+not know: the environment per platform, `null` where nobody has measured
+it, and Ollama's own published sizes until TASK-089.18's pin file lands.
 
 The answer is persisted in a small pointer file *next to* the default
 home (`MyScribe.location` beside `%LOCALAPPDATA%\MyScribe`, and the same
@@ -475,6 +482,13 @@ The checks live in `main()`. Two existing tests call `home_dir("darwin",
 {})` and `home_dir("linux", {})` against the real `Path.home()`
 (`tests/test_launcher.py:57`, `:59`) and would read a developer's real
 pointer, so the pointer's path is a parameter and §3.13 isolates it.
+**Built (TASK-089.14, 2026-09-22):** a parameter was not enough on its own.
+`build_parser()` calls `home_dir()` with no arguments at all for the
+`--home` help text, so the default comes from a module-level
+`pointer_path(platform, environ)` - `MyScribe.location` beside the default
+home - and that is the name the autouse fixture in `tests/test_launcher.py`
+replaces. `home_dir()` still returns a plain `Path`; which of the four
+sources supplied it is `home_source()`, which `--setup` prints.
 
 Refused with a sentence: a path inside the install directory (ADR-011's
 Must Not), a relative path, a folder that cannot be written,

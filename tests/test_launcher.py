@@ -11,6 +11,8 @@ import http.server
 import importlib.util
 import json
 import os
+import re
+import shutil
 import socket
 import sys
 import textwrap
@@ -31,6 +33,21 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+@pytest.fixture(autouse=True)
+def _no_pointer_from_this_machine(tmp_path, monkeypatch):
+    """No test here reads the pointer file of whoever is running it.
+
+    `home_dir` consults `MyScribe.location` beside the default home, and two
+    tests below compare `home_dir("darwin", {})` and `home_dir("linux", {})`
+    against the real `Path.home()`. Without this they would be green on a
+    machine that never moved its home and red for whoever did - the failure
+    the design spec flagged for this file (spec §3.13). Autouse, so no future
+    test has to remember; a test about the pointer points it somewhere of its
+    own and wins, because monkeypatch applies in order.
+    """
+    monkeypatch.setattr(launcher, "pointer_path", lambda *a, **k: tmp_path / "no-pointer.location")
 
 
 @pytest.fixture
@@ -131,9 +148,14 @@ def test_the_sync_is_frozen_to_the_lock_and_kept_in_the_home(layout):
     assert env["UV_NO_CONFIG"] == "1"
 
 
-def _fake_uv(tmp_path, exit_code: int) -> list[str]:
+def _fake_uv(tmp_path, exit_code: int, marker: Path | None = None) -> list[str]:
+    """A uv that prints and exits. With `marker` it leaves a file behind, which
+    is how the tests below prove that no download was even started."""
     script = tmp_path / "fake_uv.py"
-    script.write_text(f"print('Downloading torch'); print('Installed 3 packages'); raise SystemExit({exit_code})\n")
+    touch = f"open({str(marker)!r}, 'w').close(); " if marker is not None else ""
+    script.write_text(
+        f"{touch}print('Downloading torch'); print('Installed 3 packages'); raise SystemExit({exit_code})\n"
+    )
     return [sys.executable, str(script)]
 
 
@@ -883,6 +905,12 @@ def test_the_first_run_syncs_before_it_applies_the_answers(layout, tmp_path, mon
 
     The answers can only be applied by a python the sync creates, so the
     order is the fix (AC #1, #3).
+
+    This list does not carry the location question of TASK-089.14, and that is
+    not an oversight: where everything goes is settled in `main`, before there
+    is a `Launch` to be a step of. It has to be - `prepare_home` is the first
+    write under a home, and `run_window` builds its title, its "Open data
+    folder" button and its log path from the layout before this worker starts.
     """
     order, reports, asked, started = _drive_first_run(
         layout, tmp_path, monkeypatch,
@@ -1181,3 +1209,835 @@ def test_the_stable_path_a_login_entry_should_name_per_platform():
     assert launcher.launcher_path(r"C:\Program Files\MyScribe\MyScribe.exe", "win32", {}) == Path(
         r"C:\Program Files\MyScribe\MyScribe.exe"
     )
+
+
+# --- where everything goes, and whether it fits (TASK-089.14) ----------------------
+
+
+def _usage(free_gb: float):
+    """A `shutil.disk_usage` answer with `free_gb` free.
+
+    The same private constructor `tests/conftest.py` builds its `_plenty_of_disk`
+    from; a test that patches `shutil.disk_usage` itself wins over that autouse
+    fixture, because monkeypatch applies in order.
+    """
+    total = int(500 * 2**30)
+    free = int(free_gb * 2**30)
+    return shutil._ntuple_diskusage(total=total, used=total - free, free=free)
+
+
+def _shipped_install_numbers(layout, *, environment_gb=4.0, weights_bytes=2 * 2**30, floor_gb=10) -> None:
+    """The three files the total is read out of, small and explicit.
+
+    The real `scribe/models.json` and the real floor have their own drift
+    tests; these are about the arithmetic and the refusal.
+    """
+    scribe = layout.app_dir / "scribe"
+    scribe.mkdir(parents=True, exist_ok=True)
+    (scribe / "footprint.json").write_text(json.dumps({
+        "environment": {
+            key: {"download_gb": environment_gb, "unpacked_gb": environment_gb,
+                  "measured": "estimate", "date": "2026-09-22", "source": "a test"}
+            for key in ("win32", "darwin", "linux")
+        },
+        "ollama": {"installer_bytes": {"win32": 2**30, "darwin": 2**28, "linux": None},
+                   "model_bytes": 3 * 2**30, "model": "qwen3.5:4b",
+                   "measured": "read from the release page", "date": "2026-09-20", "source": "a test"},
+    }), encoding="utf-8")
+    (scribe / "models.json").write_text(json.dumps({
+        "acme/weights": {"revision": "x", "tier": "turbo", "license": "mit", "credit": "",
+                         "files": {"model.bin": {"sha256": "x", "size": weights_bytes}}},
+    }), encoding="utf-8")
+    (scribe / "doctor.py").write_text(f"DISK_FLOOR_GB = {floor_gb}\n", encoding="utf-8")
+
+
+class _StandInApp:
+    """An app process that starts, answers and stops without existing."""
+
+    def __init__(self, _layout, _port, _base=None):
+        self.proc = object()
+
+    def start(self):
+        pass
+
+    def wait_ready(self, timeout=None):
+        return True
+
+    def alive(self):
+        return True
+
+    def stop(self, timeout=None):
+        pass
+
+
+def test_too_little_room_refuses_the_sync_with_both_numbers(layout, tmp_path, monkeypatch):
+    """Red first (AC #6): today the sync starts anyway.
+
+    The first start downloads gigabytes into a home the user chose; a volume
+    that cannot hold the install plus the 10 GB the app keeps free is a failure
+    that should be a sentence before the download, not a disk-full in the
+    middle of it.
+
+    Nothing under the home either, which is the second red: `install_tools`
+    copies uv, ffmpeg and ffprobe - hundreds of MB - and a volume that is
+    genuinely out of room answers that with an ENOSPC nobody wrote a sentence
+    for. The refusal names the nearest folder that exists, because on a first
+    run the home does not yet.
+    """
+    _shipped_install_numbers(layout)
+    marker = tmp_path / "uv-ran.txt"
+    monkeypatch.setattr(launcher, "uv_command", lambda _layout: _fake_uv(tmp_path, 0, marker))
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda _path: _usage(3))
+    reports: list[tuple[str, str]] = []
+
+    launch = launcher.Launch(layout, _free_port(), False, lambda s, t: reports.append((s, t)))
+    prepared = launch.prepare()
+
+    assert prepared is False
+    assert not marker.exists(), "the download was started on a volume that cannot hold it"
+    assert not layout.home.exists(), "the tools were unpacked into a home that cannot hold them"
+    errors = [text for state, text in reports if state == "error"]
+    assert len(errors) == 1
+    assert "16" in errors[0] and "3.0 GB" in errors[0]  # needed, and free
+    assert str(launcher.disk_probe_path(layout)) in errors[0]
+
+
+def test_the_location_is_asked_before_anything_is_written_or_downloaded(layout, tmp_path, monkeypatch):
+    """Red first (AC #1): today nothing asks, and everything lands on the
+    system volume.
+
+    The assertion that matters sits inside the asker: at the moment the
+    question is put, neither home exists on disk and the fake uv has not run.
+    Asserting afterwards would prove nothing about the order.
+    """
+    default = tmp_path / "default-home"
+    chosen = tmp_path / "second-drive" / "MyScribe"
+    pointer = tmp_path / "default-home.location"
+    marker = tmp_path / "uv-ran.txt"
+    monkeypatch.delenv(launcher.HOME_VARIABLE, raising=False)
+    # Belt as well as braces, and the belt is the one that holds on a red run:
+    # patching `default_home` fences nothing while `default_home` is the name
+    # the change is about to add, and the first version of this test wrote a
+    # whole home into this machine's real %LOCALAPPDATA%. LOCALAPPDATA needs no
+    # seam. It is Windows-only - macOS's default home has no such hook - and
+    # this is the platform the test runs main() on.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(launcher, "default_home", lambda *a, **k: default, raising=False)
+    monkeypatch.setattr(launcher, "pointer_path", lambda *a, **k: pointer, raising=False)
+    monkeypatch.setattr(launcher, "uv_command", lambda _layout: _fake_uv(tmp_path, 0, marker))
+    monkeypatch.setattr(launcher, "AppProcess", _StandInApp)
+    asked: list[str] = []
+
+    def ask(message: str):
+        asked.append(message)
+        assert not default.exists(), "the default home was written under before the question"
+        assert not chosen.exists(), "the chosen home was written under before the question"
+        assert not marker.exists(), "the download had already started"
+        return str(chosen)
+
+    monkeypatch.setattr(launcher, "ask_location", ask, raising=False)
+
+    def window(layout_, port, open_browser, force_setup=False, at_login=False):
+        """`run_window` without Tk: the same worker sequence it starts."""
+        launch = launcher.Launch(layout_, port, open_browser, lambda s, t: None)
+        return 0 if launcher.first_run(launch, lambda: None, launch.report) else 1
+
+    monkeypatch.setattr(launcher, "run_window", window)
+
+    code = launcher.main(["--payload", str(layout.payload), "--port", str(_free_port()), "--no-browser"])
+
+    assert code == 0
+    assert len(asked) == 1
+    assert marker.exists(), "the sync never ran, so this proves nothing about the order"
+    assert (chosen / "env" / launcher.STAMP_NAME).exists()  # the sync ran on the chosen home
+    assert not default.exists(), "the default home was used after all"
+    assert json.loads(pointer.read_text(encoding="utf-8"))["home"] == str(chosen.resolve())
+
+
+def _door(tmp_path, payload, *, answers=(), pointer=None, install=None, environ=None, ask=True):
+    """`locate_home` as one of the doors, with a home, a pointer and an
+    environment of its own.
+
+    Windows is the platform throughout, because the default home is then
+    `LOCALAPPDATA` and a test can put that under `tmp_path`; asking on the real
+    default home would read whatever this machine has in it. The volume list
+    is empty so that the question is about the arithmetic and not about the
+    drives that happen to be in this machine.
+    """
+    environ = {"LOCALAPPDATA": str(tmp_path / "local")} if environ is None else environ
+    pointer = (tmp_path / "local" / "MyScribe.location") if pointer is None else pointer
+    reports: list[tuple[str, str]] = []
+    asked: list[str] = []
+    queued = list(answers)
+
+    def asker(message: str):
+        asked.append(message)
+        assert queued, "the question was asked more often than this test has answers"
+        return queued.pop(0)
+
+    home = launcher.locate_home(
+        None, asker if ask else None, lambda state, text: reports.append((state, text)),
+        payload, platform="win32", environ=environ, pointer=pointer, install=install, volumes=[],
+    )
+    return home, reports, asked
+
+
+# --- the numbers come out of the payload (AC #2, AC #3) ----------------------------
+
+
+def test_the_weights_are_the_catalogue_s_own_bytes_per_platform(layout):
+    """The launcher's total and `models.wanted_here` cannot drift apart: the
+    payload here is the real `scribe/models.json`, copied the way a build
+    copies it, and the bytes are added up per platform on both sides.
+
+    The app is imported here and nowhere near the launcher: ADR-011 keeps the
+    launcher stdlib-only, and a drift test is the one place allowed to hold
+    both - the licence `test_the_contract_number_is_read_out_of_the_engine_that_ships`
+    already takes.
+    """
+    from scribe import models
+
+    catalogue = Path(models.__file__).resolve().parent / "models.json"
+    (layout.app_dir / "scribe" / "models.json").write_text(
+        catalogue.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def wanted(backend: str) -> int:
+        return sum(m.bytes_total for m in models.wanted_here(backend=backend, tier=models.DEFAULT_TIER))
+
+    assert launcher.weights_bytes(layout, "win32", "AMD64") == wanted(models.NOT_MLX)
+    assert launcher.weights_bytes(layout, "linux", "x86_64") == wanted(models.NOT_MLX)
+    assert launcher.weights_bytes(layout, "darwin", "arm64") == wanted("mlx")
+    # An Intel Mac loads no mlx conversion, which is what `mlx_here` is for.
+    assert launcher.weights_bytes(layout, "darwin", "x86_64") == wanted(models.NOT_MLX)
+    assert wanted("mlx") != wanted(models.NOT_MLX), "both platforms fetch the same bytes; this proves nothing"
+
+
+def test_the_floor_is_the_one_the_app_itself_enforces(layout):
+    """The 10 GB the question adds to the total is not a second number: it is
+    read as text out of the `doctor.py` that ships, so moving it moves both."""
+    from scribe import doctor
+
+    (layout.app_dir / "scribe" / "doctor.py").write_text(
+        Path(doctor.__file__).resolve().read_text(encoding="utf-8"), encoding="utf-8")
+
+    assert launcher.disk_floor_gb(layout) == doctor.DISK_FLOOR_GB
+
+
+def test_a_payload_without_the_numbers_still_asks(layout, tmp_path):
+    """`footprint.json` is new, and a payload built before it was committed
+    does not carry it. A question that cannot add up is still worth asking: it
+    says which part it could not read, and nothing is refused on a number
+    nobody could find."""
+    text = launcher.location_question(layout, tmp_path / "MyScribe.location", volumes=[], platform="win32")
+
+    assert "nobody has measured" in text
+    assert launcher.install_size(layout, "win32", "AMD64")["needed_gb"] == 0
+    assert launcher.enough_disk(layout, lambda state, said: pytest.fail(f"refused: {said}")) is True
+
+
+def test_the_question_shows_the_default_the_total_and_every_volume(layout, tmp_path, monkeypatch):
+    """What the question is for: where it would go, what it costs, and what
+    each disk has - on a machine with two volumes, which is the case this
+    whole task exists for (AC #2)."""
+    _shipped_install_numbers(layout)
+    free = {Path("C:/"): 9.4, Path("D:/"): 412.0}
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda path: _usage(free[Path(path)]))
+
+    text = launcher.location_question(
+        layout, tmp_path / "MyScribe.location", volumes=[Path("C:/"), Path("D:/")],
+        platform="win32", machine="AMD64")
+
+    assert str(layout.home) in text
+    assert "9.4 GB free" in text and "412.0 GB free" in text
+    assert "2.0 GB of speech models" in text and "measured" in text
+    assert "about 4.0 GB of speech engine" in text
+    assert "about 16 GB free" in text and "10 GB" in text  # the install, and the floor it adds
+    assert "4.0 GB more if you later say yes to Ollama" in text and "qwen3.5:4b" in text
+
+
+def test_the_question_always_shows_the_disk_the_default_home_is_on(layout, tmp_path, monkeypatch):
+    """Whatever the enumerator found - nothing at all, on a platform where it
+    is nobody's measurement - the question still says what the disk it is
+    about to fill has left."""
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda _path: _usage(77.0))
+
+    text = launcher.location_question(layout, tmp_path / "MyScribe.location",
+                                      volumes=[], platform="win32")
+
+    assert f"{Path(layout.home.anchor)}  77.0 GB free" in text
+
+
+def test_the_question_says_where_the_answer_can_be_given_later(layout, tmp_path):
+    """There is no Settings page for this one, and the text says so with its
+    reason: the folder holds the environment the running app runs from (AC #10)."""
+    pointer = tmp_path / "MyScribe.location"
+
+    text = launcher.location_question(layout, pointer, volumes=[], platform="win32")
+
+    assert "MYSCRIBE_HOME" in text and "--home PATH" in text and str(pointer) in text
+    assert "no Settings page" in text and "runs from" in text
+    assert "does not move an install that is already there" in text
+    assert "network share" in text and "mapped drive letter" in text
+
+
+def test_setup_prints_the_home_in_force_and_where_it_came_from(layout, tmp_path, monkeypatch, capsys):
+    """`--setup` is where somebody looks after the fact (AC #10)."""
+    monkeypatch.setattr(launcher, "run_window", lambda *args, **kwargs: 0)
+    home = tmp_path / "chosen"
+
+    assert launcher.main(["--setup", "--home", str(home), "--payload", str(layout.payload)]) == 0
+
+    printed = capsys.readouterr().out
+    assert str(home) in printed and "the --home option" in printed
+    assert "MYSCRIBE_HOME" in printed and "--home PATH" in printed and "no Settings page" in printed
+
+
+def test_every_source_of_the_home_can_be_named(tmp_path):
+    """`--setup` says which of the four it was, and `home_dir` keeps returning
+    a plain Path - two tests above compare it to one."""
+    pointer = tmp_path / "MyScribe.location"
+    environ = {"LOCALAPPDATA": str(tmp_path / "local")}
+
+    assert launcher.home_source(tmp_path / "typed", "win32", environ, pointer) == "the --home option"
+    assert launcher.home_source(None, "win32", {**environ, "MYSCRIBE_HOME": "x"}, pointer) == (
+        "the MYSCRIBE_HOME variable")
+    # Both at once, or the order of the two branches is free: `locate_home`
+    # takes `--home` first, and a `--setup` that named the other one would be
+    # a wrong sentence on the screen somebody reads when they are lost.
+    assert launcher.home_source(tmp_path / "typed", "win32", {**environ, "MYSCRIBE_HOME": "x"},
+                                pointer) == "the --home option"
+    assert launcher.home_source(None, "win32", environ, pointer) == "the default for this computer"
+    pointer.write_text(json.dumps({"home": str(tmp_path / "pointed")}), encoding="utf-8")
+    assert launcher.home_source(None, "win32", environ, pointer) == f"the pointer file {pointer}"
+
+
+def test_the_windows_welcome_text_carries_no_size_in_gigabytes():
+    """The installer's welcome text cannot read `footprint.json`, so a number
+    in it is one that nobody updates - and it already disagreed with the only
+    dated estimate there is. It is gone, and this keeps it gone (AC #2)."""
+    text = (LAUNCHER_PATH.parent.parent / "windows" / "myscribe.iss").read_text(encoding="utf-8-sig")
+    welcome = [line for line in text.splitlines() if line.startswith("WelcomeLabel2=")]
+
+    assert welcome, "WelcomeLabel2 is gone; the welcome text this test is about has moved"
+    assert not re.search(r"\d+([.,]\d+)?\s*GB", welcome[0])
+
+
+# --- the pointer file (AC #4) ------------------------------------------------------
+
+
+def test_no_pointer_file_is_the_default_home(tmp_path):
+    assert launcher.home_dir("win32", {"LOCALAPPDATA": str(tmp_path)},
+                             pointer=tmp_path / "nothing.location") == tmp_path / "MyScribe"
+
+
+def test_a_pointer_file_moves_the_home(tmp_path):
+    pointer = tmp_path / "MyScribe.location"
+    pointer.write_text(json.dumps({"home": r"D:\MyScribe", "data": r"E:\Library"}), encoding="utf-8")
+
+    # The second key is not this task's, and nothing here pins that the file
+    # holds one fact: TASK-089.19 may add one (ADR-015, Open Questions).
+    assert launcher.home_dir("win32", {"LOCALAPPDATA": str(tmp_path)}, pointer=pointer) == Path(r"D:\MyScribe")
+
+
+def test_the_pointer_sits_beside_the_default_home_and_never_inside_it(tmp_path):
+    """Beside it, so a home somebody moved leaves nothing at all under the
+    default one - an empty MyScribe folder on C: is exactly the "did it
+    install twice?" that moving it was meant to avoid."""
+    default = launcher.default_home("win32", {"LOCALAPPDATA": str(tmp_path)})
+
+    assert default == tmp_path / "MyScribe"
+    assert default.with_name(default.name + ".location") == tmp_path / "MyScribe.location"
+
+
+def test_the_variable_and_the_option_still_outrank_the_pointer(tmp_path, layout):
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(json.dumps({"home": str(tmp_path / "pointed")}), encoding="utf-8")
+    environ = {"LOCALAPPDATA": str(tmp_path / "local")}
+
+    assert launcher.home_dir("win32", environ, pointer=pointer) == tmp_path / "pointed"
+    assert launcher.home_dir("win32", {**environ, "MYSCRIBE_HOME": str(tmp_path / "variable")},
+                             pointer=pointer) == tmp_path / "variable"
+    home, _reports, asked = _door(tmp_path, layout.payload, pointer=pointer,
+                                  environ={**environ, "MYSCRIBE_HOME": str(tmp_path / "variable")})
+    assert home == tmp_path / "variable" and asked == []
+
+
+def test_the_home_help_text_reads_the_pointer_a_test_can_move(tmp_path, monkeypatch):
+    """`build_parser()` asks `home_dir()` for the `--home` help text before any
+    argument is read. The path comes from the module-level `pointer_path`, and
+    that is what lets an autouse fixture keep this file away from the pointer
+    of whoever is running it (spec section 3.13)."""
+    pointer = tmp_path / "MyScribe.location"
+    pointer.write_text(json.dumps({"home": str(tmp_path / "elsewhere")}), encoding="utf-8")
+    monkeypatch.setattr(launcher, "pointer_path", lambda *args, **kwargs: pointer)
+
+    # Whitespace out of both sides: argparse wraps the help column with
+    # textwrap's defaults, which break a long path in the middle.
+    printed = "".join(launcher.build_parser().format_help().split())
+    assert "".join(str(tmp_path / "elsewhere").split()) in printed
+
+
+def test_a_pointer_that_is_not_a_json_object_says_so_and_asks_again(tmp_path, layout):
+    """Never a silent fall-back to the default: that would open an empty
+    library and look to its owner as though the recordings were gone (AC #4)."""
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text("[]", encoding="utf-8")
+    chosen = tmp_path / "second-drive" / "MyScribe"
+
+    home, reports, asked = _door(tmp_path, layout.payload, answers=[str(chosen)], pointer=pointer)
+
+    assert home == chosen.resolve()
+    assert len(asked) == 1 and str(pointer) in asked[0]
+    assert [state for state, _ in reports] == ["error"]
+    assert "does not hold a JSON object" in reports[0][1]
+
+
+def test_a_pointer_that_cannot_be_read_asks_again_and_a_failed_save_says_so(tmp_path, layout):
+    """A file that is there and unreadable - a permission, a half-written file,
+    a folder where the file should be - is a problem and never an absence.
+
+    Driven through the door and not against `read_pointer`, because the
+    interesting half is what happens after the answer: a pointer that cannot
+    be read is usually one that cannot be written either, and the save happens
+    moments after the person answered. A raise there would kill a `--windowed`
+    build with no console and no window, and lose the answer as well. It says
+    so and carries on with the folder they chose (AC #4)."""
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.mkdir(parents=True)  # a folder where the file should be
+    chosen = tmp_path / "second-drive" / "MyScribe"
+
+    home, reports, asked = _door(tmp_path, layout.payload, answers=[str(chosen)], pointer=pointer)
+
+    assert home == chosen.resolve()
+    assert len(asked) == 1 and str(pointer) in asked[0]
+    errors = [text for state, text in reports if state == "error"]
+    assert "cannot be read" in errors[0]
+    assert str(pointer) in errors[1] and "could not be saved" in errors[1]
+
+
+def test_a_pointer_that_names_no_home_is_still_a_first_run(tmp_path, layout):
+    """The file is there and it answers a different question: TASK-089.19 may
+    write its own fact into it before anybody was ever asked where everything
+    goes. What settles it is whether a home is named, never whether the file
+    exists - the trap this criterion wrote itself against (AC #4)."""
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(json.dumps({"asked": "2026-09-22"}), encoding="utf-8")
+    default = tmp_path / "local" / "MyScribe"
+    chosen = tmp_path / "second-drive" / "MyScribe"
+
+    assert launcher.wants_location(default, layout.payload, pointer) is True
+    home, _reports, asked = _door(tmp_path, layout.payload, answers=[str(chosen)], pointer=pointer)
+
+    assert home == chosen.resolve() and len(asked) == 1
+
+
+def test_a_key_the_launcher_did_not_write_survives_the_answer(tmp_path, layout):
+    """TASK-089.19 criterion 8 may add a second fact to this file, and the
+    writer merges rather than overwrites so that it is not the one that loses
+    it (AC #4). The read side is covered where the pointer moves the home;
+    this is the write side."""
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(json.dumps({"home": str(tmp_path / "gone"), "asked": "2026-09-22"}),
+                       encoding="utf-8")
+    chosen = tmp_path / "second-drive" / "MyScribe"
+
+    home, _reports, asked = _door(tmp_path, layout.payload, answers=[str(chosen)], pointer=pointer)
+
+    assert home == chosen.resolve() and len(asked) == 1
+    assert json.loads(pointer.read_text(encoding="utf-8")) == {
+        "home": str(chosen.resolve()), "asked": "2026-09-22"}
+
+
+def test_a_pointer_naming_a_folder_that_is_gone_asks_again(tmp_path, layout):
+    """An unplugged drive. One sentence, two ways on - plug it in, or say where
+    everything goes now - and never the default (AC #4)."""
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(json.dumps({"home": r"D:\gone"}), encoding="utf-8")
+    chosen = tmp_path / "second-drive" / "MyScribe"
+
+    home, reports, asked = _door(tmp_path, layout.payload, answers=[str(chosen)], pointer=pointer)
+
+    assert home == chosen.resolve()
+    assert "not there" in reports[0][1] and "nothing is lost" in reports[0][1]
+    assert r"D:\gone" in asked[0]
+    assert json.loads(pointer.read_text(encoding="utf-8"))["home"] == str(chosen.resolve())
+
+
+def test_a_pointer_that_is_gone_stops_a_door_that_cannot_ask(tmp_path, layout):
+    """At login, on the console and under `--sync-only` there is nobody to ask,
+    and starting a second, empty library on C: is the one answer that must not
+    happen. It stops, and says why (AC #4)."""
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(json.dumps({"home": r"D:\gone"}), encoding="utf-8")
+
+    home, reports, asked = _door(tmp_path, layout.payload, pointer=pointer, ask=False)
+
+    assert home is None and asked == []
+    assert "cannot start" in reports[-1][1] and "second, empty library" in reports[-1][1]
+
+
+def test_closing_the_question_over_a_broken_pointer_starts_nothing(tmp_path, layout):
+    """Skipping means "keep today's location", and today's location is the one
+    the pointer names. With that folder gone there is nothing to keep."""
+    pointer = tmp_path / "local" / "MyScribe.location"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(json.dumps({"home": r"D:\gone"}), encoding="utf-8")
+
+    home, reports, asked = _door(tmp_path, layout.payload, answers=[None], pointer=pointer)
+
+    assert home is None and len(asked) == 1
+    assert "still names a folder that is not there" in reports[-1][1]
+
+
+# --- asked once, and never about an install that is already there (AC #5, #7) ------
+
+
+def test_skipping_keeps_todays_location_and_writes_no_pointer(tmp_path, layout):
+    home, reports, asked = _door(tmp_path, layout.payload, answers=[None])
+
+    assert home == tmp_path / "local" / "MyScribe"
+    assert not (tmp_path / "local" / "MyScribe.location").exists()
+    assert len(asked) == 1
+    assert not [state for state, _ in reports if state == "error"]
+
+
+def test_a_home_that_already_holds_an_environment_is_never_asked_about(tmp_path, layout):
+    """Moving an install is out of scope, so the question is not asked where
+    one is: it would be a promise this code does not keep (AC #5, AC #7)."""
+    default = tmp_path / "local" / "MyScribe"
+    installed = launcher.Layout(default, layout.payload)
+    installed.env_python.parent.mkdir(parents=True)
+    installed.env_python.write_text("", encoding="utf-8")
+    pointer = tmp_path / "local" / "MyScribe.location"
+
+    assert launcher.wants_location(default, layout.payload, pointer) is False
+    home, _reports, asked = _door(tmp_path, layout.payload)
+    assert home == default and asked == []
+
+
+def test_a_first_run_with_nothing_anywhere_is_the_one_case_that_asks(tmp_path, layout):
+    pointer = tmp_path / "local" / "MyScribe.location"
+    default = tmp_path / "local" / "MyScribe"
+
+    assert launcher.wants_location(default, layout.payload, pointer) is True
+    assert launcher.wants_location(default, layout.payload, pointer, home_flag=Path("x")) is False
+    assert launcher.wants_location(default, layout.payload, pointer, environ={"MYSCRIBE_HOME": "x"}) is False
+
+
+# --- what a folder may not be (AC #9) ----------------------------------------------
+
+
+def test_a_relative_path_is_refused(tmp_path):
+    refusal = launcher.refuse_location("MyScribe", install=None, payload=tmp_path / "payload")
+
+    assert "not a full path" in refusal
+
+
+def test_a_path_that_climbs_back_into_the_install_directory_is_refused(tmp_path):
+    """`..` is why both sides are resolved before they are compared: the string
+    a person typed says nothing about where it lands."""
+    install = tmp_path / "Programs" / "MyScribe"
+    install.mkdir(parents=True)
+
+    refusal = launcher.refuse_location(str(install / "sub" / ".." / "data"), install=install)
+
+    assert "belongs to the installer" in refusal
+    assert not (install / "data").exists(), "a refused folder was created anyway"
+
+
+def test_a_folder_whose_name_only_starts_the_same_is_not_refused(tmp_path):
+    """`D:\\MyScribeData` is not inside `D:\\MyScribe`. Compared part by part
+    and never as strings, which is the bug this test exists to stop."""
+    install = tmp_path / "Programs" / "MyScribe"
+    install.mkdir(parents=True)
+
+    assert launcher.refuse_location(str(tmp_path / "Programs" / "MyScribeData"), install=install) == ""
+
+
+def test_a_link_into_the_install_directory_is_refused_too(tmp_path):
+    """`resolve()` follows it, which is the only reason this one is covered. A
+    junction whose target is moved *after* the check is not, and neither is a
+    case-insensitive network mount.
+
+    A plain symlink needs a privilege Windows does not hand out by default
+    (WinError 1314 here on 2026-09-22), so this machine proves the point with
+    an NTFS junction instead, which any account may create and `resolve()`
+    follows the same way. Elsewhere the symlink is the real thing.
+    """
+    import subprocess
+
+    install = tmp_path / "Programs" / "MyScribe"
+    install.mkdir(parents=True)
+    link = tmp_path / "looks-innocent"
+    try:
+        link.symlink_to(install, target_is_directory=True)
+    except (OSError, NotImplementedError) as error:
+        if not sys.platform == "win32":
+            pytest.skip(f"this machine cannot create a symlink: {error}")
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(install)],
+                              capture_output=True, text=True)
+        if made.returncode != 0 or not link.exists():
+            pytest.skip(f"this machine makes neither a symlink nor a junction: {made.stderr.strip()}")
+
+    # Through the link and one folder down, so this fails both when the link
+    # is not followed and when "inside" is read as "is".
+    assert "belongs to the installer" in launcher.refuse_location(str(link / "data"), install=install)
+    assert not (install / "data").exists(), "a refused folder was created anyway"
+
+
+def test_a_folder_inside_the_install_directory_is_refused(tmp_path):
+    """ADR-011's Must Not, and on Windows the installer owns that folder: the
+    next uninstall would take the library with it, while the installer's own
+    welcome text promises it is left alone."""
+    install = tmp_path / "Programs" / "MyScribe"
+    install.mkdir(parents=True)
+
+    refusal = launcher.refuse_location(str(install / "data"), install=install)
+
+    assert "belongs to the installer" in refusal and "uninstall" in refusal
+
+
+def test_a_folder_inside_the_payload_is_refused(tmp_path):
+    payload = tmp_path / "Programs" / "MyScribe" / "payload"
+    payload.mkdir(parents=True)
+
+    assert "belongs to the installer" in launcher.refuse_location(str(payload / "home"), payload=payload)
+
+
+def test_a_unc_path_is_refused_with_the_reason_that_a_mapped_drive_hides(tmp_path):
+    """The library is SQLite in WAL mode (ADR-013), and SQLite's own
+    documentation says WAL does not work over a network filesystem. Nothing on
+    the network is touched to find that out - the refusal is made before any
+    filesystem call, which is why it comes before `resolve()`."""
+    refusal = launcher.refuse_location(r"\\server\share\MyScribe", install=None, payload=None)
+
+    assert "network share" in refusal and "write-ahead log" in refusal
+    assert "mapped drive letter" in refusal and "cannot tell one from a real disk" in refusal
+    assert "network share" in launcher.refuse_location("//server/share/MyScribe")
+
+
+def test_a_folder_that_is_not_there_yet_is_accepted_and_not_created(tmp_path):
+    """The check creates nothing. A path with a typo in it is either refused or
+    corrected, and either way it must not leave an empty tree behind on a disk
+    the person never meant to touch - written while the question is still
+    open, which is the worst moment to be writing anything."""
+    typo = tmp_path / "MyScrbie" / "MyScribe"
+
+    assert launcher.refuse_location(str(typo)) == ""
+    assert not (tmp_path / "MyScrbie").exists()
+
+
+def test_a_folder_that_cannot_be_written_is_refused(tmp_path):
+    """Refused with what the operating system said, because "choose another
+    folder" without a reason is the sort of dialog people photograph."""
+    blocker = tmp_path / "a-file"
+    blocker.write_text("not a folder", encoding="utf-8")
+
+    refusal = launcher.refuse_location(str(blocker / "MyScribe"))
+
+    assert "cannot write in" in refusal
+
+
+def test_a_refused_answer_writes_no_pointer_and_asks_again(tmp_path, layout):
+    """One sentence, and the question comes back with it on top (AC #9)."""
+    install = tmp_path / "Programs" / "MyScribe"
+    install.mkdir(parents=True)
+    pointer = tmp_path / "local" / "MyScribe.location"
+    chosen = tmp_path / "second-drive" / "MyScribe"
+
+    home, reports, asked = _door(tmp_path, layout.payload, install=install,
+                                 answers=[str(install / "data"), str(chosen)])
+
+    assert home == chosen.resolve()
+    assert len(asked) == 2 and "belongs to the installer" in asked[1]
+    assert [state for state, _ in reports] == ["error"]
+    assert json.loads(pointer.read_text(encoding="utf-8")) == {"home": str(chosen.resolve())}
+
+
+def test_no_pointer_is_written_while_the_question_is_still_open(tmp_path, layout):
+    """Only an asker that looks between the two answers can see this: the
+    second, accepted answer overwrites a pointer the first one should never
+    have left, so the file at the end says nothing about the file in between.
+
+    What it guards is not tidiness. Refuse `<install>\\data`, then close the
+    window: the home falls back to the default while the pointer names the
+    folder ADR-011 forbids, and the next start puts `env/` and `data/` inside
+    the directory the next uninstall deletes (AC #9)."""
+    install = tmp_path / "Programs" / "MyScribe"
+    install.mkdir(parents=True)
+    pointer = tmp_path / "local" / "MyScribe.location"
+    chosen = tmp_path / "second-drive" / "MyScribe"
+    answers = [str(install / "data"), str(chosen)]
+    seen: list[bool] = []
+
+    def asker(_message: str):
+        seen.append(pointer.exists())
+        return answers.pop(0)
+
+    home = launcher.locate_home(
+        None, asker, lambda state, text: None, layout.payload, platform="win32",
+        environ={"LOCALAPPDATA": str(tmp_path / "local")}, pointer=pointer, install=install,
+        volumes=[],
+    )
+
+    assert home == chosen.resolve()
+    assert seen == [False, False], "a refused answer was written to the pointer file"
+
+
+# --- the free-space check on the doors that ask nothing (AC #6) --------------------
+
+
+def _headless_machine(layout, tmp_path, monkeypatch, *, free_gb: float) -> Path:
+    """A machine with no pointer, no environment and `free_gb` free."""
+    _shipped_install_numbers(layout)
+    marker = tmp_path / "uv-ran.txt"
+    monkeypatch.delenv(launcher.HOME_VARIABLE, raising=False)
+    monkeypatch.setattr(launcher, "default_home", lambda *a, **k: tmp_path / "default")
+    monkeypatch.setattr(launcher, "pointer_path", lambda *a, **k: tmp_path / "default.location")
+    monkeypatch.setattr(launcher, "uv_command", lambda _layout: _fake_uv(tmp_path, 0, marker))
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda _path: _usage(free_gb))
+    return marker
+
+
+def test_a_console_start_asks_nothing_says_so_and_is_still_refused_the_sync(
+        layout, tmp_path, monkeypatch, capsys):
+    """Nobody is at the screen, so nothing is asked - and the check still runs,
+    because the volume does not care who started the launcher (AC #6)."""
+    marker = _headless_machine(layout, tmp_path, monkeypatch, free_gb=3)
+
+    code = launcher.main(["--headless", "--no-browser", "--payload", str(layout.payload),
+                          "--port", str(_free_port())])
+
+    printed = capsys.readouterr().out
+    assert code == 1
+    assert not marker.exists(), "the download was started on a volume that cannot hold it"
+    assert "nothing was asked" in printed and "MYSCRIBE_HOME" in printed
+    assert "not enough room" in printed and "3.0 GB free" in printed
+
+
+def test_sync_only_is_refused_the_same_way(layout, tmp_path, monkeypatch, capsys):
+    """The one-job doors go through the same check: `--sync-only` is exactly
+    the download this refuses (AC #6)."""
+    marker = _headless_machine(layout, tmp_path, monkeypatch, free_gb=3)
+
+    code = launcher.main(["--sync-only", "--payload", str(layout.payload)])
+
+    assert code == 1 and not marker.exists()
+    assert "not enough room" in capsys.readouterr().out
+
+
+def test_enough_room_lets_the_sync_start(layout, tmp_path, monkeypatch, capsys):
+    """The other half of the refusal: with room, nothing is in the way - a
+    check that refused everything would pass the test above as well."""
+    marker = _headless_machine(layout, tmp_path, monkeypatch, free_gb=400)
+
+    code = launcher.main(["--sync-only", "--payload", str(layout.payload)])
+
+    assert code == 0 and marker.exists()
+    assert "not enough room" not in capsys.readouterr().out
+
+
+def test_a_volume_that_cannot_be_measured_does_not_refuse(layout, monkeypatch):
+    """"We do not know" must not become "nothing may be installed here": the
+    rule `doctor.require_disk_headroom` already follows, stated in
+    `enough_disk` and until now held by nothing."""
+    _shipped_install_numbers(layout)
+
+    def unmeasurable(_path):
+        raise OSError(1, "no such device")
+
+    monkeypatch.setattr(launcher.shutil, "disk_usage", unmeasurable)
+    reports: list[tuple[str, str]] = []
+
+    assert launcher.enough_disk(layout, lambda state, text: reports.append((state, text))) is True
+    assert reports == []
+
+
+def test_the_working_room_is_asked_of_a_person_and_not_of_ci(layout, monkeypatch):
+    """`--smoke`, `--sync-only` and `--doctor` install and then stop, so the
+    room MyScribe keeps free to RUN with a library is not theirs to demand.
+
+    The numbers are the ones that made this a decision rather than a tidy-up:
+    on Windows the floor is 10 of the 16.6 GB needed, and a hosted Windows
+    runner arrives with less than that with no step to clear any (the Linux
+    job has one; Windows and macOS do not). Robert chose this on 2026-09-22.
+
+    Both directions in one test on purpose: a change that drops the floor for
+    everybody passes the CI half and fails the person's half here.
+    """
+    _shipped_install_numbers(layout)
+    size = launcher.install_size(layout, "win32", "AMD64")
+    assert size["floor_gb"] > 0, "a floor of zero would make this test vacuous"
+    # Between the two: enough for the install, not enough for the working room.
+    between = size["needed_gb"] - size["floor_gb"] / 2
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda _path: _usage(between))
+
+    refused: list[str] = []
+    person = launcher.enough_disk(layout, lambda state, text: refused.append(text))
+    ci = launcher.enough_disk(layout, lambda state, text: refused.append(text), floor=False)
+
+    assert person is False, "a person installing this is still asked for the working room"
+    assert ci is True, "CI is asked only for the install it actually makes"
+    assert len(refused) == 1 and "not enough room" in refused[0]
+
+
+def test_a_footprint_whose_numbers_are_not_numbers_still_asks(layout):
+    """`footprint()` promises never to raise, and the promise is worth what the
+    arithmetic below it is: a hand-edited or half-written file whose
+    `download_gb` is a string would otherwise be a TypeError with no console
+    and no window behind it."""
+    _shipped_install_numbers(layout)
+    (layout.app_dir / "scribe" / "footprint.json").write_text(json.dumps({
+        "environment": {"win32": {"download_gb": "3.2", "unpacked_gb": None}},
+        "ollama": {"installer_bytes": {"win32": "lots"}, "model_bytes": "3 GB"},
+    }), encoding="utf-8")
+
+    size = launcher.install_size(layout, "win32", "AMD64")
+
+    assert size["environment_gb"] is None and size["ollama_gb"] is None
+    assert size["complete"] is False
+    assert size["needed_gb"] == pytest.approx(size["weights_gb"] + size["floor_gb"])
+
+
+def test_a_start_at_login_over_a_broken_pointer_says_so_in_a_window(layout, tmp_path, monkeypatch):
+    """There is no console behind `--windowed`: `sys.stdout` is None and
+    `print` returns without a word.
+
+    The scenario is ordinary - the home is on an external drive that is not
+    plugged in when the machine boots, and the login entry fires - and the one
+    sentence explaining it would otherwise go nowhere at all (AC #4)."""
+    pointer = tmp_path / "default.location"
+    pointer.write_text(json.dumps({"home": str(tmp_path / "gone")}), encoding="utf-8")
+    monkeypatch.delenv(launcher.HOME_VARIABLE, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(launcher, "default_home", lambda *a, **k: tmp_path / "default")
+    monkeypatch.setattr(launcher, "pointer_path", lambda *a, **k: pointer)
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: True)
+    shown: list[str] = []
+    monkeypatch.setattr(launcher, "show_error", lambda text: shown.append(text), raising=False)
+
+    code = launcher.main(["--at-login", "--no-browser", "--payload", str(layout.payload),
+                          "--port", str(_free_port())])
+
+    assert code == 1
+    assert len(shown) == 1
+    assert "not there" in shown[0] and "cannot start" in shown[0]
+
+
+def test_the_volume_measured_is_the_one_the_doctor_measures(tmp_path, layout):
+    """The launcher's refusal and the app's own floor must never be about two
+    different drives. The doctor measures the data directory, or its parent
+    while it does not exist; this walks further up, because before a first run
+    the home does not exist either and `disk_usage` raises on a path that is
+    not there."""
+    deep = launcher.Layout(tmp_path / "not-there" / "MyScribe", layout.payload)
+
+    assert launcher.disk_probe_path(deep) == tmp_path
+    launcher.prepare_home(deep)
+    assert launcher.disk_probe_path(deep) == deep.data_dir
