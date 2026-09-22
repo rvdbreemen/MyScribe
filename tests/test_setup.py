@@ -88,6 +88,33 @@ def test_the_provider_and_tier_are_saved_where_settings_reads_them(tmp_path, con
     assert options.tier == "max" and options.diarize is False
 
 
+def _setting_rows(conn) -> list[tuple]:
+    """Every settings row there is, so a test can say "nothing changed"."""
+    return [tuple(row) for row in conn.execute("SELECT key, value FROM setting ORDER BY key")]
+
+
+def test_a_sitting_where_every_question_was_skipped_writes_nothing(tmp_path, conn):
+    """The engine's side of ADR-016 and ADR-015: the launcher hands over a
+    sitting in which nobody answered anything, and that must leave the machine
+    exactly as it was - no provider row, no transcription defaults, no `.env` -
+    while still ending the sitting, or it would be put again at every start.
+
+    Nothing here was changed to make it pass; it pins what `apply` already
+    does, because TASK-089.25 makes the launcher rely on it.
+    """
+    defaults = transcribe_dialog.read_defaults(conn)
+    before = _setting_rows(conn)
+    env_file = tmp_path / ".env"
+
+    report = setup.apply(setup.Answers(), conn, env_file=env_file)
+
+    assert report["wrote"] == []
+    assert _setting_rows(conn) == before
+    assert transcribe_dialog.read_defaults(conn) == defaults
+    assert not env_file.exists(), "a token nobody typed writes no file"
+    assert setup.done() is True, "asked once, not at every start"
+
+
 def test_an_unknown_provider_is_refused_before_anything_is_written(tmp_path, conn):
     with pytest.raises(ValueError):
         setup.apply(setup.Answers(provider="not-a-provider"), conn, env_file=tmp_path / ".env")

@@ -755,6 +755,19 @@ def ask_setup(root, layout: Layout) -> dict | None:
     afterwards. A setup screen that must be completed before anything works is
     a worse first impression than one that can be skipped.
 
+    Nothing is filled in for the two radio questions. The launcher renders
+    questions and never decides one (ADR-015), and a preselected radio is a
+    default, not an answer - "Save and start" would otherwise write
+    `llm_provider = ollama` for somebody who chose nothing, which is what
+    ADR-016 forbids and what TASK-089.25 came from. Both groups open on a skip
+    that is visible ("Decide later", "Leave as it is") rather than on nothing
+    at all, because a group with no filled circle reads as broken. The
+    checkbox is the exception and stays a yes: a checkbox has no unanswered
+    state, and this one writes no setting row - it only decides whether the
+    download happens now or inside the first transcription. Robert ratified
+    that on 2026-09-22 and chose the sentence above with it, so the intro
+    names the two questions that have a skip instead of implying all four do.
+
     Returns the answers, or None when the person closed the window - which is
     "ask me next time", not "never".
     """
@@ -770,7 +783,9 @@ def ask_setup(root, layout: Layout) -> dict | None:
         win,
         text=(
             "Two answers make speaker separation work, and two decide what this "
-            "machine downloads. All of them can be changed later in Settings."
+            "machine downloads. The provider and model questions can be left on "
+            "their skip, which writes nothing; everything here can be changed "
+            "later in Settings."
         ),
         wraplength=520, justify="left", anchor="w",
     ).grid(row=0, column=0, columnspan=2, sticky="we", padx=12, pady=(12, 8))
@@ -785,26 +800,43 @@ def ask_setup(root, layout: Layout) -> dict | None:
         wraplength=520, justify="left", anchor="w", fg="#555",
     ).grid(row=2, column=0, columnspan=2, sticky="we", padx=12, pady=(0, 8))
 
-    tk.Label(win, text="Answers about a transcript", anchor="w").grid(row=3, column=0, sticky="w", padx=12)
-    provider = tk.StringVar(value="ollama")
-    providers = tk.Frame(win)
-    providers.grid(row=3, column=1, sticky="w", padx=12)
-    for value, label in (("ollama", "Ollama, on this machine"), ("openrouter", "OpenRouter"), ("openai", "OpenAI")):
-        tk.Radiobutton(providers, text=label, variable=provider, value=value).pack(side="left")
+    # Tk draws every button of a group with its "mixed" indicator while the
+    # group's variable holds that button's -tristatevalue, and that option
+    # defaults to the empty string - which is what a question nobody answered
+    # holds here. Photographed on 2026-09-22 (Tk 8.6, Windows 11): with the
+    # default, all seven circles open filled, so a dialog that fills nothing
+    # in looks like one that filled everything in. A value no answer can take
+    # turns it off; only the skip stays filled.
+    not_an_answer = "no answer"
 
-    tk.Label(win, text="Transcription model", anchor="w").grid(row=4, column=0, sticky="w", padx=12, pady=(8, 0))
-    tier = tk.StringVar(value="turbo")
+    # A row of its own, because the question is a sentence: in the label
+    # column it would widen it from 137 to 255 px and push both radio groups
+    # right, from x=12 to x=267 (measured on 2026-09-22).
+    tk.Label(win, text="Who answers questions about a transcript?", anchor="w").grid(
+        row=3, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 0))
+    provider = tk.StringVar(value="")
+    providers = tk.Frame(win)
+    providers.grid(row=4, column=0, columnspan=2, sticky="w", padx=12)
+    for value, label in (("ollama", "Ollama, on this machine"), ("openrouter", "OpenRouter"),
+                         ("openai", "OpenAI"), ("", "Decide later")):
+        tk.Radiobutton(providers, text=label, variable=provider, value=value,
+                       tristatevalue=not_an_answer).pack(side="left")
+
+    tk.Label(win, text="Transcription model", anchor="w").grid(row=5, column=0, sticky="w", padx=12, pady=(8, 0))
+    tier = tk.StringVar(value="")
     tiers = tk.Frame(win)
-    tiers.grid(row=4, column=1, sticky="w", padx=12, pady=(8, 0))
-    tk.Radiobutton(tiers, text="Turbo - fast", variable=tier, value="turbo").pack(side="left")
-    tk.Radiobutton(tiers, text="Maximaal - about four times slower", variable=tier, value="max").pack(side="left")
+    tiers.grid(row=5, column=1, sticky="w", padx=12, pady=(8, 0))
+    for value, label in (("turbo", "Turbo - fast"), ("max", "Maximaal - about four times slower"),
+                         ("", "Leave as it is")):
+        tk.Radiobutton(tiers, text=label, variable=tier, value=value,
+                       tristatevalue=not_an_answer).pack(side="left")
 
     fetch = tk.BooleanVar(value=True)
     tk.Checkbutton(
         win, variable=fetch, anchor="w",
         text="Download the model weights now (about 1.6 GB; otherwise the first transcription waits for them)",
         wraplength=520, justify="left",
-    ).grid(row=5, column=0, columnspan=2, sticky="we", padx=12, pady=(10, 4))
+    ).grid(row=6, column=0, columnspan=2, sticky="we", padx=12, pady=(10, 4))
 
     def save() -> None:
         answers.update(
@@ -816,7 +848,7 @@ def ask_setup(root, layout: Layout) -> dict | None:
         win.destroy()
 
     row = tk.Frame(win)
-    row.grid(row=6, column=0, columnspan=2, sticky="we", padx=12, pady=12)
+    row.grid(row=7, column=0, columnspan=2, sticky="we", padx=12, pady=12)
     tk.Button(row, text="Save and start", command=save, default="active").pack(side="right")
     tk.Button(row, text="Skip for now", command=win.destroy).pack(side="right", padx=8)
 

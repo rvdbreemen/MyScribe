@@ -16,6 +16,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -459,6 +460,233 @@ def test_an_unanswered_question_is_not_passed_at_all(tmp_path):
     command = launcher.setup_command(layout, {"hf_token": "", "provider": "", "tier": "", "fetch_models": False})
 
     assert command == [str(layout.env_python), "-m", "scribe.setup"]
+
+
+# --- the sitting itself, driven without a window (TASK-089.25) ---------------------
+
+
+class _Sitting:
+    """What the fake tkinter was told to render, and what the person did.
+
+    The dialog is three things: labels, variables and two buttons. This holds
+    exactly those, so a test can read the headings, click a radio the way a
+    person does (the variable is set to that option's value) and press a
+    button by its text.
+    """
+
+    def __init__(self):
+        self.labels: list[str] = []
+        self.options: list[tuple] = []  # (variable, value, text) per radio button
+        self.radios: list[dict] = []  # everything a radio button was given
+        self.entries: list = []
+        self.buttons: dict = {}
+
+    def pick(self, value: str) -> None:
+        """Click the radio button carrying this value, as Tk would."""
+        for variable, option, _text in self.options:
+            if option == value:
+                variable.set(value)
+                return
+        raise AssertionError(f"no option {value!r} among {[o for _v, o, _t in self.options]}")
+
+    def preselected(self) -> list:
+        """The value of every radio variable before anybody touched it."""
+        return sorted({variable.get() for variable, _value, _text in self.options})
+
+
+def _fake_tkinter(sitting: _Sitting):
+    """Just enough tkinter for `ask_setup`, and deliberately not one call more.
+
+    `ask_setup` does `import tkinter as tk` inside the function, which is the
+    seam: a fake module in `sys.modules` drives a whole sitting with no Tk
+    root, no window and no display, so the question of what an untouched
+    dialog hands over can be asked on any machine.
+
+    Everything draws nothing; only the variables, the labels and the buttons
+    are kept. Anything the dialog grows that this does not know raises
+    AttributeError, so a widget that stops being rendered fails loudly here
+    rather than passing quietly.
+    """
+
+    class Variable:
+        def __init__(self, master=None, value=None, **kwargs):
+            self._value = value
+
+        def get(self):
+            return self._value
+
+        def set(self, value):
+            self._value = value
+
+    class Widget:
+        def __init__(self, master=None, **kwargs):
+            self.kwargs = kwargs
+
+        def grid(self, **kwargs):
+            pass
+
+        def pack(self, **kwargs):
+            pass
+
+        def columnconfigure(self, *args, **kwargs):
+            pass
+
+    class Toplevel(Widget):
+        def title(self, text):
+            pass
+
+        def transient(self, other):
+            pass
+
+        def grab_set(self):
+            pass
+
+        def destroy(self):
+            pass
+
+    class Label(Widget):
+        def __init__(self, master=None, **kwargs):
+            super().__init__(master, **kwargs)
+            sitting.labels.append(kwargs.get("text", ""))
+
+    class Entry(Widget):
+        def __init__(self, master=None, **kwargs):
+            super().__init__(master, **kwargs)
+            self.typed = ""
+            sitting.entries.append(self)
+
+        def get(self):
+            return self.typed
+
+    class Radiobutton(Widget):
+        def __init__(self, master=None, **kwargs):
+            super().__init__(master, **kwargs)
+            sitting.options.append((kwargs["variable"], kwargs["value"], kwargs.get("text", "")))
+            sitting.radios.append(kwargs)
+
+    class Checkbutton(Widget):
+        def __init__(self, master=None, **kwargs):
+            super().__init__(master, **kwargs)
+            sitting.labels.append(kwargs.get("text", ""))
+
+    class Button(Widget):
+        def __init__(self, master=None, **kwargs):
+            super().__init__(master, **kwargs)
+            sitting.buttons[kwargs["text"]] = kwargs["command"]
+
+    return types.SimpleNamespace(
+        Toplevel=Toplevel, Label=Label, Entry=Entry, Frame=Widget, Button=Button,
+        Radiobutton=Radiobutton, Checkbutton=Checkbutton,
+        StringVar=Variable, BooleanVar=Variable,
+    )
+
+
+def _drive_setup(monkeypatch, layout, *, touch=None, press="Save and start"):
+    """Hold one setup sitting on the fake tkinter and return (answers, sitting).
+
+    `touch` is the person: it runs while the window is open, with the sitting
+    in hand, before the button is pressed. Nothing touches anything by
+    default, which is the case this task exists for.
+    """
+    sitting = _Sitting()
+    monkeypatch.setitem(sys.modules, "tkinter", _fake_tkinter(sitting))
+
+    class Root:
+        def wait_window(self, window):
+            if touch is not None:
+                touch(sitting)
+            if press is not None:
+                sitting.buttons[press]()
+
+    return launcher.ask_setup(Root(), layout), sitting
+
+
+def test_a_question_nobody_touched_hands_over_nothing(layout, monkeypatch):
+    """ADR-016: only an answer somebody gave writes the row. A preselected
+    radio is a default, not an answer, and the launcher renders rather than
+    decides (ADR-015) - so a sitting nobody touched may name no provider and
+    no tier at all.
+
+    Asserted through `setup_command`, because what the person gets is what
+    reaches the app, not the shape of the dict in between.
+    """
+    answers, _sitting = _drive_setup(monkeypatch, layout)
+
+    assert set(answers) == {"hf_token", "provider", "tier", "fetch_models"}, (
+        "the sitting must have been held and saved; anything else makes the rest vacuous")
+    assert launcher.setup_command(layout, answers) == [
+        str(layout.env_python), "-m", "scribe.setup", "--fetch-models",
+    ]
+
+
+def test_the_two_questions_that_can_be_skipped_open_on_their_skip(layout, monkeypatch):
+    """The skip stays visible rather than leaving a group with nothing filled
+    in, which reads as broken; both groups therefore open on an option whose
+    value is empty."""
+    _answers, sitting = _drive_setup(monkeypatch, layout, press=None)
+
+    assert sitting.preselected() == [""]
+    assert len(sitting.options) == 7, "both groups render: four providers and three tiers"
+    assert [text for _v, value, text in sitting.options if value == ""] == ["Decide later", "Leave as it is"]
+
+
+def test_a_group_on_its_skip_does_not_open_with_every_circle_filled(layout, monkeypatch):
+    """Tk draws every button of a group with its "mixed" indicator while the
+    variable holds that button's -tristatevalue, and that option defaults to
+    the empty string - which is exactly what a question nobody answered holds
+    now. Photographed on 2026-09-22 (Tk 8.6, Windows 11): with the default,
+    all seven circles open filled, so a dialog that fills nothing in looks
+    like a dialog that filled everything in. Any value no answer can take
+    turns it off.
+
+    The stub cannot draw, so what is pinned here is that the launcher asks for
+    one; the picture is in the task's evidence folder.
+    """
+    _answers, sitting = _drive_setup(monkeypatch, layout, press=None)
+
+    answerable = {value for _variable, value, _text in sitting.options}
+    assert sitting.radios, "the sitting must have rendered radio buttons"
+    for radio in sitting.radios:
+        # Absent is not neutral: leaving the option out is asking for Tk's
+        # default, which is the empty string.
+        asked_for = radio.get("tristatevalue", "")
+        assert asked_for not in answerable, (
+            f"{radio.get('text')!r} draws mixed while the group holds "
+            f"{asked_for!r}, which is an answer this question can hold")
+
+
+def test_save_and_start_still_stamps_a_sitting_nobody_touched(layout, monkeypatch):
+    """The two buttons must stay different: "Save and start" ends the sitting
+    (the app writes the stamp, so it is not asked again), closing the window
+    is "ask me next time". A skip that emptied the answers would silently
+    turn the first into the second."""
+    answers, _sitting = _drive_setup(monkeypatch, layout)
+    assert answers is not None
+
+    closed, _sitting = _drive_setup(monkeypatch, layout, press="Skip for now")
+    assert closed is None
+
+
+def test_a_person_who_does_pick_a_provider_still_gets_one(layout, monkeypatch):
+    """The other half of the change: skipping writes nothing, choosing writes
+    exactly what was chosen."""
+    answers, _sitting = _drive_setup(
+        monkeypatch, layout, touch=lambda sitting: (sitting.pick("openrouter"), sitting.pick("max")))
+
+    command = launcher.setup_command(layout, answers)
+
+    assert "--provider" in command and "openrouter" in command
+    assert "--tier" in command and "max" in command
+
+
+def test_the_provider_question_says_that_picking_chooses_who_answers(layout, monkeypatch):
+    """The old heading, "Answers about a transcript", does not say that this
+    question decides who is asked - which is what ADR-016 requires of the text
+    that writes the row. The spec asks it as a question
+    (installer-design.md, question 5)."""
+    _answers, sitting = _drive_setup(monkeypatch, layout, press=None)
+
+    assert "Who answers questions about a transcript?" in sitting.labels
 
 
 # --- the first run on a machine with no environment (TASK-089.01) -----------------

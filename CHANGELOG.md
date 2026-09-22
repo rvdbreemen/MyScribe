@@ -42,6 +42,24 @@
 
 ### Fixed
 
+- A first run wrote down an answer nobody gave. The setup dialog opened with
+  "Ollama, on this machine" and "Turbo" already filled in, so "Save and start"
+  wrote `llm_provider = ollama` for somebody who only touched the button - on
+  a machine that may have no Ollama at all, and that then fails with a
+  provider nobody chose and is never asked again, because a row exists. Both
+  questions now open on a skip of their own ("Decide later", "Leave as it is")
+  and a question left there writes nothing; the heading says what picking
+  decides: "Who answers questions about a transcript?". Nothing changes for
+  somebody who does pick. Tk had a trap in the same corner: it draws every
+  circle in a group filled while the group's answer is the empty string (its
+  `-tristatevalue` default), which would have made a dialog that fills nothing
+  in look like one that filled everything in, so both groups now name a
+  tristate value no answer can take. The download checkbox is deliberately
+  not given a skip - a checkbox has no unanswered state - so it still starts
+  on yes and a first "Save and start" fetches the weights; the intro sentence
+  now names the two questions that do have a skip instead of implying all
+  four do (TASK-089.25).
+
 - A first "Save and start" never started anything. On a machine with no
   environment the launcher asked the four questions, then ran
   `scribe.setup` from an environment that did not exist yet: the Popen died on
