@@ -164,13 +164,28 @@ def check_sqlite() -> Check:
     return Check(name="sqlite", ok=ok, detail=detail, fix_hint=hint)
 
 
+def _ffmpeg_hint() -> str:
+    """The command that installs ffmpeg on *this* machine (README.md's table).
+
+    One hint for three package managers was wrong on two of them: a Mac and a
+    Linux box were both told to run winget.
+    """
+    if sys.platform == "win32":
+        command = "winget install Gyan.FFmpeg"
+    elif sys.platform == "darwin":
+        command = "brew install ffmpeg"
+    else:
+        command = "apt install ffmpeg"
+    return f"Install ffmpeg and put it on PATH ({command})."
+
+
 def check_ffmpeg() -> Check:
     ok, line = _run(["ffmpeg", "-version"])
     return Check(
         name="ffmpeg",
         ok=ok,
         detail=line or "not found",
-        fix_hint="" if ok else "Install ffmpeg and put it on PATH (winget install Gyan.FFmpeg).",
+        fix_hint="" if ok else _ffmpeg_hint(),
     )
 
 
@@ -302,6 +317,107 @@ SMOKE_CLIP = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "cl
 
 _PIN_HINT = "Install the locked stack: uv sync (on Windows it takes torch from the cu128 index)"
 
+_NVIDIA_PCI_VENDOR = "10de"
+"""NVIDIA's PCI vendor id. The one signal that does not need a driver: the
+firmware enumerates a card whether or not anything can talk to it."""
+
+_NVIDIA_SMI_LOCATIONS = (
+    Path(r"C:\Windows\System32\nvidia-smi.exe"),
+    Path(r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
+    Path("/usr/bin/nvidia-smi"),
+    Path("/usr/local/nvidia/bin/nvidia-smi"),
+)
+"""Where the driver leaves its own tool when it is not on this process's PATH."""
+
+_SYSFS_PCI_DEVICES = Path("/sys/bus/pci/devices")
+"""Linux's PCI enumeration: one directory per device, each with a `vendor` file."""
+
+
+def nvidia_hardware_present() -> bool:
+    """Is there an NVIDIA card in this machine - driver or no driver?
+
+    The question `torch.cuda.is_available()` cannot answer. It says only that
+    no device could be opened, which is equally true of a laptop that never
+    had a card and of a 3080 behind a driver that broke this morning. One of
+    those is a machine working as designed and the other has quietly stopped
+    transcribing, so the doctor has to tell them apart before it decides
+    whether to fail.
+
+    Two signals, and deliberately not `CUDA_VISIBLE_DEVICES` - that variable
+    simulates both cases identically, which is the whole reason this function
+    exists. The driver's own `nvidia-smi` being installed is one; the PCI
+    vendor id the firmware enumerated is the other, and it is there before any
+    driver is. `nvidia-smi` is only ever looked for, never run: on a broken
+    driver it exits non-zero while the card is still in the machine, and
+    reading that as "no hardware" would soften exactly the case ADR-012 wants
+    red.
+
+    Every doubt answers True. Being wrong that way costs a fix hint somebody
+    does not need; being wrong the other way hides a dead card. So an error
+    reading the registry or sysfs, a list that cannot be read at all, and an
+    operating system this function has not been taught are all hardware
+    present.
+
+    Not tried on a real machine without an NVIDIA card by anybody
+    (TASK-089.12, criterion 9). What the tests pin is the rule, with this
+    function replaced.
+    """
+    if shutil.which("nvidia-smi") or any(path.exists() for path in _NVIDIA_SMI_LOCATIONS):
+        return True
+    if sys.platform == "win32":
+        return _nvidia_in_windows_pci()
+    if sys.platform.startswith("linux"):
+        return _nvidia_in_sysfs()
+    return True
+
+
+def _nvidia_in_windows_pci() -> bool:
+    """The PCI devices Windows enumerated, read from the registry.
+
+    `Enum\\PCI` holds one subkey per vendor and device, named `VEN_10DE&DEV_`
+    and the rest, and it is filled by enumeration rather than by a driver
+    install - which is the case a `nvidia-smi` lookup misses. Measured here:
+    0.3 ms and two vendor keys. `wmic` is gone in Windows 11 24H2 and a CIM
+    call costs a second and a process.
+
+    The loop asks for exactly the number of subkeys `QueryInfoKey` reports, so
+    a read that is refused raises out of it instead of ending it: a denied
+    enumeration must never be read as "finished, none found".
+    """
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Enum\PCI") as key:
+            for index in range(winreg.QueryInfoKey(key)[0]):
+                if f"ven_{_NVIDIA_PCI_VENDOR}" in winreg.EnumKey(key, index).lower():
+                    return True
+    except (ImportError, OSError):
+        return True
+    return False
+
+
+def _nvidia_in_sysfs() -> bool:
+    """The PCI devices the kernel enumerated: one `vendor` file per device.
+
+    The same ground truth as the registry read above, and the same rule: a
+    directory that is not there, a list that comes back empty and a file that
+    will not open are all "learned nothing", and that counts as present.
+    """
+    try:
+        vendors = sorted(_SYSFS_PCI_DEVICES.glob("*/vendor"))
+    except OSError:
+        return True
+    if not vendors:
+        return True
+    for vendor in vendors:
+        try:
+            found = vendor.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            return True
+        if found == f"0x{_NVIDIA_PCI_VENDOR}":
+            return True
+    return False
+
 
 def check_gpu_runtime() -> Check:
     """Is there a CUDA torch, and does it see the card?
@@ -330,19 +446,47 @@ def check_gpu_runtime() -> Check:
                     f"MLX {'available' if mlx else 'missing'} for transcription, "
                     f"MPS {'available' if mps else 'missing'} for diarization"
                 ),
-                fix_hint=None if (mlx and mps) else "uv sync (the mlx packages are locked for macOS)",
+                # "" and not None: this value is printed as JSON, where a null
+                # is a shape every reader has to special-case.
+                fix_hint="" if (mlx and mps) else "uv sync (the mlx packages are locked for macOS)",
             )
+        # ADR-012's Must, and it does not soften for a machine without a card:
+        # a CPU-only build on Windows or Linux means the lock was not honoured.
+        # Only the advice changes - this environment has no pip.
         return Check(
             name="gpu-runtime",
             ok=False,
             detail=f"torch {torch.__version__} is a CPU-only build",
-            fix_hint="Reinstall from the CUDA index: pip install torch --index-url https://download.pytorch.org/whl/cu128",
+            fix_hint=_PIN_HINT,
         )
     if not torch.cuda.is_available():
+        # Three machines land here and only one of them is broken. A card
+        # hidden with CUDA_VISIBLE_DEVICES looks exactly like a driver that
+        # stopped working, so the variable softens nothing; what decides is
+        # whether this machine has NVIDIA hardware at all.
+        hidden = "CUDA_VISIBLE_DEVICES" in os.environ
+        if not hidden and not nvidia_hardware_present():
+            # Information, not a failure: CPU transcription is a supported
+            # mode (README.md), and telling a machine that never had a driver
+            # to check one is advice it cannot follow. The shape of the Apple
+            # Silicon branch above, and required all the same.
+            return Check(
+                name="gpu-runtime",
+                ok=True,
+                detail=(
+                    f"torch {torch.__version__} (CUDA {torch.version.cuda}): "
+                    "no NVIDIA GPU on this machine; transcription on cpu"
+                ),
+            )
+        # Membership and not truthiness: an empty value hides every device as
+        # surely as -1 does, and the reader has to be told which it is.
+        hidden_by = (
+            f"; CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']!r} is set here" if hidden else ""
+        )
         return Check(
             name="gpu-runtime",
             ok=False,
-            detail=f"torch {torch.__version__} (CUDA {torch.version.cuda}) cannot reach a device",
+            detail=f"torch {torch.__version__} (CUDA {torch.version.cuda}) cannot reach a device{hidden_by}",
             fix_hint="Check the NVIDIA driver with nvidia-smi; the driver must be newer than the CUDA runtime.",
         )
 
@@ -686,6 +830,46 @@ WEB_SAFE_CHECKS = tuple(
 # requests is the shape of problem this tuple exists to prevent. The doctor's
 # own command still runs it, which is where the question was asked.
 
+CHECK_LABELS = {
+    check_python: "python",
+    check_sqlite: "sqlite",
+    check_ffmpeg: "ffmpeg",
+    check_ffprobe: "ffprobe",
+    check_ytdlp: "yt-dlp",
+    check_data_dir_writable: "data-dir",
+    check_disk_space: "disk-space",
+    check_database: "database",
+    check_accelerators: "accel",
+    check_diarization: "diarization",
+    check_models: "models",
+    check_ollama: "ollama",
+    check_gpu_runtime: "gpu-runtime",
+    check_gpu_smoke: "gpu-smoke",
+}
+"""The name each registered check will report, known *before* it runs.
+
+`checks()` announces a check as it starts, and at that moment there is no
+result to read a name off. A test pins every entry against the name the check
+does return, because a label that drifted would announce one thing and report
+another.
+"""
+
+SKIP_MEANINGS = {
+    "yt-dlp": "importing media from a link will not work",
+    "diarization": "speaker separation not set up",
+    "models": "weights not downloaded",
+    "ollama": "no local AI on this machine",
+}
+"""What a SKIP costs, in words somebody can act on.
+
+The closing line used to count the skipped checks and call them unwired,
+which reads as unfinished work in this repository rather than as something
+missing on the reader's own machine - and somebody who skipped the token was
+told about the developer's backlog instead of about speaker separation. A
+name with no entry here falls back to the name: a check added tomorrow must
+not crash the summary.
+"""
+
 
 # --- the GPU checks as a job ---------------------------------------------------
 
@@ -837,10 +1021,21 @@ def installed_models(cache_dir: Path | None = None) -> list[CachedModel]:
     return found
 
 
-def checks(include_gpu: bool = True) -> list[Check]:
-    """Run the checks. `include_gpu=False` keeps the unit suite off the card."""
+def checks(include_gpu: bool = True, on_start: Callable[[str], None] | None = None) -> list[Check]:
+    """Run the checks. `include_gpu=False` keeps the unit suite off the card.
+
+    `on_start` is called with a check's label just before it runs, so a caller
+    can say what is happening. It matters for one check in particular: a cold
+    `gpu-smoke` downloads 1.6 GB and transcribes a clip, and a terminal that
+    prints nothing until the last check has finished reads as a hang.
+    """
     selected = CPU_CHECKS + (GPU_CHECKS if include_gpu else ())
-    return [fn() for fn in selected]
+    results = []
+    for fn in selected:
+        if on_start is not None:
+            on_start(CHECK_LABELS.get(fn, fn.__name__))
+        results.append(fn())
+    return results
 
 
 def web_checks() -> list[Check]:
@@ -869,12 +1064,26 @@ def render(results: list[Check]) -> str:
     required_failures = [c for c in results if not c.ok and not c.optional]
     lines.append("")
     if required_failures:
-        lines.append(f"{len(required_failures)} required check(s) failed.")
+        closing = f"{len(required_failures)} required check(s) failed"
     else:
-        skipped = sum(1 for c in results if not c.ok and c.optional)
-        suffix = f" ({skipped} optional check(s) not wired yet)" if skipped else ""
-        lines.append(f"All required checks passed{suffix}.")
+        closing = "All required checks passed"
+    # On both branches, not only the passing one: a machine that has no ffmpeg
+    # still has to learn that speaker separation will not run either.
+    skipped = [c for c in results if not c.ok and c.optional]
+    if skipped:
+        closing += " (skipped: " + "; ".join(SKIP_MEANINGS.get(c.name, c.name) for c in skipped) + ")"
+    lines.append(f"{closing}.")
     return "\n".join(lines)
+
+
+def _stderr_is_a_terminal() -> bool:
+    """Is somebody watching this run? Never raises: under pythonw `sys.stderr`
+    is None, and a stream that has been closed or replaced may answer with a
+    ValueError instead of a boolean."""
+    try:
+        return bool(sys.stderr is not None and sys.stderr.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -894,10 +1103,27 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip the GPU runtime and smoke checks (they load a model and transcribe a clip)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print the checks as JSON, one object per check, instead of the table",
+    )
     args = parser.parse_args(argv)
 
-    results = checks(include_gpu=not args.no_gpu)
-    print(render(results))
+    def announce(label: str) -> None:
+        print(f"checking {label}", file=sys.stderr, flush=True)
+
+    # Progress goes to stderr, so `--json > file` stays something a program
+    # can parse, and only to a terminal, so a redirected run keeps exactly the
+    # report it had. Plain lines, no carriage returns and no ANSI: legacy
+    # conhost is still what a lot of these machines open.
+    watched = not args.json and _stderr_is_a_terminal()
+
+    results = checks(include_gpu=not args.no_gpu, on_start=announce if watched else None)
+    if args.json:
+        print(json.dumps([asdict(c) for c in results], indent=2))
+    else:
+        print(render(results))
     return 1 if any(not c.ok and not c.optional for c in results) else 0
 
 

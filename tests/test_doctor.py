@@ -1,7 +1,12 @@
 """Tests for the environment gate (plan Task 7)."""
 
+import json
+import re
 import shutil
 import sqlite3
+import sys
+import types
+from pathlib import Path
 
 import pytest
 
@@ -109,7 +114,7 @@ def test_main_returns_zero_when_all_required_checks_pass(tmp_path, monkeypatch, 
 
 def test_main_returns_one_when_a_required_check_fails(monkeypatch, capsys):
     bad = doctor.Check(name="python", ok=False, detail="too old", fix_hint="install 3.12")
-    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True: [bad])
+    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None: [bad])
 
     assert doctor.main(["--no-gpu"]) == 1
     assert "install 3.12" in capsys.readouterr().out
@@ -336,3 +341,561 @@ def test_a_database_that_will_not_open_does_not_hide_a_token_in_the_environment(
     monkeypatch.setenv("HF_TOKEN", "hf_from_the_environment")
 
     assert doctor._diarization_token() == "hf_from_the_environment"
+
+
+# --- a machine with no NVIDIA card, and the two cases that must stay red (TASK-089.12) ---
+
+
+def _tmp_library(monkeypatch, tmp_path):
+    """A library of this test's own, so nothing here touches the real one."""
+    monkeypatch.setattr(doctor.paths, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(doctor.paths, "DB_PATH", tmp_path / "myscribe.db")
+    monkeypatch.setattr(doctor.paths, "MEDIA_DIR", tmp_path / "media")
+    monkeypatch.setattr(doctor.paths, "LOGS_DIR", tmp_path / "logs")
+
+
+def _fake_torch(monkeypatch, cuda, device=False):
+    """`torch` as `check_gpu_runtime` asks about it, and nothing more.
+
+    A stand-in module rather than the real one: the branches under test are a
+    CPU-only build and a CUDA build that reaches no device, and this machine
+    can only ever be the third case, a healthy card. Nothing is loaded and no
+    card is touched.
+    """
+    monkeypatch.setattr(doctor.cuda_setup, "ensure_cuda_libs", lambda: None)
+    module = types.ModuleType("torch")
+    module.__version__ = "2.10.0+cu128" if cuda else "2.10.0+cpu"
+    module.version = types.SimpleNamespace(cuda=cuda)
+    module.cuda = types.SimpleNamespace(is_available=lambda: device)
+    monkeypatch.setitem(sys.modules, "torch", module)
+    return module
+
+
+def _hardware(monkeypatch, present):
+    """Replace the hardware question - the seam this task exists to build.
+
+    The test may not use `CUDA_VISIBLE_DEVICES` for this: on a machine with a
+    card the variable is indistinguishable from a broken driver, which is the
+    case that must stay red. It is cleared instead, because conftest
+    deliberately leaves `os.environ` alone and a shell that had it set would
+    defeat the branch silently.
+
+    Returns the list of answers the probe gave, so a test can assert it was
+    asked at all. Without that witness these tests pass for the wrong reason on
+    exactly one machine each: a bypassed seam looks green here, where the real
+    probe answers True, and green again on the card-less machine criterion 9
+    wants, where it answers False. `raising=False` is deliberately absent -
+    the attribute exists, and a renamed seam must be an error, not a stub
+    parked on the module beside the function that ignores it.
+    """
+    asked = []
+
+    def probe():
+        asked.append(present)
+        return present
+
+    monkeypatch.setattr(doctor, "nvidia_hardware_present", probe)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    return asked
+
+
+def test_a_machine_with_no_nvidia_card_reads_as_information_not_a_failure(monkeypatch):
+    """CPU transcription is a supported mode (README.md:46), so a laptop that
+    never had a driver must not fail the gate - and must not be told to run
+    nvidia-smi, a tool it does not have, for a driver it does not want."""
+    _fake_torch(monkeypatch, cuda="12.8", device=False)
+    asked = _hardware(monkeypatch, present=False)
+
+    check = doctor.check_gpu_runtime()
+
+    assert check.ok is True
+    assert check.optional is False, "still a required check; on this machine it simply passes"
+    assert "no NVIDIA GPU on this machine; transcription on cpu" in check.detail
+    assert not check.fix_hint, "nothing to fix: this machine is behaving as designed"
+    assert asked == [False], "the verdict must come from the seam, not from the machine running the test"
+
+
+def test_the_whole_command_exits_zero_on_a_machine_with_no_card(tmp_path, monkeypatch, capsys):
+    """Criterion 1 end to end. The smoke is stubbed: what it would do on a cold
+    machine is download 1.6 GB and transcribe, which is criterion 9's question
+    and not this one's."""
+    _tmp_library(monkeypatch, tmp_path)
+    _fake_torch(monkeypatch, cuda="12.8", device=False)
+    _hardware(monkeypatch, present=False)
+    monkeypatch.setattr(
+        doctor,
+        "GPU_CHECKS",
+        (
+            doctor.check_gpu_runtime,
+            lambda: doctor.Check(name="gpu-smoke", ok=True, detail="stubbed; no clip is transcribed here"),
+        ),
+    )
+
+    code = doctor.main([])
+
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "[OK  ] gpu-runtime" in out
+    assert "nvidia-smi" not in out
+
+
+def test_a_card_behind_a_broken_driver_stays_a_required_failure(monkeypatch):
+    """The case this branch was written for. Softening it would tell Robert's
+    machine "transcription on cpu" with exit 0 the day his driver broke, and he
+    would never learn that the card had stopped working."""
+    _fake_torch(monkeypatch, cuda="12.8", device=False)
+    asked = _hardware(monkeypatch, present=True)
+
+    check = doctor.check_gpu_runtime()
+
+    assert check.ok is False and check.optional is False
+    assert "cannot reach a device" in check.detail
+    assert "nvidia-smi" in check.fix_hint
+    assert asked == [True], "red because the seam said there is a card, not because this machine has one"
+
+
+@pytest.mark.parametrize("value", ["-1", ""])
+def test_a_card_hidden_by_the_environment_stays_red_and_the_detail_names_it(monkeypatch, value):
+    """Membership, not truthiness: an empty value hides a card as surely as -1.
+    The probe says "no hardware" here and the check stays red anyway, which is
+    the point - a hidden device is not a machine without one."""
+    _fake_torch(monkeypatch, cuda="12.8", device=False)
+    _hardware(monkeypatch, present=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", value)
+
+    check = doctor.check_gpu_runtime()
+
+    assert check.ok is False and check.optional is False
+    assert "CUDA_VISIBLE_DEVICES" in check.detail
+    assert "nvidia-smi" in check.fix_hint
+
+
+def test_a_cpu_only_torch_build_stays_a_required_failure_and_says_uv_sync(monkeypatch):
+    """ADR-012's Must, and the guard against a fix that passes every case: no
+    hardware and no device, and it is still red, because a CPU-only build means
+    the lock was not honoured. Only the hint moves - the venv has no pip."""
+    _fake_torch(monkeypatch, cuda=None, device=False)
+    monkeypatch.setattr(doctor.accel, "is_apple_silicon", lambda: False)
+    _hardware(monkeypatch, present=False)
+
+    check = doctor.check_gpu_runtime()
+
+    assert check.ok is False and check.optional is False
+    assert "CPU-only build" in check.detail
+    assert "uv sync" in check.fix_hint
+    assert not re.search(r"\bpip\b", check.fix_hint)
+
+
+# --- the hardware probe: any doubt counts as hardware present ------------------------
+
+
+def _fake_winreg(monkeypatch, subkeys=(), fail=False):
+    """A winreg for the PCI enumeration, so the rule can be tested off Windows."""
+
+    class Key:
+        def __init__(self, names):
+            self.names = names
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def open_key(root, path):
+        if fail:
+            raise OSError(5, "Access is denied")
+        return Key(list(subkeys))
+
+    module = types.ModuleType("winreg")
+    module.HKEY_LOCAL_MACHINE = object()
+    module.OpenKey = open_key
+    module.QueryInfoKey = lambda key: (len(key.names), 0, 0)
+    module.EnumKey = lambda key, index: key.names[index]
+    monkeypatch.setitem(sys.modules, "winreg", module)
+    return module
+
+
+def _no_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    monkeypatch.setattr(doctor, "_NVIDIA_SMI_LOCATIONS", ())
+
+
+def test_the_driver_tool_off_the_path_still_counts_as_a_card(monkeypatch, tmp_path):
+    """The second half of the nvidia-smi signal: a machine whose PATH does not
+    carry the driver's tool, but whose disk does. It is only ever looked for,
+    never run - a broken driver's nvidia-smi exits non-zero with the card still
+    in the slot. Without this test the whole `_NVIDIA_SMI_LOCATIONS` arm can be
+    deleted and every other probe test stays green, and that arm is the only
+    signal left on a machine whose card the OS has stopped enumerating."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    _fake_winreg(monkeypatch, subkeys=["VEN_8086&DEV_A0E0"])
+
+    installed = tmp_path / "nvidia-smi.exe"
+    installed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_NVIDIA_SMI_LOCATIONS", (installed,))
+
+    assert doctor.nvidia_hardware_present() is True
+
+    # A location that is merely listed proves nothing; the registry decides.
+    monkeypatch.setattr(doctor, "_NVIDIA_SMI_LOCATIONS", (tmp_path / "not-installed.exe",))
+
+    assert doctor.nvidia_hardware_present() is False
+
+
+def test_a_registry_that_will_not_answer_counts_as_hardware_present(monkeypatch):
+    """Any doubt is hardware present, in the code and not in a comment. An
+    access-denied read must never be told apart from "enumerated, none found"."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    _no_nvidia_smi(monkeypatch)
+    _fake_winreg(monkeypatch, fail=True)
+
+    assert doctor.nvidia_hardware_present() is True
+
+
+def test_the_registry_finds_a_card_by_its_pci_vendor_id(monkeypatch):
+    """Vendor 10DE, which is the ground truth and needs no driver: a card whose
+    driver was never installed is still enumerated under Enum\\PCI."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    _no_nvidia_smi(monkeypatch)
+    _fake_winreg(monkeypatch, subkeys=["VEN_8086&DEV_A0E0", "VEN_10DE&DEV_2216&SUBSYS_38821462"])
+
+    assert doctor.nvidia_hardware_present() is True
+
+
+def test_a_registry_with_no_nvidia_vendor_key_is_a_machine_without_a_card(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    _no_nvidia_smi(monkeypatch)
+    _fake_winreg(monkeypatch, subkeys=["VEN_8086&DEV_A0E0", "VEN_1022&DEV_1450"])
+
+    assert doctor.nvidia_hardware_present() is False
+
+
+def test_nvidia_smi_on_path_is_enough_on_any_os(monkeypatch):
+    """The driver's own tool being installed is evidence of a card, whatever
+    the registry or sysfs would say next."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        doctor.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
+    )
+
+    assert doctor.nvidia_hardware_present() is True
+
+
+def test_a_sysfs_that_is_not_there_counts_as_hardware_present(monkeypatch, tmp_path):
+    """A container without /sys, a kernel that lists nothing: learned nothing
+    is not "no card"."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    _no_nvidia_smi(monkeypatch)
+    monkeypatch.setattr(doctor, "_SYSFS_PCI_DEVICES", tmp_path / "absent")
+
+    assert doctor.nvidia_hardware_present() is True
+
+    empty = tmp_path / "devices"
+    empty.mkdir()
+    monkeypatch.setattr(doctor, "_SYSFS_PCI_DEVICES", empty)
+
+    assert doctor.nvidia_hardware_present() is True
+
+
+def test_sysfs_reads_the_pci_vendor_of_every_device(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    _no_nvidia_smi(monkeypatch)
+    # Named without the colons a real sysfs uses: Windows cannot create those,
+    # and what is under test is the vendor file, not the directory's spelling.
+    devices = tmp_path / "devices"
+    (devices / "0000.00.02.0").mkdir(parents=True)
+    (devices / "0000.00.02.0" / "vendor").write_text("0x8086\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_SYSFS_PCI_DEVICES", devices)
+
+    assert doctor.nvidia_hardware_present() is False
+
+    (devices / "0000.01.00.0").mkdir()
+    (devices / "0000.01.00.0" / "vendor").write_text("0x10de\n", encoding="utf-8")
+
+    assert doctor.nvidia_hardware_present() is True
+
+
+def test_an_operating_system_this_probe_does_not_know_counts_as_hardware_present(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "sunos5")
+    _no_nvidia_smi(monkeypatch)
+
+    assert doctor.nvidia_hardware_present() is True
+
+
+# --- hints that name a tool this machine has ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "platform,command",
+    [
+        ("win32", "winget install Gyan.FFmpeg"),
+        ("darwin", "brew install ffmpeg"),
+        ("linux", "apt install ffmpeg"),
+    ],
+)
+def test_the_ffmpeg_hint_names_this_machines_package_manager(monkeypatch, platform, command):
+    """One hint for three package managers was wrong on two of them; the
+    commands are README.md:45's own."""
+    monkeypatch.setattr(doctor, "_run", lambda cmd: (False, ""))
+    monkeypatch.setattr(sys, "platform", platform)
+
+    check = doctor.check_ffmpeg()
+
+    assert check.ok is False
+    assert command in check.fix_hint
+
+
+def _refuse_a_database(*args, **kwargs):
+    raise sqlite3.OperationalError("unable to open database file")
+
+
+def test_no_fix_hint_this_machine_can_print_names_pip(tmp_path, monkeypatch):
+    """uv owns the environment (ADR-012) and the venv has no pip, so a hint
+    that says "pip install" is advice nobody here can follow.
+
+    Asserted over rendered hints and not over the source: pip is a substring of
+    pipeline, a word this module uses about itself, and a green check's hint is
+    the empty string - collecting those would prove nothing, so every check in
+    the module that can produce a hint is driven into a failing branch, one
+    branch per check and all four of gpu-runtime's, since that is the check
+    this task changes.
+
+    Collected as (case, hint) pairs and not counted. A round-number floor let
+    two hints quietly become the empty string, which in the test whose job is
+    hints that exist is the one thing it may not allow; and the three
+    gpu-runtime branches all report the name "gpu-runtime", so the case has to
+    be named here or the failure message cannot say which one went missing.
+    """
+    from scribe import models
+    from scribe.stages import diarize
+
+    monkeypatch.setattr(doctor, "_run", lambda cmd: (False, ""))
+    monkeypatch.setattr(doctor.urls, "installed_version", lambda: None)
+    monkeypatch.setattr(
+        models, "status", lambda: [{"here": False, "bytes": 2**30, "repo": "pyannote/x", "gated": True}]
+    )
+    monkeypatch.setattr(diarize, "local_weights_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+    monkeypatch.setattr(doctor.db, "connect", _refuse_a_database)
+    _tmp_library(monkeypatch, tmp_path)
+
+    hints = []
+    # The three cheapest failures to stage, each in a context of its own so the
+    # fake interpreter, the old SQLite and the unwritable directory do not
+    # follow the checks below into their own branches.
+    with monkeypatch.context() as an_older_python:
+        an_older_python.setattr(sys, "version_info", types.SimpleNamespace(major=3, minor=11, micro=9))
+        hints.append(("python", doctor.check_python().fix_hint))
+    with monkeypatch.context() as an_older_sqlite:
+        an_older_sqlite.setattr(doctor.sqlite3, "sqlite_version_info", (3, 34, 0))
+        hints.append(("sqlite", doctor.check_sqlite().fix_hint))
+    with monkeypatch.context() as a_directory_that_refuses:
+
+        def refuse(*args, **kwargs):
+            raise OSError(13, "Permission denied")
+
+        a_directory_that_refuses.setattr(doctor.tempfile, "NamedTemporaryFile", refuse)
+        hints.append(("data-dir", doctor.check_data_dir_writable().fix_hint))
+
+    hints += [
+        ("ffmpeg", doctor.check_ffmpeg().fix_hint),
+        ("ffprobe", doctor.check_ffprobe().fix_hint),
+        ("yt-dlp", doctor.check_ytdlp().fix_hint),
+        ("disk-space", doctor.check_disk_space(floor_gb=10**6).fix_hint),
+        ("database", doctor.check_database().fix_hint),
+        ("diarization", doctor.check_diarization().fix_hint),
+        ("models", doctor.check_models().fix_hint),
+        ("ollama", doctor.check_ollama().fix_hint),
+        ("gpu-smoke", doctor.gpu_smoke(clip=tmp_path / "nope.wav").fix_hint),
+    ]
+    monkeypatch.setattr(doctor.accel, "is_apple_silicon", lambda: False)
+    for case, cuda, present in (
+        ("gpu-runtime: a card behind a broken driver", "12.8", True),
+        ("gpu-runtime: no NVIDIA hardware", "12.8", False),
+        ("gpu-runtime: a CPU-only build", None, False),
+    ):
+        _fake_torch(monkeypatch, cuda=cuda, device=False)
+        _hardware(monkeypatch, present=present)
+        hints.append((case, doctor.check_gpu_runtime().fix_hint))
+    monkeypatch.setattr(doctor.accel, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(doctor.accel, "mlx_available", lambda: False)
+    monkeypatch.setattr(doctor.accel, "mps_available", lambda: False)
+    _fake_torch(monkeypatch, cuda=None, device=False)
+    hints.append(("gpu-runtime: Apple Silicon without MLX", doctor.check_gpu_runtime().fix_hint))
+
+    assert [case for case, hint in hints if hint is None] == [], "a None hint becomes a null in --json"
+    assert [case for case, hint in hints if not hint] == ["gpu-runtime: no NVIDIA hardware"], (
+        f"a failing check owes the reader something to do; the one blank is the machine "
+        f"that is behaving as designed: {hints}"
+    )
+    assert [case for case, hint in hints if re.search(r"\bpip\b", hint)] == []
+
+
+def test_a_healthy_apple_silicon_leaves_an_empty_hint_and_never_a_null(monkeypatch):
+    """The one green check that still fills in the hint field, and `--json`
+    prints every field of every check - so "" and not None, because a null is a
+    shape each reader has to special-case. Nothing on this machine can reach
+    the branch, so only a test keeps it from drifting back."""
+    monkeypatch.setattr(doctor.accel, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(doctor.accel, "mlx_available", lambda: True)
+    monkeypatch.setattr(doctor.accel, "mps_available", lambda: True)
+    _fake_torch(monkeypatch, cuda=None, device=False)
+
+    check = doctor.check_gpu_runtime()
+
+    assert check.ok is True
+    assert check.fix_hint == ""
+
+
+# --- the closing line says what a SKIP costs ----------------------------------------
+
+
+def test_the_closing_line_says_what_each_skipped_check_costs():
+    """"2 optional check(s) not wired yet" read as unfinished developer work.
+    What it means is that speaker separation will not run on this machine."""
+    results = [
+        doctor.Check(name="python", ok=True, detail="3.12.7"),
+        doctor.Check(name="diarization", ok=False, optional=True, detail="no token"),
+        doctor.Check(name="models", ok=False, optional=True, detail="1.6 GB still to download"),
+    ]
+
+    printed = doctor.render(results)
+    closing = printed.splitlines()[-1]
+
+    assert closing.startswith("All required checks passed")
+    assert "speaker separation not set up" in closing
+    assert "weights not downloaded" in closing
+    assert "not wired yet" not in printed
+
+
+def test_a_machine_that_failed_a_check_is_still_told_why_one_was_skipped():
+    """The explanation hung off the passing branch only, so a machine without
+    ffmpeg learned nothing about diarization - the run where it matters most."""
+    results = [
+        doctor.Check(name="ffmpeg", ok=False, detail="not found", fix_hint="install it"),
+        doctor.Check(name="diarization", ok=False, optional=True, detail="no token"),
+    ]
+
+    closing = doctor.render(results).splitlines()[-1]
+
+    assert "1 required check(s) failed" in closing
+    assert "speaker separation not set up" in closing
+
+
+def test_a_skipped_check_with_no_entry_falls_back_to_its_name():
+    """A check added tomorrow must not crash the closing line."""
+    results = [doctor.Check(name="something-new", ok=False, optional=True, detail="absent")]
+
+    assert "something-new" in doctor.render(results).splitlines()[-1]
+
+
+def test_the_words_not_wired_yet_are_gone():
+    source = Path(doctor.__file__).read_text(encoding="utf-8")
+
+    assert "not wired yet" not in source
+
+
+# --- a program can read the answer ---------------------------------------------------
+
+
+def test_json_prints_one_object_per_check_and_nothing_else(tmp_path, monkeypatch, capsys):
+    _tmp_library(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+
+    code = doctor.main(["--no-gpu", "--json"])
+
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert code == 0
+    names = [row["name"] for row in payload]
+    assert "python" in names and "sqlite" in names and "ollama" in names
+    for row in payload:
+        assert set(row) == {"name", "ok", "optional", "detail", "fix_hint"}
+        assert isinstance(row["ok"], bool) and isinstance(row["optional"], bool)
+        assert isinstance(row["fix_hint"], str), "a null is a shape a reader has to special-case"
+
+
+@pytest.mark.parametrize("argv", [["--no-gpu"], ["--no-gpu", "--json"]])
+def test_the_exit_code_is_the_same_whichever_shape_is_printed(monkeypatch, capsys, argv):
+    """--json is a second spelling of the same answer, not a second answer."""
+    bad = doctor.Check(name="python", ok=False, detail="too old", fix_hint="install 3.12")
+    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None: [bad])
+
+    assert doctor.main(argv) == 1
+
+    passed = doctor.Check(name="python", ok=True, detail="3.12.7")
+    skipped = doctor.Check(name="ollama", ok=False, optional=True, detail="not installed on this machine")
+    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None: [passed, skipped])
+    capsys.readouterr()
+
+    assert doctor.main(argv) == 0
+
+
+# --- a cold run is not a blank terminal ---------------------------------------------
+
+
+def test_each_check_is_named_as_it_starts_on_a_terminal(tmp_path, monkeypatch, capsys):
+    """A cold gpu-smoke downloads weights and transcribes a clip; a terminal
+    that prints nothing until the last check has finished reads as a hang."""
+    _tmp_library(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+    monkeypatch.setattr(doctor, "_stderr_is_a_terminal", lambda: True)
+
+    code = doctor.main(["--no-gpu"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "checking python" in captured.err
+    assert "checking ollama" in captured.err
+    assert "checking python" not in captured.out, "progress is on stderr; stdout stays the report"
+    assert captured.out.startswith("[OK  ] python")
+
+
+def test_nothing_is_printed_when_stderr_is_not_a_terminal(tmp_path, monkeypatch, capsys):
+    """A redirected run - CI, a log file - gets the report and no narration."""
+    _tmp_library(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+
+    doctor.main(["--no-gpu"])
+
+    assert "checking " not in capsys.readouterr().err
+
+
+def test_json_output_carries_no_progress_even_on_a_terminal(tmp_path, monkeypatch, capsys):
+    """The one shape a program parses must stay parseable."""
+    _tmp_library(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+    monkeypatch.setattr(doctor, "_stderr_is_a_terminal", lambda: True)
+
+    doctor.main(["--no-gpu", "--json"])
+
+    captured = capsys.readouterr()
+    assert "checking " not in captured.err
+    json.loads(captured.out)
+
+
+def test_every_registered_check_is_labelled_with_the_name_it_reports(tmp_path, monkeypatch):
+    """The label is printed before the check runs, so it cannot come from the
+    result. One that drifted would announce one name and report another."""
+    _tmp_library(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+
+    assert set(doctor.CHECK_LABELS) == set(doctor.CPU_CHECKS + doctor.GPU_CHECKS)
+
+    for fn in doctor.CPU_CHECKS:
+        assert fn().name == doctor.CHECK_LABELS[fn]
+
+    # After the loop, because `check_accelerators` imports the real torch on
+    # its way to `accel.describe()`. The version is asserted so a fake that
+    # failed to take is a red test rather than a test that quietly asked the
+    # card in the machine.
+    _fake_torch(monkeypatch, cuda="12.8", device=False)
+    _hardware(monkeypatch, present=False)
+    runtime = doctor.check_gpu_runtime()
+    assert "2.10.0+cu128" in runtime.detail, "the real torch answered; this test touched the card"
+    assert runtime.name == doctor.CHECK_LABELS[doctor.check_gpu_runtime]
+    # The smoke without a card: gpu_smoke returns on a missing clip before the
+    # transcribe stage is even imported.
+    assert doctor.gpu_smoke(clip=tmp_path / "nope.wav").name == doctor.CHECK_LABELS[doctor.check_gpu_smoke]

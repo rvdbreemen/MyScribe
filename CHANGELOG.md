@@ -2,6 +2,30 @@
 
 ### Changed
 
+- The doctor no longer fails a machine for not having an NVIDIA card. A CUDA
+  build that cannot reach a device used to be one required failure whether the
+  machine had a card behind a broken driver or no card at all, and it told both
+  to "check the NVIDIA driver with nvidia-smi" - advice a laptop that never had
+  a driver cannot follow, on a machine that would in fact transcribe, because
+  CPU transcription is a supported mode. It now asks whether there is NVIDIA
+  hardware at all, from nvidia-smi being installed and the PCI vendor id the
+  firmware enumerated, and only then reads as information. A card that is
+  present and unreachable stays a required failure and says so loudly: that one
+  must be impossible to miss. Every doubt counts as hardware present, and
+  `CUDA_VISIBLE_DEVICES` never softens anything - it hides a working card
+  exactly as a dead driver does - but the line now says when it is set
+  (TASK-089.12).
+
+- The doctor's advice names tools that exist: `uv sync` where it used to say
+  `pip install` in an environment that has no pip, and winget, brew or apt for
+  ffmpeg instead of winget on every operating system. Its closing line says
+  what each skipped check costs - "speaker separation not set up", "weights not
+  downloaded" - where it used to read "optional check(s) not wired yet", which
+  sounded like unfinished work rather than something to do. `--json` prints one
+  object per check with name, ok, optional, detail and fix_hint, and each
+  check's name appears as it starts, so a cold gpu-smoke is no longer a blank
+  terminal for a minute (TASK-089.12).
+
 - Somebody who already finished the old setup is asked the questions this
   version added, once, and never the ones they answered. The first-run sitting
   used to appear or not on "does `setup.json` exist", so a finished old setup
