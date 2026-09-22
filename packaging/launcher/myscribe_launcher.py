@@ -437,14 +437,38 @@ def _release_frozen_dll_directory() -> None:
         ctypes.windll.kernel32.SetDllDirectoryW(None)
 
 
-def run_streaming(command: list[str], *, env: dict, cwd: Path | None, on_line: Callable[[str], None]) -> int:
-    """Run ``command``, hand every output line to ``on_line``, return the exit code."""
+def run_streaming(command: list[str], *, env: dict, cwd: Path | None, on_line: Callable[[str], None],
+                  input: str | None = None,
+                  on_start: Callable[["subprocess.Popen"], None] | None = None) -> int:
+    """Run ``command``, hand every output line to ``on_line``, return the exit code.
+
+    ``input`` is one document written to the child's stdin, which is then
+    closed: ``scribe.setup --apply-stdin`` reads until EOF, so a stdin left
+    open is a child that never starts. The document is a few hundred bytes,
+    well inside the pipe buffer, so writing it before the first read cannot
+    deadlock. Without ``input`` the child gets no stdin at all, as before -
+    which is what makes ``scribe.setup``'s own "nobody is at a terminal" test
+    look at more than ``isatty()`` on Windows, where NUL answers yes.
+
+    ``on_start`` is handed the process, for a caller that has to be able to
+    stop it: Quit stops the setup child alone, and never its tree (ADR-017).
+    """
     proc = subprocess.Popen(
         command, cwd=str(cwd) if cwd else None, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
+        stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+        creationflags=NO_WINDOW,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
+    if on_start is not None:
+        on_start(proc)
+    if input is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(input)
+        except OSError:
+            pass  # a child that died before it read; its exit code says so
+        finally:
+            proc.stdin.close()
     assert proc.stdout is not None
     for line in proc.stdout:
         on_line(line.rstrip())
@@ -1196,6 +1220,95 @@ class AppProcess:
         self.proc.wait(timeout)
 
 
+# --- what the launcher says, and where it is kept ---------------------------------
+
+
+INSTALL_LOG = "launcher.log"
+SMOKE_LOG = "launcher-smoke.log"
+REDACTED = "***"
+
+
+class InstallLog:
+    """Every line the launcher reported, appended to a file under the home.
+
+    Opened lazily, because the first lines are said before the home exists -
+    and never raises: a windowed build has no stderr, so a log that could not
+    be written must not be the thing that stops the install.
+
+    Secrets are redacted by value. The launcher knows which answers are
+    secrets because the plan says so (`kind == "secret"`), and an answer is
+    hidden here the moment the sitting hands it over - before the child that
+    might echo it has even started. ADR-015's Must Not is the rule: a secret
+    goes to its settings row and to nowhere else, a log included.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.secrets: list[str] = []
+        self.pending: list[str] = []
+
+    def hide(self, value: str) -> None:
+        """Never redact the empty string: `"".replace("", "***")` puts the
+        mark between every character of every line."""
+        if value and value not in self.secrets:
+            self.secrets.append(value)
+
+    def redact(self, text: str) -> str:
+        for secret in self.secrets:
+            text = text.replace(secret, REDACTED)
+        return text
+
+    def write(self, text: str) -> None:
+        """Append one line, or hold it until there is somewhere to put it.
+
+        Nothing is created here. The home may still turn out to be one that
+        cannot hold the install, or one a MyScribe that already serves owns,
+        and a log file is not a reason to build a folder under either.
+        `prepare_home` makes the folder, and the first write after that
+        carries everything said before it, in order.
+        """
+        self.pending.append(text)
+        if not self.path.parent.exists():
+            return
+        try:
+            with open(self.path, "a", encoding="utf-8") as handle:
+                handle.writelines(line + "\n" for line in self.pending)
+        except OSError:
+            return  # the lines wait; a log that cannot be written stops nothing
+        self.pending.clear()
+
+
+def progress_line(line: str) -> dict | None:
+    """The engine's JSON progress line, or None for a line of prose.
+
+    `scribe.setup`'s `Progress` prints one JSON object per whole percent when
+    its stdout is a pipe, which is what the launcher gives it. Those drive the
+    bar and never reach the log: there are a hundred of them per repository,
+    and as log lines they push everything that says something out of the
+    window.
+    """
+    text = line.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        event = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(event, dict) or event.get("event") != "progress":
+        return None
+    return event
+
+
+def progress_headline(event: dict) -> str:
+    """What the headline says while a download runs: the repository by name,
+    because "Saving your answers..." for a whole download is what this
+    replaces."""
+    repo = str(event.get("repo") or "the model weights")
+    percent = event.get("percent")
+    percent = percent if isinstance(percent, (int, float)) else 0
+    return f"Downloading {repo} - {int(percent)}%"
+
+
 # --- the run ----------------------------------------------------------------------
 
 
@@ -1203,17 +1316,46 @@ class Launch:
     """The steps, in order, reporting through ``report(state, text)``.
 
     States: ``busy`` (a line of progress), ``status`` (a headline),
-    ``running``, ``done`` (another instance serves), ``error``. Runs on a worker thread under the window; directly under
-    ``--headless``.
+    ``progress`` (one JSON line of a download, for the bar), ``running``,
+    ``done`` (another instance serves), ``error``. Runs on a worker thread
+    under the window; directly under ``--headless``.
     """
 
     def __init__(self, layout: Layout, port: int, open_browser: bool, report: Callable[[str, str], None]):
         self.layout = layout
         self.port = port
         self.open_browser = open_browser
-        self.report = report
+        self.say = report
+        self.log = InstallLog(layout.logs_dir / INSTALL_LOG)
         self.app: AppProcess | None = None
+        self.setup_child: subprocess.Popen | None = None
         self.serving = False
+
+    def report(self, state: str, text: str) -> None:
+        """One tee, so that every line the launcher says is also in the file.
+
+        Redacted first and for both, because ADR-015 forbids a secret on the
+        screen as firmly as in a log. The progress lines are the one state
+        that is not kept: they are a bar, not a sentence, and there are
+        hundreds of them (TASK-089.15, criteria 5 and 7).
+
+        Out of reach: the lines said before a home is settled - `locate_home`
+        reports through `main`'s console, because there is no Layout yet to
+        build a path from.
+        """
+        text = self.log.redact(text)
+        if state != "progress":
+            self.log.write(text)
+        self.say(state, text)
+
+    def remember(self, plan: dict, answers: dict) -> None:
+        """Hide every secret this sitting collected, by value, before the
+        child that might echo one has started."""
+        for question in plan.get("questions") or []:
+            if question.get("kind") == "secret":
+                value = answers.get(question.get("id"))
+                if isinstance(value, str):
+                    self.log.hide(value)
 
     def url(self) -> str:
         return f"http://{HOST}:{self.port}/"
@@ -1277,9 +1419,79 @@ class Launch:
             return True
         return self.start_app()
 
+    def watching(self, run: Callable, *args, **kwargs):
+        """Run one setup child with its handle kept, so Quit can stop it.
+
+        ADR-017's Must is about the setup child, and there are three of them:
+        ``--plan``, ``--apply-stdin`` and ``--prove``. Only the download used
+        to be registered, so Quit during the four-second plan, or during the
+        proof - which on a first run may load a model, because nothing answers
+        the port yet - left a python running behind a launcher that had gone.
+
+        The handle is let go afterwards, so a later Quit cannot terminate a pid
+        the system has since given to somebody else.
+        """
+        try:
+            return run(*args, on_start=self.keep_setup_child, **kwargs)
+        finally:
+            self.setup_child = None
+
+    def keep_setup_child(self, child: subprocess.Popen) -> None:
+        self.setup_child = child
+
+    def stop_setup(self, timeout: float = STOP_TIMEOUT) -> None:
+        """Quit during a download stops the setup child - that one process.
+
+        ``terminate()``, and never the tree kill ``AppProcess.stop`` uses on
+        the app: a tree kill here could pass over an Ollama that a third-party
+        installer had just started, and ADR-017's Must is that MyScribe never
+        stops software it did not start.
+
+        What a single-process stop can orphan is said in those words: at most
+        a version probe, which ends by itself within the 15 s timeout of
+        ``scribe/doctor.py``'s ``_run``. Under the launcher the setup child
+        has no other long-lived children - the downloads and the Ollama pull
+        are in-process HTTP, and the doctor's checks are called in-process.
+        TASK-089.18 measures what Quit may promise around a freshly installed
+        Ollama; until it has, nothing here says Quit is clean.
+        """
+        child = self.setup_child
+        if child is None or child.poll() is not None:
+            return
+        child.terminate()
+        try:
+            child.wait(timeout)
+        except subprocess.TimeoutExpired:
+            pass  # a child that will not go is left; killing its tree is the thing forbidden
+
     def stop(self) -> None:
+        self.stop_setup()
         if self.app is not None:
             self.app.stop()
+
+    def apply(self, answers: dict) -> tuple[int, list[str]]:
+        """Hand the answers to the engine, returning its exit code and what it
+        says is still open.
+
+        The child's handle is kept while it runs, so Quit can stop it
+        (``watching``).
+        """
+        reopen: list[str] = []
+
+        def on_line(line: str) -> None:
+            if progress_line(line) is not None:
+                self.report("progress", line)
+                return
+            # The one place the launcher reads the engine's prose, and it is
+            # commented at both ends: `report["reopen"]` is printed as
+            # "still open: ...". Making it a JSON line would change the
+            # contract, which belongs to TASK-089.09 (ADR-015).
+            if line.startswith(REOPEN_PREFIX):
+                reopen.extend(part.strip() for part in line[len(REOPEN_PREFIX):].split(",") if part.strip())
+            self.report("busy", line)
+
+        code = self.watching(run_setup, self.layout, answers, on_line)
+        return code, reopen
 
 
 def setup_stamp(layout: Layout) -> Path:
@@ -1358,55 +1570,364 @@ def wants_setup(layout: Layout, force: bool = False, at_login: bool = False) -> 
     return setup_needed(layout) and not at_login
 
 
-def setup_command(layout: Layout, answers: dict) -> list[str]:
-    """`python -m scribe.setup` with the answers, in the app's environment.
+def setup_command(layout: Layout) -> list[str]:
+    """`python -m scribe.setup --apply-stdin`, in the app's environment.
 
     The launcher is frozen and stdlib-only (ADR-011): it cannot write a setting
     row or parse `.env` for itself, and should not learn how. It asks the
     questions and hands the answers to the app, the same way `--doctor` hands
     over a check.
+
+    No answer is on this list and none ever will be. A secret on a command line
+    can be read by anything that can list this machine's processes (ADR-015),
+    and the token flag this replaced cost more than the token: `scribe.setup`
+    refuses it with exit 2 before it reads any other answer, so a sitting in
+    which somebody typed a token lost the whole sitting - no setting row, no
+    stamp, and the gate again at every start. ADR-015's Verification is the
+    grep that keeps that flag out of this file.
     """
-    command = [str(layout.env_python), "-m", "scribe.setup"]
-    if answers.get("hf_token"):
-        command += ["--hf-token", answers["hf_token"]]
-    if answers.get("provider"):
-        command += ["--provider", answers["provider"]]
-    if answers.get("tier"):
-        command += ["--tier", answers["tier"]]
-    if answers.get("diarize") is not None:
-        command += ["--diarize" if answers["diarize"] else "--no-diarize"]
-    if answers.get("fetch_models"):
-        command += ["--fetch-models"]
-    return command
+    return [str(layout.env_python), "-m", "scribe.setup", "--apply-stdin"]
 
 
-def run_setup(layout: Layout, answers: dict, on_line: Callable[[str], None]) -> int:
-    """Apply the answers, streaming what happens - a 1.6 GB download has to
-    look like something happening rather than a window that stopped.
+def setup_document(layout: Layout, answers: dict) -> dict:
+    """The one JSON document the sitting hands over, `{contract, answers}`.
+
+    The keys are the question ids of `--plan`, which is what the engine reads
+    them back as: a value is an answer, `None` is a skip that writes nothing
+    and is recorded as skipped, and an id that is absent was never shown.
+
+    `contract` is left out when the shipped `setup.py` could not be read. The
+    engine answers a number that is not its own with exit 2 and applies
+    nothing, and a number nobody could read is not a disagreement - it is
+    silence, which `setup_needed` already answers by asking again.
+    """
+    document: dict = {"answers": dict(answers)}
+    contract = setup_contract(layout)
+    if contract is not None:
+        document["contract"] = contract
+    return document
+
+
+def run_setup(layout: Layout, answers: dict, on_line: Callable[[str], None],
+              on_start: Callable[["subprocess.Popen"], None] | None = None) -> int:
+    """Apply the answers, streaming what happens - a download of gigabytes has
+    to look like something happening rather than a window that stopped.
 
     Returns the exit code, because the caller says it out loud: a setup that
     failed used to be a `False` nobody looked at (TASK-089.01, AC #4).
     """
     return run_streaming(
-        setup_command(layout, answers),
+        setup_command(layout),
         env=app_environment(layout),
         cwd=layout.app_dir,
         on_line=on_line,
+        input=json.dumps(setup_document(layout, answers)),
+        on_start=on_start,
     )
 
 
-def first_run(launch: Launch, ask: Callable[[], dict | None], report: Callable[[str, str], None],
-              force_setup: bool = False, at_login: bool = False) -> bool:
-    """The whole sequence: prepare, sync, ask, apply, start.
+# --- the plan the sitting is drawn from -------------------------------------------
 
-    The order is the point. `scribe.setup` runs from the environment, and the
-    environment is what the sync makes, so the sitting cannot come before it -
-    asking first meant the Popen died on the worker thread with
-    FileNotFoundError and the app was never started (TASK-089.01).
 
-    Plain and Tk-free on purpose: `ask` and `report` are the only things that
-    render, and nothing here decides an answer or writes one (ADR-011 keeps
-    the launcher stdlib-only, ADR-015 keeps every front-end a renderer).
+REOPEN_PREFIX = "still open: "
+"""How `scribe.setup` prints what it could not finish. Read here and nowhere
+else; the comment in `Launch.apply` says why it is prose and not a JSON line."""
+
+CONDITIONS_URL = "https://hf.co/pyannote/speaker-diarization-community-1"
+"""Where the gated model's conditions are accepted. A launcher constant keyed
+to the `hf_token` question and not a field of the contract: `Question` has no
+url, and adding one would bump CONTRACT, which reopens everybody's gate and
+belongs to TASK-089.09. A mild tension with ADR-015, recorded rather than
+hidden."""
+
+CONDITIONS_FOR = "hf_token"
+
+
+def plan_command(layout: Layout, *, unasked_only: bool) -> list[str]:
+    """`--plan`, with `--unasked-only` for the gate and without it by hand.
+
+    ADR-015's Must: a plan made for a start lists the questions that are open
+    and were never put; one asked for with `--setup` or the Setup button lists
+    all, with current values - which is how a question somebody skipped is
+    asked again when they go looking for it, and never by a start.
+    """
+    command = [str(layout.env_python), "-m", "scribe.setup", "--plan"]
+    if unasked_only:
+        command.append("--unasked-only")
+    return command
+
+
+def setup_plan(layout: Layout, report: Callable[[str, str], None], *,
+               unasked_only: bool = True,
+               on_start: Callable[["subprocess.Popen"], None] | None = None) -> dict | None:
+    """What this machine has and what is still open, as the engine sees it.
+
+    One child and one JSON document; None when it could not be had, which is a
+    sitting that does not open rather than one drawn from a guess. Measured on
+    2026-09-22: a cold `--plan` child costs 4332 ms, which is why the gate
+    (`setup_needed`) reads a stamp instead and only a sitting that is really
+    opening pays for this.
+    """
+    lines: list[str] = []
+    try:
+        code = run_streaming(plan_command(layout, unasked_only=unasked_only),
+                             env=app_environment(layout), cwd=layout.app_dir,
+                             on_line=lines.append, on_start=on_start)
+    except Exception as error:
+        report("error", f"The setup questions could not be read: {error}. MyScribe starts anyway; "
+                        "the questions are also in Settings.")
+        return None
+    text = "\n".join(lines)
+    # The child's stderr shares this pipe, so the document is read out of the
+    # middle of whatever else was said: from the first brace, and only as far
+    # as that object goes. `raw_decode` and not `loads`, because a line printed
+    # after the plan - a warning, an "Exception ignored in:" at shutdown - is
+    # as likely as one printed before it, and `loads` on the whole tail would
+    # make either of them a sitting that silently does not open.
+    document = None
+    start = text.find("{")
+    while start >= 0 and document is None:
+        try:
+            found = json.JSONDecoder().raw_decode(text, start)[0]
+        except ValueError:
+            found = None
+        # A line of the child's stderr can itself be a JSON object, and the
+        # first one that decodes would otherwise become the plan - a sitting
+        # that says nothing is open, and a stamp for questions nobody was
+        # asked. `questions` is in every contract-2 plan and is the key this
+        # file already reads, so it is what tells them apart.
+        document = found if isinstance(found, dict) and "questions" in found else None
+        if document is None:
+            start = text.find("{", start + 1)
+    if code != 0 or not isinstance(document, dict):
+        report("error", f"The setup questions could not be read (exit {code}). MyScribe starts "
+                        "anyway; the questions are also in Settings.")
+        return None
+    return document
+
+
+def found_lines(plan: dict) -> list[str]:
+    """The "Found on this machine" block, sources only and never a value.
+
+    The same rows `scribe.setup --plan` prints for a terminal, drawn here for
+    a window: a credential says where it was found, a proxy says its host, and
+    Ollama says what the engine made of it. Nobody should be shown an empty
+    token field for a token this machine already has and go and mint a second
+    one - that is the failure this block exists to end.
+    """
+    lines: list[str] = []
+    for row in plan.get("found") or []:
+        label = str(row.get("label") or row.get("name") or "")
+        if row.get("kind") == "proxy":
+            lines.append(f"{label}: {row.get('host', '')} ({row.get('source', '')})")
+            continue
+        lines.append(f"{label}: {row.get('source') if row.get('found') else 'not found'}")
+        if row.get("also_in"):
+            note = "also " + ", ".join(str(place) for place in row["also_in"])
+            if row.get("conflict"):
+                note += " - which defines a different value, not used"
+            lines.append(f"    {note}")
+    ollama = plan.get("ollama") or {}
+    if ollama.get("note"):
+        lines.append(f"Ollama: {ollama['note']}")
+    return lines
+
+
+def shown(question: dict, answers: dict) -> bool:
+    """Whether a question is on screen, from `shown_if` and nothing else.
+
+    ADR-015's Must Not: `shown_if` is the only condition a front-end
+    interprets. Everything else about which questions exist was decided by the
+    engine before this document was printed.
+    """
+    condition = question.get("shown_if")
+    if not isinstance(condition, dict):
+        return True
+    return answers.get(condition.get("question")) == condition.get("equals")
+
+
+# --- what a failure says ----------------------------------------------------------
+
+
+GATED_MODEL = (
+    "The speaker model is gated, and the token MyScribe has does not open it. Accept the "
+    f"conditions at {CONDITIONS_URL} with the account the token belongs to, then try again. "
+    "Everything else was saved."
+)
+CONTRACT_MISMATCH = (
+    "The answers were refused: this MyScribe's setup engine and the questions that were asked "
+    "do not agree, or a file that ships pinned did not match. Nothing was saved. Retry asks the "
+    "questions again; if it happens twice, install MyScribe again."
+)
+NO_ROOM = (
+    "There was not enough room on the disk to finish the download. Free some space and try "
+    "again, or move MyScribe with the folder question - what was saved is saved."
+)
+SETUP_FAILURES = {2: CONTRACT_MISMATCH, 3: GATED_MODEL, 4: NO_ROOM}
+"""By the exit code `scribe/models.py` gives each kind (`EXIT_CODES`). 2 is not
+the refused token flag any more: the launcher builds no such flag, so the only
+2 it can provoke is a contract or a pinned-file mismatch."""
+
+
+def setup_failure(code: int, reopen: Iterable[str] = ()) -> str:
+    """The sentence a failed sitting shows, or "" when nothing failed.
+
+    A `reopen` is a failure with a zero exit code: the engine saved what it
+    could and says which questions it could not finish, and a sitting that
+    ended on one is not one to write off in a grey log line.
+    """
+    still_open = [str(name) for name in reopen]
+    if code == 0 and not still_open:
+        return ""
+    if code in SETUP_FAILURES:
+        sentence = SETUP_FAILURES[code]
+    elif code != 0:
+        sentence = (f"Saving your answers failed with exit code {code}; the lines above say why. "
+                    "Retry asks the questions again.")
+    else:
+        sentence = "Not everything could be saved."
+    if still_open:
+        sentence += " Still open: " + ", ".join(still_open) + "."
+    return sentence
+
+
+# --- the proof that ends a sitting ------------------------------------------------
+
+
+def prove_command(layout: Layout, port: int) -> list[str]:
+    """`--prove` on the port this launcher serves on.
+
+    The port is always passed, and it is what keeps the card the runner's
+    (ADR-001): while MyScribe answers there, the engine queues the doctor job
+    instead of loading a model in the setup child (TASK-089.13).
+    """
+    return [str(layout.env_python), "-m", "scribe.setup", "--prove", "--port", str(port)]
+
+
+def run_prove(layout: Layout, report: Callable[[str, str], None], port: int,
+              on_start: Callable[["subprocess.Popen"], None] | None = None) -> int:
+    """Measure what the sitting produced and say it, whatever it comes back
+    with.
+
+    Its exit code is information and never the error state of a failed apply.
+    Transcription is a required line and reads "not tested" while the app
+    answers (TASK-089.13, step 14), so a proof run from the Setup button exits
+    1 by design - rendering that as a failure would end every such sitting in
+    "Retry".
+    """
+    report("status", "Checking what this machine can do...")
+    try:
+        code = run_streaming(prove_command(layout, port), env=app_environment(layout),
+                             cwd=layout.app_dir, on_line=lambda line: report("busy", line),
+                             on_start=on_start)
+    except Exception as error:
+        report("busy", f"The check could not be run: {error}")
+        return 1
+    report("busy", "The report above is what this machine measured; nothing was changed by it.")
+    return code
+
+
+NOTHING_WAS_ASKED = (
+    "The first-run questions were not asked: this is not a terminal and there is no window. "
+    "Start MyScribe from a terminal to answer them, or pipe one JSON document of answers to "
+    "`python -m scribe.setup --apply-stdin` in the environment MyScribe installed."
+)
+
+
+def console_sitting(launch: Launch, report: Callable[[str, str], None]) -> None:
+    """The headless door: the terminal is handed to the engine.
+
+    With a TTY, `python -m scribe.setup` inherits stdin and stdout and asks
+    for itself, with `getpass` for a secret - no document, no pipe, and no
+    second asker to keep in step with the first (ADR-015). Without one,
+    nothing is asked and no child is started.
+
+    `isatty()` is the cheap half of that test and not the whole of it: on
+    Windows `subprocess.DEVNULL` is NUL, NUL is a character device, and
+    `isatty()` answers True for it. Who is really at a terminal is the
+    engine's decision and is made in `scribe/setup.py`'s `at_a_terminal`,
+    which asks the console handle; a child started here on that footing
+    prints the engine's own "nothing was asked" line and writes no stamp.
+    The launcher does not double that test: ADR-011 keeps it stdlib-only and
+    ADR-015 keeps the deciding in one place.
+
+    What a console sitting says goes to the terminal, which is its log; the
+    tee of `Launch.report` covers the lines that pass through the launcher.
+    """
+    if not sys.stdin.isatty():
+        report("status", NOTHING_WAS_ASKED)
+        return
+    try:
+        subprocess.call([str(launch.layout.env_python), "-m", "scribe.setup"],
+                        cwd=str(launch.layout.app_dir), env=app_environment(launch.layout))
+    except Exception as error:
+        report("error", f"The setup questions could not be asked: {error}. MyScribe starts anyway; "
+                        "the questions are also in Settings.")
+        return
+    launch.watching(run_prove, launch.layout, report, launch.port)
+
+
+def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
+                 report: Callable[[str, str], None], *, force_setup: bool = False,
+                 retry: Callable[[str], bool] | None = None) -> None:
+    """One sitting: plan, ask, apply, prove - and again from the top on Retry.
+
+    `ask` gets the plan and gives back one answer per question id, or None for
+    "ask me next time" and for a window somebody closed. It always gives back
+    a dict for Save, even when every question in it was skipped, because that
+    sitting was held: the engine writes the stamp, and the gate does not open
+    it again at the next start (TASK-089.11).
+    """
+    applied = False
+    while True:
+        plan = launch.watching(setup_plan, launch.layout, report, unasked_only=not force_setup)
+        if plan is None:
+            return
+        answers = ask(plan)
+        if answers is None:
+            return  # "ask me next time": nothing applied, no stamp, asked again
+        launch.remember(plan, answers)
+        report("status", "Saving your answers...")
+        try:
+            code, reopen = launch.apply(answers)
+        except Exception as error:
+            report("error", f"Saving your answers failed: {error}. MyScribe starts anyway; "
+                            "the questions are also in Settings.")
+            break
+        applied = True
+        sentence = setup_failure(code, reopen)
+        if not sentence:
+            break
+        report("error", sentence)
+        if retry is None or not retry(sentence):
+            break
+    if applied:
+        launch.watching(run_prove, launch.layout, report, launch.port)
+
+
+def first_run(launch: Launch, ask: Callable[[dict], dict | None] | None,
+              report: Callable[[str, str], None],
+              force_setup: bool = False, at_login: bool = False,
+              retry: Callable[[str], bool] | None = None) -> bool:
+    """The whole sequence: tools, sync, plan, sitting, apply, prove, start.
+
+    Where everything goes is the step before this one and is settled in
+    `main`, because `prepare_home` is the first write under a home and
+    `run_window` builds its title, its "Open data folder" button and its log
+    path from the layout before this runs (TASK-089.14).
+
+    The rest of the order is the point. `scribe.setup` runs from the
+    environment, and the environment is what the sync makes, so the sitting
+    cannot come before it - asking first meant the Popen died on the worker
+    thread with FileNotFoundError and the app was never started (TASK-089.01).
+
+    Plain and Tk-free on purpose: `ask`, `retry` and `report` are the only
+    things that render, and nothing here decides an answer or writes one
+    (ADR-011 keeps the launcher stdlib-only, ADR-015 keeps every front-end a
+    renderer). `ask` is None for a door with no dialog - the console, and a
+    build without Tk - where the terminal goes to the engine instead, the same
+    convention `locate_home` uses. `retry` is what a failed apply asks; with
+    none, the sentence is reported and MyScribe starts anyway.
 
     `--setup` against a MyScribe that already serves is answered in words and
     not with the sitting. That is a deliberate change from the order this file
@@ -1424,40 +1945,27 @@ def first_run(launch: Launch, ask: Callable[[], dict | None], report: Callable[[
                              "with --setup to answer the questions.")
         return True
     if wants_setup(launch.layout, force=force_setup, at_login=at_login):
-        answers = ask()
-        if answers:
-            report("status", "Saving your answers...")
-            _apply_setup(launch.layout, answers, report)
+        # `ask` is None on every door with no dialog - the console, and a build
+        # without Tk - and there the terminal goes to the engine, the way
+        # `locate_home` reads a None `ask` as "nobody is at the screen".
+        if ask is None:
+            console_sitting(launch, report)
+        else:
+            open_sitting(launch, ask, report, force_setup=force_setup, retry=retry)
     return launch.start_app()
 
 
-def _apply_setup(layout: Layout, answers: dict, report: Callable[[str, str], None]) -> None:
-    """Hand the answers to the app, and say so when that fails.
+def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = False) -> int:
+    """The console door, and every build without Tk.
 
-    Never raises and never falls silent: the app is worth more than the
-    answers, which can also be given in Settings, and a windowed build has no
-    stderr for the person to look at (AC #4).
-
-    Every exception, and not only the `OSError` the Popen is known for: this
-    runs on a worker thread of a windowed build, where anything that escapes
-    is a window that stopped with nothing written anywhere. `KeyboardInterrupt`
-    and `SystemExit` are not exceptions and still travel.
+    It goes through `first_run` with no `ask`, so that a first start here is
+    asked the same questions a window is - by the engine, with the terminal
+    handed to it. Until TASK-089.15 this door ran `launch.run()`, which asks
+    nothing at all: `--setup` on a Mac or in WSL did nothing visible.
     """
-    try:
-        code = run_setup(layout, answers, lambda line: report("busy", line))
-    except Exception as error:
-        report("error", f"Saving your answers failed: {error}. MyScribe starts anyway; "
-                        "the questions are also in Settings.")
-        return
-    if code != 0:
-        report("error", f"Saving your answers failed with exit code {code}; the lines above say "
-                        "why. MyScribe starts anyway; the questions are also in Settings.")
-
-
-def run_headless(launch: Launch) -> int:
-    if not launch.run():
+    if not first_run(launch, None, launch.report, force_setup, at_login):
         return 1
-    if launch.app is None:  # another instance is serving
+    if launch.serving or launch.app is None:  # another instance is serving
         return 0
     try:
         while launch.app.alive():
@@ -1528,33 +2036,58 @@ def ask_location(message: str) -> str | None:
     return chosen["home"] if "home" in chosen else None
 
 
-def ask_setup(root, layout: Layout) -> dict | None:
-    """The four first-run questions, in one modal window.
+def link_label(parent, url: str, **kwargs):
+    """A URL as something to click, for the doors that have a window.
 
-    Four and no more. Each is something the app cannot work out for itself and
-    would otherwise fail on later: the token speaker separation needs, who
-    answers questions about a transcript, how big a model this machine should
-    commit to, and whether to fetch the weights now while somebody is watching.
+    A plain ``tk.Label`` with a link's pointer and ``webbrowser.open`` bound to
+    a click. Not ``tkinter.ttk`` and not a text widget: the launcher is frozen
+    with ``--windowed``, where a submodule only one path imports is missing
+    exactly where nobody can see it.
+    """
+    import tkinter as tk
 
-    Every answer may be left blank, and every one can be changed in Settings
-    afterwards. A setup screen that must be completed before anything works is
-    a worse first impression than one that can be skipped.
+    label = tk.Label(parent, text=url, fg="#0645ad", cursor="hand2", anchor="w",
+                     justify="left", **kwargs)
+    label.bind("<Button-1>", lambda _event: webbrowser.open(url))
+    return label
 
-    Nothing is filled in for the two radio questions. The launcher renders
-    questions and never decides one (ADR-015), and a preselected radio is a
-    default, not an answer - "Save and start" would otherwise write
-    `llm_provider = ollama` for somebody who chose nothing, which is what
-    ADR-016 forbids and what TASK-089.25 came from. Both groups open on a skip
-    that is visible ("Decide later", "Leave as it is") rather than on nothing
-    at all, because a group with no filled circle reads as broken. The
-    checkbox is the exception and stays a yes: a checkbox has no unanswered
-    state, and this one writes no setting row - it only decides whether the
-    download happens now or inside the first transcription. Robert ratified
-    that on 2026-09-22 and chose the sentence above with it, so the intro
-    names the two questions that have a skip instead of implying all four do.
 
-    Returns the answers, or None when the person closed the window - which is
-    "ask me next time", not "never".
+SITTING_INTRO = (
+    "What MyScribe already found on this machine is below, and then the questions that are "
+    "still open. Every question has a Skip that writes nothing, and everything here can be "
+    "changed later in Settings."
+)
+NOTHING_IS_OPEN = "Nothing is open: everything MyScribe asks about is answered or already here."
+
+
+def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
+    """The sitting, drawn from ``scribe.setup --plan`` and from nothing else.
+
+    The launcher renders and never decides (ADR-015): which questions exist,
+    what each one says, what skipping it costs and where it can be answered
+    later all come out of the document. ``shown_if`` is the one condition
+    interpreted here - "show this while the answer to question X is Y", which
+    is how the key for a cloud provider appears under the provider that needs
+    it.
+
+    What it replaces was a fixed form of four questions that could not see the
+    machine. It always drew the token field, so somebody whose token was
+    already in ``.env`` was shown an empty box, reasonably concluded it was
+    missing and went to mint a second one; and its provider and tier radios
+    were a tuple written into this file, which agreed with the app's list only
+    by hand.
+
+    Radios open on ``current``, the stored value, and never on ``default``: a
+    preselected default is an answer nobody gave, which ADR-016 forbids and
+    TASK-089.25 came from. A yes-no question is the exception and opens on the
+    plan's ``default`` - a checkbox has no unanswered state, and the one this
+    asks writes no setting row; Robert ratified that reading on 2026-09-22.
+
+    Returns one answer per question that was on screen - a value, or None for
+    a question that was skipped - or None for "Ask me next time" and for a
+    window somebody closed. A sitting in which every question was skipped is
+    still a dict, because it was held: the engine stamps it and no start opens
+    it again (TASK-089.11).
     """
     import tkinter as tk
 
@@ -1563,103 +2096,215 @@ def ask_setup(root, layout: Layout) -> dict | None:
     win.transient(root)
     win.grab_set()
     answers: dict = {}
+    saved: list[bool] = []
+    questions = [question for question in (plan.get("questions") or []) if question.get("id")]
 
-    tk.Label(
-        win,
-        text=(
-            "Two answers make speaker separation work, and two decide what this "
-            "machine downloads. The provider and model questions can be left on "
-            "their skip, which writes nothing; everything here can be changed "
-            "later in Settings."
-        ),
-        wraplength=520, justify="left", anchor="w",
-    ).grid(row=0, column=0, columnspan=2, sticky="we", padx=12, pady=(12, 8))
+    tk.Label(win, text=SITTING_INTRO, wraplength=520, justify="left", anchor="w").grid(
+        row=0, column=0, sticky="we", padx=12, pady=(12, 8))
 
-    tk.Label(win, text="Hugging Face token", anchor="w").grid(row=1, column=0, sticky="w", padx=12)
-    token = tk.Entry(win, width=44, show="\u2022")
-    token.grid(row=1, column=1, sticky="we", padx=12, pady=2)
-    tk.Label(
-        win,
-        text="Speaker separation downloads a gated model. Accept its conditions at\n"
-             "hf.co/pyannote/speaker-diarization-community-1 and paste a token here.",
-        wraplength=520, justify="left", anchor="w", fg="#555",
-    ).grid(row=2, column=0, columnspan=2, sticky="we", padx=12, pady=(0, 8))
+    found = found_lines(plan)
+    if found:
+        tk.Label(win, text="Found on this machine", anchor="w", justify="left").grid(
+            row=1, column=0, sticky="w", padx=12)
+        tk.Label(win, text="\n".join(found), anchor="w", justify="left", wraplength=520,
+                 fg="#555").grid(row=2, column=0, sticky="we", padx=24, pady=(0, 8))
+
+    if not questions:
+        tk.Label(win, text=NOTHING_IS_OPEN, wraplength=520, justify="left", anchor="w").grid(
+            row=3, column=0, sticky="we", padx=12, pady=(0, 8))
 
     # Tk draws every button of a group with its "mixed" indicator while the
     # group's variable holds that button's -tristatevalue, and that option
     # defaults to the empty string - which is what a question nobody answered
     # holds here. Photographed on 2026-09-22 (Tk 8.6, Windows 11): with the
-    # default, all seven circles open filled, so a dialog that fills nothing
-    # in looks like one that filled everything in. A value no answer can take
-    # turns it off; only the skip stays filled.
+    # default, every circle opens filled, so a dialog that filled nothing in
+    # looks like one that filled everything in (TASK-089.25).
     not_an_answer = "no answer"
 
-    # A row of its own, because the question is a sentence: in the label
-    # column it would widen it from 137 to 255 px and push both radio groups
-    # right, from x=12 to x=267 (measured on 2026-09-22).
-    tk.Label(win, text="Who answers questions about a transcript?", anchor="w").grid(
-        row=3, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 0))
-    provider = tk.StringVar(value="")
-    providers = tk.Frame(win)
-    providers.grid(row=4, column=0, columnspan=2, sticky="w", padx=12)
-    for value, label in (("ollama", "Ollama, on this machine"), ("openrouter", "OpenRouter"),
-                         ("openai", "OpenAI"), ("", "Decide later")):
-        tk.Radiobutton(providers, text=label, variable=provider, value=value,
-                       tristatevalue=not_an_answer).pack(side="left")
+    blocks: list = []
+    values: dict = {}
+    skips: dict = {}
+    entries: dict = {}
 
-    tk.Label(win, text="Transcription model", anchor="w").grid(row=5, column=0, sticky="w", padx=12, pady=(8, 0))
-    tier = tk.StringVar(value="")
-    tiers = tk.Frame(win)
-    tiers.grid(row=5, column=1, sticky="w", padx=12, pady=(8, 0))
-    for value, label in (("turbo", "Turbo - fast"), ("max", "Maximaal - about four times slower"),
-                         ("", "Leave as it is")):
-        tk.Radiobutton(tiers, text=label, variable=tier, value=value,
-                       tristatevalue=not_an_answer).pack(side="left")
+    def answer_of(question: dict):
+        """What one question would hand over now: a value, or None for a skip
+        and for a control nobody touched - nothing typed is nothing to write.
 
-    fetch = tk.BooleanVar(value=True)
-    tk.Checkbutton(
-        win, variable=fetch, anchor="w",
-        text="Download the model weights now (about 1.6 GB; otherwise the first transcription waits for them)",
-        wraplength=520, justify="left",
-    ).grid(row=6, column=0, columnspan=2, sticky="we", padx=12, pady=(10, 4))
+        Those two are the same record and the difference is not kept: the
+        engine writes every None as ``skipped``, which is one of the states a
+        later start does not ask again. So pressing "Save and start" past a
+        radio group nobody touched accepts that question's `if_skipped`
+        consequence, and the Setup button is what re-opens it. The console
+        door of the same engine makes a skip explicit by typing `s`; contract 2
+        has no third state for "on screen, untouched", and adding one is a
+        CONTRACT bump and TASK-089.09's.
+        """
+        name = question["id"]
+        if skips[name].get():
+            return None
+        if question.get("kind") == "secret":
+            return entries[name].get().strip() or None
+        if question.get("kind") == "yes-no":
+            return "yes" if values[name].get() else "no"
+        return values[name].get() or None
+
+    def given() -> dict:
+        return {question["id"]: answer_of(question) for question, _block in blocks}
+
+    def refresh() -> None:
+        """``shown_if``, and no other condition (ADR-015's Must Not)."""
+        now = given()
+        for question, block in blocks:
+            if shown(question, now):
+                block.grid()
+            else:
+                block.grid_remove()
+
+    for index, question in enumerate(questions):
+        name = question["id"]
+        kind = question.get("kind") or "choice"
+        block = tk.Frame(win)
+        block.grid(row=4 + index, column=0, sticky="we", padx=12, pady=(8, 0))
+        blocks.append((question, block))
+        skips[name] = tk.BooleanVar(value=False)
+
+        if kind == "yes-no":
+            values[name] = tk.BooleanVar(value=question.get("default") == "yes")
+            # `command=refresh` here as on the radios: `shown()` is generic over
+            # question ids, and today the engine puts `shown_if` on a choice
+            # only - a wiring that covered less would make the next engine
+            # change a question that never appears.
+            tk.Checkbutton(block, variable=values[name], text=question.get("text", ""),
+                           wraplength=500, justify="left", anchor="w",
+                           command=refresh).pack(fill="x")
+        else:
+            tk.Label(block, text=question.get("text", ""), wraplength=500, justify="left",
+                     anchor="w").pack(fill="x")
+
+        if kind == "secret":
+            entries[name] = tk.Entry(block, width=44, show="•")
+            # An Entry has no `command`; a key released is the same event for
+            # `refresh`, and it is the only way a secret could ever be the
+            # subject of a `shown_if`.
+            entries[name].bind("<KeyRelease>", lambda _event: refresh())
+            entries[name].pack(fill="x")
+            if name == CONDITIONS_FOR:
+                tk.Label(block, text="Accept the model's conditions with the same account at",
+                         anchor="w", justify="left", fg="#555").pack(fill="x")
+                link_label(block, CONDITIONS_URL).pack(fill="x")
+        elif kind != "yes-no":
+            values[name] = tk.StringVar(value=opening_value(question))
+            group = tk.Frame(block)
+            group.pack(fill="x")
+            for choice in question.get("choices") or []:
+                tk.Radiobutton(group, text=str(choice.get("label") or choice.get("value")),
+                               variable=values[name], value=str(choice.get("value")),
+                               tristatevalue=not_an_answer, command=refresh).pack(side="left")
+            notes = [f"{choice.get('value')}: {choice['note']}"
+                     for choice in question.get("choices") or [] if choice.get("note")]
+            if notes:
+                tk.Label(block, text="\n".join(notes), wraplength=500, justify="left",
+                         anchor="w", fg="#555").pack(fill="x")
+
+        tk.Checkbutton(block, variable=skips[name], text="Skip this question",
+                       anchor="w", command=refresh).pack(fill="x")
+        tk.Label(block, text=f"Skipping: {question.get('if_skipped', '')} "
+                             f"Later: {question.get('answer_later', '')}",
+                 wraplength=500, justify="left", anchor="w", fg="#555").pack(fill="x")
 
     def save() -> None:
-        answers.update(
-            hf_token=token.get().strip(),
-            provider=provider.get(),
-            tier=tier.get(),
-            fetch_models=bool(fetch.get()),
-        )
+        """Everything that was on screen, and nothing that was not: a question
+        ``shown_if`` hid was never put, and an id the document does not carry
+        is one the engine never mentions in the stamp."""
+        now = given()
+        answers.update({question["id"]: now[question["id"]]
+                        for question, _block in blocks if shown(question, now)})
+        saved.append(True)
         win.destroy()
 
     row = tk.Frame(win)
-    row.grid(row=7, column=0, columnspan=2, sticky="we", padx=12, pady=12)
+    row.grid(row=4 + len(questions), column=0, sticky="we", padx=12, pady=12)
     tk.Button(row, text="Save and start", command=save, default="active").pack(side="right")
     # "Ask me next time", and not "Skip for now": nothing is applied, the app
-    # writes no stamp, and the sitting therefore returns at the next start -
-    # which is what this function's docstring has said since 2026-09-19. The
-    # other skip belongs to a single question and is the engine's, where it is
-    # recorded as skipped and never asked by a start again (TASK-089.11).
+    # writes no stamp, and the sitting therefore returns at the next start.
+    # The other skip belongs to a single question and is the engine's, where
+    # it is recorded as skipped and never asked by a start again (TASK-089.11).
     tk.Button(row, text="Ask me next time", command=win.destroy).pack(side="right", padx=8)
 
-    win.columnconfigure(1, weight=1)
+    win.columnconfigure(0, weight=1)
+    refresh()
     root.wait_window(win)
-    return answers or None
+    # Not `answers or None`: a sitting in which every question was skipped is
+    # an empty dict and is still a sitting, and turning it into None would
+    # leave the stamp unwritten and the gate open at every start (criterion #4).
+    return answers if saved else None
+
+
+def opening_value(question: dict) -> str:
+    """Which radio a group opens on: the stored value, when it is one of the
+    answers offered. Nothing otherwise - and never the plan's ``default``,
+    which is what the console's Enter takes and not something a window may
+    fill in on somebody's behalf."""
+    current = str(question.get("current") or "")
+    offered = {str(choice.get("value")) for choice in question.get("choices") or []}
+    return current if current in offered else ""
+
+
+def ask_failure(root, sentence: str) -> bool:
+    """A setup that failed, said in a window with something to do about it.
+
+    Two buttons, because there are exactly two things to do: hold the sitting
+    again, or start MyScribe without what failed. Returns True for Retry.
+
+    What this replaces was one grey line in a scrolling log - "Saving your
+    answers failed with exit code 3" - under a headline that by then already
+    said "MyScribe is running".
+    """
+    import tkinter as tk
+
+    win = tk.Toplevel(root)
+    win.title(f"Set up {APP_NAME}")
+    win.transient(root)
+    win.grab_set()
+    again: list[bool] = []
+
+    tk.Label(win, text=sentence, wraplength=520, justify="left", anchor="w").pack(
+        fill="both", expand=True, padx=12, pady=12)
+    if CONDITIONS_URL in sentence:
+        link_label(win, CONDITIONS_URL).pack(fill="x", padx=12)
+
+    def retry() -> None:
+        again.append(True)
+        win.destroy()
+
+    row = tk.Frame(win)
+    row.pack(fill="x", padx=12, pady=12)
+    tk.Button(row, text="Retry", command=retry, default="active").pack(side="right")
+    tk.Button(row, text="Continue without", command=win.destroy).pack(side="right", padx=8)
+
+    root.wait_window(win)
+    return bool(again)
 
 
 def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool = False,
                at_login: bool = False) -> int:
     import tkinter as tk
-    from tkinter import scrolledtext
+    from tkinter import scrolledtext, ttk
 
     events: "queue.Queue[tuple[str, str]]" = queue.Queue()
     launch = Launch(layout, port, open_browser, lambda state, text: events.put((state, text)))
 
     root = tk.Tk()
     root.title(f"{APP_NAME} {app_version(layout)}")
-    root.geometry("560x320")
+    root.geometry("560x360")
     status = tk.StringVar(value="Preparing...")
     tk.Label(root, textvariable=status, anchor="w", justify="left", wraplength=540).pack(fill="x", padx=10, pady=(10, 4))
+    # A bar for the downloads, and it stays out of the way until there is one:
+    # the engine prints one JSON line per whole percent, and before
+    # TASK-089.15 each of those became a log line of its own - a hundred per
+    # repository - under a headline that said "Saving your answers..."
+    # throughout the whole install.
+    bar = ttk.Progressbar(root, orient="horizontal", mode="determinate", maximum=100)
     log = scrolledtext.ScrolledText(root, height=12, state="disabled", font=("TkFixedFont", 9))
     log.pack(fill="both", expand=True, padx=10)
     buttons = tk.Frame(root)
@@ -1669,6 +2314,12 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
     tk.Button(buttons, text="Open data folder", command=lambda: open_folder(layout.home)).pack(side="left", padx=8)
 
     def quit_app() -> None:
+        """Quit stops the setup child too, and that one process only.
+
+        `launch.stop()` terminates the setup child and tree-kills the app; the
+        two are deliberately different, so that no tree kill can pass over an
+        Ollama a third-party installer has just started (ADR-017's M10).
+        """
         status.set("Stopping MyScribe...")
         root.update_idletasks()
         launch.stop()
@@ -1687,6 +2338,19 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         try:
             while True:
                 state, text = events.get_nowait()
+                if state == "progress":
+                    # Never appended: a bar is what these are for, and as log
+                    # lines they push everything that says something out of
+                    # the window.
+                    event = progress_line(text)
+                    if event is not None:
+                        if not bar.winfo_ismapped():
+                            bar.pack(fill="x", padx=10, pady=(0, 6), before=log)
+                        bar["value"] = event.get("percent", 0)
+                        status.set(progress_headline(event))
+                    continue
+                if bar.winfo_ismapped():
+                    bar.pack_forget()
                 if state == "busy":
                     append(text)
                 else:
@@ -1702,12 +2366,12 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
             status.set(f"MyScribe stopped; see {layout.logs_dir / 'app.log'}")
         root.after(200, pump)
 
-    def ask() -> dict | None:
-        """Open the dialog on the Tk thread and wait for it, from the worker.
+    def on_tk(work: Callable):
+        """Run `work` on the Tk thread and wait for what it gives back.
 
-        Tk is not thread-safe, and `first_run` runs on a worker so the sync
+        Tk is not thread-safe, and the sequence runs on a worker so the sync
         does not freeze the window; so the worker asks for the dialog and
-        blocks on the queue until it closes.
+        blocks on a queue until it closes.
 
         There is no timeout on that wait, because a person may sit at the
         questions for minutes. What there is instead is an answer on every
@@ -1715,27 +2379,62 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         waiting, and that costs nothing - it is a daemon thread and the
         process ends with the mainloop.
         """
-        answered: "queue.Queue[dict | None]" = queue.Queue()
+        answered: "queue.Queue" = queue.Queue()
 
-        def sit() -> None:
+        def run() -> None:
             """On the Tk thread, and it always answers. An exception raised in
             here would otherwise go to Tk's own handler - stderr, which a
             windowed build has not got - and the worker would wait for ever
             with the app never started."""
             try:
-                result = ask_setup(root, layout)
+                result = work()
             except Exception:
                 result = None
             answered.put(result)
 
         try:
-            root.after(0, sit)
+            root.after(0, run)
         except (tk.TclError, RuntimeError):
             # Quit during the sync: no window to ask in. Tk says so as a
             # TclError from a destroyed widget, and _tkinter as a RuntimeError
             # when the mainloop this thread would hand the call to is gone.
             return None
         return answered.get()
+
+    def ask(plan: dict) -> dict | None:
+        return on_tk(lambda: ask_setup(root, layout, plan))
+
+    def retry(sentence: str) -> bool:
+        return bool(on_tk(lambda: ask_failure(root, sentence)))
+
+    sitting = threading.Lock()
+
+    def in_a_worker(work: Callable, name: str) -> None:
+        def guarded() -> None:
+            if not sitting.acquire(blocking=False):
+                return  # one sitting at a time: two dialogs would fight over grab_set
+            try:
+                work()
+            finally:
+                sitting.release()
+
+        threading.Thread(target=guarded, name=name, daemon=True).start()
+
+    def open_setup() -> None:
+        """The Setup button: the whole plan, so a question recorded as skipped
+        is asked again - which is the one route by which somebody who skipped
+        on purpose can find it (TASK-089.11 records the skip, this reopens it).
+
+        While MyScribe serves, the sitting still runs: the port goes to
+        `--prove`, so the engine queues the doctor job instead of loading a
+        model in the setup child (ADR-001, TASK-089.13).
+        """
+        in_a_worker(
+            lambda: open_sitting(launch, ask, launch.report, force_setup=True, retry=retry),
+            "myscribe-setup",
+        )
+
+    tk.Button(buttons, text="Setup", command=open_setup).pack(side="left", padx=8)
 
     def begin() -> None:
         """One worker thread for the whole sequence.
@@ -1746,11 +2445,10 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         children still inherit the environment the app was started with, which
         is started last either way (TASK-089.01).
         """
-        threading.Thread(
-            target=lambda: first_run(launch, ask, launch.report, force_setup, at_login),
-            name="myscribe-launch",
-            daemon=True,
-        ).start()
+        in_a_worker(
+            lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry),
+            "myscribe-launch",
+        )
 
     root.after(50, begin)
     root.after(200, pump)
@@ -1886,24 +2584,67 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 0
 
     if not windowed:
-        return run_headless(Launch(layout, args.port, not args.no_browser, console))
+        return run_headless(
+            Launch(layout, args.port, not args.no_browser, console),
+            force_setup=args.setup, at_login=args.at_login,
+        )
     return run_window(
         layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login
     )
 
 
+SMOKE_WROTE_NOTHING = "saved: nothing"
+"""What `scribe.setup` prints for a document that answered no question. Read
+rather than assumed: it is the engine's own word for "no setting row"."""
+
+
 def smoke(layout: Layout, port: int) -> int:
-    """Start the app exactly as a user's launch does, prove it serves, stop it."""
+    """The apply door and the app, walked by CI with nobody at a screen.
+
+    `{}` goes over stdin first, which is the same pipe a real sitting uses -
+    until TASK-089.15 nothing in CI ever walked it, because `--smoke` returned
+    before the window. The narrow claim, and only that one: an empty document
+    writes no setting row, read off the engine's own "saved: nothing". It does
+    create the directories, migrate the database and write a stamp, so this is
+    not proof that `{}` touches nothing.
+
+    Everything said here is also written to `<home>/logs/launcher-smoke.log`,
+    which `packaging/build_release.py` prints when the smoke fails: the
+    Windows binary is windowed and has no console, so a failure there says
+    nothing at all without the file.
+    """
+    record = InstallLog(layout.logs_dir / SMOKE_LOG)
+    said: list[str] = []
+
+    def say(line: str) -> None:
+        said.append(line)
+        record.write(line)
+        print(line, flush=True)
+
+    try:
+        code = run_setup(layout, {}, say)
+    except Exception as error:
+        say(f"smoke: the answers could not be applied: {error}")
+        return 1
+    if code != 0:
+        say(f"smoke: applying an empty document exited {code}")
+        return 1
+    if not any(line.strip() == SMOKE_WROTE_NOTHING for line in said):
+        say("smoke: an empty document did not report 'saved: nothing'; a setting row may have "
+            "been written, which an answer nobody gave must never do")
+        return 1
+    say("smoke: an empty document wrote no setting row")
+
     app = AppProcess(layout, port)
     app.start()
     try:
         if not app.wait_ready():
-            print(f"smoke: app did not answer {health_url(port)}", flush=True)
-            print((layout.logs_dir / "app.log").read_text(encoding="utf-8", errors="replace")[-4000:])
+            say(f"smoke: app did not answer {health_url(port)}")
+            say((layout.logs_dir / "app.log").read_text(encoding="utf-8", errors="replace")[-4000:])
             return 1
         with loopback_opener().open(f"http://{HOST}:{port}/", timeout=10) as response:
             ok = response.status == 200 and b"MyScribe" in response.read()
-        print(f"smoke: /health ok, / {'ok' if ok else 'unexpected'}", flush=True)
+        say(f"smoke: /health ok, / {'ok' if ok else 'unexpected'}")
         return 0 if ok else 1
     finally:
         app.stop()

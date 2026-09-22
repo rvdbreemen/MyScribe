@@ -2,6 +2,31 @@
 
 ### Changed
 
+- The first-run dialog shows what this machine already has and asks only
+  what is open. It was a fixed form: always a token field, even for somebody
+  whose token was already found, so they went and minted a second one; and
+  two radios preselected, so somebody on OpenRouter who reopened it only to add
+  a token pressed Save and was moved to Ollama at Turbo. It is now drawn from
+  `python -m scribe.setup --plan` - a "Found on this machine" block naming
+  sources and never values, then one question per thing nobody has answered,
+  each with its own Skip and a sentence saying what skipping costs, radios
+  opening on what is stored. A Setup button beside Open, Open data folder and
+  Quit reopens it, and a question you skipped is asked again there
+  (TASK-089.15).
+
+- No answer travels on a command line any more. The token used to ride on
+  `--hf-token`, where it sat in the process list for the length of a 1.6 GB
+  download - and after the engine started refusing that flag, typing a token
+  cost the whole sitting: no setting, no stamp, the questions again at every
+  start, and one line saying "exit code 2". The answers now go to the engine as
+  one JSON document on its standard input. Every line the launcher reports is
+  kept in `<home>/logs/launcher.log` with secrets redacted, the download is a
+  progress bar instead of a log line per megabyte, and a setup that fails is a
+  visible error with Retry and Continue without, naming the gated model or the
+  full disk. Quit during a download stops the setup child alone - never by its
+  process tree, so a stop can never take down an Ollama an installer has just
+  started (TASK-089.15).
+
 - An install ends on a proof instead of on the word "done".
   `python -m scribe.setup --prove` reports what this machine is - the
   environment, ffmpeg and ffprobe with where each came from, the machine

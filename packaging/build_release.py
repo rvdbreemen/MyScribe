@@ -228,9 +228,29 @@ def main(argv: list[str] | None = None) -> int:
         code = subprocess.call([str(binary), "--home", str(home), "--smoke"])
         if code != 0:
             print(f"::error::the built artifact failed its smoke test (exit {code})")
+            print(smoke_log(home))
             return code
         print("smoke: the artifact started, served and stopped")
     return 0
+
+
+SMOKE_LOG = Path("logs") / "launcher-smoke.log"
+
+
+def smoke_log(home: Path) -> str:
+    """What the frozen launcher wrote while it smoked, for the job log.
+
+    The Windows binary is built windowed and has no console, so its `print`
+    returns without a word: a failed smoke there said only "exit 1" until the
+    launcher started keeping this file (TASK-089.15). Missing is said as such,
+    because "the file is not there" is itself the finding - the launcher did
+    not get as far as writing one.
+    """
+    path = home / SMOKE_LOG
+    try:
+        return f"--- {path} ---\n" + path.read_text(encoding="utf-8", errors="replace")[-8000:]
+    except OSError as error:
+        return f"--- {path} ---\nnot written: {error}"
 
 
 def _frozen_binary(frozen: Path, platform_name: str) -> Path:
