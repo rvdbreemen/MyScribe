@@ -221,7 +221,7 @@ the app.
 | --- | --- |
 | `python -m scribe` | the app. `--port`, `--no-supervisor`, `--no-browser` |
 | `python -m scribe.doctor` | can this machine run it. `--no-gpu` skips the model load |
-| `python -m scribe.setup` | the first-run answers. `--status` prints them as JSON; `--hf-token`, `--provider`, `--tier`, `--diarize/--no-diarize`, `--fetch-models` answer them without the browser |
+| `python -m scribe.setup` | the first-run answers. `--plan` prints what was found and what is still open as JSON, `--apply-stdin` reads one JSON document of answers, `--status` prints what it would ask about; `--provider`, `--tier`, `--diarize/--no-diarize`, `--fetch-models` answer without the browser. A token never goes on the command line: put it in `HF_TOKEN`, in the environment or `.env`, and `--hf-token` says so and refuses |
 | `python -m scribe.models --fetch` | download the weights. `--only <repo>` for one, `--dest` for elsewhere |
 | `python -m scribe.export` | export without the browser. Ids, or `--all`, or `--folder`; `--preset`, `--format`, `--out` and the subtitle knobs (`--cpl`, `--max-cps`, `--cue-gap`, …) |
 | `python -m scribe.proxies` | make the exact-seeking AAC copy of every recording that needs one. `--dry-run` lists them and makes nothing |

@@ -2,6 +2,32 @@
 
 ### Changed
 
+- First run no longer asks four things: it asks what is still open on this
+  machine, which is usually fewer. `python -m scribe.setup` is now the one
+  engine behind the questions - `--plan` prints what was found and where (never
+  a value), what Ollama is, what this platform would download and only the
+  questions nobody has answered yet; `--apply-stdin` takes the answers back as
+  one JSON document. The launcher's dialog, a clone's installer and the console
+  all render that one list, so a question exists once. "Four answers, and no
+  more than four" was right about the reason - each question is something the
+  app cannot work out for itself - and wrong about the number; the 0.4.0 entry
+  below records what that release did and stays as it is (ADR-015, TASK-089.09).
+
+- A typed Hugging Face token is saved to its settings row and to nothing else.
+  It used to be written to `.env` as well, which TASK-040.06 recorded as the
+  point: the first run happens before there is a browser to type into. The row
+  is what Settings can show and clear and what every lookup reads first, so the
+  second copy only aged - and `.env` is the less protected of the two files. A
+  token found somewhere is used where it is and never copied (TASK-089.09).
+
+- A token never travels on a command line. `--hf-token` is still recognised and
+  is refused with a sentence and exit 2: a token in a command line can be read
+  by any process that can list this machine's processes, and the shell writes
+  it to its history. Put it in `HF_TOKEN`, in the environment or `.env`, where
+  setup now finds it by itself, or answer the question in the document piped to
+  `--apply-stdin`. `--diarize/--no-diarize` stays, as an explicit choice and
+  the one writer of the speakers default setup keeps (TASK-089.09).
+
 - A first run's questions now come after the environment is installed, not
   before it, so the first minutes look different: the download runs first and
   the dialog opens when it is done. The answers can only be applied by a python
@@ -41,6 +67,39 @@
   keep `openrouter` in their parameters and are not recalled.
 
 ### Fixed
+
+- Asking what setup would ask no longer changes the machine it asks about.
+  Setup created the data directory and migrated the database before it answered
+  any question, so asking about a fresh machine made a library nobody asked
+  for; `--plan` now opens the library read-only, and `mode=ro&immutable=1` where no
+  `-wal` stands beside it, because a plain read-only open of a cleanly closed
+  WAL database creates a `-shm` and a `-wal` and leaves them there (measured,
+  32,768 and 0 bytes) (TASK-089.09).
+
+- A tier answer no longer writes the speakers default as a side effect. The
+  tier was saved through the dialog's `save_defaults`, which writes language,
+  tier and diarize in one statement, so a first run that answered "Maximum"
+  also wrote a `default_diarize` nobody chose - a row every upload rewrites and
+  seven call sites read (TASK-089.09).
+
+- An answer is checked before anything is written. `--provider` with a
+  misspelled name used to save the token first and refuse the provider after,
+  which left half a sitting applied with an exit code that said nothing was
+  saved. Unknown providers are now refused by the flag itself and by the
+  stdin document, before the first write (TASK-089.09).
+
+- A cloud provider saved without a key now says what that costs: Summary and
+  Chat will show a no-key card until it has one, and where to add it. It used
+  to exit 0 with "saved: provider", and the first Summary became a failed job
+  on the board (TASK-089.09).
+
+- Run with no answers and nobody at the terminal, setup no longer stamps itself
+  done having asked nothing - which made the launcher never ask again. It
+  prints what it found and what is open, and writes no stamp; on a terminal it
+  asks the questions itself, with `getpass` for secrets, a word that is on none
+  of the lists asked again rather than applied, and a download that fails
+  ending in the same sentence and the same exit code as everywhere else
+  (TASK-089.09).
 
 - A first run wrote down an answer nobody gave. The setup dialog opened with
   "Ollama, on this machine" and "Turbo" already filled in, so "Save and start"

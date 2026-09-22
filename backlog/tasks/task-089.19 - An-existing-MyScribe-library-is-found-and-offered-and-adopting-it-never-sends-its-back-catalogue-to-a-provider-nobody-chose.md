@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-20 21:29'
+updated_date: '2026-09-22 07:40'
 labels:
   - library
   - packaging
@@ -57,3 +57,40 @@ Needs a real machine: A COPY of Robert's library, on his machine. Never the live
 - [ ] #10 Where the answer can be given later: `--setup` and the Setup button, and in a clone also SCRIBE_DATA_DIR in `.env` or `--data-dir`, which is the documented manual route (.env.example:30). There is no Settings counterpart. That is a stated exception to scribe/setup.py:21-23, with its reason: the settings rows live in the library's own database, so switching libraries from inside the running app would change the database under the process that serves it. Settings > This machine already shows the store's path (scribe/templates/settings.html:100-104) and gains one line saying how to change it, and the question's answer_later line says the same. Robert can overturn this by asking for a Settings counterpart, which is then built first, as TASK-089.21 is for TASK-089.22. TASK-089.11 criterion 4 allows this exception by name.
 - [ ] #11 A library that a running MyScribe is serving is not migrated under it: the lifespan connects and migrates at start (scribe/app.py:247-248), and the ladder only goes forward (scribe/db.py:551-558). The mechanism is the one Robert decided on 2026-09-20 (brief: G5) and TASK-089.17 builds (its criteria 8 and 9): `/health` names the source tree the app runs from and the data directory it serves, and this task reads the data directory. It invents no mechanism. When it says the found library is being served, adoption is refused with 'stop that MyScribe first', and nothing is migrated. A MyScribe that answers /health without saying what it serves - an older one - is doubt, and doubt refuses the same way, as it does for the sync in TASK-089.17. What the sitting cannot see at all - an app on a port nobody named, this repository's own `--port 4299` among them - is said in the sentence that asks for the explicit yes before adopting. A job row in state `running` in the found database is read without writing and refuses in any case; it needs no port. One test per case, and each asserts that the found database's user_version did not move.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+### Found while building TASK-089.09, reproduced by the orchestrator (2026-09-22)
+
+`python -m scribe.setup` orphans a library from before the 2026-09-06 rename,
+silently, and this is pre-existing rather than new: `conn = db.connect(paths.DB_PATH)`
+stands at `scribe/setup.py:1168` today, at `:163` on HEAD before TASK-089.09,
+and at `:172` in the v0.5.1 tag.
+
+`db.connect()` adopts only when it is given no path - `if path is None:
+paths.adopt_legacy_db()` (`scribe/db.py:539-541`) - and setup passes the path
+explicitly, so the adoption never runs from that door.
+
+Reproduced on a scratch directory, fenced, with a legacy `scribe.db` holding a
+row and no `myscribe.db`:
+
+    before: ['.env', 'scribe.db']
+    setup exit 0
+    after : ['.env', 'logs', 'media', 'models', 'myscribe.db', 'scribe.db',
+             'setup.json', 'work']
+    paths.adopt_legacy_db() now returns: False
+
+The old library keeps its data and is never opened again: `adopt_legacy_db`
+refuses for ever once `myscribe.db` exists (`scribe/paths.py:25`). Whoever
+upgrades from a pre-rename install and runs setup before starting the app
+loses sight of their recordings, with no message.
+
+TASK-089.09's own `--plan` door is safe - it opens read-only and treats a
+legacy database as no library at all, deliberately, because adopting means
+renaming and a plan may not write (`scribe/setup.py:239-245`). It is the
+writing door that needs the fix, and adoption is this task's subject.
+
+Not fixed by TASK-089.09: outside its twenty criteria, and changing which
+database setup opens is an adoption decision, not an engine one.
+<!-- SECTION:NOTES:END -->

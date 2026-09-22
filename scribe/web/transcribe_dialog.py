@@ -108,6 +108,30 @@ def save_defaults(conn: sqlite3.Connection, options: TranscribeOptions) -> None:
         conn.commit()
 
 
+def _save_one(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """One default row, and only that one.
+
+    `save_defaults` writes all three in one statement, which is right for a
+    dialog that submitted all three and wrong for anybody who answered one: a
+    first-run sitting that saved the tier also wrote `default_diarize`, a row
+    seven call sites rewrite and read, with a choice nobody made (ADR-015,
+    Must Not; TASK-089.09).
+    """
+    with db.LOCK:
+        conn.execute("INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+
+
+def save_tier(conn: sqlite3.Connection, tier: str) -> None:
+    """Remember the transcription tier, and nothing else."""
+    _save_one(conn, SETTING_TIER, tier)
+
+
+def save_diarize(conn: sqlite3.Connection, diarize: bool) -> None:
+    """Remember whether speakers are separated by default, and nothing else."""
+    _save_one(conn, SETTING_DIARIZE, "1" if diarize else "0")
+
+
 # --- the dialog ------------------------------------------------------------------
 
 
