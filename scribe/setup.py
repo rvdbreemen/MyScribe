@@ -51,7 +51,7 @@ from typing import Callable, Iterator
 
 import httpx2
 
-from scribe import accel, credentials, db, env, models, ollama_setup, paths
+from scribe import credentials, db, env, models, ollama_setup, paths
 from scribe.stages import diarize
 from scribe.web import ai_ui, transcribe_dialog
 
@@ -134,12 +134,22 @@ code for a usage error, which `mismatch` also uses."""
 
 NOT_LOADED_HERE = "not loaded on this platform"
 
+NOT_THIS_TIER = "not loaded at the chosen quality setting"
+
 CATALOGUE_TODAY = "today's catalogue, from scribe/models.json"
 
-UNPINNED_HERE = (
-    "the Whisper weights this platform loads are not pinned yet: they are "
-    "downloaded inside the first transcription, with no progress shown (TASK-089.16)"
-)
+TIER_CHOICES = [
+    {"value": "turbo", "label": "Turbo", "note": "the default, and the measured fast path"},
+    {
+        "value": "max",
+        "label": "Maximum",
+        "note": "slower, and several times slower without a GPU - python -m scribe.doctor says which this machine has",
+    },
+]
+"""The quality settings a first sitting chooses between.
+
+Written once because two questions need them: the one that asks, and the one
+that offers the download the answer decides the size of."""
 
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 """OpenRouter's free key check: an authenticated request here costs nothing and
@@ -276,7 +286,10 @@ def needed(conn: sqlite3.Connection | None = None) -> dict:
         "hf_token": bool(token),
         "provider": (ai_ui.setting_get(conn, ai_ui.PROVIDER_SETTING) if conn else "") or "",
         "models": absent,
-        "to_download": sum(row["bytes"] for row in absent if not row["here"]),
+        # `wanted`: the rows this platform and tier load. Without it a Windows
+        # machine was told it still had gigabytes of Apple weights to fetch
+        # (TASK-089.16).
+        "to_download": sum(row["bytes"] for row in absent if row["wanted"] and not row["here"]),
         "diarization_possible": bool(token) or diarize.local_weights_dir().joinpath("config.yaml").exists(),
     }
 
@@ -421,71 +434,54 @@ def _ollama(state: ollama_setup.State) -> dict:
     }
 
 
-NOT_MLX = "not-mlx"
-"""What `transcriber()` answers where the MLX path is impossible. It is not a
-backend name: which of cuda or cpu such a machine uses is the doctor's answer,
-and asking costs a torch import."""
+NOT_MLX = models.NOT_MLX
+"""Re-exported, not a second copy: `scribe.models` owns the answer to "which
+transcriber does this platform load", because the doctor needs it too and two
+spellings of one question is how the doctor came to ask for weights the plan
+already knew this machine could not open (TASK-089.16)."""
 
 
-def transcriber() -> str:
-    """Which transcriber this platform would load - asked so that a plan does
-    not import torch to find out.
+def downloads(tier: str = "") -> dict:
+    """What this platform would download at this quality setting, and what it
+    would not.
 
-    `accel.transcription_backend()` asks CUDA first, and `cuda_available()`
-    imports torch: measured here on 2026-09-22 at 4.9 s in a cold process,
-    against 51 ms for all the rest of a plan. That is a heavy price for a
-    question asked before anybody has typed anything, and `scribe.accel`'s own
-    docstring keeps torch out of a process that only wants an answer (ADR-001);
-    the doctor's `accel` line is a GPU check on purpose.
+    An entry that this machine does not fetch carries no byte count at all
+    rather than a number in a column headed "download": its size is real, but
+    it is not a download this machine would make, and a number shown as one is
+    how "1.6 GB" ended up in a dialog whatever was picked.
 
-    mlx-whisper is the only platform-bound loader in today's catalogue and it
-    exists on Apple Silicon alone (`accel.is_apple_silicon`), where there is no
-    CUDA - so off that platform the backend is never `mlx`, which is all a plan
-    has to know. On it, the real probe is asked and answers as it always did.
+    Every catalogue row is still named, the ones that are not fetched included,
+    so the offer can be read against `models.json` - which is the half of this
+    that `models.status()` keeps true.
     """
-    return accel.transcription_backend() if accel.mlx_available() else NOT_MLX
-
-
-def loads_here(repo: str, backend: str) -> bool:
-    """Would this platform's transcriber load these weights?
-
-    The MLX conversion is loaded by mlx-whisper on Apple Silicon and by nothing
-    else; Windows and Linux load Whisper through faster-whisper from the hub
-    cache, whose weights this catalogue does not pin yet (TASK-089.16). The
-    diarization pipeline is PyTorch and loads everywhere.
-    """
-    return backend == "mlx" if repo.startswith("mlx-community/") else True
-
-
-def downloads() -> dict:
-    """What this platform would download, and what it would not.
-
-    Until TASK-089.16 re-pins the catalogue per platform this is today's
-    catalogue and says so. An entry that does not load here carries no byte
-    count at all rather than a number in a column headed "download": its size
-    is real, but it is not a download this machine would make, and a number
-    shown as one is how "1.6 GB" ended up in a dialog whatever was picked.
-    """
-    backend = transcriber()
+    backend = models.backend_here()
+    tier = tier or models.DEFAULT_TIER
     entries, total = [], 0
-    for row in models.status():
-        here_too = loads_here(row["repo"], backend)
-        if here_too and not row["here"]:
+    for row in models.status(backend=backend, tier=tier):
+        if row["wanted"] and not row["here"]:
             total += row["bytes"]
         entries.append(
             {
                 "repo": row["repo"],
                 "here": row["here"],
                 "gated": row["gated"],
-                "bytes": row["bytes"] if here_too else None,
-                "loads_here": here_too,
-                "note": "" if here_too else NOT_LOADED_HERE,
+                "bytes": row["bytes"] if row["wanted"] else None,
+                # Two questions, so two keys. `loads_here` is the platform one
+                # the contract has carried since TASK-089.09 (design spec 3.1:
+                # "false for the MLX entry off Apple Silicon") and `wanted`
+                # adds the quality setting. Folded into one key, the offer said
+                # `loads_here` false about the repository this machine loads -
+                # true about the tier and false about the platform, which is
+                # not what the name asks.
+                "loads_here": row["loads_here"],
+                "wanted": row["wanted"],
+                "note": "" if row["wanted"] else (NOT_LOADED_HERE if not row["loads_here"] else NOT_THIS_TIER),
             }
         )
     return {
         "catalogue": CATALOGUE_TODAY,
         "backend": backend,
-        "note": "" if backend == "mlx" else UNPINNED_HERE,
+        "note": "",
         "entries": entries,
         "total_bytes": total,
     }
@@ -578,17 +574,15 @@ def _questions(conn: sqlite3.Connection | None, state: ollama_setup.State, offer
         open_questions.append(model_question)
 
     # 10. Transcription quality, on a first sitting only.
-    if not done():
-        current_tier = _row(conn, transcribe_dialog.SETTING_TIER) or "turbo"
+    tier_open = not done()
+    if tier_open:
+        current_tier = _row(conn, transcribe_dialog.SETTING_TIER) or models.DEFAULT_TIER
         open_questions.append(
             Question(
                 id="default_tier",
                 kind="choice",
                 text="Transcription quality.",
-                choices=[
-                    {"value": "turbo", "label": "Turbo", "note": "the default, and the measured fast path"},
-                    {"value": "max", "label": "Maximum", "note": "slower, and several times slower without a GPU - python -m scribe.doctor says which this machine has"},
-                ],
+                choices=[dict(choice) for choice in TIER_CHOICES],
                 current=current_tier,
                 default=current_tier,
                 shown_if=None,
@@ -598,12 +592,32 @@ def _questions(conn: sqlite3.Connection | None, state: ollama_setup.State, offer
         )
 
     # 11. Download the weights now, while somebody is watching.
-    if offer["total_bytes"] > 0:
+    #
+    #     For the tier that will be in play, and while question 10 is open that
+    #     is not the stored one - the quality is answered in this same sitting.
+    #     Offered against the stored tier alone, a first sitting that picked
+    #     Maximum on a machine whose turbo weights were already here was asked
+    #     nothing at all, and the larger model then arrived inside the first
+    #     transcription with no progress shown: the fault this task exists to
+    #     remove, one tier over (TASK-089.16).
+    if tier_open:
+        totals = [(choice["label"], downloads(choice["value"])["total_bytes"]) for choice in TIER_CHOICES]
+    else:
+        totals = [("", offer["total_bytes"])]
+    to_offer = [(label, total) for label, total in totals if total > 0]
+    if to_offer:
+        # One number while it is the same number whatever is chosen, which is
+        # every sitting that is not choosing; one number per choice otherwise,
+        # because a single one would be wrong for the choice it is not for.
+        if len(to_offer) == len(totals) and len({total for _, total in to_offer}) == 1:
+            sizes = models.human(to_offer[0][1])
+        else:
+            sizes = ", ".join(f"{models.human(total)} for {label}" for label, total in to_offer)
         open_questions.append(
             Question(
                 id="fetch_models",
                 kind="yes-no",
-                text=f"Download the speech weights now ({models.human(offer['total_bytes'])})?",
+                text=f"Download the speech weights now ({sizes})?",
                 choices=[{"value": "yes", "label": "Yes"}, {"value": "no", "label": "No"}],
                 current="",
                 default="yes",
@@ -710,7 +724,11 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict
     `not_needed` and was never put, so it is still asked once it goes.
     """
     state = ollama_setup.state()
-    offer = downloads()
+    # The tier decides which Whisper repository is offered, so the offer is
+    # made for the one this library is set to rather than for the default
+    # (TASK-089.16): choosing the largest model and then downloading the turbo
+    # weights is what AC5 of TASK-040.06 claimed was already true.
+    offer = downloads(_row(conn, transcribe_dialog.SETTING_TIER) or "")
     open_questions = _questions(conn, state, offer)
     if unasked_only:
         was_put = {id for id, state_of in states().items() if state_of in PUT}
@@ -941,7 +959,10 @@ def apply(
         answered.append("fetch_models")
         try:
             report["downloaded"] = models.ensure(
-                answers.wanted or None, token=diarize.hf_token(conn), on_progress=on_progress
+                answers.wanted or None,
+                token=diarize.hf_token(conn),
+                tier=answers.tier or _row(conn, transcribe_dialog.SETTING_TIER) or "",
+                on_progress=on_progress,
             )
         except models.ModelError:
             # The sitting still ended, so it is still stamped: the questions
@@ -1350,7 +1371,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except models.ModelError as exc:
             print(f"\n{exc}")
-            return {"token": 3, "mismatch": 2}.get(exc.reason, 1)
+            return models.EXIT_CODES.get(exc.reason, 1)
         except ValueError as exc:
             print(str(exc))
             return 1

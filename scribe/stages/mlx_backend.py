@@ -39,6 +39,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, Iterator
 
+from scribe import models
+
 MLX_ORG = "mlx-community"
 """Where the converted Whisper weights live on the Hub. The repository for a
 faster-whisper model name follows one rule - ``whisper-<name>`` for the turbo
@@ -73,7 +75,13 @@ class MlxWhisperModel:
             module = mlx_whisper
         self._mlx = module
         self.model_name = model_name
-        self.repo = repo_for(model_name)
+        # The copy setup downloaded, when it downloaded one, and the hub id
+        # otherwise. mlx-whisper documents `path_or_hf_repo` as taking either,
+        # but nobody here has a Mac to run it on: whether it really loads from
+        # a folder is TASK-089.16's criterion 8, and until somebody answers it
+        # the fallback is the path every Mac has actually used.
+        local = models.local_dir(model_name, DEVICE)
+        self.repo = str(local) if local else repo_for(model_name)
 
     def transcribe(
         self,

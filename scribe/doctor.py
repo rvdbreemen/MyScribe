@@ -684,11 +684,13 @@ def _diarization_hint(local: "Path") -> str:
 def _gated_repo_reachable(repo: str, token: str) -> tuple[bool, str]:
     """Would the Hub serve this repo's config to this token? One HEAD, no weights.
 
-    401 and 403 are the two answers that mean "not for you" - the first for a
-    token the Hub does not know, the second for one that knows it but has not
-    accepted the conditions - and both are reported as they come back, because
-    the fix differs. Anything else (offline, DNS, a 500) is not an answer about
-    the token and says so rather than blaming it.
+    401 and 403 are the two answers that mean "not for you", and they are not
+    the same problem: 401 is a token the Hub does not know, which is replaced,
+    and 403 is a token it knows whose account never accepted the conditions,
+    which is not. They shared one sentence - "the conditions are not accepted
+    for this token" - and it sent somebody with an expired token to a
+    conditions page they had already agreed to. Anything else (offline, DNS, a
+    500) is not an answer about the token and says so rather than blaming it.
     """
     url = f"https://huggingface.co/{repo}/resolve/main/config.yaml"
     request = urllib.request.Request(url, method="HEAD", headers={"Authorization": f"Bearer {token}"})
@@ -696,8 +698,10 @@ def _gated_repo_reachable(repo: str, token: str) -> tuple[bool, str]:
         with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - fixed https host
             return 200 <= response.status < 300, str(response.status)
     except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            return False, f"HTTP {exc.code} - the conditions are not accepted for this token"
+        if exc.code == 401:
+            return False, "HTTP 401 - this token was not accepted; it is missing, expired or another account's"
+        if exc.code == 403:
+            return False, f"HTTP 403 - this account has not accepted the conditions at hf.co/{repo}"
         return False, f"HTTP {exc.code}"
     except Exception as exc:  # noqa: BLE001 - no network is not a verdict on the token
         return False, f"could not be asked ({exc})"
@@ -713,15 +717,37 @@ def check_models() -> Check:
 
     Optional: a machine that has not downloaded them yet is not broken, it is
     new. It fails loudly enough to be read.
+
+    Only the rows this platform and tier actually load are counted. On
+    2026-09-22 this card said "1.6 GB still to download" on Robert's machine
+    while the gpu-smoke two lines below transcribed with weights that were
+    already in the hub cache: the missing entry was the Apple conversion, which
+    nothing on Windows can open. `models.wanted_here` is now the one answer to
+    that question and the plan reads the same one.
+
+    The tier is the stored default rather than this library's setting. Reading
+    that row *can* be done without writing - `setup.read_only()` opens the
+    library `immutable=1` and measured that it creates no `-wal` and no `-shm`
+    - but this check may not import `scribe.setup`: it renders on a settings
+    page (WEB_SAFE_CHECKS, ADR-001) and setup pulls `diarize`, `ai_ui` and
+    `transcribe_dialog` into the web process behind it. A second spelling of
+    the immutable open, here, is the duplication this task exists to remove. So
+    a machine set to the largest model is told about the default one; that is a
+    smaller error than a card that demands weights nothing here can load, and
+    it is written down in the task rather than left to be rediscovered.
     """
     from scribe import models
 
-    rows = models.status()
+    rows = [row for row in models.status() if row["wanted"]]
     absent = [row for row in rows if not row["here"]]
     if not absent:
         return Check(name="models", ok=True, detail=f"{len(rows)} model(s) present")
 
     outstanding = sum(row["bytes"] for row in absent)
+    # The short name is honest now that the rows are filtered: what is left is
+    # a repository this machine loads, so the name reads as the weights the
+    # user's own transcriptions use. Unfiltered, the split stripped the
+    # `mlx-community/` that was the only clue it was the wrong platform.
     names = ", ".join(f"{row['repo'].split('/')[-1]} ({models.human(row['bytes'])})" for row in absent)
     gated = any(row["gated"] for row in absent)
     return Check(

@@ -2,6 +2,27 @@
 
 ### Changed
 
+- The weights MyScribe offers to download are the ones this machine would
+  actually load. The catalogue pinned only the Apple MLX conversion of Whisper,
+  so on Windows and Linux the doctor demanded 1.6 GB for ever - on a machine
+  that transcribes fine, with the real weights already in the cache two lines
+  below the message - and `python -m scribe.models --fetch` would have
+  downloaded them. The entry faster-whisper actually requests is pinned now,
+  with Systran's large-v3 for the Maximum setting and the MLX pair for Apple
+  Silicon, each by revision, per-file sha256 and size. A row that this platform
+  or this quality setting does not load says which of the two it is instead of
+  being counted as missing (TASK-089.16).
+
+- Downloading the weights is harder to get wrong. The gated pipeline is
+  fetched first, so a machine with no Hugging Face token is refused before
+  1.6 GB of public weights arrive rather than after; free space is checked on
+  the volume the files land on before the first byte, with both numbers in the
+  sentence; a connection that drops mid-file is reported as a connection that
+  dropped and resumed with a Range request, where it used to read as the file
+  not matching its pin, which sounds like tampering; 401 and 403 no longer
+  share one sentence; and the Authorization header is dropped on a redirect
+  that changes host or scheme (TASK-089.16).
+
 - The doctor no longer fails a machine for not having an NVIDIA card. A CUDA
   build that cannot reach a device used to be one required failure whether the
   machine had a card behind a broken driver or no card at all, and it told both

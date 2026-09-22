@@ -146,8 +146,17 @@ def test_what_is_still_needed_is_about_this_machine_now(tmp_path, conn, monkeypa
     state = setup.needed(conn)
 
     assert state["hf_token"] is False
-    assert state["to_download"] > 0
     assert state["diarization_possible"] is False
+    # The number, not just that there is one: summed over every catalogue row
+    # it told a Windows machine it had gigabytes of Apple weights to fetch,
+    # which is the fault this whole task is about (TASK-089.16).
+    assert state["to_download"] == sum(
+        row["bytes"] for row in state["models"] if row["wanted"] and not row["here"]
+    )
+    assert any(not row["wanted"] and row["bytes"] for row in state["models"]), (
+        "and the catalogue really does hold a row this machine does not fetch"
+    )
+    assert 0 < state["to_download"] < sum(row["bytes"] for row in state["models"])
 
 
 def test_the_weights_are_only_fetched_when_asked(tmp_path, conn, monkeypatch):

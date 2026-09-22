@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import sys
 import types
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -674,7 +675,11 @@ def test_no_fix_hint_this_machine_can_print_names_pip(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "_run", lambda cmd: (False, ""))
     monkeypatch.setattr(doctor.urls, "installed_version", lambda: None)
     monkeypatch.setattr(
-        models, "status", lambda: [{"here": False, "bytes": 2**30, "repo": "pyannote/x", "gated": True}]
+        models,
+        "status",
+        lambda **_: [
+            {"here": False, "bytes": 2**30, "repo": "pyannote/x", "gated": True, "wanted": True}
+        ],
     )
     monkeypatch.setattr(diarize, "local_weights_dir", lambda: tmp_path / "absent")
     monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
@@ -899,3 +904,67 @@ def test_every_registered_check_is_labelled_with_the_name_it_reports(tmp_path, m
     # The smoke without a card: gpu_smoke returns on a missing clip before the
     # transcribe stage is even imported.
     assert doctor.gpu_smoke(clip=tmp_path / "nope.wav").name == doctor.CHECK_LABELS[doctor.check_gpu_smoke]
+
+
+# --- the weights this machine can actually load (TASK-089.16) ---------------------
+
+
+def _not_apple_silicon(monkeypatch, tmp_path):
+    from scribe import accel, models
+
+    monkeypatch.setattr(accel, "mlx_available", lambda: False)
+    monkeypatch.setattr(accel, "transcription_backend", lambda: "cuda")
+    monkeypatch.setattr(models, "root", lambda: tmp_path / "models")
+    return models
+
+
+def test_a_windows_machine_is_never_asked_to_download_apple_weights(monkeypatch, tmp_path):
+    """The headline of TASK-089.16, measured on Robert's machine on 2026-09-22:
+    the card read "1.6 GB still to download: whisper-large-v3-turbo (1.6 GB)"
+    while the gpu-smoke two lines below transcribed happily. The missing entry
+    was the MLX conversion, which nothing on Windows can open, and the short
+    name had stripped the `mlx-community/` that said so."""
+    models = _not_apple_silicon(monkeypatch, tmp_path)
+    monkeypatch.setattr(models, "hub_snapshot", lambda model: None)
+
+    check = doctor.check_models()
+
+    assert check.ok is False, "the weights really are absent here"
+    assert "mlx" not in check.detail.lower(), check.detail
+    named = check.detail.split(": ", 1)[1]
+    assert len(named.split(", ")) == 2, f"one Whisper repository and the pipeline: {named}"
+
+
+def test_weights_the_hub_cache_already_holds_are_present(monkeypatch, tmp_path):
+    """The other half of the same run: the CT2 weights that transcribe on this
+    machine were in the hub cache all along."""
+    models = _not_apple_silicon(monkeypatch, tmp_path)
+    wanted = {model.repo for model in models.wanted_here(backend="cuda")}
+    monkeypatch.setattr(
+        models, "hub_snapshot", lambda model: tmp_path / "hub" if model.repo in wanted else None
+    )
+
+    check = doctor.check_models()
+
+    assert check.ok is True, check.detail
+    assert check.detail == "2 model(s) present"
+
+
+def test_401_and_403_are_not_the_same_answer_about_a_token(monkeypatch):
+    """They shared one sentence - "the conditions are not accepted for this
+    token" - and it sent somebody with an expired token to a conditions page
+    they had already agreed to."""
+    said = {}
+    for code in (401, 403):
+        def refuse(*_args, code=code, **_kwargs):
+            raise urllib.error.HTTPError("https://huggingface.co/x", code, "no", {}, None)
+
+        monkeypatch.setattr(doctor.urllib.request, "urlopen", refuse)
+        reachable, why = doctor._gated_repo_reachable("pyannote/demo", "a-token")
+
+        assert reachable is False
+        said[code] = why
+
+    assert said[401] != said[403]
+    assert "401" in said[401] and "expired" in said[401]
+    assert "403" in said[403] and "pyannote/demo" in said[403]

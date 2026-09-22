@@ -12,6 +12,7 @@ on an actual Mac is the acceptance run for that assumption.
 from __future__ import annotations
 
 import importlib.machinery
+import hashlib
 import sys
 import types
 
@@ -208,3 +209,50 @@ def test_transcribe_audio_runs_the_whole_loop_on_mlx(on_a_mac, tmp_path):
     (call,) = on_a_mac
     assert call["initial_prompt"] == "Zaphod"
     assert hasattr(call["audio"], "dtype")  # samples, not a path
+
+
+# --- the copy setup downloaded is the copy that loads (TASK-089.16) ---------------
+
+
+def one_mlx_entry(monkeypatch, tmp_path, alias):
+    """A one-row catalogue pinning a four-byte file under ``alias``; the real
+    pin is 1.6 GB and this test is about which path reaches mlx-whisper."""
+    from scribe import models
+
+    body = b"mlx!"
+    entry = models.Model(
+        repo="demo/mlx-weights",
+        revision="a" * 40,
+        files={"weights.safetensors": {"sha256": hashlib.sha256(body).hexdigest(), "size": len(body)}},
+        license="mit",
+        credit="Demo, MIT.",
+        gated=False,
+        backends=("mlx",),
+        tier=models.DEFAULT_TIER,
+        alias=alias,
+    )
+    monkeypatch.setattr(models, "catalogue", lambda: {entry.repo: entry})
+    monkeypatch.setattr(models, "root", lambda: tmp_path)
+    return entry, body
+
+
+def test_the_downloaded_folder_is_what_mlx_whisper_is_pointed_at(tmp_path, monkeypatch):
+    """Whether mlx-whisper really loads from a folder is TASK-089.16's
+    criterion 8 and needs a Mac nobody here has; what is pinned is that the
+    folder this installation downloaded is the path it is handed."""
+    entry, body = one_mlx_entry(monkeypatch, tmp_path, "large-v3-turbo")
+    folder = tmp_path / entry.folder
+    folder.mkdir(parents=True)
+    (folder / "weights.safetensors").write_bytes(body)
+
+    model = mlx_backend.MlxWhisperModel("large-v3-turbo", module=fake_mlx_module([]))
+
+    assert model.repo == str(folder)
+
+
+def test_without_a_downloaded_copy_the_hub_id_is_used_as_before(tmp_path, monkeypatch):
+    one_mlx_entry(monkeypatch, tmp_path, "large-v3-turbo")
+
+    model = mlx_backend.MlxWhisperModel("large-v3-turbo", module=fake_mlx_module([]))
+
+    assert model.repo == "mlx-community/whisper-large-v3-turbo"

@@ -634,25 +634,158 @@ def test_answering_the_model_question_writes_only_myscribe_s_own_row(
 
 @pytest.mark.parametrize("backend", ["cuda", "cpu"])
 def test_weights_that_do_not_load_here_are_no_download(library, no_weights, monkeypatch, backend):
-    """Until TASK-089.16 re-pins the catalogue per platform, the MLX entry is
-    in it and loads on Apple Silicon only. It is named, it is excluded from the
-    offer and the total, and it carries no byte count - a size shown in a
-    column headed "download" is how "about 1.6 GB" ended up in a dialog
-    whatever was picked."""
+    """The Apple conversions load on Apple Silicon and nowhere else. They are
+    named, they are excluded from the offer and the total, and they carry no
+    byte count - a size shown in a column headed "download" is how "about
+    1.6 GB" ended up in a dialog whatever was picked."""
     monkeypatch.setattr(accel, "mlx_available", lambda: False)
     monkeypatch.setattr(accel, "transcription_backend", lambda: backend)
 
     offer = setup.plan(library)["downloads"]
 
-    mlx = next(row for row in offer["entries"] if row["repo"].startswith("mlx-community/"))
-    assert mlx["loads_here"] is False
-    assert mlx["note"] == setup.NOT_LOADED_HERE
-    assert mlx["bytes"] is None
+    apple = [row for row in offer["entries"] if row["repo"].startswith("mlx-community/")]
+    assert apple, "they are still named"
+    for row in apple:
+        assert row["loads_here"] is False
+        assert row["note"] == setup.NOT_LOADED_HERE
+        assert row["bytes"] is None
     assert offer["total_bytes"] == sum(
-        row["bytes"] for row in offer["entries"] if row["loads_here"] and not row["here"]
+        row["bytes"] for row in offer["entries"] if row["wanted"] and not row["here"]
     )
-    assert "not pinned yet" in offer["note"], "and one line says what this platform does instead"
     assert offer["catalogue"] == setup.CATALOGUE_TODAY
+
+
+def test_the_offer_gives_real_bytes_for_this_platform(library, no_weights, monkeypatch):
+    """TASK-089.09 could only say that the weights this platform loads were not
+    pinned. They are pinned now, so the offer is a number and the sentence that
+    stood in for one is gone (TASK-089.16)."""
+    monkeypatch.setattr(accel, "mlx_available", lambda: False)
+    monkeypatch.setattr(accel, "transcription_backend", lambda: "cuda")
+
+    offer = setup.plan(library)["downloads"]
+
+    assert offer["note"] == ""
+    assert "not pinned" not in json.dumps(offer)
+    wanted = [row for row in offer["entries"] if row["wanted"]]
+    assert len(wanted) == 2, "one Whisper repository and the diarization pipeline"
+    assert all(row["bytes"] > 0 for row in wanted)
+    assert offer["total_bytes"] == sum(row["bytes"] for row in wanted if not row["here"])
+
+
+def test_choosing_the_largest_model_offers_the_largest_model(library, no_weights, monkeypatch):
+    """What TASK-040.06 AC5 claimed: picking Maximum and ticking download used
+    to fetch the turbo weights, because the tier reached neither the offer nor
+    the fetch."""
+    monkeypatch.setattr(accel, "mlx_available", lambda: False)
+    monkeypatch.setattr(accel, "transcription_backend", lambda: "cuda")
+    transcribe_dialog.save_tier(library, "max")
+
+    offer = setup.plan(library)["downloads"]
+
+    wanted = {row["repo"] for row in offer["entries"] if row["wanted"]}
+    turbo = [row for row in offer["entries"] if not row["wanted"] and row["note"] == setup.NOT_THIS_TIER]
+    assert wanted and turbo and not (wanted & {row["repo"] for row in turbo})
+    biggest = max(
+        (row for row in offer["entries"] if row["wanted"] and row["repo"] != models.DIARIZE),
+        key=lambda row: row["bytes"],
+    )
+    assert biggest["bytes"] > 2 * 10 ** 9, "the full model, not the distilled one"
+    # The other tier's Whisper repository loads on this platform perfectly
+    # well; it is simply not what this quality setting downloads. One key for
+    # both questions reported it as not loading here (TASK-089.16 review).
+    assert all(row["loads_here"] is True for row in turbo)
+
+
+def test_the_chosen_tier_reaches_the_fetch(library, monkeypatch):
+    """The offer and the download have to agree: an offer for the largest model
+    followed by a fetch of the default one is the same bug one step later."""
+    asked: list = []
+
+    def ensure(wanted=None, token=None, tier=None, on_progress=None):
+        asked.append(tier)
+        return []
+
+    monkeypatch.setattr(models, "ensure", ensure)
+
+    setup.apply(setup.Answers(tier="max", fetch_models=True), library)
+
+    assert asked == ["max"]
+
+
+@pytest.fixture
+def two_tiers(monkeypatch):
+    """A catalogue of one repository per quality setting.
+
+    Small enough that a test can put one of them on disk, and far enough apart
+    that `models.human` prints a different number for each.
+    """
+    def made(name: str, tier: str, size: int) -> models.Model:
+        return models.Model(
+            repo=name,
+            revision="a" * 40,
+            files={"weights.bin": {"sha256": "0" * 64, "size": size}},
+            license="mit",
+            credit="c",
+            gated=False,
+            backends=("cuda", "cpu"),
+            tier=tier,
+            alias=tier,
+        )
+
+    rows = {m.repo: m for m in (made("demo/turbo", "turbo", 2_000_000), made("demo/max", "max", 5_000_000))}
+    monkeypatch.setattr(models, "catalogue", lambda: rows)
+    return rows
+
+
+def test_a_tier_answered_in_this_sitting_is_still_offered_its_download(
+    library, no_weights, two_tiers, monkeypatch, tmp_path
+):
+    """The quality question and the download question are put in one sitting,
+    so the offer cannot be made against the tier that was stored before it.
+
+    On a machine whose turbo weights are already here the stored tier needed
+    nothing, so the download question was not asked at all - and somebody who
+    picked Maximum got the 3.1 GB inside their first transcription, with no
+    progress shown, which is the whole of what this task exists to remove.
+    """
+    monkeypatch.setattr(accel, "mlx_available", lambda: False)
+    turbo = two_tiers["demo/turbo"]
+    here = tmp_path / "models" / turbo.folder / "weights.bin"
+    here.parent.mkdir(parents=True, exist_ok=True)
+    here.write_bytes(b"x" * turbo.bytes_total)
+
+    asked = question(setup.plan(library), "fetch_models")
+
+    assert asked is not None, "the tier this sitting can still choose has a download"
+    assert models.human(two_tiers["demo/max"].bytes_total) in asked["text"]
+    assert "Maximum" in asked["text"], "and says which choice that number belongs to"
+
+
+def test_the_offer_names_a_number_per_choice_while_the_quality_is_open(
+    library, no_weights, two_tiers, monkeypatch
+):
+    """Both tiers need a download and they are not the same size, so one number
+    would be wrong for whichever choice it was not for."""
+    monkeypatch.setattr(accel, "mlx_available", lambda: False)
+
+    asked = question(setup.plan(library), "fetch_models")
+
+    assert models.human(two_tiers["demo/turbo"].bytes_total) in asked["text"]
+    assert models.human(two_tiers["demo/max"].bytes_total) in asked["text"]
+
+
+def test_once_the_quality_is_settled_the_offer_is_one_number(
+    library, no_weights, two_tiers, monkeypatch
+):
+    """A later sitting is not choosing a tier any more, so the question names
+    the stored one's download and nothing else."""
+    monkeypatch.setattr(accel, "mlx_available", lambda: False)
+    setup.stamp_path().write_text("{}", encoding="utf-8")
+    transcribe_dialog.save_tier(library, "max")
+
+    asked = question(setup.plan(library), "fetch_models")
+
+    assert asked["text"] == f"Download the speech weights now ({models.human(5_000_000)})?"
 
 
 def test_on_an_mlx_machine_the_mlx_weights_are_the_download(library, no_weights, monkeypatch):
@@ -663,10 +796,15 @@ def test_on_an_mlx_machine_the_mlx_weights_are_the_download(library, no_weights,
 
     offer = setup.plan(library)["downloads"]
 
-    mlx = next(row for row in offer["entries"] if row["repo"].startswith("mlx-community/"))
-    assert mlx["loads_here"] is True and mlx["bytes"] > 0
-    assert offer["total_bytes"] >= mlx["bytes"]
+    wanted = [row for row in offer["entries"] if row["wanted"]]
+    assert {row["repo"] for row in wanted} == {
+        row["repo"] for row in offer["entries"]
+        if row["repo"].startswith("mlx-community/whisper-large-v3-turbo") or row["repo"] == models.DIARIZE
+    }
+    assert all(row["bytes"] > 0 for row in wanted)
+    assert offer["total_bytes"] >= max(row["bytes"] for row in wanted)
     assert offer["note"] == "", "nothing is unpinned here"
+
 
 
 # --- no value, anywhere (#7) ---------------------------------------------------------
@@ -1436,7 +1574,7 @@ def test_the_download_question_names_a_flag_the_engine_really_takes(library, no_
     engine takes and acts on."""
     fetched: list = []
 
-    def ensure(wanted=None, token=None, on_progress=None):
+    def ensure(wanted=None, token=None, tier=None, on_progress=None):
         fetched.append(wanted)
         return []
 

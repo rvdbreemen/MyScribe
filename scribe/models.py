@@ -24,6 +24,7 @@ model load.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import shutil
@@ -32,12 +33,17 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
+from urllib.parse import urlsplit
 
-from scribe import credentials, paths
+from scribe import accel, credentials, paths
 
 HERE = Path(__file__).resolve().parent
 HUB = "https://huggingface.co"
 CHUNK = 1 << 20
+RETRIES = 3
+"""How often one file is asked for again after the connection dropped part way
+through it. Each try resumes from the `.part`, so three is three chances at the
+rest of a file and never three times the file."""
 
 # The diarization pipeline, named here because `folder` and the doctor both
 # need to know which entry is the gated one. The *transcription* model is
@@ -47,14 +53,35 @@ CHUNK = 1 << 20
 # pins a binary version.
 DIARIZE = "pyannote/speaker-diarization-community-1"
 
+NOT_MLX = "not-mlx"
+"""What `backend_here()` answers where the MLX path is impossible. It is not a
+backend name: which of cuda or cpu such a machine uses is the doctor's answer,
+and asking costs a torch import."""
+
+DEFAULT_TIER = "turbo"
+"""Which quality setting a caller that names none is asking about - the stored
+default of a fresh installation, and what `scribe.web.transcribe_dialog` writes
+when somebody chooses. The tiers themselves are `tier` keys in `models.json`."""
+
+EXIT_CODES = {"mismatch": 2, "token": 3, "disk": 4}
+"""What a command exits with per `ModelError.reason`; anything else is 1. Named
+here because `scribe.setup` returns the same codes for the same failure, and
+two copies of a table are how they come to disagree. 2 is also argparse's usage
+error, which `--hf-token` already uses."""
+
 
 class ModelError(RuntimeError):
     """A fetch that could not finish, with `reason` naming which kind it was.
 
-    Three kinds, because three different things have to be done about them:
+    Four kinds, because four different things have to be done about them:
     `offline` (nothing to do here but try again on a connection), `token` (the
-    gate has not been accepted, or the token is not this account's) and
+    gate has not been accepted, or the token is not this account's), `disk`
+    (there is no room for the file, here or on the volume it lands on) and
     `mismatch` (the file that arrived is not the file that was pinned).
+
+    `disk` was split off `offline` because they read as the same sentence and
+    are not: "could not be downloaded" sends somebody to look at a connection
+    that is working.
     """
 
     def __init__(self, message: str, *, reason: str):
@@ -70,6 +97,15 @@ class Model:
     license: str
     credit: str
     gated: bool
+    backends: tuple[str, ...] | None = None
+    """Which transcribers load these weights; None means every one of them,
+    which is what the diarization pipeline is."""
+    tier: str | None = None
+    """Which quality setting asks for them; None means every setting."""
+    alias: str | None = None
+    """The id the loader itself requests - a faster-whisper model name. It is
+    data in `models.json` and never a literal in this package, so ADR-004's
+    grep still finds the default model name spelled in one file."""
 
     @property
     def folder(self) -> str:
@@ -95,10 +131,83 @@ def catalogue() -> dict[str, Model]:
             license=spec["license"],
             credit=spec["credit"],
             gated=name.startswith("pyannote/"),
+            backends=tuple(spec["backends"]) if spec.get("backends") else None,
+            tier=spec.get("tier"),
+            alias=spec.get("alias"),
         )
         for name, spec in raw.items()
         if not name.startswith("_")
     }
+
+
+def backend_here() -> str:
+    """Which transcriber this platform would load - `mlx` or `NOT_MLX`.
+
+    `accel.transcription_backend()` is deliberately not asked. It tries CUDA
+    first, and `cuda_available()` imports torch: 4.9 s in a cold process,
+    measured on 2026-09-22 against 51 ms for all the rest of a plan. Worse than
+    slow, it is forbidden - `check_models` reads this and sits in the doctor's
+    WEB_SAFE_CHECKS, so asking it would import torch into the web process every
+    time a settings page renders (ADR-001, Must Not). On Apple Silicon, where
+    `mlx_available()` is true, that is exactly what would happen.
+
+    Nothing is lost by not asking. mlx-whisper is the only platform-bound
+    loader in the catalogue and it exists on Apple Silicon alone
+    (`accel.is_apple_silicon`), where there is no CUDA; everywhere else cuda
+    and cpu load the same files, so the catalogue cannot tell them apart and
+    does not need to. `load_model` still asks the real probe, because it is
+    about to load a model anyway.
+    """
+    return "mlx" if accel.mlx_available() else NOT_MLX
+
+
+def loads_here(model: Model, backend: str) -> bool:
+    """Would this transcriber load these weights?
+
+    `NOT_MLX` is not a backend, so it is answered by what it rules out rather
+    than by what it names: everything except the Apple conversions.
+    """
+    if model.backends is None:
+        return True
+    if backend == NOT_MLX:
+        return "mlx" not in model.backends
+    return backend in model.backends
+
+
+def wanted_here(*, backend: str | None = None, tier: str | None = None) -> list[Model]:
+    """The catalogue rows this machine would download, at this quality setting.
+
+    The one place the question is answered. It used to be answered twice - once
+    in the plan and not at all in the doctor - and a doctor that asked for
+    1.6 GB of weights this platform cannot load was the result.
+    """
+    backend = backend or backend_here()
+    tier = tier or DEFAULT_TIER
+    return [
+        m
+        for m in catalogue().values()
+        if loads_here(m, backend) and m.tier in (None, tier)
+    ]
+
+
+def local_dir(alias: str | None, backend: str, *, where: Path | None = None) -> Path | None:
+    """The folder a loader should open for ``alias``, or None to let it resolve
+    the name by itself.
+
+    The copy `ensure()` wrote is the copy that gets loaded, so a machine that
+    downloaded its weights while somebody watched does not download them a
+    second time inside the first job, with no progress shown. A folder that is
+    not whole is not an answer: the loader would open it and fail, where the
+    bare name still resolves through the hub cache.
+    """
+    name = (alias or "").strip()
+    if not name:
+        return None
+    base = where or root()
+    for model in catalogue().values():
+        if model.alias == name and loads_here(model, backend) and present(model, where=base):
+            return base / model.folder
+    return None
 
 
 def root() -> Path:
@@ -158,6 +267,12 @@ def present(model: Model, *, where: Path | None = None, verify: bool = False) ->
     byte it writes, and refuses anything that does not match. A file that is
     the right size and the wrong content is caught there, which is before
     anything has relied on it.
+
+    One exception, and it is deliberate: a copy in the huggingface_hub cache is
+    accepted on its revision, its names and its sizes whatever `verify` says.
+    This app did not put it there and does not maintain it - huggingface_hub
+    does its own integrity work - and hashing 1.6 GB of somebody else's cache
+    to answer "must I download?" would cost more than the question is worth.
     """
     if where is None and hub_snapshot(model) is not None:
         return True
@@ -174,12 +289,30 @@ def present(model: Model, *, where: Path | None = None, verify: bool = False) ->
     return True
 
 
-def missing(*, where: Path | None = None, verify: bool = False) -> list[Model]:
-    return [m for m in catalogue().values() if not present(m, where=where, verify=verify)]
+def missing(
+    *,
+    where: Path | None = None,
+    verify: bool = False,
+    backend: str | None = None,
+    tier: str | None = None,
+) -> list[Model]:
+    """What this machine still has to download. The same predicate `--fetch`
+    walks, so "nothing is missing" and "nothing is fetched" cannot disagree."""
+    return [
+        m for m in wanted_here(backend=backend, tier=tier) if not present(m, where=where, verify=verify)
+    ]
 
 
-def status(*, where: Path | None = None) -> list[dict]:
-    """What the setup screen and the doctor print: one row per model."""
+def status(*, where: Path | None = None, backend: str | None = None, tier: str | None = None) -> list[dict]:
+    """What the setup screen and the doctor print: one row per model.
+
+    Every catalogue row, filtered nowhere: an entry this machine does not load
+    is still named, with `wanted` false, because a plan that silently drops a
+    row cannot be read against `models.json`. Which rows *count* is what
+    `wanted` says, and each reader decides what to do with a row that is not.
+    """
+    backend = backend or backend_here()
+    tier = tier or DEFAULT_TIER
     return [
         {
             "repo": m.repo,
@@ -188,9 +321,129 @@ def status(*, where: Path | None = None) -> list[dict]:
             "bytes": m.bytes_total,
             "gated": m.gated,
             "licence": m.license,
+            "tier": m.tier,
+            "loads_here": loads_here(m, backend),
+            "wanted": loads_here(m, backend) and m.tier in (None, tier),
         }
         for m in catalogue().values()
     ]
+
+
+def origin_of(url: str) -> tuple[str, str]:
+    """Scheme and host together - what "the same place" means for a credential.
+
+    The host alone is not enough. `https://huggingface.co/x` and
+    `http://huggingface.co/x` have the same netloc, so a redirect that only
+    drops the s would read as the same place and the token would go out over
+    the wire in the clear, which is the one way of losing it that costs the
+    credential itself.
+    """
+    parts = urlsplit(url)
+    return parts.scheme, parts.netloc
+
+
+class DropAuthAcrossHosts(urllib.request.HTTPRedirectHandler):
+    """A redirect handler that does not carry the token anywhere else.
+
+    urllib copies a request's headers into the redirected request, and
+    `Authorization` is one of them, so a `Location` pointing anywhere else is
+    all it takes for this account's Hugging Face token to be handed to whatever
+    host that is. Same origin, same token; anything else, no header.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        followed = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if followed is not None and origin_of(newurl) != origin_of(req.full_url):
+            followed.headers.pop("Authorization", None)
+            followed.unredirected_hdrs.pop("Authorization", None)
+        return followed
+
+
+def _one_request(
+    model: Model, url: str, part: Path, token: str | None, resume_from: int, on_bytes: Callable[[int], None]
+) -> bool:
+    """One GET appended to ``part``. True when the body ended early.
+
+    A short body is not an error urllib reports: `HTTPResponse.read` returns
+    b"" and closes when the stream ends before Content-Length is satisfied, so
+    the only way to notice is to count what arrived and compare.
+    """
+    # The token is this account's credential for the one repository whose
+    # conditions it accepted. A public file needs none, and sending one
+    # anyway tells every repository who is downloading.
+    headers = {"Authorization": f"Bearer {token}"} if token and model.gated else {}
+    if resume_from:
+        headers["Range"] = f"bytes={resume_from}-"
+    request = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(DropAuthAcrossHosts)
+    try:
+        with opener.open(request, timeout=120) as response:
+            announced = int(response.headers.get("Content-Length") or 0)
+            # A server that ignores the Range header answers 200 with the whole
+            # file, and appending that to what is already there would build a
+            # file of the right length out of the wrong bytes.
+            mode = "ab" if resume_from and response.status == 206 else "wb"
+            arrived = 0
+            with part.open(mode) as out:
+                while True:
+                    block = response.read(CHUNK)
+                    if not block:
+                        break
+                    out.write(block)
+                    arrived += len(block)
+                    on_bytes(len(block))
+            return bool(announced) and arrived != announced
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and resume_from:
+            # "Range not satisfiable": what is on disk is longer than the file
+            # the hub will serve from here. The `.part` carries the revision it
+            # was begun for, so this is the network's own answer - a proxy, or
+            # a server that once sent more than it announced - and not a
+            # leftover of ours. It is thrown away, so the next try starts over.
+            part.unlink(missing_ok=True)
+            return True
+        # Everything else keeps the `.part`. A 500 is as temporary as a dropped
+        # connection, and a token that was refused will be replaced: deleting
+        # what had already arrived made every one of those cost the whole file
+        # again.
+        # Every HTTP failure names a configured proxy, the gated ones included:
+        # a proxy that refuses a request answers HTTP too, and 403 is what it
+        # commonly answers for a host it blocks - the same status the hub uses
+        # for conditions that were not accepted. This side cannot tell which of
+        # the two answered, so somebody sent to go and accept conditions is
+        # told a proxy stood in the way as well.
+        if exc.code == 401:
+            raise ModelError(
+                f"{model.repo}: this Hugging Face token was not accepted - it is missing, expired or "
+                f"belongs to another account{credentials.proxy_note()}",
+                reason="token",
+            ) from exc
+        if exc.code == 403:
+            raise ModelError(
+                f"{model.repo} is gated: this account has not accepted the conditions at "
+                f"https://hf.co/{model.repo}{credentials.proxy_note()}",
+                reason="token",
+            ) from exc
+        raise ModelError(
+            f"{model.repo}: the hub answered HTTP {exc.code}{credentials.proxy_note()}", reason="offline"
+        ) from exc
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ENOSPC:
+            # The `.part` is why there is no room. Keeping it on a disk with
+            # nothing free helps nobody: the next try cannot finish it either,
+            # and the machine stays full until somebody finds the file.
+            part.unlink(missing_ok=True)
+            raise ModelError(
+                f"{model.repo}/{part.name}: the disk filled up while it was being written",
+                reason="disk",
+            ) from exc
+        # A reset or a timeout keeps what arrived. This used to delete it, so
+        # the resume `fetch_file` promises worked only for a body that ended
+        # early without raising - which is not the drop a long download over a
+        # flaky line is most likely to hit.
+        raise ModelError(
+            f"{model.repo}: could not be downloaded ({exc}){credentials.proxy_note()}", reason="offline"
+        ) from exc
 
 
 def fetch_file(model: Model, rel: str, dest: Path, token: str | None, on_bytes: Callable[[int], None]) -> None:
@@ -200,42 +453,60 @@ def fetch_file(model: Model, rel: str, dest: Path, token: str | None, on_bytes: 
     an interrupted download never leaves a file that looks finished - the
     failure mode that would otherwise be indistinguishable from a good copy
     until a transcription produced nonsense.
+
+    The `.part` is also what a retry resumes from. A connection that dropped at
+    1.5 GB used to cost the whole 1.6 GB again, and reported itself as a pin
+    mismatch - "it was deleted rather than used" - which reads as somebody
+    having interfered with the download rather than as a dropped connection.
+
+    It carries the revision it was begun for, because bytes are only a prefix
+    of the file they were fetched for. Named per file alone, a `.part` outlived
+    a re-pin and the next run appended one revision's bytes to another's: a
+    file of exactly the right length and the wrong content, which failed its
+    digest with that same sentence about being deleted rather than used.
     """
     url = f"{HUB}/{model.repo}/resolve/{model.revision}/{rel}"
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
     dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_suffix(dest.suffix + ".part")
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response, part.open("wb") as out:
-            while True:
-                block = response.read(CHUNK)
-                if not block:
-                    break
-                out.write(block)
-                on_bytes(len(block))
-    except urllib.error.HTTPError as exc:
-        part.unlink(missing_ok=True)
-        # Every HTTP failure names a configured proxy, the gated one included:
-        # a proxy that refuses a request answers HTTP too, and 403 is what it
-        # commonly answers for a host it blocks - the same status the hub uses
-        # for conditions that were not accepted. This side cannot tell which
-        # of the two answered, so somebody sent to go and accept conditions is
-        # told a proxy stood in the way as well.
-        if exc.code in (401, 403):
-            raise ModelError(
-                f"{model.repo} is gated: accept the conditions at https://hf.co/{model.repo} "
-                f"with the same account, and give MyScribe that account's token{credentials.proxy_note()}",
-                reason="token",
-            ) from exc
+    part = dest.with_name(f"{dest.name}.{model.revision[:12]}.part")
+    for stale in dest.parent.glob(f"{dest.name}*.part"):
+        # Another revision's leftover, or one from before the revision was in
+        # the name at all. Nothing will ever ask for either again, and a
+        # gigabyte nobody looks at is not a thing to leave on somebody's disk.
+        if stale != part:
+            stale.unlink(missing_ok=True)
+    for _attempt in range(RETRIES):
+        resume_from = part.stat().st_size if part.exists() else 0
+        if not _one_request(model, url, part, token, resume_from, on_bytes):
+            part.replace(dest)
+            return
+    # The `.part` stays: the next run asks for the rest of it, not for all of
+    # it, and on a connection that keeps dropping that is the difference
+    # between finishing eventually and never finishing.
+    raise ModelError(
+        f"{model.repo}/{rel}: the connection dropped before the file was whole, "
+        f"{RETRIES} times over{credentials.proxy_note()}",
+        reason="offline",
+    )
+
+
+def room_for(wanted: Iterable[Model], base: Path) -> None:
+    """Enough room on the volume the files land on, asked before the first byte.
+
+    A download that fills the disk and fails at the last gigabyte has cost the
+    connection and left the machine worse than it found it. Both numbers are
+    known here, so the refusal can give them rather than say "could not be
+    downloaded" about a connection that is working.
+    """
+    needed = sum(m.bytes_total for m in wanted)
+    if not needed:
+        return
+    base.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(base).free
+    if free < needed:
         raise ModelError(
-            f"{model.repo}: the hub answered HTTP {exc.code}{credentials.proxy_note()}", reason="offline"
-        ) from exc
-    except OSError as exc:
-        part.unlink(missing_ok=True)
-        raise ModelError(
-            f"{model.repo}: could not be downloaded ({exc}){credentials.proxy_note()}", reason="offline"
-        ) from exc
-    part.replace(dest)
+            f"{human(needed)} is needed and {human(free)} is free on {base}; nothing was downloaded",
+            reason="disk",
+        )
 
 
 def ensure(
@@ -243,9 +514,16 @@ def ensure(
     *,
     token: str | None = None,
     where: Path | None = None,
+    backend: str | None = None,
+    tier: str | None = None,
     on_progress: Callable[[str, int, int], None] | None = None,
 ) -> list[str]:
     """Fetch what is missing. Returns the repos that were downloaded.
+
+    Naming no repositories means the ones this platform and tier load, the same
+    set `missing()` reports - so "1.6 GB still to download" and what `--fetch`
+    actually fetches are one answer. Naming them is the payload build's
+    question and is answered literally.
 
     `on_progress(repo, done, total)` is called as bytes arrive, which is what
     lets a 1.6 GB download look like something happening rather than a frozen
@@ -253,18 +531,35 @@ def ensure(
     """
     base = where or root()
     token = token if token is not None else default_token()
-    done: list[str] = []
-    for model in catalogue().values():
-        if wanted is not None and model.repo not in set(wanted):
-            continue
-        if present(model, where=base, verify=True):
-            continue
+    if wanted is None:
+        todo = wanted_here(backend=backend, tier=tier)
+    else:
+        named = set(wanted)
+        todo = [m for m in catalogue().values() if m.repo in named]
+    # Gated first. Walked in catalogue order, the public gigabyte arrived
+    # before the gated pipeline could refuse, so a sitting with no token spent
+    # its download on weights and then ended in an error anyway.
+    todo.sort(key=lambda m: not m.gated)
+    # `where` and not `base`: a copy in the huggingface_hub cache is a copy
+    # this installation can load, which is exactly what `status()` reports, and
+    # ensure used to re-download it. `--dest` still means that folder only,
+    # because then `where` is not None and the cache is not an answer.
+    outstanding = [m for m in todo if not present(m, where=where, verify=True)]
+
+    # Everything that can refuse for free refuses first: a token that is not
+    # there and a disk that has no room both cost nothing to find out, and
+    # finding out after 1.6 GB is the fault this ordering exists for.
+    for model in outstanding:
         if model.gated and not token:
             raise ModelError(
                 f"{model.repo} is gated and no Hugging Face token is set; "
                 f"accept the conditions at https://hf.co/{model.repo} and save a token in Settings",
                 reason="token",
             )
+    room_for(outstanding, base)
+
+    done: list[str] = []
+    for model in outstanding:
         sent = 0
         total = model.bytes_total
         for rel, pin in model.files.items():
@@ -297,8 +592,16 @@ def ensure(
             sent += int(pin.get("size") or 0)
             if on_progress:
                 on_progress(model.repo, min(sent, total), total)
-        write_credit(model, base)
         done.append(model.repo)
+
+    # The credit goes beside every copy that is in this folder, not only beside
+    # the ones this run wrote: a user who put the weights there by hand has the
+    # same files and the same licence. A model that is only in the
+    # huggingface_hub cache gets none, and that is the point - this app placed
+    # no copy there, so there is nothing of its doing to attribute.
+    for model in todo:
+        if present(model, where=base):
+            write_credit(model, base)
     return done
 
 
@@ -351,10 +654,20 @@ def main(argv: list[str] | None = None) -> int:
     base = args.dest
 
     if not args.fetch:
+        # Every catalogue row is printed, the ones this machine does not load
+        # included: a listing that showed only the wanted rows could not be
+        # read against `models.json`, and "MISSING" against weights nothing
+        # here can load is what sent people to download 1.6 GB for nothing.
         for row in status(where=base):
-            mark = "have" if row["here"] else "MISSING"
+            mark = "have" if row["here"] else ("MISSING" if row["wanted"] else "-")
             gate = " (needs your Hugging Face token)" if row["gated"] and not row["here"] else ""
-            print(f"[{mark:>7}] {row['repo']:<45} {human(row['bytes']):>8}  {row['licence']}{gate}")
+            if row["wanted"]:
+                note = ""
+            elif not row["loads_here"]:
+                note = " (not loaded on this platform)"
+            else:
+                note = f" (not loaded at the {DEFAULT_TIER} quality setting)"
+            print(f"[{mark:>7}] {row['repo']:<45} {human(row['bytes']):>8}  {row['licence']}{gate}{note}")
         outstanding = sum(m.bytes_total for m in missing(where=base))
         print(f"\n{human(outstanding)} to download" if outstanding else "\nEverything is here.")
         return 0
@@ -368,11 +681,16 @@ def main(argv: list[str] | None = None) -> int:
             print(line, end="\r", flush=True)
             last["line"] = line
 
+    # `--dest` assembles a payload, and for a platform that is not necessarily
+    # this one, so it fetches the whole catalogue. Without it the question is
+    # what this machine loads, which is what `ensure(None)` answers.
+    only = args.only or ([m.repo for m in catalogue().values()] if args.dest else None)
+
     try:
-        got = ensure(args.only, where=base, on_progress=progress)
+        got = ensure(only, where=base, on_progress=progress)
     except ModelError as exc:
         print(f"\n{exc}")
-        return {"token": 3, "mismatch": 2}.get(exc.reason, 1)
+        return EXIT_CODES.get(exc.reason, 1)
     print("\n" + (f"downloaded: {', '.join(got)}" if got else "nothing to do; everything was already here"))
     return 0
 

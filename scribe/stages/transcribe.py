@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 
 import numpy as np
 
-from scribe import accel, cuda_setup, db, glossary, jobs
+from scribe import accel, cuda_setup, db, glossary, jobs, models
 from scribe.stages import loudness, mlx_backend, seams, second_opinion
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
@@ -580,7 +580,18 @@ def load_model(
     if compute_type is None:
         compute_type = "float16" if device.startswith("cuda") else "int8"
 
-    return WhisperModel(model_name, device=device, compute_type=compute_type), device, compute_type
+    # The copy setup downloaded, when it downloaded one. `WhisperModel` takes a
+    # directory as readily as a name (faster_whisper/transcribe.py:678), and a
+    # name sends it to the Hub - which is how a machine that had just spent
+    # minutes on a progress bar spent them again inside the first job, with no
+    # bar at all. None means "there is no whole copy here", and then the name
+    # resolves exactly as it always did.
+    local = models.local_dir(model_name, device)
+    return (
+        WhisperModel(str(local) if local else model_name, device=device, compute_type=compute_type),
+        device,
+        compute_type,
+    )
 
 
 def _decode_options(language: str | None, task: str, hotwords: str | None) -> dict:

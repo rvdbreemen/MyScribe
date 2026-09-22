@@ -28,7 +28,11 @@ Mismatch = app_models.ModelError
 
 def ensure(dest_root: Path, *, token: str | None = None, only: str | None = None) -> dict:
     """Every pinned file present under ``dest_root`` and verified."""
-    app_models.ensure([only] if only else None, token=token, where=dest_root)
+    # Every catalogue entry, named: `ensure(None)` means "what this machine
+    # loads" since TASK-089.16, and a payload is assembled for the platform it
+    # ships to, not for the one it is built on.
+    everything = [model.repo for model in app_models.catalogue().values()]
+    app_models.ensure([only] if only else everything, token=token, where=dest_root)
     return {
         model.repo: {"revision": model.revision, "files": dict(model.files)}
         for model in app_models.catalogue().values()

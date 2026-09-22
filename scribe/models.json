@@ -1,7 +1,71 @@
 {
-  "_comment": "Model weights shipped in the payload (TASK-040.05). Pinned by revision and verified by sha256 before packaging, the same rule tools.json states for binaries. Large files carry the Hub's own LFS digest; small ones were hashed when this file was written.",
+  "_comment": "The weights this installation downloads for itself (scribe/models.py). Pinned by revision and verified by sha256 before anything loads them, the same rule tools.json states for binaries. Large files carry the Hub's own LFS digest, read from HfApi.model_info(files_metadata=True); small ones carry no LFS digest on the Hub and were hashed by hand. `backends` says which transcriber loads an entry (absent means every one of them), `tier` which quality setting asks for it, and `alias` the id the loader itself requests - kept here as data, so the model name stays spelled once in the package (ADR-004).",
+  "_pins": "The four transcription entries were collected on 2026-09-22 (TASK-089.16). Revisions and every model.bin/weights digest: the Hub API, anonymously. config.json, preprocessor_config.json, tokenizer.json and vocabulary.json for the two CT2 repos: sha256 taken by hand from this machine's huggingface_hub cache, whose sizes the API confirmed byte for byte at the same revision. mlx-community/whisper-large-v3-mlx's config.json: sha256 taken by hand from a 269-byte GET of that revision. The mlx-community/whisper-large-v3-turbo entry is older and was not re-collected; the same method reproduces its revision and digest exactly, which is the cross-check that the two were built the same way.",
+  "mobiuslabsgmbh/faster-whisper-large-v3-turbo": {
+    "revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+    "backends": ["cuda", "cpu"],
+    "tier": "turbo",
+    "alias": "large-v3-turbo",
+    "files": {
+      "config.json": {
+        "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e",
+        "size": 2263
+      },
+      "preprocessor_config.json": {
+        "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+        "size": 340
+      },
+      "tokenizer.json": {
+        "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+        "size": 2710337
+      },
+      "vocabulary.json": {
+        "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1",
+        "size": 1068114
+      },
+      "model.bin": {
+        "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+        "size": 1617884929
+      }
+    },
+    "license": "mit",
+    "credit": "Whisper large-v3-turbo, (c) OpenAI, MIT licence. CTranslate2 conversion by mobiuslabsgmbh. Source: https://hf.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+  },
+  "Systran/faster-whisper-large-v3": {
+    "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+    "backends": ["cuda", "cpu"],
+    "tier": "max",
+    "alias": "large-v3",
+    "files": {
+      "config.json": {
+        "sha256": "a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9",
+        "size": 2394
+      },
+      "preprocessor_config.json": {
+        "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+        "size": 340
+      },
+      "tokenizer.json": {
+        "sha256": "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca",
+        "size": 2480617
+      },
+      "vocabulary.json": {
+        "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1",
+        "size": 1068114
+      },
+      "model.bin": {
+        "sha256": "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1",
+        "size": 3087284237
+      }
+    },
+    "license": "mit",
+    "credit": "Whisper large-v3, (c) OpenAI, MIT licence. CTranslate2 conversion by Systran. Source: https://hf.co/Systran/faster-whisper-large-v3"
+  },
   "mlx-community/whisper-large-v3-turbo": {
     "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+    "backends": ["mlx"],
+    "tier": "turbo",
+    "alias": "large-v3-turbo",
     "files": {
       "config.json": {
         "sha256": "b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379",
@@ -14,6 +78,24 @@
     },
     "license": "mit",
     "credit": "Whisper large-v3-turbo, (c) OpenAI, MIT licence. MLX conversion by the mlx-community organisation."
+  },
+  "mlx-community/whisper-large-v3-mlx": {
+    "revision": "49e6aa286ad60c14352c404340ded53710378a11",
+    "backends": ["mlx"],
+    "tier": "max",
+    "alias": "large-v3",
+    "files": {
+      "config.json": {
+        "sha256": "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3",
+        "size": 269
+      },
+      "weights.npz": {
+        "sha256": "05ff791ce3630fae47e7c51004e9666204d786246ec07cac6110af768099b40d",
+        "size": 3083520416
+      }
+    },
+    "license": "mit",
+    "credit": "Whisper large-v3, (c) OpenAI, MIT licence. MLX conversion by the mlx-community organisation. Source: https://hf.co/mlx-community/whisper-large-v3-mlx"
   },
   "pyannote/speaker-diarization-community-1": {
     "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",

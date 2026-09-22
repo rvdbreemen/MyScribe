@@ -27,6 +27,7 @@ accuracy. Accuracy is what the GPU models are for.
 
 import gc
 import json
+import hashlib
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
@@ -1027,3 +1028,87 @@ def test_live_text_flushes_on_the_segment_cap_on_the_clock_and_at_the_end(conn, 
     assert _log_events(conn, job_id)[-1]["text"] == "last"
     live.flush()  # nothing pending: no empty row
     assert len(_log_events(conn, job_id)) == 3
+
+
+# --- the copy setup downloaded is the copy that loads (TASK-089.16) ---------------
+
+
+def one_entry(monkeypatch, tmp_path, alias, backends):
+    """A one-row catalogue pinning a four-byte file under ``alias``.
+
+    The real pin is 1.6 GB and this test is about which path reaches the
+    loader; tests/test_models.py pins the alias against faster-whisper's own
+    table, so the row here standing in for it cannot drift.
+    """
+    from scribe import models
+
+    body = b"ct2!"
+    entry = models.Model(
+        repo="demo/weights",
+        revision="a" * 40,
+        files={"model.bin": {"sha256": hashlib.sha256(body).hexdigest(), "size": len(body)}},
+        license="mit",
+        credit="Demo, MIT.",
+        gated=False,
+        backends=backends,
+        tier=models.DEFAULT_TIER,
+        alias=alias,
+    )
+    monkeypatch.setattr(models, "catalogue", lambda: {entry.repo: entry})
+    monkeypatch.setattr(models, "root", lambda: tmp_path)
+    return entry, body
+
+
+def _fake_whisper(monkeypatch):
+    """faster-whisper's constructor, recorded rather than run."""
+    import faster_whisper
+
+    from scribe import cuda_setup
+
+    opened: list = []
+
+    class Fake:
+        def __init__(self, name_or_directory, **_kwargs):
+            opened.append(name_or_directory)
+
+    monkeypatch.setattr(cuda_setup, "ensure_cuda_libs", lambda: None)
+    monkeypatch.setattr(faster_whisper, "WhisperModel", Fake)
+    return opened
+
+
+def test_the_weights_setup_downloaded_are_the_weights_that_load(tmp_path, monkeypatch):
+    """A machine that watched a progress bar during setup used to watch nothing
+    at all while the first job downloaded the same weights again: the name was
+    handed to faster-whisper, which resolves it through the Hub."""
+    opened = _fake_whisper(monkeypatch)
+    entry, body = one_entry(monkeypatch, tmp_path, transcribe.DEFAULT_MODEL, ("cuda", "cpu"))
+    folder = tmp_path / entry.folder
+    folder.mkdir(parents=True)
+    (folder / "model.bin").write_bytes(body)
+
+    transcribe.load_model(transcribe.DEFAULT_MODEL, device="cpu")
+
+    assert opened == [str(folder)]
+
+
+def test_a_folder_that_is_not_whole_is_not_used(tmp_path, monkeypatch):
+    """faster-whisper would open it and fail, where the bare name still
+    resolves through the hub cache."""
+    opened = _fake_whisper(monkeypatch)
+    entry, _body = one_entry(monkeypatch, tmp_path, transcribe.DEFAULT_MODEL, ("cuda", "cpu"))
+    (tmp_path / entry.folder).mkdir(parents=True)
+
+    transcribe.load_model(transcribe.DEFAULT_MODEL, device="cpu")
+
+    assert opened == [transcribe.DEFAULT_MODEL]
+
+
+def test_another_model_name_is_handed_over_as_before(tmp_path, monkeypatch):
+    """Nothing in the catalogue serves it, so it resolves the way it always
+    did - the hidden CPU fallback and anybody's own checkpoint included."""
+    opened = _fake_whisper(monkeypatch)
+    one_entry(monkeypatch, tmp_path, transcribe.DEFAULT_MODEL, ("cuda", "cpu"))
+
+    transcribe.load_model("tiny", device="cpu")
+
+    assert opened == ["tiny"]
