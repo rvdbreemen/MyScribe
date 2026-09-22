@@ -3,7 +3,7 @@
 
 {% block content %}
 {#
-  The settings page: six categories down the left, one of them open on the
+  The settings page: seven categories down the left, one of them open on the
   right.
 
   It used to be one long scroll - the doctor, the models, storage, the
@@ -55,6 +55,10 @@
 
     <div id="settings-watch-section" class="settings-section" data-settings-section="watch">
       {% include "_settings_watch.html" %}
+    </div>
+
+    <div id="settings-autostart-section" class="settings-section" data-settings-section="autostart">
+      {% include "_settings_autostart.html" %}
     </div>
 
     <div id="settings-glossary-section" class="settings-section" data-settings-section="glossary">

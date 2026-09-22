@@ -1,0 +1,63 @@
+{#
+  The start-at-login card: what settings.html includes, and what
+  POST /settings/autostart returns to swap in its place.
+
+  Context (from scribe.web.settings.autostart_context):
+
+      autostart        {on, where, command, can_switch} read from the OS on
+                       this very request, or nothing at all when the OS
+                       refused to answer
+      autostart_error  what it said when it refused
+      flash            a line for the page's status region, or none
+      oob              whether this is a fragment response carrying the flash
+                       out of band
+
+  The place and the whole command are printed, as text and never |safe.
+  "On" is the one thing about a login entry a user cannot check for himself:
+  he can compare these two lines with what regedit, Finder or `cat` shows and
+  see the same thing, or see that they differ.
+
+  No switch at all where nothing is known to start MyScribe again. A button
+  that registered a path which is wrong at the next login would be worse than
+  the absence of one, and the paragraph says which two doors exist.
+#}
+<section id="start-at-login" class="panel autostart">
+  <h2>Start at login</h2>
+  <p class="hint">
+    Watch folders and feed subscriptions only do work while MyScribe is running: a folder you
+    are watching takes nothing in between a reboot and the moment you start MyScribe yourself.
+    This is registered for your account alone - nothing machine-wide is written and nothing
+    here needs an administrator.
+  </p>
+
+  {% if autostart_error %}
+  <p class="hint fail">
+    This machine would not say whether MyScribe starts at login: {{ autostart_error }}
+  </p>
+  {% elif not autostart.can_switch %}
+  <p class="hint fail">
+    Nothing here is known to start MyScribe again after a login, so there is nothing to
+    register. An installed MyScribe registers its own launcher; a checkout registers the
+    <code>scripts/start</code> script next to it.
+  </p>
+  {% else %}
+  <dl class="facts">
+    <dt>Starts when you log in</dt>
+    <dd>{{ 'Yes' if autostart.on else 'No' }}</dd>
+    <dt>{{ 'Registered at' if autostart.on else 'Would be registered at' }}</dt>
+    <dd class="mono path">{{ autostart.where }}</dd>
+    <dt>{{ 'Runs' if autostart.on else 'Would run' }}</dt>
+    <dd class="mono">{{ autostart.command }}</dd>
+  </dl>
+
+  <form method="post" action="/settings/autostart"
+        hx-post="/settings/autostart" hx-target="#start-at-login" hx-swap="outerHTML">
+    <input type="hidden" name="enabled" value="{{ '0' if autostart.on else '1' }}">
+    <button type="submit" class="{{ '' if autostart.on else 'primary' }}">
+      {{ 'Do not start at login' if autostart.on else 'Start MyScribe when I log in' }}
+    </button>
+  </form>
+  {% endif %}
+
+  {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
+</section>

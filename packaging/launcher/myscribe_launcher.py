@@ -45,6 +45,9 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 4242
 HOME_VARIABLE = "MYSCRIBE_HOME"
 PAYLOAD_VARIABLE = "MYSCRIBE_PAYLOAD"
+# What the app is told about this launcher, so a login entry can name the
+# launcher and not the environment's python (TASK-089.21).
+LAUNCHER_VARIABLE = "MYSCRIBE_LAUNCHER"
 STAMP_NAME = ".myscribe-sync.json"
 READY_TIMEOUT = 120.0
 STOP_TIMEOUT = 15.0
@@ -198,6 +201,46 @@ def sync_environment(layout: Layout, base: dict | None = None) -> dict:
     return env
 
 
+def launcher_path(executable: str, platform: str, environ: dict) -> Path:
+    """The path that will still start this launcher at the next login.
+
+    Which path that is differs per OS, and only the Windows answer has been
+    seen to be true here:
+
+    * macOS - the ``.app`` bundle, not the binary inside it.
+    * Linux - the value of ``APPIMAGE``: inside an AppImage the running
+      executable sits under a temporary mount that is gone after exit, so an
+      entry naming it breaks at the next login. Without it (an unpacked
+      build), the executable itself.
+    * Windows - the executable itself.
+
+    The macOS and Linux answers are the platforms' own documentation and
+    nobody's measurement (design spec §3.10).
+    """
+    if platform == "darwin":
+        for parent in Path(executable).parents:
+            if parent.suffix == ".app":
+                return parent
+    elif platform.startswith("linux"):
+        appimage = environ.get("APPIMAGE")
+        if appimage:
+            return Path(appimage)
+    return Path(executable)
+
+
+def this_launcher() -> Path | None:
+    """Where this launcher is, or None when it is not a frozen launcher at all.
+
+    Running from the source tree, ``sys.executable`` is a python in somebody's
+    venv. Naming that in a login entry is exactly the stale-environment bug a
+    release entry exists to avoid, so nothing is handed down and the app falls
+    back to the clone's own start script.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    return launcher_path(sys.executable, sys.platform, os.environ)
+
+
 def app_environment(layout: Layout, base: dict | None = None) -> dict:
     env = child_environment(base)
     env.update(
@@ -208,6 +251,12 @@ def app_environment(layout: Layout, base: dict | None = None) -> dict:
         PYTHONPATH=str(layout.app_dir),
         PYTHONUTF8="1",
     )
+    # Where the launcher is, so Settings can register it as a login entry and
+    # tell a release from a clone (TASK-089.21). Absent when nothing was
+    # frozen: there is then no launcher path that means anything.
+    launcher = this_launcher()
+    if launcher is not None:
+        env[LAUNCHER_VARIABLE] = str(launcher)
     # The bundled ffmpeg and ffprobe first. A Mac app started from Finder gets
     # a PATH without Homebrew, so without this there would be no ffmpeg at all.
     env["PATH"] = os.pathsep.join(p for p in (str(layout.tools_dir), env.get("PATH", "")) if p)
@@ -545,6 +594,22 @@ def setup_needed(layout: Layout) -> bool:
     return not setup_stamp(layout).exists()
 
 
+def wants_setup(layout: Layout, force: bool = False, at_login: bool = False) -> bool:
+    """Whether to open the first-run sitting before starting the app.
+
+    A pure predicate so it can be asked without a Tk window - the gate it
+    replaces was an `if` inside one, and no test could reach it.
+
+    At login nobody is at the screen, and a modal dialog that holds the watch
+    folders up is the opposite of what the login entry exists for. A sitting
+    that is due is not cancelled: it waits for the next start somebody makes
+    by hand. `--setup` still wins, because somebody typed it.
+    """
+    if force:
+        return True
+    return setup_needed(layout) and not at_login
+
+
 def setup_command(layout: Layout, answers: dict) -> list[str]:
     """`python -m scribe.setup` with the answers, in the app's environment.
 
@@ -676,7 +741,8 @@ def ask_setup(root, layout: Layout) -> dict | None:
     return answers or None
 
 
-def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool = False) -> int:
+def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool = False,
+               at_login: bool = False) -> int:
     import tkinter as tk
     from tkinter import scrolledtext
 
@@ -734,7 +800,7 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         """Ask first, then launch. The questions come before the app starts so
         a token given here is in `.env` before anything reads it - the runner
         children inherit the environment the app was started with."""
-        if setup_needed(layout) or force_setup:
+        if wants_setup(layout, force=force_setup, at_login=at_login):
             answers = ask_setup(root, layout)
             if answers:
                 status.set("Saving your answers...")
@@ -772,6 +838,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--headless", action="store_true", help="no window; progress on the console")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--at-login",
+        action="store_true",
+        help="started by the login entry: no first-run questions, nobody is at the screen",
+    )
     parser.add_argument("--home", type=Path, help=f"the per-user folder (default: {home_dir()})")
     parser.add_argument("--payload", type=Path, help="the shipped app/ and bin/ (default: inside the launcher)")
     parser.add_argument("--sync-only", action="store_true", help="install or update the environment, then exit")
@@ -815,7 +886,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         import tkinter  # noqa: F401
     except ImportError:
         return run_headless(Launch(layout, args.port, not args.no_browser, console))
-    return run_window(layout, args.port, not args.no_browser, force_setup=args.setup)
+    return run_window(
+        layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login
+    )
 
 
 def smoke(layout: Layout, port: int) -> int:

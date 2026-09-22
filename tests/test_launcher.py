@@ -484,3 +484,102 @@ def test_the_smoke_test_looks_inside_the_onedir(tmp_path):
     (frozen / "MyScribe.app").mkdir()
     mac = build_release._frozen_binary(frozen, "macos-arm64")
     assert mac == frozen / "MyScribe.app" / "Contents" / "MacOS" / "MyScribe"
+
+
+# --- a start at login (TASK-089.21) -----------------------------------------------
+
+
+def test_a_start_at_login_leaves_a_due_sitting_for_the_next_start_by_hand(tmp_path):
+    """Nobody is at the screen at login, and a modal that holds up the watch
+    folders is the opposite of what the login entry is for. A sitting that is
+    due is not cancelled - it waits for the next start somebody makes by hand.
+
+    `--setup` still wins over `--at-login`: somebody typed it.
+    """
+    layout = launcher.Layout(tmp_path / "home", tmp_path / "payload")
+
+    assert launcher.wants_setup(layout) is True
+    assert launcher.wants_setup(layout, at_login=True) is False
+    assert launcher.wants_setup(layout, force=True, at_login=True) is True
+
+    stamp = launcher.setup_stamp(layout)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("{}", encoding="utf-8")
+
+    assert launcher.wants_setup(layout) is False
+    assert launcher.wants_setup(layout, force=True) is True
+    assert launcher.wants_setup(layout, at_login=True) is False
+
+
+def test_the_launcher_takes_at_login_on_the_command_line():
+    """What the login entry passes. `--no-browser` was already there; the entry
+    carries both, so a login opens no tab and asks no questions."""
+    args = launcher.build_parser().parse_args(["--at-login", "--no-browser"])
+
+    assert args.at_login is True
+    assert args.no_browser is True
+    assert launcher.build_parser().parse_args([]).at_login is False
+
+
+def test_the_flag_reaches_the_window_and_not_only_the_parser(tmp_path, monkeypatch):
+    """The one seam between `--at-login` and the predicate that reads it.
+
+    A parser test cannot see it: deleting the argument from main()'s call left
+    every other test in this file green, and a login would have opened the
+    first-run sitting again. `run_window` itself needs Tk, so what is asserted
+    is the call.
+    """
+    seen = {}
+
+    def _capture(layout, port, open_browser, force_setup=False, at_login=False):
+        seen.update(open_browser=open_browser, force_setup=force_setup, at_login=at_login)
+        return 0
+
+    monkeypatch.setattr(launcher, "run_window", _capture)
+
+    assert launcher.main(["--at-login", "--no-browser", "--home", str(tmp_path)]) == 0
+    assert seen == {"open_browser": False, "force_setup": False, "at_login": True}
+
+    assert launcher.main(["--home", str(tmp_path)]) == 0
+    assert seen == {"open_browser": True, "force_setup": False, "at_login": False}
+
+
+def test_the_app_is_told_where_the_launcher_is(layout, monkeypatch):
+    """The app cannot otherwise tell a release from a clone, and a login entry
+    that named the environment's python would run a stale environment after the
+    next update - only the launcher re-syncs."""
+    monkeypatch.setattr(launcher, "this_launcher", lambda: Path(r"C:\Program Files\MyScribe\MyScribe.exe"))
+
+    env = launcher.app_environment(layout, {"PATH": "/usr/bin"})
+
+    assert env["MYSCRIBE_LAUNCHER"] == r"C:\Program Files\MyScribe\MyScribe.exe"
+
+
+def test_a_launcher_that_is_not_frozen_names_no_path_at_all(layout):
+    """Running from the source tree, `sys.executable` is a python in somebody's
+    venv, not a launcher. Registering that would be the stale-environment bug;
+    no variable at all is what makes the app fall back to the clone's own
+    start script."""
+    assert launcher.this_launcher() is None
+    assert "MYSCRIBE_LAUNCHER" not in launcher.app_environment(layout, {"PATH": "/usr/bin"})
+
+
+def test_the_stable_path_a_login_entry_should_name_per_platform():
+    """Unverified on macOS and Linux: which path survives to the next login is
+    the platform's own documentation, not a measurement anybody made here.
+
+    macOS: the `.app` bundle, not the binary inside it. Linux: `APPIMAGE`,
+    because inside an AppImage the running executable sits under a temporary
+    mount that is gone after exit. Windows: the executable itself.
+    """
+    bundle = "/Applications/MyScribe.app/Contents/MacOS/MyScribe"
+    assert launcher.launcher_path(bundle, "darwin", {}) == Path("/Applications/MyScribe.app")
+
+    assert launcher.launcher_path("/tmp/.mount_x/MyScribe", "linux", {"APPIMAGE": "/home/r/MyScribe.AppImage"}) == Path(
+        "/home/r/MyScribe.AppImage"
+    )
+    assert launcher.launcher_path("/opt/myscribe/MyScribe", "linux", {}) == Path("/opt/myscribe/MyScribe")
+
+    assert launcher.launcher_path(r"C:\Program Files\MyScribe\MyScribe.exe", "win32", {}) == Path(
+        r"C:\Program Files\MyScribe\MyScribe.exe"
+    )

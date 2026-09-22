@@ -601,7 +601,7 @@ def test_the_web_process_never_imports_a_model_runtime(tmp_path):
 
 
 def test_the_settings_page_is_a_sidebar_of_categories_with_one_card_open(client):
-    """It was one long scroll. Six categories now, one shown at a time; the
+    """It was one long scroll. Seven categories now, one shown at a time; the
     switch is a radio group outside every self-refreshing partial, so a
     Save on the fourth card cannot put the page back on the first."""
     from scribe.web import settings as settings_ui
@@ -898,3 +898,156 @@ def test_the_page_says_when_no_token_is_set(client, conn, monkeypatch):
     page = client.get("/settings").text
 
     assert "Not set" in page and "hf.co/pyannote" in page
+
+
+# --- start MyScribe at login (TASK-089.21) -----------------------------------------
+#
+# The card reads the OS through `scribe.autostart`; these tests put a mechanism
+# of their own in its place, so nothing here touches this developer's own Run
+# key, `~/Library` or `~/.config`. What the mechanisms themselves do is
+# tests/test_autostart.py's subject.
+
+
+class _FakeMechanism:
+    """One login entry, in memory. The same three methods the real ones have."""
+
+    where = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MyScribe"
+
+    def __init__(self):
+        self.value: str | None = None
+
+    def render(self, command) -> str:
+        return subprocess.list2cmdline(list(command))
+
+    def read(self) -> str | None:
+        return self.value
+
+    def write(self, command) -> None:
+        self.value = self.render(command)
+
+    def remove(self) -> None:
+        self.value = None
+
+
+AT_LOGIN = (r"C:\Program Files\MyScribe\MyScribe.exe", "--at-login", "--no-browser")
+
+
+def _the_autostart_card(page: str) -> str:
+    """Just this one section of the settings page.
+
+    `name="enabled" value="1"` is byte-identical to what the watch-folder card
+    renders for a folder that is switched off, so the whole page cannot answer
+    a question about this switch: it would pass on somebody else's markup and
+    fail for somebody else's reason.
+    """
+    assert 'id="start-at-login"' in page, "the start-at-login card is not on this page at all"
+    return page.split('id="start-at-login"', 1)[1].split("</section>", 1)[0]
+
+
+@pytest.fixture
+def login_entry(monkeypatch):
+    from scribe import autostart
+
+    mechanism = _FakeMechanism()
+    monkeypatch.setattr(autostart, "default_mechanism", lambda *args, **kwargs: mechanism)
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: AT_LOGIN)
+    return mechanism
+
+
+def test_the_card_prints_the_exact_entry_not_only_that_it_is_on(client, login_entry):
+    """AC1, AC2. 'On' is exactly what a user cannot check. The place and the
+    whole command are on the page, so what was registered can be read back
+    here and compared with what the OS holds."""
+    login_entry.write(AT_LOGIN)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MyScribe" in card
+    assert "MyScribe.exe" in card and "--at-login" in card and "--no-browser" in card
+
+
+def test_the_switch_registers_and_removes_through_the_module(client, login_entry):
+    """AC2. On writes the entry, off takes exactly that one away, and off again
+    is not an error - a user who already deleted it by hand still gets a page."""
+    on = client.post("/settings/autostart", data={"enabled": "1"}, follow_redirects=False)
+    assert on.status_code in (200, 303)
+    assert login_entry.value is not None and "--at-login" in login_entry.value
+
+    off = client.post("/settings/autostart", data={"enabled": "0"}, follow_redirects=False)
+    assert off.status_code in (200, 303)
+    assert login_entry.value is None
+
+    again = client.post("/settings/autostart", data={"enabled": "0"}, follow_redirects=False)
+    assert again.status_code in (200, 303)
+    assert login_entry.value is None
+
+
+def test_a_login_entry_removed_by_hand_shows_as_off_on_the_page(client, login_entry):
+    """AC1. The page asks the OS on every load; it remembers nothing."""
+    client.post("/settings/autostart", data={"enabled": "1"}, follow_redirects=False)
+    login_entry.value = None
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert 'name="enabled" value="1"' in card, "the switch offers to turn it ON again"
+
+
+def test_where_nothing_is_known_to_start_the_card_says_why_and_offers_no_switch(client, monkeypatch, login_entry):
+    """AC1, AC4. A release whose launcher never said where it is, and a
+    checkout without the start scripts: there is nothing safe to register, so
+    the page says so rather than offering a switch that would write a path
+    that breaks at the next login."""
+    from scribe import autostart
+
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: None)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    # Text this branch alone renders. "nothing" would be true of every branch:
+    # the card's standing paragraph says nothing machine-wide is written.
+    assert "known to start MyScribe" in card
+    assert 'name="enabled" value="1"' not in card
+
+
+def test_a_post_from_a_page_that_is_out_of_date_is_refused_and_writes_nothing(client, monkeypatch, login_entry):
+    """The card offers no switch where there is nothing to start, so a post
+    that arrives anyway came from a page that is stale. It gets the reason and
+    a 409 - not a 200 that would tell the user something was registered."""
+    from scribe import autostart
+
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: None)
+
+    refused = client.post("/settings/autostart", data={"enabled": "1"}, follow_redirects=False)
+
+    assert refused.status_code == 409
+    assert login_entry.value is None
+
+
+def test_an_os_that_refuses_the_write_says_so_rather_than_claiming_success(client, monkeypatch, login_entry):
+    """The other error path. A registry or a folder that will not take the
+    write must not come back as a page saying MyScribe now starts at login."""
+    def _refuses(command):
+        raise OSError("the registry said no")
+
+    monkeypatch.setattr(login_entry, "write", _refuses)
+
+    failed = client.post("/settings/autostart", data={"enabled": "1"}, follow_redirects=False)
+
+    assert failed.status_code == 500
+    assert login_entry.value is None
+
+
+def test_the_settings_page_survives_an_os_that_will_not_answer(client, monkeypatch, login_entry):
+    """`autostart_context` runs on every settings load. An unreadable registry
+    or an unreadable folder must cost the card, not the whole page."""
+    from scribe import autostart
+
+    def _refuses():
+        raise OSError("the registry said no")
+
+    monkeypatch.setattr(login_entry, "read", _refuses)
+
+    page = client.get("/settings?section=autostart")
+
+    assert page.status_code == 200
+    assert "Start at login" in page.text

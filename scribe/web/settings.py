@@ -33,6 +33,11 @@ the web process (ADR-001):
   app's own scratch is full of things that look like media), and against
   already being watched - all three at the form, where a mistake can be
   named, rather than in a thread where it would be a log line.
+* **Start at login.** One per-user login entry - a value under this user's own
+  Run key, a launchd agent or an XDG autostart file - written and read back by
+  `scribe.autostart`. Nothing about it is stored here: the OS is asked on every
+  load, so an entry removed by hand reads as off. It is the counterpart to the
+  watch folders above, which do nothing at all while the app is not running.
 * **The glossary.** The names this machine should get right, spent on both
   sides of the decode (`scribe.glossary`): as `hotwords` while a recording is
   transcribed, and afterwards as a correction layer over the words it
@@ -68,7 +73,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 
-from scribe import credentials, db, doctor, fsbrowse, glossary, jobs, paths
+from scribe import autostart, credentials, db, doctor, fsbrowse, glossary, jobs, paths
 from scribe.exports.options import PRESETS
 from scribe.ingest import watching
 from scribe.llm import base as llm_base
@@ -95,10 +100,15 @@ FLASH_WATCH_DISABLED = "Stopped watching that folder."
 FLASH_WATCH_REMOVED = "Folder removed. Everything already transcribed stays in the library."
 FLASH_TERM_ADDED = "Added to the glossary. It biases the next transcription and corrects the ones already here."
 FLASH_TERM_REMOVED = "Term removed. Re-run the corrections to take its changes back out of the transcripts."
+FLASH_AUTOSTART_ON = "MyScribe will start when you log in."
+FLASH_AUTOSTART_OFF = "MyScribe will not start when you log in."
 
 # The form field carrying the folder to watch, and the one carrying its switch.
 FIELD_WATCH_PATH = "path"
 FIELD_WATCH_ENABLED = "enabled"
+
+# The switch on the start-at-login card.
+FIELD_AUTOSTART = "enabled"
 
 # The glossary form's fields: one term with its weight and known misspellings,
 # or a whole list pasted into the import box.
@@ -363,6 +373,36 @@ def glossary_context(conn: sqlite3.Connection, *, flash: str | None = None) -> d
     }
 
 
+def autostart_context(*, flash: str | None = None) -> dict:
+    """What _settings_autostart.html renders from: the login entry exactly as
+    the OS holds it right now.
+
+    Asked on every page load and never remembered. An entry the user deleted
+    in regedit, in Finder or with rm has to show as off, and a stored row
+    could not do that. Where nothing on this machine is known to start
+    MyScribe again there is no switch at all: registering a path that is wrong
+    at the next login is worse than registering nothing.
+
+    An OS that will not answer costs this card and not the page. Settings is
+    where somebody goes to find out what is wrong with this machine, and a
+    registry read that raised would take every other card on it away too.
+    """
+    try:
+        entry = autostart.status()
+    except (OSError, ValueError) as refused:
+        return {"autostart": None, "autostart_error": str(refused), "flash": flash}
+    return {
+        "autostart": {
+            "on": entry.on,
+            "where": entry.where,
+            "command": entry.command,
+            "can_switch": entry.on or bool(entry.command),
+        },
+        "autostart_error": None,
+        "flash": flash,
+    }
+
+
 def page_context(
     conn: sqlite3.Connection, *, watcher: "watching.Watcher | None" = None
 ) -> dict:
@@ -378,6 +418,7 @@ def page_context(
         **storage_context(),
         **defaults_context(conn),
         **watch_context(conn, watcher=watcher),
+        **autostart_context(),
         **glossary_context(conn),
         **presets_context(conn),
         **ai_ui.settings_context(conn),
@@ -434,6 +475,7 @@ def save_roots(conn: sqlite3.Connection, roots: tuple[Path, ...]) -> None:
 SECTIONS: tuple[tuple[str, str, str], ...] = (
     ("defaults", "Transcription", "Language, model tier, speakers, browse roots"),
     ("watch", "Watch folders", "Folders that transcribe by themselves"),
+    ("autostart", "Start at login", "Start MyScribe when you log in"),
     ("glossary", "Glossary", "Names and terms Whisper gets wrong"),
     ("llm", "AI providers", "Ollama, OpenAI, OpenRouter and their keys"),
     ("presets", "Export presets", "Saved export settings"),
@@ -693,6 +735,46 @@ def delete_watch_folder(folder_id: int, request: Request) -> Response:
     _get_watch_folder(conn, folder_id)
     watching.remove_folder(conn, folder_id)
     return _watch_answer(request, conn, flash=FLASH_WATCH_REMOVED)
+
+
+# --- start at login ------------------------------------------------------------------------
+#
+# One entry in this user's own profile, written and read back by
+# `scribe.autostart`. Nothing about it is stored here: the OS is asked on every
+# load, so an entry somebody removed by hand shows as off rather than as a row
+# insisting it is on. It is functional and not a convenience - a watch folder
+# added above does nothing at all while the app is not running.
+
+
+def _autostart_answer(request: Request, *, flash: str) -> Response:
+    """The section re-rendered for htmx; a 303 back to the page otherwise."""
+    if not library._is_htmx(request):
+        return _back_to("autostart", "start-at-login")
+    return render(request, "_settings_autostart.html", oob=True, **autostart_context(flash=flash))
+
+
+@router.post("/settings/autostart", include_in_schema=False)
+async def set_autostart(request: Request) -> Response:
+    """Switch the login entry on or off. Off removes exactly that one entry.
+
+    A 409 rather than a quiet no-op when there is nothing to start: the card
+    offers no switch in that case, so a post that arrives anyway came from a
+    page that is out of date, and the reason belongs in the answer.
+    """
+    fields = transcribe_dialog._fields(await request.form())
+    wanted = library._truthy(fields.get(FIELD_AUTOSTART))
+    try:
+        if wanted:
+            autostart.enable()
+        else:
+            autostart.disable()
+    except autostart.NothingToStart as nothing:
+        raise HTTPException(status_code=409, detail=str(nothing)) from None
+    except (OSError, ValueError) as refused:
+        raise HTTPException(
+            status_code=500, detail=f"the login entry could not be changed: {refused}"
+        ) from None
+    return _autostart_answer(request, flash=FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF)
 
 
 # --- the glossary --------------------------------------------------------------------------

@@ -1453,6 +1453,7 @@ table.log-lines tr.lv-error td.ev { color: var(--bad); }
 /* One rule per category, generated the same way as the job tabs. */
 .settings-layout:has(#ss-defaults:checked) [for="ss-defaults"],
 .settings-layout:has(#ss-watch:checked) [for="ss-watch"],
+.settings-layout:has(#ss-autostart:checked) [for="ss-autostart"],
 .settings-layout:has(#ss-glossary:checked) [for="ss-glossary"],
 .settings-layout:has(#ss-llm:checked) [for="ss-llm"],
 .settings-layout:has(#ss-presets:checked) [for="ss-presets"],
@@ -1466,6 +1467,7 @@ table.log-lines tr.lv-error td.ev { color: var(--bad); }
    the label it names. */
 .settings-layout:has(#ss-defaults:focus-visible) [for="ss-defaults"],
 .settings-layout:has(#ss-watch:focus-visible) [for="ss-watch"],
+.settings-layout:has(#ss-autostart:focus-visible) [for="ss-autostart"],
 .settings-layout:has(#ss-glossary:focus-visible) [for="ss-glossary"],
 .settings-layout:has(#ss-llm:focus-visible) [for="ss-llm"],
 .settings-layout:has(#ss-presets:focus-visible) [for="ss-presets"],
@@ -1475,6 +1477,7 @@ table.log-lines tr.lv-error td.ev { color: var(--bad); }
 .settings-section { display: none; }
 .settings-layout:has(#ss-defaults:checked) [data-settings-section="defaults"],
 .settings-layout:has(#ss-watch:checked) [data-settings-section="watch"],
+.settings-layout:has(#ss-autostart:checked) [data-settings-section="autostart"],
 .settings-layout:has(#ss-glossary:checked) [data-settings-section="glossary"],
 .settings-layout:has(#ss-llm:checked) [data-settings-section="llm"],
 .settings-layout:has(#ss-presets:checked) [data-settings-section="presets"],
