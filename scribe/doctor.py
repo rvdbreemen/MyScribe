@@ -111,6 +111,22 @@ class Check:
     detail: str
     fix_hint: str = ""
     optional: bool = False
+    tested: bool = True
+    """False when the check was never run, with the reason in `detail`.
+
+    A third state, because two were not enough for `scribe.setup --prove`: a
+    required check nobody measured rendered FAIL, which reads as "this machine
+    is broken" about a machine nothing was asked of (TASK-089.13). `ok` is
+    still the verdict and `optional` still what the gate counts, so the exit
+    rule needs no change - a required line that was not tested is not ok and
+    exits 1 - and a `doctor_last` row written before this field still loads.
+    """
+
+    def __post_init__(self) -> None:
+        # "Anything skipped reads 'not tested', never 'ok'" (TASK-089.13
+        # criterion 1), made impossible rather than tested per caller.
+        if self.ok and not self.tested:
+            raise ValueError(f"{self.name}: a check that was not tested cannot be ok")
 
 
 def _run(cmd: list[str]) -> tuple[bool, str]:
@@ -499,11 +515,17 @@ def check_gpu_runtime() -> Check:
     )
 
 
-def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None) -> Check:
+def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None, *, record: bool = True) -> Check:
     """Transcribe a short clip on the GPU and record the timing.
 
     This is the check that matters: the DLL failure this guards against only
     appears on the first real compute call, long after the model has loaded.
+
+    `record=False` skips the `stage_perf` row, for a caller that may not write
+    to the library it is reporting on (`scribe.setup --prove`). The sample is
+    telemetry under its own stage name, and one of it is worth less than a
+    proof that leaves the library byte-identical (TASK-089.13 criterion 2).
+    `python -m scribe.doctor` from a terminal still writes it.
     """
     clip = clip or SMOKE_CLIP
     if not clip.exists():
@@ -551,23 +573,23 @@ def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None) -> Chec
             fix_hint="The clip may be silent or the model mismatched; check tests/fixtures/clip30.wav.",
         )
 
-    try:
-        conn = db.connect()
+    if record:
         try:
-            db.migrate(conn)
-            # Deliberately NOT stage "transcribe": measured on this machine, a
-            # 30 s clip runs at ~1.1x realtime while a 5-minute one runs at
-            # ~14.5x, because the first transcribe() call in a process pays for
-            # CUDA kernel warmup and that fixed cost swamps a short clip.
-            # Filing this sample as a transcribe timing would drag the rolling
-            # median in eta_seconds() down and make every ETA in the app
-            # absurdly pessimistic. It is kept under its own stage name so it
-            # stays visible without poisoning the estimates.
-            jobs.record_stage_perf(conn, "smoke", model_name, info.duration, wall)
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001 - telemetry must never fail the check
-        pass
+            conn = db.connect()
+            try:
+                # Deliberately NOT stage "transcribe": measured on this machine, a
+                # 30 s clip runs at ~1.1x realtime while a 5-minute one runs at
+                # ~14.5x, because the first transcribe() call in a process pays for
+                # CUDA kernel warmup and that fixed cost swamps a short clip.
+                # Filing this sample as a transcribe timing would drag the rolling
+                # median in eta_seconds() down and make every ETA in the app
+                # absurdly pessimistic. It is kept under its own stage name so it
+                # stays visible without poisoning the estimates.
+                jobs.record_stage_perf(conn, "smoke", model_name, info.duration, wall)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - telemetry must never fail the check
+            pass
 
     return Check(
         name="gpu-smoke",
@@ -615,13 +637,23 @@ def check_diarization() -> Check:
     can transcribe is usable. It is reported all the same, which is the whole
     point - "SKIP" with the reason beats a green card and a failed job.
     """
+    return _diarization(_diarization_token)
+
+
+def _diarization(token_of: Callable[[], str | None]) -> Check:
+    """The check itself, with where the token comes from handed in.
+
+    One argument, one seam: the read-only twin differs from `check_diarization`
+    in nothing but how it opens the library to read a settings row, and two
+    copies of these branches is how they would come to disagree.
+    """
     from scribe.stages import diarize
 
     local = diarize.local_weights_dir()
     if (local / "config.yaml").exists():
         return Check(name="diarization", ok=True, detail=f"local pipeline at {local}")
 
-    token = _diarization_token()
+    token = token_of()
     if not token:
         return Check(
             name="diarization",
@@ -804,6 +836,145 @@ def check_ollama() -> Check:
     )
 
 
+# --- the same questions, asked of a library that may not change -----------------------
+#
+# `python -m scribe.setup --prove` reports on a library that may be live, and a
+# proof that migrates it under an older app that is still serving is what
+# TASK-089.13 criterion 2 forbids. Four checks write, so four have a twin here.
+# Three were expected - the data-dir probe, the database and the smoke's
+# `stage_perf` row - and the fourth was found by running them: `check_diarization`
+# reads its token from the settings row through `credentials.library_db`, which
+# opens with `db.connect` and sets `journal_mode`. They are plain zero-argument
+# functions and not
+# `functools.partial`: `CHECK_LABELS` is keyed on the function object, and a
+# partial has no identity to key on.
+
+
+def check_scratch_dir_writable() -> Check:
+    """Can this process write at all - measured somewhere it may.
+
+    `check_data_dir_writable` creates the data directory and a probe file in
+    it. A proof may do neither, so the probe moves to a scratch directory the
+    operating system hands out and takes away again. The detail names the
+    directory it measured, so a green line about a temp folder can never be
+    read as a green line about the library.
+    """
+    try:
+        with tempfile.TemporaryDirectory(prefix="myscribe-probe-") as scratch:
+            with tempfile.NamedTemporaryFile(dir=scratch, suffix=".probe", delete=True):
+                pass
+            measured = scratch
+    except OSError as exc:
+        return Check(
+            name="data-dir",
+            ok=False,
+            detail=f"no writable scratch directory: {exc}",
+            fix_hint="Point TMP (or TMPDIR) at a writable location.",
+        )
+    return Check(name="data-dir", ok=True, detail=f"{measured} writable (a scratch directory, not the library)")
+
+
+def check_database_read_only() -> Check:
+    """The library's schema version, read without migrating it.
+
+    `check_database` opens through `db.connect` - a `journal_mode` pragma,
+    which is a write - and then migrates. Run from a proof after a `git pull`,
+    with an older app still serving, that migrates the live library out from
+    under it.
+
+    A library one version behind is not broken: the app migrates it the next
+    time it starts, and saying so is the answer. An absent one is not broken
+    either - that is a first run.
+
+    `scribe.setup` is imported here and not at the top, the way `check_models`
+    imports `scribe.models`: setup pulls `diarize`, `ai_ui` and
+    `transcribe_dialog` in behind it, and the doctor is a module the web
+    process imports (ADR-001). This check is outside `WEB_SAFE_CHECKS` for
+    that reason, and `setup.read_only` is the one immutable open in this
+    repository rather than a second spelling of it.
+    """
+    from scribe import setup
+
+    path = paths.DB_PATH
+    if not path.exists():
+        return Check(name="database", ok=True, detail=f"no library yet at {path}")
+
+    version = None
+    with setup.read_only(path) as conn:
+        if conn is not None:
+            try:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+            except sqlite3.Error:
+                version = None
+    if version is None:
+        return Check(
+            name="database",
+            ok=False,
+            detail=f"{path} could not be opened read-only",
+            fix_hint=f"Delete or move {path} if it is corrupt, then run the doctor again.",
+        )
+    if version > db.SCHEMA_VERSION:
+        # Behind and ahead are not the same relaxation. `db.migrate` walks
+        # `range(version + 1, SCHEMA_VERSION + 1)`, which is empty going down:
+        # nothing migrates a library backwards, so this checkout would open a
+        # schema it does not know. `check_database` fails any version that is
+        # not this one, and the twin asks the same question - it only forgives
+        # the direction the app itself repairs.
+        return Check(
+            name="database",
+            ok=False,
+            detail=f"schema v{version} at {path}, read-only: written by a newer MyScribe than this one",
+            fix_hint=(
+                f"This copy speaks schema v{db.SCHEMA_VERSION}. Update MyScribe, or point "
+                "SCRIBE_DATA_DIR at the library this copy wrote."
+            ),
+        )
+    behind = (
+        ""
+        if version == db.SCHEMA_VERSION
+        else f"; the app migrates it to v{db.SCHEMA_VERSION} the next time it starts"
+    )
+    return Check(name="database", ok=True, detail=f"schema v{version} at {path}, read-only{behind}")
+
+
+def check_diarization_read_only() -> Check:
+    """The diarization check with the settings row read, not written to.
+
+    `_diarization_token` asks `credentials.library_db`, which opens through
+    `db.connect` - a `journal_mode` pragma, which is a write, on a library
+    this caller promised not to touch. Nothing else about the check differs;
+    the network HEAD is the same one request and no weights.
+    """
+    return _diarization(_diarization_token_read_only)
+
+
+def _diarization_token_read_only() -> str | None:
+    """`_diarization_token` through the immutable open.
+
+    The same two routes in the same order - this library's settings row, then
+    the environment - so a machine answers identically whichever mode asked.
+    """
+    from scribe import setup
+    from scribe.stages import diarize
+
+    try:
+        with setup.read_only(paths.DB_PATH) as conn:
+            token = diarize.hf_token(conn)
+        if token:
+            return token
+    except Exception:  # noqa: BLE001 - a credential lookup never fails a check
+        pass
+    try:
+        return diarize.hf_token(None)
+    except Exception:  # noqa: BLE001 - nor does the lookup without it
+        return None
+
+
+def check_gpu_smoke_read_only() -> Check:
+    """The smoke without its `stage_perf` row: see `gpu_smoke(record=...)`."""
+    return gpu_smoke(record=False)
+
+
 CPU_CHECKS = (
     check_python,
     check_sqlite,
@@ -871,6 +1042,10 @@ CHECK_LABELS = {
     check_ollama: "ollama",
     check_gpu_runtime: "gpu-runtime",
     check_gpu_smoke: "gpu-smoke",
+    check_scratch_dir_writable: "data-dir",
+    check_database_read_only: "database",
+    check_diarization_read_only: "diarization",
+    check_gpu_smoke_read_only: "gpu-smoke",
 }
 """The name each registered check will report, known *before* it runs.
 
@@ -879,6 +1054,20 @@ result to read a name off. A test pins every entry against the name the check
 does return, because a label that drifted would announce one thing and report
 another.
 """
+
+READ_ONLY_SUBSTITUTES = {
+    check_data_dir_writable: check_scratch_dir_writable,
+    check_database: check_database_read_only,
+    check_diarization: check_diarization_read_only,
+    check_gpu_smoke: check_gpu_smoke_read_only,
+}
+"""The four checks that write, each beside the twin that asks the same
+question without writing. `checks(read_only=True)` swaps them in place, so
+neither the order of the report nor the name of a line changes with the mode -
+what changes is only where the writing happened."""
+
+READ_ONLY_CHECKS = tuple(READ_ONLY_SUBSTITUTES.values())
+"""Registered like any other check, so the label test covers them too."""
 
 SKIP_MEANINGS = {
     "yt-dlp": "importing media from a link will not work",
@@ -946,6 +1135,9 @@ def last_run(conn: sqlite3.Connection) -> dict | None:
                 detail=str(c.get("detail", "")),
                 fix_hint=str(c.get("fix_hint", "")),
                 optional=bool(c.get("optional", False)),
+                # Defaulted, so a row stored before `tested` existed still
+                # loads: everything a doctor job ran was, by definition, run.
+                tested=bool(c.get("tested", True)),
             )
             for c in payload["checks"]
         ]
@@ -1047,15 +1239,27 @@ def installed_models(cache_dir: Path | None = None) -> list[CachedModel]:
     return found
 
 
-def checks(include_gpu: bool = True, on_start: Callable[[str], None] | None = None) -> list[Check]:
+def checks(
+    include_gpu: bool = True,
+    on_start: Callable[[str], None] | None = None,
+    *,
+    read_only: bool = False,
+) -> list[Check]:
     """Run the checks. `include_gpu=False` keeps the unit suite off the card.
 
     `on_start` is called with a check's label just before it runs, so a caller
     can say what is happening. It matters for one check in particular: a cold
     `gpu-smoke` downloads 1.6 GB and transcribes a clip, and a terminal that
     prints nothing until the last check has finished reads as a hang.
+
+    `read_only=True` swaps in `READ_ONLY_SUBSTITUTES`, for a caller reporting
+    on a library it may not change - `python -m scribe.setup --prove`. Nothing
+    else about the run differs, which is the point: the same questions, in the
+    same order, under the same names.
     """
     selected = CPU_CHECKS + (GPU_CHECKS if include_gpu else ())
+    if read_only:
+        selected = tuple(READ_ONLY_SUBSTITUTES.get(fn, fn) for fn in selected)
     results = []
     for fn in selected:
         if on_start is not None:
@@ -1078,7 +1282,12 @@ def render(results: list[Check]) -> str:
     width = max(len(c.name) for c in results)
     lines = []
     for c in results:
-        if c.ok:
+        # `tested` before `optional`: a check the caller gated away is not a
+        # skip, which says it was asked and answered. It reads "not tested",
+        # which is the word TASK-089.13 criterion 1 asks for.
+        if not c.tested:
+            mark = "----"
+        elif c.ok:
             mark = "OK  "
         elif c.optional:
             mark = "SKIP"
@@ -1087,19 +1296,37 @@ def render(results: list[Check]) -> str:
         lines.append(f"[{mark}] {c.name.ljust(width)}  {c.detail}")
         if not c.ok and c.fix_hint:
             lines.append(f"       {' ' * width}  -> {c.fix_hint}")
-    required_failures = [c for c in results if not c.ok and not c.optional]
+    required_failures = [c for c in results if not c.ok and not c.optional and c.tested]
+    required_untested = [c for c in results if not c.tested and not c.optional]
     lines.append("")
+    said = []
     if required_failures:
-        closing = f"{len(required_failures)} required check(s) failed"
-    else:
-        closing = "All required checks passed"
+        said.append(f"{len(required_failures)} required check(s) failed")
+    if required_untested:
+        # Its own sentence, not folded into the failures: a machine nobody
+        # measured is not a machine that came back broken, and the exit code
+        # counts them the same only because neither one is a pass.
+        said.append(f"{len(required_untested)} required check(s) not tested")
+    closing = ", ".join(said) if said else "All required checks passed"
     # On both branches, not only the passing one: a machine that has no ffmpeg
     # still has to learn that speaker separation will not run either.
-    skipped = [c for c in results if not c.ok and c.optional]
+    skipped = [c for c in results if not c.ok and c.optional and c.tested]
     if skipped:
         closing += " (skipped: " + "; ".join(SKIP_MEANINGS.get(c.name, c.name) for c in skipped) + ")"
     lines.append(f"{closing}.")
     return "\n".join(lines)
+
+
+def exit_code(results: list[Check]) -> int:
+    """0 when every required check passed, 1 otherwise.
+
+    One function because there are now two commands that end on this rule -
+    `python -m scribe.doctor` and `python -m scribe.setup --prove` - and two
+    spellings of "did this machine pass" is how they would come to disagree.
+    A required check that was never tested is not ok, so it exits 1: nobody
+    measured it, and a proof may not round that up to a pass.
+    """
+    return 1 if any(not c.ok and not c.optional for c in results) else 0
 
 
 def _stderr_is_a_terminal() -> bool:
@@ -1134,6 +1361,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print the checks as JSON, one object per check, instead of the table",
     )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="ask the same questions without writing: no migration, no probe file in the "
+             "data directory, and no timing row from the smoke",
+    )
     args = parser.parse_args(argv)
 
     def announce(label: str) -> None:
@@ -1145,12 +1378,16 @@ def main(argv: list[str] | None = None) -> int:
     # conhost is still what a lot of these machines open.
     watched = not args.json and _stderr_is_a_terminal()
 
-    results = checks(include_gpu=not args.no_gpu, on_start=announce if watched else None)
+    results = checks(
+        include_gpu=not args.no_gpu,
+        on_start=announce if watched else None,
+        read_only=args.read_only,
+    )
     if args.json:
         print(json.dumps([asdict(c) for c in results], indent=2))
     else:
         print(render(results))
-    return 1 if any(not c.ok and not c.optional for c in results) else 0
+    return exit_code(results)
 
 
 if __name__ == "__main__":

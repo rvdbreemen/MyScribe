@@ -2,6 +2,29 @@
 
 ### Changed
 
+- An install ends on a proof instead of on the word "done".
+  `python -m scribe.setup --prove` reports what this machine is - the
+  environment, ffmpeg and ffprobe with where each came from, the machine
+  checks, the credentials by source, Ollama, the AI provider, transcription
+  and the app - and exits 0 only when every required line is ok. A line
+  nobody measured says "not tested" and where to finish it; it never says
+  "ok". Nothing was checking any of this after a setup before: no code path
+  ran the doctor, and from a clone there was no "it serves" check at all
+  (TASK-089.13).
+
+- Asking for that report does not disturb the library it reports on, or the
+  card. It reads the schema version, the credential rows and the provider
+  without moving a byte - proven on the shape this library is in, where a
+  read appears no file and moves no mtime - and it starts no app on the real
+  data directory, because the app's own startup migrates the database and
+  queues a speaker pass for every diarized recording that never had one. The
+  serve check gets an empty folder of its own and a port nobody was using.
+  And it loads no model beside something that might be using the GPU: with
+  MyScribe answering it queues the same doctor job Settings queues and names
+  it, with any job running it loads nothing, and only with neither does it
+  measure here - which is what `python -m scribe.doctor` has always done from
+  a terminal (TASK-089.13).
+
 - A release install asks where everything should go, before it writes anything
   or downloads a byte. Everything hung off one home that only `MYSCRIBE_HOME`
   or `--home` could move and nothing remembered, so 12 to 15 GB landed on the

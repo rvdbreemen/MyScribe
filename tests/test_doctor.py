@@ -115,7 +115,7 @@ def test_main_returns_zero_when_all_required_checks_pass(tmp_path, monkeypatch, 
 
 def test_main_returns_one_when_a_required_check_fails(monkeypatch, capsys):
     bad = doctor.Check(name="python", ok=False, detail="too old", fix_hint="install 3.12")
-    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None: [bad])
+    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None, read_only=False: [bad])
 
     assert doctor.main(["--no-gpu"]) == 1
     assert "install 3.12" in capsys.readouterr().out
@@ -817,8 +817,12 @@ def test_json_prints_one_object_per_check_and_nothing_else(tmp_path, monkeypatch
     names = [row["name"] for row in payload]
     assert "python" in names and "sqlite" in names and "ollama" in names
     for row in payload:
-        assert set(row) == {"name", "ok", "optional", "detail", "fix_hint"}
+        # `tested` joined the shape with TASK-089.13: a report has to be able
+        # to say "nobody measured this", and `--json` is what a program reads
+        # that answer from.
+        assert set(row) == {"name", "ok", "optional", "detail", "fix_hint", "tested"}
         assert isinstance(row["ok"], bool) and isinstance(row["optional"], bool)
+        assert row["tested"] is True, "the doctor's own command runs every check it prints"
         assert isinstance(row["fix_hint"], str), "a null is a shape a reader has to special-case"
 
 
@@ -826,13 +830,13 @@ def test_json_prints_one_object_per_check_and_nothing_else(tmp_path, monkeypatch
 def test_the_exit_code_is_the_same_whichever_shape_is_printed(monkeypatch, capsys, argv):
     """--json is a second spelling of the same answer, not a second answer."""
     bad = doctor.Check(name="python", ok=False, detail="too old", fix_hint="install 3.12")
-    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None: [bad])
+    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None, read_only=False: [bad])
 
     assert doctor.main(argv) == 1
 
     passed = doctor.Check(name="python", ok=True, detail="3.12.7")
     skipped = doctor.Check(name="ollama", ok=False, optional=True, detail="not installed on this machine")
-    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None: [passed, skipped])
+    monkeypatch.setattr(doctor, "checks", lambda include_gpu=True, on_start=None, read_only=False: [passed, skipped])
     capsys.readouterr()
 
     assert doctor.main(argv) == 0
@@ -886,11 +890,28 @@ def test_every_registered_check_is_labelled_with_the_name_it_reports(tmp_path, m
     result. One that drifted would announce one name and report another."""
     _tmp_library(monkeypatch, tmp_path)
     monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+    # Both seams, because the loop below calls the read-only twin as well and
+    # that one resolves its token through `_diarization_token_read_only`. With
+    # only the first stubbed this test made an authenticated request to
+    # huggingface.co with whatever token this machine happens to hold - which
+    # conftest's `_no_credentials_from_this_machine` exists to prevent, and
+    # which it cannot see, because it does not stub `os.environ`.
+    monkeypatch.setattr(doctor, "_diarization_token_read_only", lambda: None)
 
-    assert set(doctor.CHECK_LABELS) == set(doctor.CPU_CHECKS + doctor.GPU_CHECKS)
+    assert set(doctor.CHECK_LABELS) == set(
+        doctor.CPU_CHECKS + doctor.GPU_CHECKS + doctor.READ_ONLY_CHECKS
+    )
 
     for fn in doctor.CPU_CHECKS:
         assert fn().name == doctor.CHECK_LABELS[fn]
+
+    # The read-only twins report the same name as the check they stand in for,
+    # so a report does not change its lines with the mode. Called here for the
+    # same reason as the loop above: they take no arguments either.
+    for writes, reads in doctor.READ_ONLY_SUBSTITUTES.items():
+        if reads is doctor.check_gpu_smoke_read_only:
+            continue  # loads a model; the smoke is asserted below with the card absent
+        assert reads().name == doctor.CHECK_LABELS[reads] == doctor.CHECK_LABELS[writes]
 
     # After the loop, because `check_accelerators` imports the real torch on
     # its way to `accel.describe()`. The version is asserted so a fake that
@@ -968,3 +989,180 @@ def test_401_and_403_are_not_the_same_answer_about_a_token(monkeypatch):
     assert said[401] != said[403]
     assert "401" in said[401] and "expired" in said[401]
     assert "403" in said[403] and "pyannote/demo" in said[403]
+
+
+# --- the read-only mode: the same questions, asked of a library that may not change ---
+#
+# TASK-089.13 criterion 2. `python -m scribe.setup --prove` reports on a
+# library that may be live, and these are the checks that used to write to it.
+
+
+def _wal_library(monkeypatch, tmp_path, *, behind: int = 0):
+    """A planted library, `behind` schema versions old, in WAL mode and closed.
+
+    Closed matters: SQLite checkpoints and removes the `-wal` and `-shm` on the
+    last connection, and `setup.read_only` promises `immutable=1` only where no
+    `-wal` stands beside the file. A library planted with a plain
+    `sqlite3.connect` would stay in delete-journal mode and would prove nothing
+    about the branch the product takes.
+    """
+    _tmp_library(monkeypatch, tmp_path)
+    with monkeypatch.context() as older:
+        older.setattr(doctor.db, "SCHEMA_VERSION", doctor.db.SCHEMA_VERSION - behind)
+        conn = doctor.db.connect(tmp_path / "myscribe.db")
+        doctor.db.migrate(conn)
+        conn.close()
+    return tmp_path / "myscribe.db"
+
+
+def test_the_read_only_database_check_reports_the_version_without_migrating(tmp_path, monkeypatch):
+    path = _wal_library(monkeypatch, tmp_path, behind=1)
+    before = path.stat().st_mtime_ns
+
+    check = doctor.check_database_read_only()
+
+    assert check.ok is True, "a library the app migrates on its next start is not broken"
+    assert f"v{doctor.db.SCHEMA_VERSION - 1}" in check.detail
+    assert f"v{doctor.db.SCHEMA_VERSION}" in check.detail, "and it says where the app will take it"
+    assert path.stat().st_mtime_ns == before
+    assert not path.with_name(path.name + "-wal").exists()
+    assert not path.with_name(path.name + "-shm").exists()
+
+
+def test_a_library_that_is_not_there_yet_is_not_a_failure(tmp_path, monkeypatch):
+    """A first run has no database, and every question about it is open. The
+    writing check creates one."""
+    _tmp_library(monkeypatch, tmp_path / "nothing-here")
+
+    check = doctor.check_database_read_only()
+
+    assert check.ok is True and check.optional is False
+    assert "no library yet" in check.detail
+    assert not (tmp_path / "nothing-here").exists(), "the check created the data directory"
+
+
+def test_the_read_only_data_dir_line_names_the_directory_it_measured(tmp_path, monkeypatch):
+    """A green line about a temp folder must never read as a green line about
+    the library."""
+    _tmp_library(monkeypatch, tmp_path / "library")
+
+    check = doctor.check_scratch_dir_writable()
+
+    assert check.ok is True and check.name == "data-dir"
+    assert "scratch directory" in check.detail
+    assert str(tmp_path / "library") not in check.detail
+    assert not (tmp_path / "library").exists(), "the probe created the data directory"
+
+
+def _smoke_without_a_model(monkeypatch, tmp_path):
+    """`gpu_smoke`'s own path with the model replaced, so the branch after a
+    result can be reached without loading 1.6 GB."""
+    from scribe.stages import transcribe as transcribe_stage
+
+    clip = tmp_path / "clip30.wav"
+    clip.write_bytes(b"RIFF")  # existence is all gpu_smoke asks of it
+
+    segment = types.SimpleNamespace(words=[object()] * 12)
+    info = types.SimpleNamespace(duration=30.0)
+
+    class Model:
+        def transcribe(self, *args, **kwargs):
+            return [segment], info
+
+    monkeypatch.setattr(transcribe_stage, "load_model", lambda name: (Model(), "cuda", "float16"))
+    return clip
+
+
+def test_the_smoke_without_record_writes_no_timing_row(tmp_path, monkeypatch):
+    """The `smoke` row is telemetry under its own stage name, and a proof that
+    leaves the library byte-identical is worth more than one sample of it."""
+    path = _wal_library(monkeypatch, tmp_path)
+    clip = _smoke_without_a_model(monkeypatch, tmp_path)
+    recorded = []
+    monkeypatch.setattr(doctor.jobs, "record_stage_perf", lambda *a, **k: recorded.append(a))
+    before = path.stat().st_mtime_ns
+
+    check = doctor.gpu_smoke(clip=clip, record=False)
+
+    assert check.ok is True, check.detail
+    assert recorded == []
+    assert path.stat().st_mtime_ns == before
+
+
+def test_the_smoke_from_a_terminal_still_records_its_timing(tmp_path, monkeypatch):
+    """Criterion 2 takes the row away from the proof and from nothing else."""
+    _wal_library(monkeypatch, tmp_path)
+    clip = _smoke_without_a_model(monkeypatch, tmp_path)
+    recorded = []
+    monkeypatch.setattr(doctor.jobs, "record_stage_perf", lambda *a, **k: recorded.append(a))
+
+    assert doctor.gpu_smoke(clip=clip).ok is True
+    assert [args[1] for args in recorded] == ["smoke"]
+
+
+def test_the_read_only_diarization_check_reads_the_settings_row_without_writing(
+    tmp_path, monkeypatch, library_db_unstubbed
+):
+    """`_diarization_token` opens the library through `db.connect`, whose
+    journal-mode pragma is a write. The twin asks the same two places in the
+    same order and moves nothing."""
+    from scribe.stages import diarize
+
+    path = _wal_library(monkeypatch, tmp_path)
+    conn = doctor.db.connect(path)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            (diarize.SETTING_TOKEN, "hf_from_the_settings_row"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    before = path.stat().st_mtime_ns
+
+    assert doctor._diarization_token_read_only() == "hf_from_the_settings_row"
+
+    assert path.stat().st_mtime_ns == before
+    assert not path.with_name(path.name + "-wal").exists()
+
+
+def test_read_only_checks_keep_the_names_and_the_order(tmp_path, monkeypatch):
+    """The mode changes where the writing happened, and nothing else."""
+    from scribe import models as models_module
+
+    _wal_library(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_diarization_token", lambda: None)
+    monkeypatch.setattr(doctor, "_diarization_token_read_only", lambda: None)
+    monkeypatch.setattr(doctor.accel, "describe", lambda: "transcription on cpu")
+    monkeypatch.setattr(models_module, "status", lambda **kwargs: [])
+
+    writing = [c.name for c in doctor.checks(include_gpu=False)]
+    reading = [c.name for c in doctor.checks(include_gpu=False, read_only=True)]
+
+    assert writing == reading
+
+
+def test_the_registered_twin_is_the_one_that_does_not_record(tmp_path, monkeypatch):
+    """The twin `READ_ONLY_SUBSTITUTES` swaps in is what `--prove` calls.
+
+    A twin that forgot its keyword - `return gpu_smoke()` - would pass every
+    other test in this file and write a `stage_perf` row into somebody's
+    library on every real run, which is the one thing criterion 2 of
+    TASK-089.13 says the proof does not do. So the call is asserted, not the
+    behaviour of the function it calls.
+    """
+    _tmp_library(monkeypatch, tmp_path)
+    asked = []
+
+    def stand_in(*args, **kwargs):
+        asked.append(kwargs)
+        return doctor.Check(name="gpu-smoke", ok=True, detail="stubbed; nothing was loaded")
+
+    monkeypatch.setattr(doctor, "gpu_smoke", stand_in)
+
+    doctor.check_gpu_smoke_read_only()
+    assert asked == [{"record": False}]
+
+    asked.clear()
+    doctor.check_gpu_smoke()
+    assert asked == [{}], "the doctor's own command still records its timing"

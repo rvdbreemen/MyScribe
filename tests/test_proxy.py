@@ -193,6 +193,31 @@ def test_the_launchers_health_probe_reaches_this_machine_with_a_dead_proxy_confi
     assert answered is True
 
 
+def test_the_proofs_health_probe_reaches_this_machine_with_a_dead_proxy_configured(
+    loopback, monkeypatch
+):
+    """`setup._health` is what decides whether `--prove` may load a model.
+
+    Its `trust_env=False` is the bypass TASK-089.05 measured for the launcher,
+    and the consequence of losing it is worse here than a wrong status line:
+    with a proxy variable set and no NO_PROXY the loopback GET goes to the
+    proxy, `_health` answers "nothing there", the gate opens, and a model
+    loads beside an app that is serving - the ADR-001 breach the gate exists
+    to prevent.
+
+    The assertion is which request arrived, the way every test in this file
+    does it; the second one is that the answer was read, so a probe that
+    reached the port and threw the body away cannot pass either.
+    """
+    monkeypatch.setenv("HTTP_PROXY", DEAD_PROXY)
+    monkeypatch.setenv("HTTPS_PROXY", DEAD_PROXY)
+
+    answered = setup._health(loopback.port)
+
+    assert loopback.arrived == ["/health"], "the proof's probe never reached 127.0.0.1"
+    assert answered is not None and answered["version"] == "test"
+
+
 def test_the_hub_download_still_goes_through_the_proxy(loopback, tmp_path, monkeypatch):
     """The bypass is loopback-only, and this is the test that says so.
 

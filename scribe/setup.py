@@ -40,18 +40,22 @@ from __future__ import annotations
 import argparse
 import contextlib
 import getpass
+import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterator
 
 import httpx2
 
-from scribe import credentials, db, env, models, ollama_setup, paths
+from scribe import applog, credentials, db, doctor, env, models, ollama_setup, paths
 from scribe.stages import diarize
 from scribe.web import ai_ui, transcribe_dialog
 
@@ -317,10 +321,18 @@ def read_only(path: Path) -> Iterator[sqlite3.Connection | None]:
     no `-wal` stands beside the database. Where one does, a writer has been or
     still is at work and the plain read-only open is the one that reads the
     truth: that is the branch the launcher plans in, with the running app
-    holding the library. It can create a `-shm` where one is missing - a `.db`
-    and a `-wal` without one is a half-copied or restored library rather than
-    anything MyScribe leaves behind - and reading what the app has written is
-    worth that.
+    holding the library. Measured on this machine on 2026-09-22: on that
+    branch SQLite writes the wal-index. It rewrites an existing `-shm`, and
+    creates one where it is missing - a `.db` and a `-wal` without one is a
+    half-copied or restored library rather than anything MyScribe leaves
+    behind. The database and the log itself are not touched either way.
+
+    That is the whole of what this open costs, and it buys the only reading
+    that is true: `immutable=1` on a library with a `-wal` answers with the
+    state before the last checkpoint. Measured the same day on a library whose
+    schema version and provider row were committed after one, it reported
+    `user_version` 0 and the superseded row. A report that quietly says v0
+    about a working library is worse than a wal-index that was rewritten.
 
     No database is None and never an error: a first run has none, and every
     question is then open. A library from before the 2026-09-06 rename reads as
@@ -740,6 +752,699 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict
         "downloads": offer,
         "questions": [asdict(question) for question in open_questions],
     }
+
+
+# --- the proof --------------------------------------------------------------------------
+
+
+DEFAULT_PORT = 4242
+"""The port `python -m scribe` serves on. The number rather than an import:
+taking it from `scribe.__main__` would pull uvicorn and FastAPI into a child
+whose whole job is to measure. The launcher keeps its own copy for a related
+reason (ADR-011), so this is the third and last."""
+
+HEALTH_TIMEOUT = 2.0
+"""How long an app that is up gets to answer. This is loopback: a MyScribe that
+is running answers in milliseconds, and one that needs longer than this is not
+something the proof can say anything true about."""
+
+LOCK_PATH = Path(__file__).resolve().parent.parent / "uv.lock"
+
+
+@dataclass(frozen=True)
+class Gate:
+    """May this process load a model, and if not, why not.
+
+    ADR-001's Must is that GPU work runs only inside `scribe.runner` children,
+    at most one at a time, and its Exceptions read "None". ADR-015 records the
+    reading this rests on: with nothing answering on the port and no job
+    running, nothing else holds the card, and a one-shot command that measures
+    in its own process is the existing precedent - `python -m scribe.doctor`
+    from a terminal. Every branch below is about whether that condition holds,
+    and no branch widens it.
+    """
+
+    may_load: bool
+    reason: str = ""
+    answered: dict | None = None
+    job_id: int | None = None
+    asked_a_port: bool = True
+
+
+def _a_job_is_running(conn: sqlite3.Connection | None) -> bool:
+    """Is anything already working in this library?
+
+    The cheap half of the guard, and it needs no port: a runner child holding
+    the card is a row in this database whatever port its app listens on. Asked
+    first for that reason.
+    """
+    if conn is None:
+        return False
+    try:
+        row = conn.execute("SELECT id FROM job WHERE status='running' LIMIT 1").fetchone()
+    except sqlite3.Error:  # a library from before this table existed
+        return False
+    return row is not None
+
+
+def _health(port: int) -> dict | None:
+    """GET /health on the loopback, or None when nothing answers.
+
+    `trust_env=False`, unconditionally and for the reason TASK-089.05 measured:
+    with a proxy variable set and no NO_PROXY, a loopback GET goes to the proxy
+    and times out, and the launcher's own single-instance check answered "no
+    app" about an app that was serving. A wrong answer here would load a model
+    beside a running transcription, which is the failure this whole gate is
+    about.
+    """
+    try:
+        with httpx2.Client(timeout=HEALTH_TIMEOUT, trust_env=False) as client:
+            answer = client.get(f"http://127.0.0.1:{port}/health")
+    except Exception:  # noqa: BLE001 - every way of not answering is "nothing there"
+        return None
+    if answer.status_code != 200:
+        return None
+    try:
+        body = answer.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _serves_this_library(answered: dict) -> bool:
+    """Does the app that answered serve the library this proof has open?
+
+    `data_dir` is one of the two fields `/health` gains in TASK-089.17. Until
+    that lands every MyScribe answers without them, so this returns False for
+    every app there is today - and that is the right answer, because an answer
+    without the fields is doubt (ADR-015), and doubt loads nothing.
+
+    Compared after `normcase(realpath())` on both sides, the way TASK-089.17
+    compares paths: one directory reached by two spellings is one library.
+    """
+    theirs = str(answered.get("data_dir") or "").strip()
+    if not theirs:
+        return False
+    return os.path.normcase(os.path.realpath(theirs)) == os.path.normcase(
+        os.path.realpath(paths.DATA_DIR)
+    )
+
+
+def _queue_doctor_job() -> int:
+    """Queue the GPU checks as a `doctor` job, the way Settings does.
+
+    The single write criterion 2 allows, and only on this branch: the app that
+    answered serves this library, so the row lands where the runner that will
+    claim it is looking, and the result comes back in the `doctor_last` setting
+    the page reads. Queued into a library no app is serving, the row would sit
+    there until somebody happened to start one.
+
+    `scribe.web.settings` is imported here and not at the top - it is a page
+    module, and the other four doors of this engine have no business paying for
+    it - and `queue_gpu_checks` is reused rather than respelled, so "one doctor
+    job at a time" stays one rule in one place.
+
+    `jobs.enqueue` also appends a `job.enqueued` line to the library's own log.
+    That is part of the same exception rather than a hole in it: the app that
+    is serving holds that file open already, and a queue that leaves no trace
+    in the log is worse than one that does.
+    """
+    from scribe.web import settings as settings_ui
+
+    conn = db.connect(paths.DB_PATH)
+    try:
+        job_id, _ = settings_ui.queue_gpu_checks(conn)
+        return job_id
+    finally:
+        conn.close()
+
+
+def _gate(conn: sqlite3.Connection | None, port: int, health: Callable[[int], dict | None]) -> Gate:
+    """Decide once whether a model may be loaded here, for every line that would."""
+    if _a_job_is_running(conn):
+        return Gate(may_load=False, reason="not tested (a job is running)", asked_a_port=False)
+
+    answered = health(port)
+    if answered is None:
+        return Gate(may_load=True)
+
+    if _serves_this_library(answered):
+        job_id = _queue_doctor_job()
+        return Gate(
+            may_load=False,
+            reason=(
+                f"not tested yet - queued as doctor job {job_id}; the result appears "
+                "under Settings > This machine"
+            ),
+            answered=answered,
+            job_id=job_id,
+        )
+    return Gate(
+        may_load=False,
+        reason=f"not tested (a MyScribe is running on port {port})",
+        answered=answered,
+    )
+
+
+def _uv_version() -> str:
+    """`uv --version`, or "" when there is no uv. Never raises: this is a line
+    in a report, not a dependency of it."""
+    found = shutil.which("uv")
+    if not found:
+        return ""
+    try:
+        done = subprocess.run(
+            [found, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = (done.stdout or "").strip().splitlines()
+    return lines[0] if done.returncode == 0 and lines else ""
+
+
+def _lock_digest() -> str:
+    """The first twelve characters of `uv.lock`'s sha256, or "".
+
+    Twelve, because this is for somebody holding two reports side by side and
+    asking whether the same stack was installed. All sixty-four would push
+    everything else off the line, and verifying a download is not what it is
+    for.
+    """
+    try:
+        return hashlib.sha256(LOCK_PATH.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return ""
+
+
+def _environment() -> doctor.Check:
+    """Which python, which uv, which lockfile - what decides, between them,
+    everything that is installed here (ADR-012).
+
+    Information and never a failure. No uv on PATH means the launcher used its
+    own copy, and a missing `uv.lock` means this is not a checkout; both are
+    worth printing and neither is a broken machine.
+    """
+    said = [f"python {sys.version.split()[0]} at {sys.executable}"]
+    said.append(_uv_version() or "uv not on PATH")
+    digest = _lock_digest()
+    said.append(f"uv.lock sha256 {digest}" if digest else "no uv.lock beside this package")
+    return doctor.Check(name="environment", ok=True, detail="; ".join(said))
+
+
+def _with_provenance(check: doctor.Check) -> doctor.Check:
+    """The same line, saying which copy answered.
+
+    `check_ffmpeg` reports a version string, which says what ran and not which
+    of the ffmpegs on this machine it was - and on a machine where the wrong
+    one is first on PATH that is the whole question.
+    """
+    where = shutil.which(check.name)
+    if not check.ok or not where:
+        return check
+    return replace(check, detail=f"{check.detail} (found at {where})")
+
+
+def _credential_lines(conn: sqlite3.Connection | None) -> list[doctor.Check]:
+    """One line per credential and per proxy: what was found and where.
+
+    `found_table` is the list `--plan` prints and Settings renders, and it is
+    built so that a value cannot be in it (`credentials.Found`) - which is why
+    the report can carry it at all.
+
+    Optional, every one: a machine with no OpenAI key is not a broken machine.
+    """
+    lines = []
+    for row in found_table(conn):
+        if row["kind"] == "proxy":
+            detail = f"{row['host']} (from {row['source']})"
+        elif row["found"]:
+            detail = f"found in {row['source']}"
+            if row["also_in"]:
+                detail += ", also in " + ", ".join(row["also_in"])
+            if row["conflict"]:
+                detail += " - and they do not agree"
+        else:
+            detail = "not found on this machine"
+        lines.append(
+            doctor.Check(name=row["name"], ok=bool(row["found"]), optional=True, detail=detail)
+        )
+    return lines
+
+
+PROVIDER_QUESTION = "Ask {label} for one word now? One request, and it costs money [y/N]: "
+
+
+def _confirm(question: str) -> bool:
+    """A y/N question whose answer is No unless somebody types otherwise.
+
+    Never asked without a terminal: an unattended install that blocked on input
+    would hang, and one that took silence for yes would spend money nobody
+    agreed to (criterion 6).
+    """
+    if not at_a_terminal():
+        return False
+    try:
+        return input(question).strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def _provider_word(conn: sqlite3.Connection | None, provider: str) -> doctor.Check:
+    """One word from the chosen provider, through the probe Settings uses.
+
+    `llm.selftest.probe` and not a request of this module's own: that is the
+    one place that sends two module constants and nothing of the user's, and a
+    second spelling would be a second thing to keep honest. It stores nothing
+    here - `store_result` is the settings page's call, and this report writes
+    no rows.
+    """
+    from scribe.llm import selftest
+
+    label = label_of(provider)
+    if conn is None:
+        return doctor.Check(
+            name="ai-provider",
+            ok=False,
+            tested=False,
+            optional=True,
+            detail=f"{label}: no library here to read the key from",
+        )
+    result = selftest.probe(conn, provider_name=provider)
+    if result.ok:
+        detail = f"{label} ({result.model}) answered in {result.elapsed_s:.1f}s"
+    else:
+        detail = f"{label} ({result.model}): {result.detail}"
+    return doctor.Check(name="ai-provider", ok=result.ok, optional=True, detail=detail)
+
+
+def _provider_line(
+    conn: sqlite3.Connection | None,
+    gate: Gate,
+    probe: Callable[[sqlite3.Connection | None, str], doctor.Check],
+    confirm: Callable[[str], bool],
+) -> doctor.Check:
+    """Does the chosen AI provider answer - asked only where asking is free or
+    agreed to.
+
+    Three states, one rule each. No provider row is ADR-016's legitimate state:
+    nothing is chosen, so nothing is sent. A cloud provider costs money, so it
+    is asked for its word only on an explicit yes whose default is No. A local
+    one costs nothing but runs on the same card as the transcription, so it
+    waits on the same gate.
+
+    Optional in every state, which is what lets the install pass without it:
+    this line says what the machine's AI is doing, and no recording depends on
+    it.
+    """
+    provider = _row(conn, ai_ui.PROVIDER_SETTING)
+    if not provider:
+        return doctor.Check(
+            name="ai-provider",
+            ok=True,
+            optional=True,
+            detail="no provider chosen; nothing is sent until somebody chooses (ADR-016)",
+        )
+
+    known = ai_ui.llm.PROVIDERS.get(provider)
+    if known is None:
+        # A row written by a newer MyScribe, or a provider dropped from
+        # `PROVIDERS` since. `llm.provider_class` raises `ValueError` for a
+        # name it does not have, by design - so the state is read here, before
+        # any question is asked, and this line degrades into a sentence the
+        # way every other line in this report does.
+        return doctor.Check(
+            name="ai-provider",
+            ok=False,
+            tested=False,
+            optional=True,
+            detail=f"{provider}: not a provider this version knows",
+            fix_hint="Settings > AI lists the ones it does.",
+        )
+
+    label = label_of(provider)
+    if known.is_local:
+        if not gate.may_load:
+            return doctor.Check(
+                name="ai-provider",
+                ok=False,
+                tested=False,
+                optional=True,
+                detail=f"{label}: {gate.reason}",
+            )
+    elif not confirm(PROVIDER_QUESTION.format(label=label)):
+        return doctor.Check(
+            name="ai-provider",
+            ok=False,
+            tested=False,
+            optional=True,
+            detail=f"{label}: configured, not tested",
+            fix_hint="Settings > AI has a test button, or answer yes the next time this asks.",
+        )
+    return probe(conn, provider)
+
+
+def _gpu_runtime_line(gate: Gate) -> doctor.Check:
+    """Which torch, which CUDA, which card - asked only where asking is free.
+
+    `check_gpu_runtime` is a member of `GPU_CHECKS`, and that tuple is this
+    repository's own word for "not in this process": `checks(include_gpu=False)`
+    drops it, and the settings page queues it as a `doctor` job rather than
+    calling it. It sits one level below `check_accelerators`, which answers
+    with `torch.cuda.is_available()` and reaches no device; this one asks for
+    `get_device_name(0)` and `get_device_properties(0)`, which go through
+    torch's lazy init and open a CUDA context on device 0. Small beside a
+    model, and still work on a card something else may be holding, which
+    ADR-001 keeps inside a runner child.
+
+    Gated and not dropped, because the answer is not lost: `check_gpu_runtime`
+    is in the doctor job the match branch queues, and the reason says where it
+    will appear.
+
+    Optional only while it is untested. A card that is present and unreachable
+    is a required failure and stays one (criterion 5); a card nobody was
+    allowed to ask about is already counted, by the `transcription` line above
+    that was stopped for the same reason. One withholding, one place in the
+    verdict.
+    """
+    if not gate.may_load:
+        return doctor.Check(
+            name="gpu-runtime", ok=False, tested=False, optional=True, detail=gate.reason
+        )
+    return doctor.check_gpu_runtime()
+
+
+def _transcription_line(gate: Gate, smoke: Callable[[], doctor.Check]) -> doctor.Check:
+    """The one line the exit code turns on.
+
+    Required on purpose. Criterion 3 says the exit code counts a queued
+    transcription as not tested, so a proof run beside a running app exits 1 -
+    the report saying "nobody measured this here", which is exactly what it is
+    for and not a failure of the machine.
+    """
+    if not gate.may_load:
+        return doctor.Check(
+            name="transcription",
+            ok=False,
+            tested=False,
+            detail=gate.reason,
+            fix_hint=(
+                ""
+                if gate.job_id
+                else "Run `python -m scribe.doctor` once nothing else is holding the card."
+            ),
+        )
+    measured = smoke()
+    return doctor.Check(
+        name="transcription",
+        ok=measured.ok,
+        detail=measured.detail,
+        fix_hint=measured.fix_hint,
+    )
+
+
+def serve_check(data_dir: Path, *, timeout: float = 90.0) -> doctor.Check:
+    """Start a MyScribe on ``data_dir``, ask /health, stop it.
+
+    The whole point of the scratch directory: the app's own startup migrates
+    the database, reconciles job rows, sweeps recordings and - through
+    `finalize.sweep_speaker_passes` - queues an LLM job for every diarized
+    recording that never had a speaker pass. None of that may happen to a real
+    library because somebody asked for a report, so it happens to an empty
+    folder that is thrown away afterwards.
+
+    A port of 0 asks the operating system for one nobody is using, so this
+    never disturbs an app on 4242 - or on any other port somebody chose.
+
+    `--no-supervisor` and `--no-browser`: nothing here queues work and nothing
+    should open a window. The child is stopped in a `finally`, and killed if it
+    will not stop, because a proof that leaves a server behind is worse than no
+    proof.
+    """
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    environment = dict(os.environ, SCRIBE_DATA_DIR=str(data_dir))
+    # An `.env` naming another library would send this child there, which is
+    # the one thing this check exists to avoid.
+    environment.pop("SCRIBE_ENV_FILE", None)
+    environment["SCRIBE_ENV_FILE"] = str(data_dir / ".env")
+    child = subprocess.Popen(
+        [sys.executable, "-m", "scribe", "--port", str(port), "--no-supervisor", "--no-browser"],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    started = time.monotonic()
+    try:
+        while time.monotonic() - started < timeout:
+            if child.poll() is not None:
+                return doctor.Check(
+                    name="app",
+                    ok=False,
+                    detail=f"it did not start (exit {child.returncode})",
+                    fix_hint=f"Run it yourself and read the error: python -m scribe --port {port}",
+                )
+            answered = _health(port)
+            if answered is not None:
+                took = time.monotonic() - started
+                version = str(answered.get("version") or "")
+                return doctor.Check(
+                    name="app",
+                    ok=True,
+                    detail=(f"started on an empty folder and answered /health in {took:.1f}s"
+                            + (f" (version {version})" if version else "")),
+                )
+            time.sleep(0.25)
+        return doctor.Check(
+            name="app",
+            ok=False,
+            detail=f"it did not answer /health within {timeout:.0f}s",
+            fix_hint="Start it by hand and read the lines it prints.",
+        )
+    finally:
+        child.terminate()
+        try:
+            child.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
+
+
+def _app_line(gate: Gate, port: int,
+              serve: Callable[[Path], doctor.Check] | None = None) -> doctor.Check:
+    """Does a MyScribe serve - and this run does not start one to find out.
+
+    Criterion 2 allows a serve check only on a scratch `SCRIBE_DATA_DIR`,
+    because the app's startup migrates the database, reconciles job rows and -
+    `finalize.sweep_speaker_passes` - queues an LLM job for every diarized
+    recording that never had a speaker pass. None of that may happen to a real
+    library because somebody asked for a report. So this line reports the app
+    that is already answering, and otherwise names the command that starts one
+    where it can do no harm.
+
+    Optional: an install that ends with nothing serving is not a broken
+    install, it is an install.
+    """
+    if gate.answered is not None:
+        version = str(gate.answered.get("version") or "")
+        seen = f"/health already answers on port {port}"
+        return doctor.Check(
+            name="app",
+            ok=True,
+            optional=True,
+            detail=seen + (f" (version {version})" if version else ""),
+        )
+    if not gate.asked_a_port:
+        return doctor.Check(
+            name="app",
+            ok=False,
+            tested=False,
+            optional=True,
+            detail="not tested (a job is running; no port was asked)",
+        )
+    if serve is None:
+        return doctor.Check(
+            name="app",
+            ok=False,
+            tested=False,
+            optional=True,
+            detail=f"not tested: nothing answers on port {port}",
+            fix_hint=(
+                "Ask one that can do no harm: point SCRIBE_DATA_DIR at an empty directory, then "
+                f"`python -m scribe --port {port} --no-supervisor --no-browser`."
+            ),
+        )
+    # Nothing is serving and no job is running, so one is started where it can
+    # do no harm: an empty directory of its own, on a port the operating system
+    # picked, thrown away afterwards (criterion 2).
+    with tempfile.TemporaryDirectory(prefix="myscribe-prove-") as scratch:
+        return serve(Path(scratch))
+
+
+def _blind_spot(port: int) -> doctor.Check:
+    """What this proof cannot see, said rather than implied (criterion 4).
+
+    The job-row check covers any port for *this* library; `/health` covers the
+    port it was given. Between the two sits a MyScribe on another port serving
+    this same library with nothing queued - and this repository's own
+    instructions document exactly that arrangement (`--port 4299`).
+
+    The second sentence is the other end of the same doubt. `_health` reads
+    anything that is not a 200 with a JSON object as nothing there, which
+    opens the gate: an app whose `/health` is broken while it transcribes
+    would be missed. Said here rather than turned into a third state, because
+    on that port anything else answering really does mean no app.
+    """
+    return doctor.Check(
+        name="blind-spot",
+        ok=False,
+        tested=False,
+        optional=True,
+        detail=(
+            f"a MyScribe on another port than {port} serving this library was not looked for; "
+            "a job it is running is seen, an idle one holding the card is not. An answer on "
+            f"{port} that is not a MyScribe /health reads here as nothing there"
+        ),
+    )
+
+
+def _log_line(gate: Gate) -> doctor.Check:
+    """Where the application log lives - named, and written to on one branch.
+
+    Named, because somebody reading a failed install needs the path. Not
+    written by this report, which is what lets it sit under a data directory
+    criterion 2 leaves alone - except where the gate queued a doctor job:
+    `jobs.enqueue` appends a `job.enqueued` line to it. That write is part of
+    criterion 2's exception, and it belongs in the report rather than in a
+    docstring, because the alternative is a line that says "not written" on
+    the one branch where something was.
+
+    There is no separate install log anywhere in this repository. TASK-089.09
+    read "mirrors the report into the install log" as the launcher teeing this
+    child's output into one; that tee does not exist - `run_setup` hands each
+    line to a status callback and opens no file - so this line names the
+    application log and claims nothing about a second one.
+    """
+    if gate.job_id:
+        return doctor.Check(
+            name="log",
+            ok=True,
+            detail=f"{applog.path()} (the queued job's job.enqueued line is written here)",
+        )
+    return doctor.Check(name="log", ok=True, detail=f"{applog.path()} (named here, not written)")
+
+
+def _announce(label: str) -> None:
+    """Say which check has started, on stderr.
+
+    stderr so that `--prove > report.txt` keeps exactly the report it had, and
+    plain lines with no carriage returns or ANSI, because legacy conhost is
+    still what a lot of these machines open. It matters for one check above
+    all: a cold transcription downloads 1.6 GB, and a terminal that prints
+    nothing for two minutes reads as a hang.
+    """
+    print(f"checking {label}", file=sys.stderr, flush=True)
+
+
+def _watched() -> bool:
+    """Is anybody looking at this run? `sys.stderr`, not stdin: the report may
+    be piped somewhere while a person watches the progress."""
+    return at_a_terminal(sys.stderr)
+
+
+def _take(measured: dict[str, doctor.Check], name: str) -> doctor.Check:
+    """One of the doctor's lines, by name.
+
+    A KeyError here means a check was renamed and this report has silently
+    lost a line it promises. Loud is the right failure for that.
+    """
+    return measured.pop(name)
+
+
+def prove(
+    conn: sqlite3.Connection | None,
+    *,
+    port: int = DEFAULT_PORT,
+    smoke: Callable[[], doctor.Check] | None = None,
+    health: Callable[[int], dict | None] | None = None,
+    provider_probe: Callable[[sqlite3.Connection | None, str], doctor.Check] | None = None,
+    confirm: Callable[[str], bool] | None = None,
+    on_start: Callable[[str], None] | None = None,
+    serve: Callable[[Path], doctor.Check] | None = None,
+) -> list[doctor.Check]:
+    """The report an install ends on: what this machine is, measured.
+
+    An install that ends on "done" proves nothing, and until now no code path
+    ran the doctor after setup at all. This is that path, and two things it
+    must not do are what shaped it.
+
+    **It does not write to the library it reports on.** Not tidiness: a proof
+    run after a `git pull`, with an older app still serving, would otherwise
+    migrate the live database out from under it. So the doctor's checks run in
+    `read_only` mode, `conn` is the immutable open and never `db.connect`, and
+    the one exception is the job row queued for an app that is provably serving
+    this library. What it reads of the library - the schema version, the
+    credential rows, the provider - it reads without moving a byte.
+
+    **It does not load a model beside something that might be using the card.**
+    ADR-001 keeps GPU work in runner children, one at a time, and the 9B and
+    12B models both failed to start here while 12.7 GB of the 16 GB card was
+    in use. So `Gate` decides once, and every line that would load a model asks
+    it: a running job row, or an app that answers, and the transcription reads
+    "not tested" with the reason. With nothing answering and nothing running,
+    the smoke measures in this process, which is what `python -m scribe.doctor`
+    has always done from a terminal (ADR-015 records that reading).
+
+    The four probes are arguments for one reason: without them a test of the
+    gate would have to load a real model to prove that it did not.
+
+    Returns the report as `doctor.Check` objects - the doctor's own shape, not
+    a second one - for `doctor.render` to print and `doctor.exit_code` to
+    judge.
+    """
+    smoke = smoke or doctor.check_gpu_smoke_read_only
+    health = health or _health
+    provider_probe = provider_probe or _provider_word
+    confirm = confirm or _confirm
+
+    measured = {
+        check.name: check
+        for check in doctor.checks(include_gpu=False, on_start=on_start, read_only=True)
+    }
+    # Criterion 1's order, and the pops are what make it one order rather than
+    # two: a check taken out here cannot also appear in the middle block.
+    report = [_environment(), _with_provenance(_take(measured, "ffmpeg")), _with_provenance(_take(measured, "ffprobe"))]
+    accel_line = _take(measured, "accel")
+    ollama_line = _take(measured, "ollama")
+    report += list(measured.values())
+    report.append(accel_line)
+    # Decided here, before the first line that would touch the card. Every
+    # line from this point down asks it.
+    gate = _gate(conn, port, health)
+    report.append(_gpu_runtime_line(gate))
+    report += _credential_lines(conn)
+    report.append(ollama_line)
+
+    # Execution order is not report order, and here they differ on purpose. A
+    # local provider answers on the same card, and ollama keeps that model
+    # resident for five minutes (`KEEP_ALIVE`), so asking it first would leave
+    # VRAM occupied while the smoke loads beside it - the collision measured
+    # in scribe/llm/ollama.py. The smoke is measured first; the two lines are
+    # appended in criterion 1's order.
+    transcription = _transcription_line(gate, smoke)
+    report.append(_provider_line(conn, gate, provider_probe, confirm))
+    report.append(transcription)
+    report.append(_app_line(gate, port, serve or serve_check))
+    report.append(_blind_spot(port))
+    report.append(_log_line(gate))
+    return report
 
 
 # --- checking a typed credential ------------------------------------------------------
@@ -1290,6 +1995,17 @@ def main(argv: list[str] | None = None) -> int:
         help="with --plan: leave out the questions the last sitting already put",
     )
     parser.add_argument("--apply-stdin", action="store_true", help="read one JSON document of answers from stdin")
+    parser.add_argument(
+        "--prove",
+        action="store_true",
+        help="measure this machine and print one report; writes nothing to the library",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"with --prove: the port a running MyScribe would answer on (default {DEFAULT_PORT})",
+    )
     parser.add_argument("--status", action="store_true", help="print what setup would ask about, as JSON")
     # Recognised so that the refusal can be a sentence rather than an argparse
     # usage error; never read. The ADR-015 tripwire flags this line and the
@@ -1323,6 +2039,15 @@ def main(argv: list[str] | None = None) -> int:
         with read_only(paths.DB_PATH) as conn:
             print(json.dumps(plan(conn, unasked_only=args.unasked_only), indent=2))
         return 0
+
+    # A proof writes nothing either, so it branches here for the same reason -
+    # everything below `ensure_dirs` may write, and a directory that merely
+    # appeared already fails criterion 2 of TASK-089.13.
+    if args.prove:
+        with read_only(paths.DB_PATH) as conn:
+            report = prove(conn, port=args.port, on_start=_announce if _watched() else None)
+        print(doctor.render(report))
+        return doctor.exit_code(report)
 
     paths.ensure_dirs()
     conn = db.connect(paths.DB_PATH)
