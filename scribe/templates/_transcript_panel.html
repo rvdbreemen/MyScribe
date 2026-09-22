@@ -18,6 +18,8 @@
       new_speaker  the `speaker` value that asks reassign for a new one
       job          {id, status, stage, error_code} of the latest job, or none
       folders      [{id, name, parent_id, depth}] for the Move select
+      diarization_note  what the diarize stage left on this run when it could
+                   not work the speakers out, or "" when it could
       hide_ts_key  the localStorage key the timestamp toggle persists under
 
   What the markup promises app.js, so it reads attributes and computes nothing
@@ -146,6 +148,23 @@
       </form>
       {% elif word_flash is defined and word_flash %}
       <p class="word-offer" role="status">{{ word_flash }}</p>
+      {% endif %}
+
+      {% if diarization_note %}
+      {# The speakers were asked for and could not be worked out (TASK-089.08).
+         The job is done and every word is here; this is the note the diarize
+         stage put on the run, and it is shown for the same reason the cleanup
+         line below is: a reader who is not told is left to guess why a
+         transcript they asked speakers for has none. The link goes to the
+         token field itself rather than to the paragraph above it, and its
+         text is the action and not the place: two different notes end up in
+         here - this one, which has just named Settings > Transcription in
+         prose, and the substitution note, which names no place at all - and
+         a bare place name repeats the first and dangles after the second. #}
+      <p class="hint" data-diarization-note>
+        {{ diarization_note }}
+        <a href="/settings?section=defaults#hf-token">Open the token field</a>
+      </p>
       {% endif %}
 
       {% if clean_reading %}

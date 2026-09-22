@@ -1876,3 +1876,111 @@ def test_no_template_comment_leaks_into_the_page(client, conn, transcribed):
         body = client.get(path).text
         assert "#}" not in body, path
         assert "{#" not in body, path
+
+
+# --- a run whose speakers could not be worked out says so (TASK-089.08) ---------
+#
+# `diarization_note` has been written to `run.params_json` since the assembled
+# fallback shipped and was rendered by nothing: no template and no route read
+# it, so "says so on the run" was only ever half true. Putting it on the page
+# is what makes a job that keeps its transcript and skips the speakers a
+# success with a note rather than a silence.
+
+
+def _note_on_the_run(conn, run_id, note):
+    with db.LOCK:
+        conn.execute(
+            "UPDATE run SET params_json=? WHERE id=?",
+            (json.dumps({"diarization_note": note}), run_id),
+        )
+        conn.commit()
+
+
+def _diarization_note(body):
+    found = re.search(r"<p[^>]*data-diarization-note[^>]*>(.*?)</p>", body, re.S)
+    return None if found is None else " ".join(found.group(1).split())
+
+
+def test_a_run_that_could_not_work_out_the_speakers_says_so_on_the_page(
+    client, conn, transcribed
+):
+    _note_on_the_run(
+        conn,
+        transcribed["run"],
+        "Speakers were not worked out: no Hugging Face token was found.",
+    )
+
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    line = _diarization_note(body)
+    assert line is not None, "the page says nothing about the speakers it has none of"
+    assert "no Hugging Face token was found" in line
+
+
+def test_the_note_links_to_the_token_field_rather_than_naming_it(client, conn, transcribed):
+    """A link that lands on the field, not on the paragraph above it: the
+    three routes are in the note, and the one a user can take right now is a
+    click away. Its text is the action, because the same paragraph carries
+    two different notes and one of them names no place at all."""
+    _note_on_the_run(conn, transcribed["run"], "Speakers were not worked out.")
+
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    assert (
+        '<a href="/settings?section=defaults#hf-token">Open the token field</a>' in body
+    )
+
+
+def test_a_run_that_has_its_speakers_says_nothing_about_missing_ones(client, transcribed):
+    assert "data-diarization-note" not in client.get(f"/media/{transcribed['media']}").text
+
+
+def test_the_substitution_note_reaches_the_page_too(client, conn, transcribed):
+    """The rider on TASK-089.08, pinned rather than left implicit.
+
+    `FALLBACK_NOTE` has been written to the run since the assembled 3.1
+    fallback shipped and was rendered by nothing. This is a run that *has*
+    speakers, so the line says what diarized rather than what is missing -
+    and the route it offers is the same one, because accepting the
+    conditions is what gets community-1 back.
+    """
+    from scribe.stages.diarize import FALLBACK_NOTE
+
+    _note_on_the_run(conn, transcribed["run"], FALLBACK_NOTE)
+
+    line = _diarization_note(client.get(f"/media/{transcribed['media']}").text)
+
+    assert line is not None
+    assert "speaker-diarization-3.1" in line
+    assert "/settings?section=defaults#hf-token" in line
+
+
+def test_a_note_that_is_not_json_leaves_the_transcript_alone(client, conn, transcribed):
+    """A run row with unreadable params is a run with no note, not a 500.
+
+    This is a line beside a transcript, and the transcript is the thing the
+    page exists to show - so the parse failure costs the note and nothing
+    else."""
+    with db.LOCK:
+        conn.execute(
+            "UPDATE run SET params_json=? WHERE id=?", ("not json", transcribed["run"])
+        )
+        conn.commit()
+
+    body = client.get(f"/media/{transcribed['media']}").text
+
+    assert "data-diarization-note" not in body
+    # The words are still there; only the note is gone. (The first word is
+    # "Don't", which renders escaped - so the second.)
+    assert default_words()[1]["text"].strip() in body
+
+
+def test_the_panel_on_its_own_carries_the_note_as_well(client, conn, transcribed):
+    """The panel is re-fetched alone after every rail action (`refresh`), so a
+    note that only survived the full page would vanish at the first rename."""
+    _note_on_the_run(conn, transcribed["run"], "Speakers were not worked out.")
+
+    body = client.get(f"/media/{transcribed['media']}", headers=HX).text
+
+    assert "<html" not in body
+    assert "data-diarization-note" in body

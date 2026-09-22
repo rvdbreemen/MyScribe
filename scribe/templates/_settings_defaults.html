@@ -74,7 +74,11 @@
     </footer>
   </form>
 
-  <form class="hf-token" method="post" action="/settings/hf-token"
+  {# `id` on the form rather than on the input: a media page whose speakers
+     could not be worked out links straight here (TASK-089.08), and landing on
+     the form brings the label with the field. `#hf-hint` is the paragraph
+     above, which leaves a reader one element short of what they came for. #}
+  <form id="hf-token" class="hf-token" method="post" action="/settings/hf-token"
         hx-post="/settings/hf-token" hx-target="#settings-defaults" hx-swap="outerHTML">
     <label class="field">Hugging Face token
       <input type="password" name="hf_token" autocomplete="off" spellcheck="false"

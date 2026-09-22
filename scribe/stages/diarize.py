@@ -7,7 +7,7 @@ are arbitrary per run: without a vector to match against, re-diarizing a file
 scrambles every name the user typed (spec section 8, named there as a known hard
 risk).
 
-Four things this module is careful about.
+Five things this module is careful about.
 
 **pyannote is handed samples, never a path** - and this is a deliberate,
 documented deviation from the plan's global constraint that says the opposite.
@@ -36,6 +36,16 @@ were tried and what to do about it, because "returned None" is what pyannote
 offers otherwise - it does not raise for a gated repo, it returns None and
 prints a hint to stdout that nobody is reading.
 
+**And when none of them works, the job keeps its transcript.** Every route
+into this stage is gated - measured 2026-09-22, an unauthenticated HEAD on
+`pyannote/segmentation-3.0`, which the assembled 3.1 fallback is built from,
+answers 401 - so a machine without a token has none at all. That used to fail
+the job in its fifth stage, an hour of audio after the words were written.
+`WeightsUnavailable` is caught here instead, the run carries a note saying
+what is missing and the three ways to fix it, and nothing else is caught:
+a broken wav or a card out of memory still fails, because a job reporting
+"done" for one of those would be lying about the transcript.
+
 **The pipeline is gone before the next stage loads one.** Three gigabytes of
 pyannote and six of Whisper do not both fit; the release happens in a `finally`
 so the failure path - which is where a leak actually costs you - frees the card
@@ -54,7 +64,7 @@ import wave
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
-from scribe import accel, credentials, cuda_setup, db, jobs, paths
+from scribe import accel, applog, credentials, cuda_setup, db, jobs, paths
 from scribe.stages.attribute import Turn, turns_from_diarization
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
@@ -612,16 +622,24 @@ def run(ctx: "RunnerContext") -> None:
     # the key too, but a job queued before the upgrade is never re-validated;
     # not reading it here is what covers that one.
     loaded: dict = {}
-    turns, embeddings = diarize(
-        wav,
-        num_speakers=ctx.params.get("num_speakers"),
-        min_speakers=ctx.params.get("min_speakers"),
-        max_speakers=ctx.params.get("max_speakers"),
-        on_progress=ctx.report,
-        device=ctx.params.get("device"),
-        token=hf_token(ctx.conn),
-        source_out=loaded,
-    )
+    # Resolved here rather than through `hf_token`, which carries the value
+    # alone: when nothing loads, the note below has to say *where* the token
+    # came from, and that is the one thing a bare string cannot tell it.
+    token = credentials.resolve(ctx.conn, credentials.HUGGINGFACE)
+    try:
+        turns, embeddings = diarize(
+            wav,
+            num_speakers=ctx.params.get("num_speakers"),
+            min_speakers=ctx.params.get("min_speakers"),
+            max_speakers=ctx.params.get("max_speakers"),
+            on_progress=ctx.report,
+            device=ctx.params.get("device"),
+            token=token.value,
+            source_out=loaded,
+        )
+    except WeightsUnavailable as exc:
+        _skip_speakers(ctx, run_id, token, exc)
+        return
 
     _persist(ctx, run_id, embeddings)
 
@@ -651,6 +669,110 @@ def run(ctx: "RunnerContext") -> None:
     ctx.report(1.0)
 
 
+def _skip_speakers(
+    ctx: "RunnerContext", run_id: int, token: credentials.Resolved, exc: Exception
+) -> None:
+    """No weights anywhere: keep the transcript, drop the speakers, say so.
+
+    This is the fifth of eight stages and the words were written by the
+    fourth. Until TASK-089.08 `WeightsUnavailable` left the stage and the
+    runner turned it into a failed job, so somebody who skipped the token -
+    which is allowed, and stays allowed - waited an hour for a recording and
+    was handed nothing. The transcript is what they came for; the speakers
+    are the extra, and a run that keeps the one and names the other is a
+    success with a note.
+
+    There is no setting behind this. A watch folder, a feed, a URL and the
+    recorder all carry their own options and never read `default_diarize`
+    (brief: W6), so an install-time guard could not have covered them; the
+    honest fallback has to live in the stage.
+    """
+    source = credentials.short_source(token.source)
+    applog.log(
+        "diarize.skipped",
+        level="warn",
+        job=ctx.job["id"],
+        run=run_id,
+        reason="weights-unavailable",
+        credential=source or "none",
+        # The first line only - the fixed sentence - and the per-route lines
+        # under it are dropped here rather than carried anywhere else. They
+        # are whatever pyannote and huggingface_hub said, and a download
+        # error quotes a signed CDN URL: applog replaces a query string only
+        # when the value *starts* with the URL (`_URL_WITH_QUERY` is anchored
+        # at ^) and `detail` is not a name it redacts, so a mid-sentence one
+        # would be written whole. What a person gets instead is the note on
+        # the run, and `python -m scribe.doctor`, which asks the Hub with
+        # this token and reports what it answered (ADR-014: the log
+        # observes). `split` and not `splitlines()[0]`: an exception with no
+        # text at all would raise IndexError inside the rescue.
+        detail=str(exc).split("\n", 1)[0],
+    )
+    # The same state `"diarize": false` leaves (:609), so from here on the two
+    # skips are one path. Keeping them identical is the point rather than the
+    # next stage needing it: attribute reads `ctx.state.get("turns")`.
+    ctx.state["turns"] = []
+    _note_run(ctx, run_id, "", skipped_note(source))
+    # Structured keys rather than the sentence: the jobs board truncates every
+    # value at 80 characters (`jobs_ui._short`), and `reason` is what tells
+    # this apart from the user switching "Recognise speakers" off - which
+    # emits `skipped` too.
+    jobs.emit(
+        ctx.conn,
+        ctx.job["id"],
+        "diarize",
+        run_id=run_id,
+        skipped=True,
+        reason="weights-unavailable",
+        token_found=token.found,
+        token_source=source,
+        n_turns=0,
+    )
+    ctx.report(1.0)
+
+
+def skipped_note(source: str) -> str:
+    """Why this run has no speakers, and the three ways to get them.
+
+    Two openings, because the two failures have different first moves. With no
+    token at all, nobody has ever been asked for one. With a token that opens
+    nothing, the token is there and its owner has almost always not accepted
+    the model's conditions - and `source` says which token, by the name of the
+    place it came from and never by its value.
+
+    What this deliberately does not claim is 401 versus 403. pyannote hands
+    back None for a missing, a private and a gated repository alike, so no
+    status code ever reaches this stage; the doctor is where a token is
+    actually asked about. "A token was found and it opened nothing" is the
+    whole of what is known here, and it is said as that.
+
+    The third route is named `MODELS_DIR/pyannote` and not the resolved path.
+    This note is written to `run.params_json`, which the JSON export writes
+    out verbatim (`exports/jsonw._params`), so a shared transcript would
+    otherwise carry the directory layout of the machine that made it. The
+    doctor prints the resolved path, because that is a report about one
+    machine and never leaves it.
+    """
+    if source:
+        opening = (
+            f"Speakers were not worked out: the Hugging Face token from {source} "
+            "opened none of the diarization pipelines - most often the model's "
+            "conditions have not been accepted for it."
+        )
+    else:
+        opening = (
+            "Speakers were not worked out: no Hugging Face token was found, and "
+            "every diarization pipeline this stage can load is gated."
+        )
+    return (
+        f"{opening} The transcript is complete; only the speakers are missing. "
+        "Three ways to get them next time: accept the conditions at "
+        f"https://hf.co/{DEFAULT_PIPELINE} and save the token under Settings > "
+        "Transcription; or set HF_TOKEN in the environment or in .env; or put a "
+        "pipeline directory at MODELS_DIR/pyannote."
+    )
+
+
 def _note_run(ctx: "RunnerContext", run_id: int, source: str, note: str | None) -> None:
     """Merge the diarization source (and any substitution note) into run.params_json."""
     with db.LOCK:
@@ -658,7 +780,12 @@ def _note_run(ctx: "RunnerContext", run_id: int, source: str, note: str | None) 
         if row is None:
             return
         params = json.loads(row["params_json"] or "{}")
-        params["diarization_pipeline"] = source
+        if source:
+            params["diarization_pipeline"] = source
+        else:
+            # Nothing loaded. An empty name would read as "diarized with the
+            # pipeline called ''" everywhere run.params is shown or exported.
+            params.pop("diarization_pipeline", None)
         if note:
             params["diarization_note"] = note
         else:

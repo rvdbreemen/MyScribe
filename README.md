@@ -238,7 +238,7 @@ subtitle and filename options than fit here.
 | The doctor says `gpu-runtime: CPU build` | torch was installed without CUDA | `uv sync` again from the lock; on Windows the cu128 index is in `pyproject.toml`, and plain pip will silently give you a CPU torch |
 | `accel` says `cpu` on a Mac | `mlx-whisper` is missing | It is in the lock for macOS-arm64; re-run `uv sync` |
 | The doctor fails on disk space | It wants headroom for the weights and a job's scratch space | Free space, or point `SCRIBE_DATA_DIR` at a bigger volume |
-| Diarization falls back and says so | No `HF_TOKEN`, or the model conditions were never accepted | Accept them at the model page, then put the token in `.env` |
+| A finished transcript has no speakers and says why | No `HF_TOKEN`, or the conditions were never accepted for the one you have. There is no route that downloads weights without a token: `pyannote/segmentation-3.0`, which the speaker-diarization-3.1 fallback is built from, answered HTTP 401 unauthenticated on 2026-09-22 | Nothing was lost - the job keeps its transcript. Accept the conditions at the model page, then save the token under **Settings → Transcription**, or set `HF_TOKEN` in the environment or `.env`. A pipeline you already have needs no token at all: put it at `MODELS_DIR/pyannote` |
 | The whole test suite stalls on Windows | CPython's socketpair emulation behind TestClient (see `pytest.ini`) | Kill it and run the two halves named in `CLAUDE.md` |
 | A second launch does nothing visible | One instance already answers on the port | It opens the browser at the running one instead of starting a second server |
 | Playback seeks to the wrong place | An old recording has no AAC copy yet | `python -m scribe.proxies` |

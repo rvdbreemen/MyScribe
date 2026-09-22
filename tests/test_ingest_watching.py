@@ -1685,3 +1685,127 @@ def test_a_long_reconcile_writes_its_measurements_before_it_finishes(
 
     assert len(saves) >= 2, f"only {len(saves)} saves during a 12-file pass; nothing checkpointed"
     assert saves[0] > 0, "the first checkpoint wrote an empty cache"
+
+
+# --- a watched folder's job keeps its transcript too (TASK-089.08) ---------------------
+#
+# The path no install-time guard could ever cover. A watch folder carries its
+# own TranscribeOptions and never reads `default_diarize`, so switching that
+# row off at setup would not have saved this job: "Recognise speakers" is on
+# here because the folder says so. The stage itself is what has to keep the
+# transcript when the weights will not load.
+
+
+def a_transcript_instead_of_a_model(tmp_path):
+    """One fake stage in place of probe, prepare, proxy and transcribe.
+
+    Those four want ffprobe, ffmpeg and a Whisper model, and none of them is
+    what this test is about. Everything from `diarize` onwards is the real
+    code walked by the real `runner._run`, so the verdict asserted below is
+    the runner's own and not a stand-in for it.
+    """
+
+    def fake(ctx):
+        rows = [(0, 0.0, 0.5, " Hello"), (1, 0.6, 1.2, " there")]
+        with db.LOCK:
+            cur = ctx.conn.execute(
+                "INSERT INTO run(media_id, model, compute_type, created_at)"
+                " VALUES (?, 'tiny', 'int8', 0)",
+                (ctx.job["media_id"],),
+            )
+            run_id = cur.lastrowid
+            ctx.conn.executemany(
+                "INSERT INTO word(run_id, idx, start, end, text, probability)"
+                " VALUES (?,?,?,?,?,0.9)",
+                [(run_id, idx, start, end, text) for idx, start, end, text in rows],
+            )
+            ctx.conn.commit()
+        ctx.state["run_id"] = run_id
+        ctx.state["wav"] = tmp_path / "prepared.wav"
+        ctx.state["words"] = [
+            {"idx": idx, "start": start, "end": end, "text": text, "probability": 0.9}
+            for idx, start, end, text in rows
+        ]
+
+    return fake
+
+
+def the_stages_after_transcribe(monkeypatch, tmp_path):
+    from scribe import runner
+    from scribe.stages import attribute, diarize, finalize
+
+    monkeypatch.setitem(
+        runner.STAGES,
+        "transcribe",
+        [
+            ("transcribe", a_transcript_instead_of_a_model(tmp_path)),
+            ("diarize", diarize.run),
+            ("attribute", attribute.run),
+            ("finalize", finalize.run),
+        ],
+    )
+    return diarize
+
+
+def a_watched_file_enqueued(conn, watcher, inbox, options):
+    watching.add_folder(conn, inbox, options)
+    path = drop(inbox, "meeting.mp3")
+    watcher.notice(path)
+    watcher.pump(conn, now=1000.0)
+    watcher.pump(conn, now=1010.0)
+    (job,) = job_rows(conn)
+    return job
+
+
+def test_a_watched_folders_job_keeps_its_transcript_when_the_weights_will_not_load(
+    conn, watcher, inbox, tmp_path, monkeypatch
+):
+    from scribe import runner
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    diarize = the_stages_after_transcribe(monkeypatch, tmp_path)
+    job = a_watched_file_enqueued(conn, watcher, inbox, TranscribeOptions(diarize=True))
+    # The folder's own options put it there; nothing read a settings row.
+    assert json.loads(job["params_json"])["diarize"] is True
+    monkeypatch.setattr(
+        diarize,
+        "load_pipeline_with_source",
+        lambda *a, **k: (_ for _ in ()).throw(
+            diarize.WeightsUnavailable("No speaker diarization weights could be loaded.")
+        ),
+    )
+
+    assert runner._run(conn, job["id"]) == 0
+
+    row = conn.execute("SELECT status FROM job WHERE id=?", (job["id"],)).fetchone()
+    assert row["status"] == "done"
+    run = conn.execute(
+        "SELECT * FROM run WHERE media_id=? AND is_current=1", (job["media_id"],)
+    ).fetchone()
+    assert run is not None, "the transcript never became the current one"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM word WHERE run_id=?", (run["id"],)
+    ).fetchone()[0] == 2
+    assert "diarization_note" in json.loads(run["params_json"])
+
+
+def test_a_watched_folders_job_still_fails_on_anything_else(
+    conn, watcher, inbox, tmp_path, monkeypatch
+):
+    """Only `WeightsUnavailable` is a success with a note. Through the runner,
+    because "the job fails" is the runner's verdict and not the stage's."""
+    from scribe import runner
+
+    diarize = the_stages_after_transcribe(monkeypatch, tmp_path)
+    job = a_watched_file_enqueued(conn, watcher, inbox, TranscribeOptions(diarize=True))
+    monkeypatch.setattr(
+        diarize,
+        "diarize",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("the waveform is not 16-bit")),
+    )
+
+    assert runner._run(conn, job["id"]) == 1
+
+    row = conn.execute("SELECT status FROM job WHERE id=?", (job["id"],)).fetchone()
+    assert row["status"] == "failed"

@@ -70,6 +70,7 @@ subprocesses, and they run in the request's threadpool worker.
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import re
@@ -215,6 +216,28 @@ QUICK_EXPORTS: tuple[tuple[str, str], ...] = (
 )
 
 
+def diarization_note(run: dict | None) -> str:
+    """What the diarize stage left on this run about its speakers, or "".
+
+    The stage writes the note when the speakers could not be worked out and
+    removes it when they could (`diarize._note_run`), so the presence of the
+    key is the whole question. It has been written since the assembled 3.1
+    fallback shipped and was read by nothing until TASK-089.08 - "says so on
+    the run" said it only to the database.
+
+    A run row whose `params_json` is not JSON is a run with no note, not a
+    500: this is a line beside a transcript, and the transcript is the thing
+    the page exists to show.
+    """
+    if run is None:
+        return ""
+    try:
+        stored = json.loads(run["params_json"] or "{}")
+    except (TypeError, ValueError):
+        return ""
+    return str(stored.get("diarization_note") or "")
+
+
 def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
     """Everything transcript.html and _transcript_panel.html render from.
 
@@ -256,6 +279,7 @@ def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
         ),
         "clean_reading": reading,
         "cleanup_status": cleanup,
+        "diarization_note": diarization_note(run),
         "speakers": speakers,
         "colors": {s["cluster"]: s["color"] for s in speakers if s["color"]},
         "new_speaker": NEW_SPEAKER,

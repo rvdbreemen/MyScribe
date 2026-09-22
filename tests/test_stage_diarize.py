@@ -36,7 +36,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scribe import db, jobs, media, paths, runner
+from scribe import applog, db, jobs, media, paths, runner
 from scribe.stages import attribute, diarize
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1275,3 +1275,210 @@ def test_the_stage_records_the_default_pipeline_without_a_note(conn, data_dir, m
     assert "diarization_note" not in params
     event = [e for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "diarize"][-1]
     assert event["payload"]["fallback"] is False
+
+
+# --- weights that will not load cost the speakers, not the transcript (TASK-089.08) ---
+#
+# Measured 2026-09-22, unauthenticated HEAD on
+# https://huggingface.co/pyannote/segmentation-3.0/resolve/main/config.yaml:
+# HTTP 401. So the assembled fallback is gated too, and a machine with no
+# token has no route at all. Until this task WeightsUnavailable left the fifth
+# of eight stages uncaught: an hour of audio ended as a failed job with no
+# transcript, which is the one thing the user actually waited for.
+
+
+def no_weights(monkeypatch):
+    """Every route refuses, the way a tokenless machine's does."""
+
+    def refuse(*args, **kwargs):
+        raise diarize.WeightsUnavailable("No speaker diarization weights could be loaded.")
+
+    monkeypatch.setattr(diarize, "load_pipeline_with_source", refuse)
+
+
+def run_params(conn, run_id):
+    row = conn.execute("SELECT params_json FROM run WHERE id=?", (run_id,)).fetchone()
+    return json.loads(row["params_json"] or "{}")
+
+
+def diarize_events(conn, job_id):
+    return [e for e in jobs.events_after(conn, job_id, 0) if e["kind"] == "diarize"]
+
+
+def test_weights_that_will_not_load_keep_the_transcript_and_skip_the_speakers(
+    conn, data_dir, monkeypatch
+):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    progress: list[float] = []
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch, progress=progress)
+    no_weights(monkeypatch)
+
+    diarize.run(ctx)
+
+    # attribute reads this next; [] is the same state "diarize": false leaves.
+    assert ctx.state["turns"] == []
+    assert progress[-1] == 1.0
+
+
+def test_a_run_without_speakers_says_so_in_words_and_names_the_three_routes(
+    conn, data_dir, monkeypatch
+):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch)
+    no_weights(monkeypatch)
+
+    diarize.run(ctx)
+
+    note = run_params(conn, run_id)["diarization_note"]
+    assert "Settings" in note
+    assert "HF_TOKEN" in note
+    assert "MODELS_DIR/pyannote" in note
+    # By name and not by resolved path: this note goes into run.params_json
+    # and the JSON export writes that out verbatim (exports/jsonw._params),
+    # so a shared transcript would otherwise carry the directory layout of
+    # the machine that made it.
+    assert str(diarize.local_weights_dir()) not in note
+    # Nothing loaded, so there is no pipeline to name: an empty name would
+    # read as "diarized with the pipeline called ''" in the JSON export.
+    assert "diarization_pipeline" not in run_params(conn, run_id)
+
+
+def test_a_skipped_diarization_is_announced_rather_than_passed_over(
+    conn, data_dir, monkeypatch
+):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch)
+    no_weights(monkeypatch)
+
+    diarize.run(ctx)
+
+    (event,) = diarize_events(conn, job_id)
+    # Structured keys, not prose: the jobs board truncates every value at 80
+    # characters (jobs_ui._short), and `reason` is what tells this apart from
+    # the user switching "Recognise speakers" off - which emits skipped too.
+    assert event["payload"]["skipped"] is True
+    assert event["payload"]["reason"] == "weights-unavailable"
+    assert event["payload"]["token_found"] is False
+    assert event["payload"]["n_turns"] == 0
+
+
+def test_the_note_says_no_token_was_found_when_there_is_none(conn, data_dir, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch)
+    no_weights(monkeypatch)
+
+    diarize.run(ctx)
+
+    note = run_params(conn, run_id)["diarization_note"]
+    assert "no Hugging Face token was found" in note
+
+
+def test_the_note_names_where_a_token_that_did_not_open_the_model_came_from(
+    conn, data_dir, monkeypatch
+):
+    # The 401-versus-403 distinction as far as this stage can honestly know
+    # it: pyannote hands back None for missing, private and gated alike, so
+    # the stage never sees a status code. What it does know is whether a
+    # token resolved at all, and from where.
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    with db.LOCK:
+        conn.execute("INSERT INTO setting(key, value) VALUES ('hf_token', 'hf_stored')")
+        conn.commit()
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch)
+    no_weights(monkeypatch)
+
+    diarize.run(ctx)
+
+    note = run_params(conn, run_id)["diarization_note"]
+    assert "no Hugging Face token was found" not in note
+    assert "token from settings" in note  # where it came from, never what it is
+    assert "hf_stored" not in note
+    (event,) = diarize_events(conn, job_id)
+    assert event["payload"]["token_found"] is True
+    # The jobs board reads this line: "a token was found, here" is a different
+    # job to look at from "no token anywhere", and the place is the only part
+    # of a token that may be shown.
+    assert event["payload"]["token_source"] == "settings"
+
+
+def test_only_the_first_line_of_the_failure_reaches_the_application_log(
+    conn, data_dir, monkeypatch
+):
+    """The per-route lines stay out of app.log, on purpose.
+
+    Under the fixed first sentence `_no_weights_hint` lists what every route
+    said, which is huggingface_hub's text - and a download error quotes a
+    signed CDN URL. applog replaces a query string only when the value starts
+    with the URL, and `detail` is not a name it redacts, so a mid-sentence one
+    would be written whole.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch)
+    monkeypatch.setattr(
+        diarize,
+        "load_pipeline_with_source",
+        lambda *a, **k: (_ for _ in ()).throw(
+            diarize.WeightsUnavailable(
+                "No speaker diarization weights could be loaded.\n"
+                "Tried:\n  - https://cdn-lfs.hf.co/x/model.bin?Expires=1&Signature=s3cr3t"
+            )
+        ),
+    )
+
+    diarize.run(ctx)
+
+    lines, _ = applog.tail(0)
+    (skipped,) = [line for line in lines if line["event"] == "diarize.skipped"]
+    assert skipped["detail"] == "No speaker diarization weights could be loaded."
+    assert "Signature" not in json.dumps(skipped)
+
+
+def test_a_failure_with_no_message_at_all_is_still_a_kept_transcript(
+    conn, data_dir, monkeypatch
+):
+    """The rescue may not raise. `"".splitlines()` is `[]`, and an IndexError
+    here would turn this recovery back into the failed job it exists to
+    prevent - no route raises an empty one today, which is exactly why
+    nothing would catch it."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch)
+    monkeypatch.setattr(
+        diarize,
+        "load_pipeline_with_source",
+        lambda *a, **k: (_ for _ in ()).throw(diarize.WeightsUnavailable("")),
+    )
+
+    diarize.run(ctx)
+
+    assert ctx.state["turns"] == []
+    assert "diarization_note" in run_params(conn, run_id)
+
+
+def test_any_other_failure_in_the_stage_still_fails_the_job(conn, data_dir, monkeypatch):
+    # Only WeightsUnavailable is a success with a note. A broken wav, a card
+    # that ran out of memory, a bug in this module: those are failures, and a
+    # job that reported "done" for one would be lying about the transcript.
+    job_id, run_id = a_job_with_a_run(conn, params={"device": "cpu"})
+    ctx, _, _ = stage_ctx(conn, job_id, run_id, monkeypatch)
+    monkeypatch.setattr(
+        diarize,
+        "diarize",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("the waveform is not 16-bit")),
+    )
+
+    with pytest.raises(ValueError, match="16-bit"):
+        diarize.run(ctx)

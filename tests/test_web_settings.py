@@ -873,6 +873,15 @@ def test_clearing_falls_back_to_the_environment(client, conn, monkeypatch):
     assert "<code>HF_TOKEN</code>" in client.get("/settings").text
 
 
+def test_the_token_field_is_what_a_link_can_land_on(client):
+    """A media page whose speakers were skipped links straight here
+    (TASK-089.08). `#hf-hint` is the paragraph above the field; a reader sent
+    to it lands one element short of the thing they came to fill in."""
+    page = client.get("/settings?section=defaults").text
+
+    assert 'id="hf-token"' in page
+
+
 def test_saving_nothing_is_refused_rather_than_stored_empty(client):
     """An empty string is a token as far as Hugging Face is concerned - it
     answers 401 rather than serving the public copy (`diarize.hf_token`)."""

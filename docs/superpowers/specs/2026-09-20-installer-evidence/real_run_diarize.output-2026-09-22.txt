@@ -1,0 +1,40 @@
+A real transcribe job that asks for speakers, on a machine whose token opens
+nothing: does it keep its transcript?
+
+TASK-089.08 criterion 1's real-run half, run by the orchestrator on
+2026-09-22 with real_run_diarize.py beside this file. Two trees, identical
+but for scribe/stages/diarize.py: "before" carries the file as it was at
+HEAD (commit aa7e44f), "after" the change. Same clip, same scratch data
+directory, same empty pyannote cache, same deliberately invalid token.
+
+Everything is real - ffprobe, ffmpeg, faster-whisper on the tiny model, and
+runner.main walking all eight stages. Only the token is arranged, and only so
+that the weights genuinely cannot be fetched. An invalid token was chosen
+over no token at all because this machine keeps a real one in the HKLM
+registry, which no environment fence reaches; an invalid one forces a real
+401 from Hugging Face, which is the harder path.
+
+    before (HEAD)          after (working tree)
+    runner exit 1          runner exit 0
+    job status failed      job status done
+    76 words in the run    76 words in the run
+    no note                the note below
+    44.0 s                 27.0 s
+
+    Speakers were not worked out: the Hugging Face token from HF_TOKEN opened
+    none of the diarization pipelines - most often the model's conditions have
+    not been accepted for it. The transcript is complete; only the speakers
+    [...]
+
+pyannote's own refusal, printed by its loader in both runs:
+
+    Could not download Pipeline from pyannote/speaker-diarization-community-1.
+    It might be because the repository is private or gated:
+    * visit https://hf.co/pyannote/speaker-diarization-community-1 to accept
+      user conditions
+    Could not download Model from pyannote/segmentation-3.0.
+
+What the mocked stage tests could not have shown: in the "before" run the 76
+words were already in the database when diarize failed. The data was there
+and the job was failed, which is what a person sees. The difference this
+change makes is not whether the words exist but whether the job admits it.
