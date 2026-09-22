@@ -461,6 +461,259 @@ def test_an_unanswered_question_is_not_passed_at_all(tmp_path):
     assert command == [str(layout.env_python), "-m", "scribe.setup"]
 
 
+# --- the first run on a machine with no environment (TASK-089.01) -----------------
+
+
+def _drive_first_run(layout, tmp_path, monkeypatch, *, answers, setup_command=None,
+                     force_setup=False, at_login=False):
+    """Run `first_run` on a layout with no environment, recording every effect.
+
+    Three things are faked and the rest is the real path. The uv is the
+    file's own `_fake_uv`, which prints and exits without building an
+    environment; the app process is a stand-in, because nothing here can
+    serve; and `scribe.setup` is a command the caller chooses, because the
+    real one names the environment python the fake uv never created - it
+    would raise FileNotFoundError after the fix too, for the wrong reason.
+    What is real: prepare_home, install_tools, sync, run_setup and
+    run_streaming, in the order `first_run` puts them.
+
+    No Tk anywhere, which is what makes the sequence testable at all.
+    """
+    order: list[str] = []
+    reports: list[tuple[str, str]] = []
+
+    def _record(name, real):
+        def wrapper(*args, **kwargs):
+            order.append(name)
+            return real(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(launcher, "uv_command", lambda _layout: _fake_uv(tmp_path, 0))
+    for name in ("prepare_home", "install_tools", "sync"):
+        monkeypatch.setattr(launcher, name, _record(name, getattr(launcher, name)))
+    # Recorded on `run_setup` and not on the faked command, so that a run shows
+    # up even when no command was given: "nothing was applied" is then an
+    # absence the test can see rather than one it has to infer.
+    monkeypatch.setattr(launcher, "run_setup", _record("scribe.setup", launcher.run_setup))
+    if setup_command is not None:
+        monkeypatch.setattr(launcher, "setup_command", lambda _layout, _answers: setup_command)
+
+    class _FakeApp:
+        def __init__(self, _layout, _port, _base=None):
+            self.proc = object()
+
+        def start(self):
+            order.append("app start")
+
+        def wait_ready(self, timeout=None):
+            return True
+
+        def alive(self):
+            return True
+
+        def stop(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(launcher, "AppProcess", _FakeApp)
+
+    asked: list[int] = []
+
+    def ask():
+        asked.append(1)
+        return answers
+
+    launch = launcher.Launch(layout, _free_port(), False, lambda s, t: reports.append((s, t)))
+    started = launcher.first_run(launch, ask, launch.report, force_setup, at_login)
+    return order, reports, asked, started
+
+
+def test_the_first_run_syncs_before_it_applies_the_answers(layout, tmp_path, monkeypatch):
+    """The bug every release user walked into: the dialog came first and
+    `scribe.setup` was run from an environment the sync had not made yet, so
+    the Popen died on the worker thread with FileNotFoundError and the app was
+    never started - 'Saving your answers...' for ever.
+
+    The answers can only be applied by a python the sync creates, so the
+    order is the fix (AC #1, #3).
+    """
+    order, reports, asked, started = _drive_first_run(
+        layout, tmp_path, monkeypatch,
+        answers={"hf_token": "", "provider": "ollama", "tier": "turbo", "fetch_models": False},
+        setup_command=[sys.executable, "-c", "print('setup: answers saved')"],
+    )
+
+    assert order == ["prepare_home", "install_tools", "sync", "scribe.setup", "app start"]
+    assert asked == [1]
+    assert started is True
+    assert ("busy", "setup: answers saved") in reports  # the command really ran
+    assert not [state for state, _ in reports if state == "error"]
+
+
+def test_a_setup_that_exits_non_zero_is_reported_with_its_code_and_the_app_still_starts(
+        layout, tmp_path, monkeypatch):
+    """A failed setup is a bad first impression; a silent one is worse, and a
+    windowed build has no stderr to fall back on. The answers are not worth
+    the app: it starts anyway, and the questions are also in Settings (AC #4)."""
+    order, reports, _asked, started = _drive_first_run(
+        layout, tmp_path, monkeypatch,
+        answers={"provider": "ollama"},
+        setup_command=[sys.executable, "-c", "raise SystemExit(3)"],
+    )
+
+    errors = [text for state, text in reports if state == "error"]
+    assert len(errors) == 1 and "3" in errors[0]
+    assert order[-1] == "app start"
+    assert started is True
+
+
+def test_a_setup_that_cannot_be_started_is_reported_not_swallowed(layout, tmp_path, monkeypatch):
+    """The original failure, now visible: the command names a python that is
+    not there, the Popen raises, and the person is told instead of watching a
+    window that stopped (AC #4)."""
+    order, reports, _asked, started = _drive_first_run(
+        layout, tmp_path, monkeypatch,
+        answers={"provider": "ollama"},
+        setup_command=[str(tmp_path / "no-such-python"), "-m", "scribe.setup"],
+    )
+
+    errors = [text for state, text in reports if state == "error"]
+    assert len(errors) == 1 and "answers" in errors[0]
+    assert order[-1] == "app start"
+    assert started is True
+
+
+def test_a_setup_that_fails_in_a_way_nobody_expected_is_reported_too(layout, tmp_path, monkeypatch):
+    """The promise is 'never raises', not 'catches the Popen's OSError'.
+
+    A malformed command raises ValueError and not OSError, and on the worker
+    thread of a windowed build anything that escapes is the window that
+    stopped with nothing written anywhere - the failure this task exists to
+    end (AC #4).
+    """
+    order, reports, _asked, started = _drive_first_run(
+        layout, tmp_path, monkeypatch,
+        answers={"provider": "ollama"},
+        setup_command=[sys.executable, "-c", "print('never runs')\x00"],
+    )
+
+    errors = [text for state, text in reports if state == "error"]
+    assert len(errors) == 1 and "answers" in errors[0]
+    assert order[-1] == "app start"
+    assert started is True
+
+
+def test_skipping_the_questions_starts_the_app_and_runs_no_setup(layout, tmp_path, monkeypatch):
+    """'Skip for now' is 'ask me next time', not 'never': no stamp is written
+    here, nothing is applied, and the app starts."""
+    order, reports, asked, started = _drive_first_run(
+        layout, tmp_path, monkeypatch, answers=None, setup_command=None,
+    )
+
+    assert order == ["prepare_home", "install_tools", "sync", "app start"]
+    assert "scribe.setup" not in order  # nothing was applied, and not by accident
+    assert asked == [1]
+    assert started is True
+    assert not [state for state, _ in reports if state == "error"]
+
+
+def test_a_myscribe_that_already_serves_is_not_asked_the_questions_again(layout, tmp_path, monkeypatch):
+    """A deliberate change: the sitting now comes after the sync, and the
+    already-serving branch returns before either. Nothing is prepared, nothing
+    is asked - the same answer `Launch.run` has always given that case."""
+    port = _free_port()
+    server = _serve(port, {"ok": True})
+    asked: list[int] = []
+    reports: list[tuple[str, str]] = []
+    try:
+        launch = launcher.Launch(layout, port, False, lambda s, t: reports.append((s, t)))
+        started = launcher.first_run(launch, lambda: asked.append(1), launch.report)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert started is True
+    assert asked == []
+    assert launch.app is None
+    assert not layout.home.exists()
+    assert reports[-1][0] == "done"
+
+
+def test_setup_against_a_myscribe_that_already_serves_is_said_out_loud(layout):
+    """`--setup` is not dropped in silence when MyScribe is already running.
+
+    Before the sequence was split, the dialog came first and the answers were
+    applied beside the serving app. The sitting now sits behind the sync and
+    the serving branch returns before it, so the flag would go nowhere, and a
+    flag somebody typed that does nothing is the silence this task exists to
+    end. Asking there anyway is not a two-line change: `prepare` has already
+    reported `done`, and `run_window`'s pump destroys the window three seconds
+    after that state, so the dialog would be pulled away under the person's
+    hands. 'Quit it first' is the answer, and it is said.
+    """
+    port = _free_port()
+    server = _serve(port, {"ok": True})
+    asked: list[int] = []
+    reports: list[tuple[str, str]] = []
+    try:
+        launch = launcher.Launch(layout, port, False, lambda s, t: reports.append((s, t)))
+        started = launcher.first_run(launch, lambda: asked.append(1), launch.report, force_setup=True)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert started is True
+    assert asked == []
+    assert [text for _state, text in reports if "--setup" in text]
+
+
+def test_a_start_at_login_asks_nothing_all_the_way_through_the_sequence(layout, tmp_path, monkeypatch):
+    """`--at-login` has to survive the whole way down to the gate.
+
+    `wants_setup` is pinned on its own and `main` -> `run_window` is pinned on
+    its own; this is the hop between them. Dropping the two arguments here
+    leaves both of those tests green and opens the modal sitting at login
+    again, which is what TASK-089.21 landed to prevent.
+    """
+    order, reports, asked, started = _drive_first_run(
+        layout, tmp_path, monkeypatch, answers={"provider": "ollama"}, at_login=True,
+    )
+
+    assert asked == []
+    assert order == ["prepare_home", "install_tools", "sync", "app start"]
+    assert started is True
+    assert not [state for state, _ in reports if state == "error"]
+
+
+def test_setup_reopens_the_sitting_although_the_stamp_is_there(layout, tmp_path, monkeypatch):
+    """The other half of the same hop: `--setup` wins over an answered
+    sitting, because somebody typed it."""
+    stamp = launcher.setup_stamp(layout)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("{}", encoding="utf-8")
+
+    order, _reports, asked, started = _drive_first_run(
+        layout, tmp_path, monkeypatch,
+        answers={"provider": "ollama"},
+        setup_command=[sys.executable, "-c", "print('setup: answers saved')"],
+        force_setup=True,
+    )
+
+    assert asked == [1]
+    assert order == ["prepare_home", "install_tools", "sync", "scribe.setup", "app start"]
+    assert started is True
+
+
+def test_the_sequence_is_free_of_tk(layout):
+    """ADR-011 and ADR-015: the launcher renders and hands over, and the
+    sequencing decides nothing a front-end could. The real proof is that the
+    tests above drive `first_run` end to end with no Tk root anywhere; this
+    only guards the source against a `import tkinter` creeping back in."""
+    import inspect
+
+    assert "tkinter" not in inspect.getsource(launcher.first_run)
+
+
 # --- the smoke test has to find the executable (release run 35435965404) -----------
 
 

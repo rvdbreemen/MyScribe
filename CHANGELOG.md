@@ -2,6 +2,14 @@
 
 ### Changed
 
+- A first run's questions now come after the environment is installed, not
+  before it, so the first minutes look different: the download runs first and
+  the dialog opens when it is done. The answers can only be applied by a python
+  the sync makes, which is why they waited. Starting again with `--setup` while
+  MyScribe is already running no longer opens the dialog beside a window that
+  closes three seconds later - it says to quit first and start again
+  (TASK-089.01).
+
 - ADR-015 and ADR-017 are Accepted, so every decision behind the installer is
   settled: setup is one engine behind a JSON contract that the launcher, a
   clone's installer and the console only render, and third-party software is
@@ -33,6 +41,18 @@
   keep `openrouter` in their parameters and are not recalled.
 
 ### Fixed
+
+- A first "Save and start" never started anything. On a machine with no
+  environment the launcher asked the four questions, then ran
+  `scribe.setup` from an environment that did not exist yet: the Popen died on
+  a worker thread with `FileNotFoundError [WinError 2]`, `launch.run` was never
+  reached, and the window sat on "Saving your answers..." for ever. Only "Skip
+  for now" produced an app, and because a skip writes no stamp the dialog came
+  back on the next start - where Save then worked. So the happy path only
+  worked on the second attempt, after a skip, and every release user walked it.
+  The sequence is now prepare, install, sync, ask, apply, start, in one plain
+  function the window only calls, and a setup that fails is reported with its
+  exit code while the app starts anyway (TASK-089.01).
 
 - Behind an `HTTP_PROXY` variable, MyScribe cannot see what runs on this
   machine. Measured on 2026-09-21: `OllamaProvider.available()` spends its

@@ -545,15 +545,25 @@ class Launch:
         self.open_browser = open_browser
         self.report = report
         self.app: AppProcess | None = None
+        self.serving = False
 
     def url(self) -> str:
         return f"http://{HOST}:{self.port}/"
 
-    def run(self) -> bool:
+    def prepare(self) -> bool:
+        """Everything that has to exist before the app can be started; False
+        means there is nothing to start.
+
+        Split from ``run`` so the first-run sitting can sit between the sync
+        and the start: the answers are applied by a python that only exists
+        once uv has made it (TASK-089.01). ``serving`` says another instance
+        already answers, which is a good end and not a start.
+        """
         if running_instance(self.port):
             self.report("done", f"MyScribe is already running at {self.url()}")
             if self.open_browser:
                 webbrowser.open(self.url())
+            self.serving = True
             return True
         if port_taken(self.port):
             self.report("error", f"Port {self.port} is used by another program; MyScribe cannot start.")
@@ -568,6 +578,9 @@ class Launch:
                 self.report("error", "Installing failed; the lines above say why. Check the "
                                      "internet connection and start MyScribe again.")
                 return False
+        return True
+
+    def start_app(self) -> bool:
         self.report("status", "Starting MyScribe...")
         self.app = AppProcess(self.layout, self.port)
         self.app.start()
@@ -579,6 +592,13 @@ class Launch:
         if self.open_browser:
             webbrowser.open(self.url())
         return True
+
+    def run(self) -> bool:
+        if not self.prepare():
+            return False
+        if self.serving:
+            return True
+        return self.start_app()
 
     def stop(self) -> None:
         if self.app is not None:
@@ -603,7 +623,9 @@ def wants_setup(layout: Layout, force: bool = False, at_login: bool = False) -> 
     At login nobody is at the screen, and a modal dialog that holds the watch
     folders up is the opposite of what the login entry exists for. A sitting
     that is due is not cancelled: it waits for the next start somebody makes
-    by hand. `--setup` still wins, because somebody typed it.
+    by hand. `--setup` still wins, because somebody typed it - except against
+    a MyScribe that already serves, which `first_run` answers in words
+    instead of with the sitting.
     """
     if force:
         return True
@@ -632,16 +654,78 @@ def setup_command(layout: Layout, answers: dict) -> list[str]:
     return command
 
 
-def run_setup(layout: Layout, answers: dict, on_line: Callable[[str], None]) -> bool:
+def run_setup(layout: Layout, answers: dict, on_line: Callable[[str], None]) -> int:
     """Apply the answers, streaming what happens - a 1.6 GB download has to
-    look like something happening rather than a window that stopped."""
-    code = run_streaming(
+    look like something happening rather than a window that stopped.
+
+    Returns the exit code, because the caller says it out loud: a setup that
+    failed used to be a `False` nobody looked at (TASK-089.01, AC #4).
+    """
+    return run_streaming(
         setup_command(layout, answers),
         env=app_environment(layout),
         cwd=layout.app_dir,
         on_line=on_line,
     )
-    return code == 0
+
+
+def first_run(launch: Launch, ask: Callable[[], dict | None], report: Callable[[str, str], None],
+              force_setup: bool = False, at_login: bool = False) -> bool:
+    """The whole sequence: prepare, sync, ask, apply, start.
+
+    The order is the point. `scribe.setup` runs from the environment, and the
+    environment is what the sync makes, so the sitting cannot come before it -
+    asking first meant the Popen died on the worker thread with
+    FileNotFoundError and the app was never started (TASK-089.01).
+
+    Plain and Tk-free on purpose: `ask` and `report` are the only things that
+    render, and nothing here decides an answer or writes one (ADR-011 keeps
+    the launcher stdlib-only, ADR-015 keeps every front-end a renderer).
+
+    `--setup` against a MyScribe that already serves is answered in words and
+    not with the sitting. That is a deliberate change from the order this file
+    had until TASK-089.01: the sitting now comes after the sync, and the
+    serving branch comes before it, so opening it there would mean a dialog
+    beside a window `run_window`'s pump destroys three seconds after the
+    `done` state. Quit first, then `--setup`.
+    """
+    if not launch.prepare():
+        return False
+    if launch.serving:  # another instance answers; nothing to set up or start
+        if force_setup:
+            # Short on purpose: the window closes three seconds after `done`.
+            report("status", "MyScribe is already running; quit it first and start again "
+                             "with --setup to answer the questions.")
+        return True
+    if wants_setup(launch.layout, force=force_setup, at_login=at_login):
+        answers = ask()
+        if answers:
+            report("status", "Saving your answers...")
+            _apply_setup(launch.layout, answers, report)
+    return launch.start_app()
+
+
+def _apply_setup(layout: Layout, answers: dict, report: Callable[[str, str], None]) -> None:
+    """Hand the answers to the app, and say so when that fails.
+
+    Never raises and never falls silent: the app is worth more than the
+    answers, which can also be given in Settings, and a windowed build has no
+    stderr for the person to look at (AC #4).
+
+    Every exception, and not only the `OSError` the Popen is known for: this
+    runs on a worker thread of a windowed build, where anything that escapes
+    is a window that stopped with nothing written anywhere. `KeyboardInterrupt`
+    and `SystemExit` are not exceptions and still travel.
+    """
+    try:
+        code = run_setup(layout, answers, lambda line: report("busy", line))
+    except Exception as error:
+        report("error", f"Saving your answers failed: {error}. MyScribe starts anyway; "
+                        "the questions are also in Settings.")
+        return
+    if code != 0:
+        report("error", f"Saving your answers failed with exit code {code}; the lines above say "
+                        "why. MyScribe starts anyway; the questions are also in Settings.")
 
 
 def run_headless(launch: Launch) -> int:
@@ -796,24 +880,55 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
             status.set(f"MyScribe stopped; see {layout.logs_dir / 'app.log'}")
         root.after(200, pump)
 
+    def ask() -> dict | None:
+        """Open the dialog on the Tk thread and wait for it, from the worker.
+
+        Tk is not thread-safe, and `first_run` runs on a worker so the sync
+        does not freeze the window; so the worker asks for the dialog and
+        blocks on the queue until it closes.
+
+        There is no timeout on that wait, because a person may sit at the
+        questions for minutes. What there is instead is an answer on every
+        path: a Quit between the schedule and the dispatch leaves the worker
+        waiting, and that costs nothing - it is a daemon thread and the
+        process ends with the mainloop.
+        """
+        answered: "queue.Queue[dict | None]" = queue.Queue()
+
+        def sit() -> None:
+            """On the Tk thread, and it always answers. An exception raised in
+            here would otherwise go to Tk's own handler - stderr, which a
+            windowed build has not got - and the worker would wait for ever
+            with the app never started."""
+            try:
+                result = ask_setup(root, layout)
+            except Exception:
+                result = None
+            answered.put(result)
+
+        try:
+            root.after(0, sit)
+        except (tk.TclError, RuntimeError):
+            # Quit during the sync: no window to ask in. Tk says so as a
+            # TclError from a destroyed widget, and _tkinter as a RuntimeError
+            # when the mainloop this thread would hand the call to is gone.
+            return None
+        return answered.get()
+
     def begin() -> None:
-        """Ask first, then launch. The questions come before the app starts so
-        a token given here is in `.env` before anything reads it - the runner
-        children inherit the environment the app was started with."""
-        if wants_setup(layout, force=force_setup, at_login=at_login):
-            answers = ask_setup(root, layout)
-            if answers:
-                status.set("Saving your answers...")
-                threading.Thread(
-                    target=lambda: (
-                        run_setup(layout, answers, lambda line: events.put(("busy", line))),
-                        launch.run(),
-                    ),
-                    name="myscribe-setup",
-                    daemon=True,
-                ).start()
-                return
-        threading.Thread(target=launch.run, name="myscribe-launch", daemon=True).start()
+        """One worker thread for the whole sequence.
+
+        The questions used to come first, so a token given here was in `.env`
+        before anything read it. They now come after the sync, because the
+        python that applies them is what the sync makes - and the runner
+        children still inherit the environment the app was started with, which
+        is started last either way (TASK-089.01).
+        """
+        threading.Thread(
+            target=lambda: first_run(launch, ask, launch.report, force_setup, at_login),
+            name="myscribe-launch",
+            daemon=True,
+        ).start()
 
     root.after(50, begin)
     root.after(200, pump)
