@@ -41,6 +41,7 @@ import argparse
 import contextlib
 import getpass
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -55,24 +56,50 @@ from scribe.stages import diarize
 from scribe.web import ai_ui, transcribe_dialog
 
 CONTRACT = 2
-"""The version of the document `--plan` prints and `--apply-stdin` reads.
+"""The version of the document `--plan` prints and `--apply-stdin` reads, and
+the number the stamp is measured against. Raise it whenever a question is added
+to `_questions`.
 
 Launcher and app ship in one payload (ADR-015), so a front-end that disagrees
-is a mismatched install rather than an old client, and the number is here as a
-constant rather than in a file of its own: where the payload keeps it is
-TASK-089.11's to settle with the stamp.
+is a mismatched install rather than an old client. It stays a constant in this
+file rather than the `scribe/setup_contract.json` the spec proposes (section 2,
+"a constant read as text would do as well"), and the launcher reads this line
+as text the way it reads `scribe.__version__` (`app_version`): adding a
+question means editing this file, so the number that has to rise lives beside
+the change that forces it. A file of its own puts the bump away from its cause,
+which is how two numbers drift apart.
 
 A document that claims another number is refused with the usage code and
 nothing of it is applied; one that claims no number at all is taken at the word
-of the engine it is talking to. The *stamp*'s version gate - a start that
-reopens a sitting when the stamp is older than the payload - is TASK-089.11's.
+of the engine it is talking to. A stamp that claims a lower one reopens the
+sitting for the questions this version added (`setup_needed` in the launcher).
 """
 
 STAMP = "setup.json"
 """Written into the data directory when a sitting ends, so the launcher asks
-once rather than every start. It lists what was answered and what was skipped,
-which is also what makes `--status` able to say what was chosen and when. Its
-format, its gate and its migration are TASK-089.11's."""
+once rather than every start.
+
+It holds the contract, when the sitting ended, and one state per question id -
+never a chosen value: `states()` reads it, `_write_stamp` writes it, and the
+launcher's gate parses those three keys with the standard library and nothing
+else."""
+
+STATES = ("not_needed", "skipped", "answered", "open")
+"""What a sitting can record about one question, weakest first.
+
+Weakest first is the precedence `_states` applies by writing them in this
+order, and the order matters in two real cases. A token that was typed, saved
+and then found by the resolver is `answered` and not `not_needed` - somebody
+was asked. One the service refused is `open` although it was typed: nothing was
+written, so the question is not settled.
+
+`not_needed` is the weakest because it is the only one nobody did - it says the
+answer was already on this machine. So it never counts as a question that was
+put, which is what keeps `--plan --unasked-only` honest."""
+
+PUT = ("answered", "skipped")
+"""The two states that mean the question was put to somebody. A start asks what
+is open and was never put; `--setup` asks everything that is open."""
 
 TIERS = ("turbo", "max")
 
@@ -188,6 +215,50 @@ def stamped() -> dict:
     except (OSError, ValueError):
         return {}
     return found if isinstance(found, dict) else {}
+
+
+def states() -> dict[str, str]:
+    """What the last sitting did with each question, whatever shape it left.
+
+    One shape is written and three are read. This writer's own, which carries
+    `ended`; the one 0.5.x wrote, which `_before_the_contract` maps; and
+    anything else - unreadable, not a document, or a contract with no `ended` -
+    which is nobody's stamp and states nothing. The launcher's gate reads the
+    same file and answers the last case by showing the sitting.
+    """
+    found = stamped()
+    questions = found.get("questions")
+    if found.get("ended") is not None and isinstance(questions, dict):
+        return {str(asked): str(state) for asked, state in questions.items()}
+    if "contract" in found:
+        return {}
+    return _before_the_contract(found)
+
+
+def _before_the_contract(found: dict) -> dict[str, str]:
+    """A stamp from before there were question ids in one, read as contract 1.
+
+    Four fields were written and each stands for the question that filled it: a
+    non-empty `provider` for question 5, a non-empty `tier` for 10, `hf_token`
+    true for 4, a non-empty `fetched` for 11 (spec section 2). Everything else
+    was never asked, which is what gets somebody who finished the old setup the
+    questions this version added and nothing they already answered.
+
+    A stamp the bare-run bug left holds four empty values and so counts nothing
+    as answered - which is the right answer for it: nobody was asked anything.
+    Counting nothing is not the same as asking everything again: `default_tier`
+    is a first-sitting question and `_questions` offers it only while no stamp
+    exists at all, so it does not come back through any door once one does. The
+    tier stays reachable from Settings and the transcribe dialog, which is why
+    `done()` was left as it is (TASK-089.11, criterion 3).
+    """
+    filled = {
+        "llm_provider": bool(str(found.get("provider") or "").strip()),
+        "default_tier": bool(str(found.get("tier") or "").strip()),
+        "hf_token": found.get("hf_token") is True,
+        "fetch_models": bool(found.get("fetched")),
+    }
+    return {question: "answered" for question, was_answered in filled.items() if was_answered}
 
 
 def needed(conn: sqlite3.Connection | None = None) -> dict:
@@ -420,6 +491,22 @@ def downloads() -> dict:
     }
 
 
+def question_of(credential: str) -> str:
+    """The id of the question that asks for one credential.
+
+    The Hugging Face token is asked as `hf_token` and every LLM key as
+    `llm_key_<provider>`. Both spellings are built here rather than written out
+    at each end, so that the stamp cannot invent a spelling the plan does not
+    use. It says nothing about which ids reach the stamp: `_states` records
+    `not_needed` for every credential this machine has, and `_questions` asks
+    for a key only while its provider is in play, so a machine with an OpenAI
+    key and Ollama chosen stamps an `llm_key_openai` nobody was asked. That is
+    informational and inert - `not_needed` is not in `PUT`, so it suppresses no
+    question, and the gate reads `contract` and `ended` only.
+    """
+    return "hf_token" if credential == credentials.HUGGINGFACE.name else f"llm_key_{credential}"
+
+
 def _questions(conn: sqlite3.Connection | None, state: ollama_setup.State, offer: dict) -> list[Question]:
     """The questions that are open on this machine, in the order they are asked.
 
@@ -440,7 +527,7 @@ def _questions(conn: sqlite3.Connection | None, state: ollama_setup.State, offer
     if not credentials.resolve(conn, credentials.HUGGINGFACE).found and not has_pipeline:
         open_questions.append(
             Question(
-                id="hf_token",
+                id=question_of(credentials.HUGGINGFACE.name),
                 kind="secret",
                 text="Hugging Face token, so that MyScribe can recognise speakers.",
                 choices=[],
@@ -472,7 +559,7 @@ def _questions(conn: sqlite3.Connection | None, state: ollama_setup.State, offer
         cred = credentials.CREDENTIALS[name]
         open_questions.append(
             Question(
-                id=f"llm_key_{name}",
+                id=question_of(name),
                 kind="secret",
                 text=f"API key for {cred.label}.",
                 choices=[],
@@ -616,14 +703,17 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict
     catalogue and Ollama's own two reads (TASK-089.06), and stops there.
 
     `unasked_only` drops the questions a saved sitting already put - what a
-    start asks for, against the `--setup` that asks everything. Which ids those
-    are is read from the stamp, whose format is TASK-089.11's.
+    start asks for, against the `--setup` that asks everything. Answered and
+    skipped both count as put: somebody was asked and said what they wanted,
+    and a question skipped on purpose that came back at every start would be
+    the nagging this flag exists to end. A credential that was merely found is
+    `not_needed` and was never put, so it is still asked once it goes.
     """
     state = ollama_setup.state()
     offer = downloads()
     open_questions = _questions(conn, state, offer)
     if unasked_only:
-        was_put = set(stamped().get("answered", []) or []) | set(stamped().get("skipped", []) or [])
+        was_put = {id for id, state_of in states().items() if state_of in PUT}
         open_questions = [q for q in open_questions if q.id not in was_put]
     return {
         "contract": CONTRACT,
@@ -855,36 +945,80 @@ def apply(
             )
         except models.ModelError:
             # The sitting still ended, so it is still stamped: the questions
-            # were put and answered, and a download that failed is a thing to
-            # try again, not a reason to ask everything a second time at the
-            # next start. The caller still gets the error and its exit code.
-            _write_stamp(answers, report, answered)
+            # were put, and a download that failed is a thing to try again, not
+            # a reason to ask everything a second time at the next start. The
+            # question itself is open rather than answered - nothing was
+            # fetched - and `--plan` therefore offers it again. The caller
+            # still gets the error and its exit code.
+            report["reopen"].append("fetch_models")
+            _write_stamp(answers, report, answered, conn)
             raise
 
-    _write_stamp(answers, report, answered)
+    _write_stamp(answers, report, answered, conn)
     return report
 
 
-def _write_stamp(answers: Answers, report: dict, answered: list[str]) -> None:
+def _states(answers: Answers, report: dict, answered: list[str], conn: sqlite3.Connection) -> dict[str, str]:
+    """What this sitting did with each question, on top of what earlier ones did.
+
+    The four sources are written weakest first, so a later line wins: that is
+    the precedence `STATES` names, in the one place it is applied. What an
+    earlier sitting recorded is the base, because a stamp is the record of
+    everything that was ever put - a re-run that touches one question must not
+    erase the rest (spec section 2, "carries the known states over").
+
+    `not_needed` is `setdefault` for the same reason: a credential that is on
+    this machine is worth recording where nothing is known about the question,
+    and must never overwrite an answer somebody gave. It is read off
+    `credentials.find_all`, which costs no network and no Ollama probe.
+    """
+    states_now = dict(states())
+    for row in credentials.find_all(conn):
+        if row.found:
+            states_now.setdefault(question_of(row.credential), "not_needed")
+    for question in answers.skipped:
+        states_now[question] = "skipped"
+    for question in answered:
+        states_now[question] = "answered"
+    for question in report["reopen"]:
+        states_now[question] = "open"
+    return states_now
+
+
+def _write_stamp(answers: Answers, report: dict, answered: list[str], conn: sqlite3.Connection) -> None:
     """The sitting ended, so it is recorded - a failed or skipped download
-    included. What it lists is what was answered and what was skipped; the
-    format, the gate and the migration are TASK-089.11's."""
+    included.
+
+    States and nothing else. `provider`, `tier`, `hf_token` and `fetched` were
+    in the stamp until TASK-089.11 and went with the shape: this file is what
+    the gate reads, and the gate has no business knowing anybody's provider.
+    What was chosen lives in the settings rows, where Settings can show it.
+
+    `ended` is what tells a stamp of this writer's from anything else with a
+    `contract` in it - a half-finished sitting, an editor, a future field. The
+    gate treats one without it as no stamp at all and asks again, which is the
+    safe way round (spec section 2).
+
+    It goes down in one piece - a temp file beside it, then `os.replace` (spec
+    section 2). A truncating write would empty the file before it has the new
+    text, and under this contract that file is the only record of what somebody
+    skipped on purpose and of what the migration carried over: losing it costs
+    those states for good, not one extra sitting.
+    """
     stamp_path().parent.mkdir(parents=True, exist_ok=True)
-    stamp_path().write_text(
+    written = stamp_path().with_name(stamp_path().name + ".tmp")
+    written.write_text(
         json.dumps(
             {
                 "contract": CONTRACT,
-                "answered": answered,
-                "skipped": list(answers.skipped),
-                "provider": answers.provider,
-                "tier": answers.tier,
-                "hf_token": bool(answers.hf_token.strip()),
-                "fetched": report["downloaded"],
+                "ended": time.time(),
+                "questions": _states(answers, report, answered, conn),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
+    os.replace(written, stamp_path())
 
 
 def from_document(document: dict) -> Answers:
@@ -1129,6 +1263,11 @@ def _answered_anything(args: argparse.Namespace) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scribe.setup", description=__doc__.split("\n\n")[0])
     parser.add_argument("--plan", action="store_true", help="print what was found and what is open, as JSON")
+    parser.add_argument(
+        "--unasked-only",
+        action="store_true",
+        help="with --plan: leave out the questions the last sitting already put",
+    )
     parser.add_argument("--apply-stdin", action="store_true", help="read one JSON document of answers from stdin")
     parser.add_argument("--status", action="store_true", help="print what setup would ask about, as JSON")
     # Recognised so that the refusal can be a sentence rather than an argparse
@@ -1161,7 +1300,7 @@ def main(argv: list[str] | None = None) -> int:
     # branch is above the line where that starts.
     if args.plan:
         with read_only(paths.DB_PATH) as conn:
-            print(json.dumps(plan(conn), indent=2))
+            print(json.dumps(plan(conn, unasked_only=args.unasked_only), indent=2))
         return 0
 
     paths.ensure_dirs()

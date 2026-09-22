@@ -106,12 +106,25 @@ def test_an_unknown_provider_is_refused_before_anything_is_written(tmp_path, con
 
 
 def test_finishing_writes_the_stamp_so_it_is_asked_once(tmp_path, conn):
+    """What the stamp says is what happened to each question, never what was
+    chosen (TASK-089.11): the launcher reads this file to decide whether to ask
+    at all, and a provider name in it would tell it something it has no
+    business knowing. The chosen value lives in the settings row above."""
     assert setup.done() is False
 
     setup.apply(setup.Answers(provider="ollama", tier="turbo"), conn, env_file=tmp_path / ".env")
 
     assert setup.done() is True
-    assert json.loads(setup.stamp_path().read_text(encoding="utf-8"))["provider"] == "ollama"
+    written = json.loads(setup.stamp_path().read_text(encoding="utf-8"))
+    assert written["contract"] == setup.CONTRACT and written["ended"] > 0
+    # Only what was put is asserted by name. A credential this machine happens
+    # to have in its environment is recorded as `not_needed` beside them, which
+    # is the state's whole job - and this file, unlike tests/test_setup_plan.py,
+    # does not empty the environment.
+    assert {asked for asked, state in written["questions"].items() if state in setup.PUT} == {
+        "llm_provider", "default_tier"}
+    assert written["questions"]["llm_provider"] == "answered"
+    assert "ollama" not in setup.stamp_path().read_text(encoding="utf-8")
 
 
 def test_what_is_still_needed_is_about_this_machine_now(tmp_path, conn, monkeypatch):

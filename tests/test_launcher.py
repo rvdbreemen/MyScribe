@@ -420,17 +420,120 @@ def test_an_installed_tool_does_not_inherit_the_download_s_quarantine(layout):
 # --- first run asks before it starts (TASK-040.06) ---------------------------------
 
 
-def test_setup_is_needed_until_the_app_says_it_is_done(tmp_path):
-    """The stamp is written by `scribe.setup`, not by the launcher: the
-    launcher asks the questions, the app decides what answering them means."""
-    layout = launcher.Layout(tmp_path / "home", tmp_path / "payload")
+def _shipped_contract(layout, number: int) -> None:
+    """A payload whose `scribe/setup.py` names one contract number. Not the
+    engine: what the launcher reads is one line of text."""
+    (layout.app_dir / "scribe" / "setup.py").write_text(
+        f'"""Not the engine - only the line the launcher reads."""\n\nCONTRACT = {number}\n',
+        encoding="utf-8")
 
-    assert launcher.setup_needed(layout) is True
 
+def _stamp(layout, document) -> None:
+    """Write the stamp `scribe.setup` leaves behind, or whatever stands in for
+    one: a string is written as it is, so that a stamp nobody can read can be
+    put there too."""
     stamp = launcher.setup_stamp(layout)
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text("{}", encoding="utf-8")
+    stamp.write_text(document if isinstance(document, str) else json.dumps(document), encoding="utf-8")
+
+
+def test_the_sitting_appears_until_a_finished_sitting_of_this_contract_says_otherwise(layout):
+    """The gate, and every way it fires (TASK-089.11, criteria #2 and #8).
+
+    The stamp is written by `scribe.setup`, not by the launcher: the launcher
+    asks the questions, the app decides what answering them means. What the
+    launcher decides is whether to ask at all, and it decides it from that file
+    plus one number out of the payload - as data, with no child process.
+
+    It is deliberately not a question about this machine. A token removed after
+    the sitting makes `--plan` open again and does not reopen the sitting: the
+    gate is about what was asked, `--plan` is about the machine now (criterion
+    #7), and the launcher cannot see a token in any case.
+
+    Renamed from `test_setup_is_needed_until_the_app_says_it_is_done`, which
+    pinned "the file exists" - true until this task and the whole of what it
+    replaces.
+    """
+    _shipped_contract(layout, 7)
+
+    assert launcher.setup_needed(layout) is True, "no stamp at all"
+
+    _stamp(layout, "{ not json")
+    assert launcher.setup_needed(layout) is True, "a stamp nobody can read"
+
+    _stamp(layout, {})
+    assert launcher.setup_needed(layout) is True, "no sitting ever ended, so none was held"
+
+    _stamp(layout, [])
+    assert launcher.setup_needed(layout) is True, "JSON, but not a document"
+
+    _stamp(layout, json.dumps("a string"))  # valid JSON, so it gets past the parse
+    assert launcher.setup_needed(layout) is True, "and neither is this"
+
+    _stamp(layout, {"contract": "7", "ended": 1789930000.0, "questions": {}})
+    assert launcher.setup_needed(layout) is True, "a contract that is not a number is no number"
+
+    _stamp(layout, {"contract": 7, "questions": {}})
+    assert launcher.setup_needed(layout) is True, "a contract and no `ended` is not this writer's"
+
+    _stamp(layout, {"contract": 6, "ended": 1789930000.0, "questions": {"hf_token": "skipped"}})
+    assert launcher.setup_needed(layout) is True, "finished, but before this payload's questions"
+
+    _stamp(layout, {"contract": 7, "ended": 1789930000.0, "questions": {"hf_token": "skipped"}})
+    assert launcher.setup_needed(layout) is False, "asked once - and a skip does not nag"
+
+
+def test_a_contract_number_that_cannot_be_read_shows_the_sitting(layout):
+    """Fail open, both ways round: asking twice costs a dialog somebody can
+    close, and never asking is the failure the gate exists for."""
+    _stamp(layout, {"contract": 7, "ended": 1789930000.0, "questions": {}})
+
+    assert launcher.setup_contract(layout) is None, "this payload has no scribe/setup.py"
+    assert launcher.setup_needed(layout) is True
+
+    (layout.app_dir / "scribe" / "setup.py").write_text(
+        'print(f"this engine speaks CONTRACT = 99")\n', encoding="utf-8")
+    assert launcher.setup_contract(layout) is None, "the name inside a sentence is not the line"
+    assert launcher.setup_needed(layout) is True
+
+
+def test_the_gate_starts_no_child_to_find_out(layout, monkeypatch):
+    """Two small reads, and never a `--plan`.
+
+    A gate that asked the engine would pay for a Python child at every start.
+    Measured on this machine on 2026-09-22 (median of 3 cold children against
+    the median of 5 x 1000 in-process calls): 4332 ms for `--plan`, 4183 ms for
+    the `--status` this replaces, and 0.78 ms for the gate - about 5500 times
+    cheaper. So the number comes out of the payload as text and the states out
+    of the stamp as JSON, and the sitting itself pays for the one `--plan`.
+    """
+    def never(*args, **kwargs):
+        raise AssertionError("the gate started a child process")
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", never)
+    monkeypatch.setattr(launcher.subprocess, "run", never)
+    _shipped_contract(layout, 7)
+    _stamp(layout, {"contract": 7, "ended": 1789930000.0, "questions": {}})
+
+    assert launcher.setup_contract(layout) == 7
     assert launcher.setup_needed(layout) is False
+    assert launcher.wants_setup(layout) is False
+
+
+def test_the_contract_number_is_read_out_of_the_engine_that_ships(layout):
+    """The text the launcher reads and the constant the engine uses cannot
+    drift: the payload here is the real `scribe/setup.py`, copied the way a
+    build copies it, and the number read out of it is the engine's own.
+
+    The app is imported here and nowhere near the launcher: ADR-011 keeps the
+    launcher stdlib-only, and this test is the one place allowed to hold both.
+    """
+    from scribe import setup
+
+    engine = Path(setup.__file__).read_text(encoding="utf-8")
+    (layout.app_dir / "scribe" / "setup.py").write_text(engine, encoding="utf-8")
+
+    assert launcher.setup_contract(layout) == setup.CONTRACT
 
 
 def test_the_answers_are_handed_to_the_app_not_acted_on_here(tmp_path):
@@ -663,8 +766,24 @@ def test_save_and_start_still_stamps_a_sitting_nobody_touched(layout, monkeypatc
     answers, _sitting = _drive_setup(monkeypatch, layout)
     assert answers is not None
 
-    closed, _sitting = _drive_setup(monkeypatch, layout, press="Skip for now")
+    closed, _sitting = _drive_setup(monkeypatch, layout, press="Ask me next time")
     assert closed is None
+
+
+def test_the_button_that_puts_the_whole_sitting_off_says_that_is_what_it_does(
+        layout, monkeypatch):
+    """"Skip for now" reads like "never", and it is not: nothing is applied, no
+    stamp is written and the sitting returns at the next start - which is what
+    this file's own docstring has said since 2026-09-19 (criterion #5).
+
+    The other skip is the engine's and is a different control: skip on one
+    question is recorded as skipped and never asked again by a start
+    (tests/test_setup_plan.py, the null answer). This one puts off all of them.
+    """
+    closed, sitting = _drive_setup(monkeypatch, layout, press="Ask me next time")
+
+    assert set(sitting.buttons) == {"Save and start", "Ask me next time"}
+    assert closed is None, "no answers, so `first_run` applies nothing and the app stamps nothing"
 
 
 def test_a_person_who_does_pick_a_provider_still_gets_one(layout, monkeypatch):
@@ -832,8 +951,8 @@ def test_a_setup_that_fails_in_a_way_nobody_expected_is_reported_too(layout, tmp
 
 
 def test_skipping_the_questions_starts_the_app_and_runs_no_setup(layout, tmp_path, monkeypatch):
-    """'Skip for now' is 'ask me next time', not 'never': no stamp is written
-    here, nothing is applied, and the app starts."""
+    """'Ask me next time' is what it says: no stamp is written here, nothing is
+    applied, and the app starts - so the sitting returns at the next start."""
     order, reports, asked, started = _drive_first_run(
         layout, tmp_path, monkeypatch, answers=None, setup_command=None,
     )
@@ -916,9 +1035,9 @@ def test_a_start_at_login_asks_nothing_all_the_way_through_the_sequence(layout, 
 def test_setup_reopens_the_sitting_although_the_stamp_is_there(layout, tmp_path, monkeypatch):
     """The other half of the same hop: `--setup` wins over an answered
     sitting, because somebody typed it."""
-    stamp = launcher.setup_stamp(layout)
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text("{}", encoding="utf-8")
+    _shipped_contract(layout, 7)
+    _stamp(layout, {"contract": 7, "ended": 1789930000.0, "questions": {"hf_token": "answered"}})
+    assert launcher.setup_needed(layout) is False, "a finished sitting, so only `--setup` opens it"
 
     order, _reports, asked, started = _drive_first_run(
         layout, tmp_path, monkeypatch,
@@ -970,22 +1089,20 @@ def test_the_smoke_test_looks_inside_the_onedir(tmp_path):
 # --- a start at login (TASK-089.21) -----------------------------------------------
 
 
-def test_a_start_at_login_leaves_a_due_sitting_for_the_next_start_by_hand(tmp_path):
+def test_a_start_at_login_leaves_a_due_sitting_for_the_next_start_by_hand(layout):
     """Nobody is at the screen at login, and a modal that holds up the watch
     folders is the opposite of what the login entry is for. A sitting that is
     due is not cancelled - it waits for the next start somebody makes by hand.
 
     `--setup` still wins over `--at-login`: somebody typed it.
     """
-    layout = launcher.Layout(tmp_path / "home", tmp_path / "payload")
+    _shipped_contract(layout, 7)
 
     assert launcher.wants_setup(layout) is True
     assert launcher.wants_setup(layout, at_login=True) is False
     assert launcher.wants_setup(layout, force=True, at_login=True) is True
 
-    stamp = launcher.setup_stamp(layout)
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text("{}", encoding="utf-8")
+    _stamp(layout, {"contract": 7, "ended": 1789930000.0, "questions": {"hf_token": "skipped"}})
 
     assert launcher.wants_setup(layout) is False
     assert launcher.wants_setup(layout, force=True) is True

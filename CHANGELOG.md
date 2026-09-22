@@ -2,6 +2,21 @@
 
 ### Changed
 
+- Somebody who already finished the old setup is asked the questions this
+  version added, once, and never the ones they answered. The first-run sitting
+  used to appear or not on "does `setup.json` exist", so a finished old setup
+  hid the key question and the Ollama question for good - including from the
+  people who pressed Save on a preselected "Ollama, on this machine" without
+  having Ollama, who are who this work is for. The stamp now records one state
+  per question - answered, skipped, not needed because the answer was found,
+  or still open after a failure - and the launcher compares its contract number
+  with the one the payload ships. Skipping a question on purpose is recorded
+  and does not nag; `--setup` still asks it. Reading the gate costs no child
+  process and about a millisecond, against the four seconds a `--plan` child
+  would take at every start. A token removed after the sitting does not reopen
+  it: the gate is about what was asked, `--plan` is about the machine now
+  (TASK-089.11).
+
 - First run no longer asks four things: it asks what is still open on this
   machine, which is usually fewer. `python -m scribe.setup` is now the one
   engine behind the questions - `--plan` prints what was found and where (never

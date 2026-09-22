@@ -19,8 +19,10 @@ would be answered by the developer's environment.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -151,11 +153,14 @@ def test_a_plan_is_the_same_document_the_engine_hands_a_caller(library, no_weigh
 
 def test_a_start_is_asked_only_what_the_last_sitting_never_put(library, no_weights):
     """`unasked_only` is what a start asks with, against the `--setup` that
-    asks everything. Nothing calls it with True yet - the stamp's reader is
-    TASK-089.11's - so it is pinned here rather than shipped unexercised on a
-    contract six tasks render (review, 2026-09-22)."""
-    setup.stamp_path().write_text(
-        json.dumps({"answered": ["hf_token"], "skipped": ["llm_provider"]}), encoding="utf-8")
+    asks everything. The states come out of the stamp (TASK-089.11), and
+    answered and skipped both count as put: a question somebody skipped on
+    purpose must not come back at every start."""
+    setup.stamp_path().write_text(json.dumps({
+        "contract": setup.CONTRACT,
+        "ended": 1789930000.0,
+        "questions": {"hf_token": "answered", "llm_provider": "skipped"},
+    }), encoding="utf-8")
     everything = ids(setup.plan(library))
     assert {"hf_token", "llm_provider"} <= set(everything), "both are open on this machine"
 
@@ -724,6 +729,10 @@ def test_a_typed_secret_is_written_to_its_row_and_to_no_file(library, no_weights
     ]
     assert elsewhere == []
     assert SENTINEL not in setup.stamp_path().read_text(encoding="utf-8")
+    # And not only this marker: what the stamp holds per question is one of
+    # four states, so there is no field a value could arrive in (TASK-089.11).
+    assert set(stamp_document()["questions"].values()) <= set(setup.STATES)
+    assert stamp_document()["questions"]["hf_token"] == "answered"
 
 
 # --- a sitting where nothing was answered (#14) ---------------------------------------
@@ -745,9 +754,7 @@ def test_an_all_skipped_sitting_writes_no_row_and_stamps_every_id(
 
     assert _rows(library) == before_rows
     assert env_file.read_bytes() == before_env
-    stamp = json.loads(setup.stamp_path().read_text(encoding="utf-8"))
-    assert stamp["answered"] == []
-    assert sorted(stamp["skipped"]) == sorted(open_now)
+    assert stamp_document()["questions"] == {asked: "skipped" for asked in open_now}
     assert "saved: nothing" in capsys.readouterr().out
 
 
@@ -839,9 +846,10 @@ def test_a_failed_download_keeps_the_exit_code_it_always_had(
 
 
 def test_a_failed_download_still_ends_the_sitting(library, no_weights, monkeypatch):
-    """The questions were put and answered; a download that failed is a thing
-    to try again, not a reason to ask all of them a second time at the next
-    start. So the stamp is written and it still lists what was answered."""
+    """The questions were put; a download that failed is a thing to try again,
+    not a reason to ask all of them a second time at the next start. So the
+    stamp is written - and the download stands in it as open rather than as
+    answered, because nothing was fetched and `--plan` offers it again."""
     def raises(*args, **kwargs):
         raise models.ModelError("the download failed", reason="other")
 
@@ -849,9 +857,7 @@ def test_a_failed_download_still_ends_the_sitting(library, no_weights, monkeypat
 
     assert setup.main(["--tier", "max", "--fetch-models"]) == 1
 
-    stamp = json.loads(setup.stamp_path().read_text(encoding="utf-8"))
-    assert stamp["answered"] == ["default_tier", "fetch_models"]
-    assert stamp["fetched"] == []
+    assert stamp_document()["questions"] == {"default_tier": "answered", "fetch_models": "open"}
 
 
 def test_a_download_that_fails_at_the_console_costs_what_it_costs_anywhere_else(
@@ -890,8 +896,7 @@ def test_a_sitting_at_a_terminal_saves_what_was_answered(library, no_weights, mo
     assert _rows(library)["default_tier"] == "max"
     assert ai_ui.PROVIDER_SETTING not in _rows(library), "and deciding later writes no row"
     assert "saved: defaults" in capsys.readouterr().out
-    stamp = json.loads(setup.stamp_path().read_text(encoding="utf-8"))
-    assert stamp["answered"] == ["default_tier"]
+    assert stamp_document()["questions"] == {"default_tier": "answered"}
 
 
 # --- a typed credential is checked before it is saved (#6) ------------------------------
@@ -1160,3 +1165,295 @@ def test_the_door_really_checks_a_typed_token_before_it_saves_it(
     printed = capsys.readouterr().out
     assert "conditions not accepted" in printed and "still open: hf_token" in printed
     assert SENTINEL not in printed
+
+
+# --- the stamp, the gate and the migration (TASK-089.11) ------------------------------
+
+
+def stamp_document() -> dict:
+    """The stamp as it was written. Every assertion about it reads the file, so
+    that the shape the launcher's gate parses is the shape under test."""
+    return json.loads(setup.stamp_path().read_text(encoding="utf-8"))
+
+
+def test_a_finished_sitting_records_one_state_per_question(library, no_weights, monkeypatch):
+    """The stamp says what happened to each question and nothing about what was
+    chosen: the gate reads it, and the gate has no business knowing anybody's
+    provider.
+
+    All four states in one sitting - a tier answered, a provider skipped, a key
+    the service refused and so still open, and a Hugging Face token that was
+    already on this machine and therefore never asked.
+    """
+    monkeypatch.setenv("HF_TOKEN", SENTINEL)
+    monkeypatch.setattr(
+        setup, "verify", lambda name, value: setup.Verdict(False, "key not recognised", refused=True))
+    document = json.dumps({"contract": setup.CONTRACT, "answers": {
+        "default_tier": "max",
+        "llm_provider": None,
+        "llm_key_openrouter": "a-key-the-service-refuses",
+    }})
+    monkeypatch.setattr(sys, "stdin", io.StringIO(document))
+
+    assert setup.main(["--apply-stdin"]) == 0
+
+    written = stamp_document()
+    assert set(written) == {"contract", "ended", "questions"}
+    assert written["contract"] == setup.CONTRACT
+    assert written["ended"] > 0, "a finished sitting says when it ended; nothing else writes this file"
+    assert written["questions"] == {
+        "default_tier": "answered",
+        "llm_provider": "skipped",
+        "llm_key_openrouter": "open",
+        "hf_token": "not_needed",
+    }
+
+
+def test_a_stamp_that_could_not_be_written_leaves_the_one_that_was_there(
+        library, no_weights, monkeypatch):
+    """The stamp is written in one piece - a temp file, then `os.replace`
+    (spec section 2).
+
+    Under this contract the file is the only record of what somebody skipped on
+    purpose and of what the 0.5.x migration carried over, so a write that fails
+    half-way does not cost one extra sitting: it loses those states for good. A
+    truncating write is exactly that failure - it empties the file before it
+    has the new text to put there.
+    """
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"contract": setup.CONTRACT, "answers": {"hf_token": None, "default_tier": "max"}})))
+    assert setup.main(["--apply-stdin"]) == 0
+    first = stamp_document()
+    assert first["questions"]["hf_token"] == "skipped", "what the next sitting must not lose"
+
+    refused: list[str] = []
+
+    def refuse(source, target):
+        refused.append(str(target))
+        raise OSError("the disk said no")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"contract": setup.CONTRACT, "answers": {"llm_provider": "ollama"}})))
+
+    with contextlib.suppress(OSError):
+        setup.main(["--apply-stdin"])
+
+    assert stamp_document() == first, "the sitting nobody could write left the one before it whole"
+    assert refused, "and it was `os.replace` that failed: the stamp is put there in one step"
+
+
+def test_a_credential_this_machine_has_does_not_overwrite_the_answer_that_saved_it(
+        library, no_weights, monkeypatch):
+    """`not_needed` is what is known about a question nobody was asked, so it
+    fills a gap and never closes one.
+
+    Across two sittings that is the whole of it. The first answers the token;
+    by the second, the row it wrote is a source `find_all` reports, so the only
+    thing keeping `answered` in the stamp is that `not_needed` is written with
+    `setdefault`. Within one sitting the loop order would hide that.
+    """
+    monkeypatch.setattr(setup, "verify", lambda name, value: setup.Verdict(True))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"contract": setup.CONTRACT, "answers": {"hf_token": "a-token-this-test-made-up"}})))
+    assert setup.main(["--apply-stdin"]) == 0
+    assert stamp_document()["questions"]["hf_token"] == "answered"
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"contract": setup.CONTRACT, "answers": {"default_tier": "max"}})))
+    assert setup.main(["--apply-stdin"]) == 0
+
+    found = {row.credential for row in credentials.find_all(library) if row.found}
+    assert credentials.HUGGINGFACE.name in found, "the row the first sitting wrote is a source by now"
+    assert stamp_document()["questions"]["hf_token"] == "answered", \
+        "an answer is not downgraded to `not_needed` by the row that answering it wrote"
+
+
+def test_a_stamp_from_before_the_contract_gets_the_new_questions_once(
+        library, no_weights, monkeypatch):
+    """0.5.x wrote four fields and no question ids, so it is read as contract 1:
+    a non-empty `provider` answered question 5, a non-empty `tier` 10,
+    `hf_token` true 4 and a non-empty `fetched` 11 (spec section 2).
+
+    The sitting an upgrade opens therefore asks what this version added and
+    nothing that was already answered, those answers are carried into the new
+    stamp, and it is asked once. A plan writes nothing, so neither the provider
+    nor the tier is reset on the way.
+    """
+    setup.stamp_path().write_text(
+        json.dumps({"provider": "ollama", "tier": "turbo", "hf_token": True, "fetched": []}),
+        encoding="utf-8")
+    before = _rows(library)
+    everything = ids(setup.plan(library))
+    assert {"hf_token", "llm_provider", "llm_key_openrouter", "fetch_models"} <= set(everything)
+
+    asked_at_a_start = ids(setup.plan(library, unasked_only=True))
+
+    assert "hf_token" not in asked_at_a_start, "true in the old stamp, so it was answered"
+    assert "llm_provider" not in asked_at_a_start, "and so was the provider"
+    assert "llm_key_openrouter" in asked_at_a_start, "the key question is what 0.5.x never put"
+    assert "fetch_models" in asked_at_a_start, "an empty `fetched` answered nothing"
+    assert ids(setup.plan(library)) == everything, "and `--setup` still asks all of them"
+    assert _rows(library) == before, "nothing was reset: a plan writes nothing at all"
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"contract": setup.CONTRACT, "answers": {}})))
+    assert setup.main(["--apply-stdin"]) == 0
+
+    carried = stamp_document()
+    assert carried["contract"] == setup.CONTRACT and carried["ended"] > 0
+    assert carried["questions"]["llm_provider"] == "answered", "what 0.5.x answered is carried over"
+    assert carried["questions"]["hf_token"] == "answered"
+    assert carried["questions"]["default_tier"] == "answered"
+
+
+def test_a_question_skipped_on_purpose_is_recorded_and_does_not_nag(
+        library, no_weights, monkeypatch):
+    """Skip on one question is not "ask me next time" on the whole sitting: it
+    is an answer of its own - "I know, and no" - so the next start honours it
+    while `--setup` still lists it (criterion 4). The rest of the sitting ends
+    all the same: what nobody put is still asked."""
+    open_now = ids(setup.plan(library))
+    assert "hf_token" in open_now
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        json.dumps({"contract": setup.CONTRACT, "answers": {"hf_token": None}})))
+
+    assert setup.main(["--apply-stdin"]) == 0
+
+    assert stamp_document()["questions"] == {"hf_token": "skipped"}
+    assert "hf_token" in ids(setup.plan(library)), "and still there for `--setup`"
+    assert ids(setup.plan(library, unasked_only=True)) == [
+        asked for asked in ids(setup.plan(library)) if asked != "hf_token"]
+
+
+def test_a_question_a_later_version_adds_is_asked_exactly_once(
+        library, no_weights, monkeypatch, capsys):
+    """The upgrade case at the engine's end.
+
+    The stamp of a finished sitting carries the number the engine spoke then;
+    this version adds a question and raises it, so the launcher sees two
+    numbers that differ and pays for one `--plan --unasked-only`. This is what
+    that plan answers: the one question this machine was never asked, and after
+    it has been put, nothing. The comparison itself is the launcher's and is
+    pinned there (tests/test_launcher.py, the gate).
+    """
+    before = setup.Question(
+        "hf_token", "secret", "Hugging Face token.", [], "", None, None, "Nothing is saved.",
+        "Settings > Transcription > Hugging Face token")
+    added = setup.Question(
+        "watch_folder", "choice", "Which folder should MyScribe watch?",
+        [{"value": "none", "label": "None", "note": ""}], "", None, None,
+        "Nothing is watched.", "Settings > Watch folders")
+    monkeypatch.setattr(setup, "_questions", lambda conn, state, offer: [before, added])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        json.dumps({"contract": setup.CONTRACT, "answers": {"hf_token": None}})))
+    assert setup.main(["--apply-stdin"]) == 0
+    capsys.readouterr()  # what the sitting said; the plan below is read on its own
+    stamped_at = stamp_document()["contract"]
+
+    # The later version: one question more, and the number raised for it.
+    monkeypatch.setattr(setup, "CONTRACT", stamped_at + 1)
+
+    assert setup.main(["--plan", "--unasked-only"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+
+    assert printed["contract"] > stamped_at, "the two numbers the launcher compares"
+    assert [q["id"] for q in printed["questions"]] == ["watch_folder"]
+    assert ids(setup.plan(library)) == ["hf_token", "watch_folder"], "`--setup` still asks both"
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        json.dumps({"contract": setup.CONTRACT, "answers": {"watch_folder": None}})))
+    assert setup.main(["--apply-stdin"]) == 0
+
+    assert ids(setup.plan(library, unasked_only=True)) == [], "put once, and once is enough"
+    assert stamp_document()["contract"] == stamped_at + 1, "and the stamp speaks the new number"
+
+
+def test_a_token_removed_after_the_sitting_does_not_put_the_question_again(
+        library, no_weights, monkeypatch):
+    """Deliberate, and criterion 7: the gate is about what was asked, `--plan`
+    is about the machine now. A token that was answered and later removed is
+    open on this machine again and `--plan` says so - but a start does not put
+    the question a second time, because it was put."""
+    monkeypatch.setattr(setup, "verify", lambda name, value: setup.Verdict(True))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        json.dumps({"contract": setup.CONTRACT, "answers": {"hf_token": "a-token-this-test-typed"}})))
+    assert setup.main(["--apply-stdin"]) == 0
+    assert stamp_document()["questions"]["hf_token"] == "answered"
+
+    library.execute("DELETE FROM setting WHERE key = ?", (credentials.HUGGINGFACE.setting_key,))
+    library.commit()
+
+    assert "hf_token" in ids(setup.plan(library)), "open on this machine again, and said so"
+    assert "hf_token" not in ids(setup.plan(library, unasked_only=True)), "but not put again"
+    assert setup.states()["hf_token"] == "answered", "the stamp records what was asked, not what is"
+
+
+LATER_ROUTES = {
+    "hf_token": ("POST", "/settings/hf-token"),
+    "llm_provider": ("POST", "/settings/llm"),
+    "llm_key_openrouter": ("POST", "/settings/llm/{provider}/key"),
+    "llm_key_openai": ("POST", "/settings/llm/{provider}/key"),
+    "llm_model_ollama": ("POST", "/settings/llm"),
+    "default_tier": ("POST", "/settings"),
+}
+"""Per question, the Settings route that takes its answer later.
+
+Criterion 4 asks that the route a question's `answer_later` line names exists,
+and the honest reading of "exists" is the handler that writes the row - not a
+sentence with the word Settings in it. `fetch_models` has no Settings
+counterpart and names a command instead; the location (TASK-089.14) and the
+library (TASK-089.19) are not in `_questions` yet and have no row here.
+"""
+
+
+@pytest.mark.parametrize("asked_id", sorted(LATER_ROUTES))
+def test_the_route_a_question_names_for_later_is_a_route_the_app_has(asked_id):
+    """One per route: the page really has the handler the sentence points at."""
+    from scribe.web import settings as settings_page
+
+    method, path = LATER_ROUTES[asked_id]
+    have = {(verb, route.path) for route in settings_page.router.routes for verb in route.methods}
+
+    assert (method, path) in have
+
+
+def test_every_open_question_says_where_its_answer_can_be_given_later(library, no_weights):
+    """And no question escapes the table: one added without an answer_later
+    route is a question that can only be answered in the sitting that asked it,
+    which is what criterion 4 exists to prevent."""
+    for asked in setup.plan(library)["questions"]:
+        assert asked["answer_later"], asked["id"]
+        if asked["id"] == "fetch_models":
+            assert asked["answer_later"] == "python -m scribe.setup --fetch-models"
+            continue
+        assert asked["id"] in LATER_ROUTES, "a new question needs its route in the table"
+        assert "Settings" in asked["answer_later"]
+
+
+def test_the_download_question_names_a_flag_the_engine_really_takes(library, no_weights, monkeypatch):
+    """The one question with no Settings counterpart: its `answer_later` names
+    `python -m scribe.setup --fetch-models`, so the flag has to be one the
+    engine takes and acts on."""
+    fetched: list = []
+
+    def ensure(wanted=None, token=None, on_progress=None):
+        fetched.append(wanted)
+        return []
+
+    monkeypatch.setattr(models, "ensure", ensure)
+
+    assert setup.main(["--fetch-models"]) == 0
+
+    assert fetched == [None], "the flag reached the download"
+    assert stamp_document()["questions"]["fetch_models"] == "answered"
+
+
+def test_the_ollama_model_question_names_the_settings_route_that_writes_its_row(
+        ollama_chosen, no_weights, monkeypatch, ollama_state_unstubbed):
+    """The seventh route, which only a machine with a ready Ollama is asked."""
+    serving(monkeypatch, Daemon("gemma4:12b"))
+
+    asked = question(setup.plan(ollama_chosen), "llm_model_ollama")
+
+    assert asked is not None and "Settings" in asked["answer_later"]
+    assert LATER_ROUTES["llm_model_ollama"] == ("POST", "/settings/llm")

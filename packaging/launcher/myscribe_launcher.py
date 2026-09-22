@@ -606,12 +606,61 @@ class Launch:
 
 
 def setup_stamp(layout: Layout) -> Path:
-    """Written by `scribe.setup` when the questions have been answered."""
+    """Written by `scribe.setup` when a sitting ends: the contract it spoke,
+    when it ended, and one state per question id."""
     return layout.data_dir / "setup.json"
 
 
+def setup_contract(layout: Layout) -> int | None:
+    """``scribe.setup.CONTRACT`` read as text, the way ``app_version`` reads the
+    version - importing it would need the environment (ADR-011).
+
+    Anchored at the start of a line, because the name also appears inside
+    sentences the engine prints: a regex that matched one of those would
+    compare the stamp against a number out of an f-string. None means the
+    number could not be read, which the gate answers by asking again.
+    """
+    source = layout.app_dir / "scribe" / "setup.py"
+    try:
+        match = re.search(r"^CONTRACT\s*=\s*(\d+)\s*$", source.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return None
+    return int(match.group(1)) if match else None
+
+
 def setup_needed(layout: Layout) -> bool:
-    return not setup_stamp(layout).exists()
+    """Does the first-run sitting appear? The stamp and one number, as data.
+
+    Reading this has to be cheap, because it is read at every start: measured
+    here on 2026-09-22, a cold `--plan` child costs 4332 ms and this costs
+    0.78 ms. So nothing is imported from the app and no child is started - the
+    launcher learns a number and some states, and nothing about what any of the
+    questions are (ADR-015). The sitting that follows pays for the one `--plan`
+    it draws itself from (TASK-089.15).
+
+    It asks when there is no stamp, when the stamp cannot be read, when it
+    carries no `ended` - which every finished sitting writes, so something else
+    left it - and when its contract is lower than the payload's, which is how
+    somebody who finished an older setup is asked the questions this version
+    added, once. Anything it cannot work out asks: a dialog can be closed, and
+    never asking is the failure this gate exists for.
+
+    It is deliberately not a question about this machine. A token removed after
+    the sitting makes `--plan` list it open again and does not reopen the
+    sitting: the gate is about what was asked, `--plan` is about the machine
+    now, and the doctor reports the difference.
+    """
+    try:
+        stamp = json.loads(setup_stamp(layout).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if not isinstance(stamp, dict) or stamp.get("ended") is None:
+        return True
+    shipped = setup_contract(layout)
+    if shipped is None:
+        return True
+    spoke = stamp.get("contract")
+    return not isinstance(spoke, int) or spoke < shipped
 
 
 def wants_setup(layout: Layout, force: bool = False, at_login: bool = False) -> bool:
@@ -850,7 +899,12 @@ def ask_setup(root, layout: Layout) -> dict | None:
     row = tk.Frame(win)
     row.grid(row=7, column=0, columnspan=2, sticky="we", padx=12, pady=12)
     tk.Button(row, text="Save and start", command=save, default="active").pack(side="right")
-    tk.Button(row, text="Skip for now", command=win.destroy).pack(side="right", padx=8)
+    # "Ask me next time", and not "Skip for now": nothing is applied, the app
+    # writes no stamp, and the sitting therefore returns at the next start -
+    # which is what this function's docstring has said since 2026-09-19. The
+    # other skip belongs to a single question and is the engine's, where it is
+    # recorded as skipped and never asked by a start again (TASK-089.11).
+    tk.Button(row, text="Ask me next time", command=win.destroy).pack(side="right", padx=8)
 
     win.columnconfigure(1, weight=1)
     root.wait_window(win)
