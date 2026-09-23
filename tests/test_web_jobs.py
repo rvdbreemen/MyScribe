@@ -196,6 +196,10 @@ def test_running_job_shows_elapsed_and_the_eta_from_stage_history(client, conn, 
 
 def test_running_job_without_history_says_the_eta_is_unknown(client, board):
     running = _section(client.get("/jobs").text, "running")
+    # The start time is on the card too: a job started at 23:00 carried
+    # "3:00" in its <time> element and failed this on CI's clock
+    # (2026-09-23). The ETA is what is asserted, so the times go first.
+    running = re.sub(r"<time[^>]*>.*?</time>", "", running, flags=re.S)
 
     assert "3:00" not in running
     assert "no estimate yet" in running
