@@ -673,6 +673,61 @@ def test_a_rename_that_lands_while_the_pass_writes_is_kept(conn, media):
     assert (result["named"], result["left"]) == ([], ["SPEAKER_00"])
 
 
+# --- the note the pass leaves behind (TASK-089.10) ------------------------------------
+#
+# `finalize` writes "the speakers were not named automatically: <why>" on the
+# run when the provider could not be asked, and the sentence tells the reader
+# to ask again from the AI panel. That request arrives here - plan, generate,
+# store, apply - and nowhere near `queue_speaker_pass`, which is the only
+# other place the note comes off. The sweep never visits a recording that has
+# a `speakers` answer (`NOT EXISTS (… kind='speakers')`), so a note still on
+# the run now is a note that sits beside named speakers for good: the
+# TASK-089.08 defect, on the one path the note itself recommends.
+
+
+def _note_on(conn, run_id) -> None:
+    with db.LOCK:
+        conn.execute(
+            "UPDATE run SET params_json=? WHERE id=?",
+            (json.dumps({"speaker_pass_note": "not named automatically: Ollama is not running."}), run_id),
+        )
+        conn.commit()
+
+
+def _run_params(conn, run_id) -> dict:
+    row = conn.execute("SELECT params_json FROM run WHERE id=?", (run_id,)).fetchone()
+    return json.loads(row["params_json"] or "{}")
+
+
+def test_an_answer_takes_the_speaker_pass_note_off_the_run(conn, media, monkeypatch):
+    """The panel is where the note sends the reader, so the panel takes it off."""
+    run_id = _run_id(conn, media)
+    _note_on(conn, run_id)
+    provider, _ = fake_provider([SPEAKERS_ANSWER])
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert "speaker_pass_note" not in _run_params(conn, run_id)
+
+
+def test_the_note_comes_off_even_when_nobody_was_named(conn, media, monkeypatch):
+    """Not gated on a name being written, and that is the whole of it: what
+    shuts the sweep out of this recording for ever is the `llm_output` row, not
+    a confident guess. A clear that waited for a name would leave "Ollama is
+    not running" on every run the pass answered vaguely - the same defect with
+    an extra step."""
+    run_id = _run_id(conn, media)
+    _note_on(conn, run_id)
+    provider, _ = fake_provider([_answer({"cluster": "SPEAKER_00", "name": "Arthur", "confidence": 10})])
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, run_id) == {}
+    assert "speaker_pass_note" not in _run_params(conn, run_id)
+
+
 def test_running_it_again_updates_rather_than_duplicates(conn, media, monkeypatch):
     """speaker_label is UNIQUE(run_id, cluster_label); a second confident pass
     is a correction, not a second opinion to store beside the first."""

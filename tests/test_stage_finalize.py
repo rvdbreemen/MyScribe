@@ -11,11 +11,44 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from scribe import db, paths
+from scribe import db, paths, runner
 from scribe.app import create_app
+from scribe.llm import base, ollama
 from scribe.stages import finalize
-from tests.seed import default_words, seed_media, seed_run
+from tests.seed import default_words, seed_job, seed_media, seed_run
 from tests.test_llm_tasks import conn  # noqa: F401  (fixture)
+
+
+@pytest.fixture
+def own_work_dir(tmp_path, monkeypatch):
+    """This test's scratch, because `finalize.run` deletes its job's work dir.
+
+    Belt and braces over the fence: `paths.remove_job_work_dir` resolves
+    `paths.WORK_DIR` at the call, and the live one holds Robert's library.
+    """
+    monkeypatch.setattr(paths, "WORK_DIR", tmp_path / "work")
+    return tmp_path / "work"
+
+
+def _pulled(*names):
+    """`/api/tags` rows for a daemon that has `names`, all chat-capable."""
+    return lambda self: [
+        {"name": name, "model": name, "capabilities": ["completion"]} for name in names
+    ]
+
+
+@pytest.fixture
+def ollama_ready(monkeypatch):
+    """The daemon answering, with the model these tests would ask of it.
+
+    Requested by every test that means to exercise *when* the pass is queued
+    rather than whether the provider can answer. Not a loosening: `conftest`
+    stubs `ollama_setup.state` and never `OllamaProvider.tags`, so until
+    TASK-089.10 this file was answered by whatever happened to be pulled on the
+    machine running it - green on Robert's laptop, red on one without
+    `qwen3.5:4b`.
+    """
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", _pulled(ollama.OllamaProvider.default_model))
 
 
 def _set_provider(conn, name):
@@ -42,7 +75,7 @@ def _queued(conn):
     ]
 
 
-def test_clusters_mean_a_speaker_pass_is_queued(conn, recording):
+def test_clusters_mean_a_speaker_pass_is_queued(conn, recording, ollama_ready):
     media_id, run_id = recording
     _set_provider(conn, "ollama")
 
@@ -80,7 +113,7 @@ def test_a_private_recording_is_not_sent_to_an_external_provider_by_a_pipeline_s
     assert _queued(conn) == []
 
 
-def test_a_private_recording_is_identified_by_a_local_provider(conn, recording):
+def test_a_private_recording_is_identified_by_a_local_provider(conn, recording, ollama_ready):
     media_id, run_id = recording
     _set_provider(conn, "ollama")
     with db.LOCK:
@@ -90,7 +123,7 @@ def test_a_private_recording_is_identified_by_a_local_provider(conn, recording):
     assert finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00"]) is not None
 
 
-def test_the_pass_names_the_run_it_was_asked_about(conn, recording):
+def test_the_pass_names_the_run_it_was_asked_about(conn, recording, ollama_ready):
     """speaker_label hangs off a run. A pass that did not say which run it was
     about could name the clusters of a re-transcription that landed while it
     was in flight."""
@@ -196,7 +229,7 @@ def _three_voices():
     return words
 
 
-def test_a_partly_named_run_keeps_the_names_it_had(conn):
+def test_a_partly_named_run_keeps_the_names_it_had(conn, ollama_ready):
     """The pass names the clusters it is sure of and leaves the rest - media 3
     has Danny and Nancy and an unnamed third. Measured 2026-09-11: 12 of the
     53 named recordings are like that, and a re-transcription dropped every
@@ -286,7 +319,7 @@ def test_only_the_label_whose_voice_moved_loses_its_name(conn):
     assert _labels(conn, new_run) == {"SPEAKER_02": ("Zaphod", "human")}
 
 
-def test_a_run_every_name_is_on_is_asked_about_only_when_asked_to(conn):
+def test_a_run_every_name_is_on_is_asked_about_only_when_asked_to(conn, ollama_ready):
     """The catch-up leaves a run whose every cluster has a name: the speakers
     were assigned, so there is nothing it should ask. A re-transcription asks
     anyway (Robert, 2026-09-11) - finalize says so with `even_if_named`."""
@@ -318,7 +351,7 @@ def test_asking_again_still_never_sends_a_private_recording_out(conn):
     assert _queued(conn) == []
 
 
-def test_a_partly_named_run_still_asks_about_the_rest(conn):
+def test_a_partly_named_run_still_asks_about_the_rest(conn, ollama_ready):
     media_id = seed_media(conn, title="Guide")
     old_run = seed_run(conn, media_id)
     _name(conn, old_run, "SPEAKER_00", "Arthur")
@@ -331,7 +364,7 @@ def test_a_partly_named_run_still_asks_about_the_rest(conn):
     assert job_id is not None
 
 
-def test_the_first_run_of_a_recording_inherits_nothing_and_asks(conn):
+def test_the_first_run_of_a_recording_inherits_nothing_and_asks(conn, ollama_ready):
     media_id = seed_media(conn, title="Guide")
     run_id = seed_run(conn, media_id)
     _set_provider(conn, "ollama")
@@ -370,7 +403,7 @@ def _analysed(conn, media_id):
         conn.commit()
 
 
-def test_the_sweep_asks_about_a_recording_that_was_never_asked(conn):
+def test_the_sweep_asks_about_a_recording_that_was_never_asked(conn, ollama_ready):
     """Sixty runs in this library carried clusters and three carried names,
     because the pass only existed for recordings finished after it did."""
     media_id, _ = _diarized(conn)
@@ -461,7 +494,7 @@ def test_a_recording_with_no_diarization_has_nothing_to_ask_about(conn):
     assert finalize.sweep_speaker_passes(conn) == []
 
 
-def test_a_second_sweep_finds_nothing_because_the_first_left_a_job(conn):
+def test_a_second_sweep_finds_nothing_because_the_first_left_a_job(conn, ollama_ready):
     """Otherwise every restart before the queue drains adds another copy of
     the same question."""
     _diarized(conn)
@@ -556,7 +589,7 @@ def test_an_app_start_with_no_provider_row_queues_nothing_for_a_back_catalogue(
 
 
 def test_the_pass_waits_and_catches_up_at_the_first_start_after_somebody_chose(
-    conn, tmp_path, scratch_paths
+    conn, tmp_path, scratch_paths, ollama_ready
 ):
     """Nothing is lost by waiting: the sweep marks nothing asked, so the four
     conditions still hold the next time the app starts."""
@@ -568,3 +601,177 @@ def test_the_pass_waits_and_catches_up_at_the_first_start_after_somebody_chose(
     _start_the_app_once(tmp_path / "test.db")
 
     assert _queued_media(conn) == sorted(ids)
+
+
+# --- a provider that cannot answer (TASK-089.10) -------------------------------------
+#
+# The automatic pass has the same blind spot the AI panel had: a provider was
+# chosen, it cannot answer, and the job was queued anyway - so a transcript
+# that finished cleanly left an LLM_FAILED row on the board for somebody to
+# read. Here it skips, and the run carries a note that says what to fix.
+#
+# Only `finalize.run` ever writes a note; `queue_speaker_pass` clears one,
+# where its enqueue succeeds. The writing is not shared with it because its
+# `None` already means five different things (no clusters, every cluster
+# named, no provider, private, cannot answer), and a caller that read `None`
+# as "the provider cannot answer" would put "start Ollama" on every undiarized
+# run. TASK-089.08 is the lesson about notes that are not true - and the
+# clearing is the other half of it: see
+# test_the_sweep_clears_the_note_when_it_finally_asks below, and
+# tests/test_llm_speakers.py for the panel, which is where the note's own
+# sentence sends the reader.
+
+
+def _unreachable(self):
+    raise base.NothingAnswered(f"Ollama is not running at {self.host}")
+
+
+def _finalize_ctx(conn, media_id, run_id, words=None):
+    """A `RunnerContext` for finalize, the shape tests/test_pipeline_e2e.py builds."""
+    job_id = seed_job(conn, media_id)
+    job = dict(conn.execute("SELECT * FROM job WHERE id=?", (job_id,)).fetchone())
+    ctx = runner.RunnerContext(
+        conn=conn,
+        job=job,
+        params=json.loads(job["params_json"] or "{}"),
+        report=lambda p: None,
+        cancelled=lambda: False,
+        media_path=None,
+    )
+    ctx.state.update(run_id=run_id, words=words if words is not None else default_words())
+    return ctx
+
+
+def _run_params(conn, run_id):
+    row = conn.execute("SELECT params_json FROM run WHERE id=?", (run_id,)).fetchone()
+    return json.loads(row["params_json"] or "{}")
+
+
+def _diarized_words():
+    """The default transcript with two clusters on it, so there is a question."""
+    words = default_words()
+    for i, word in enumerate(words):
+        word["speaker"] = "SPEAKER_00" if i < 20 else "SPEAKER_01"
+    return words
+
+
+def _undiarized_words():
+    """The same words with nobody attached: one voice, or diarization off."""
+    words = default_words()
+    for word in words:
+        word["speaker"] = None
+    return words
+
+
+def test_a_provider_that_cannot_answer_queues_nothing_and_says_what_to_fix(
+    conn, own_work_dir, monkeypatch
+):
+    media_id = seed_media(conn, title="Guide")
+    words = _diarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+    _set_provider(conn, "ollama")
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", _unreachable)
+
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    assert _queued(conn) == []
+    note = _run_params(conn, run_id).get("speaker_pass_note", "")
+    assert "not running" in note
+    assert "start it" in note
+    # Two sentences, not one long one. `available()` ends none of its four
+    # answers with a full stop - "(start it, then reload)", "(pulled: none)" -
+    # so splicing one straight in runs the provider's sentence into ours.
+    assert "reload). The transcript" in note
+
+
+def test_the_sweep_queues_nothing_for_a_provider_that_cannot_answer(
+    conn, own_work_dir, monkeypatch
+):
+    """`queue_speaker_pass` keeps a check of its own, so the startup sweep gets
+    this for free rather than through a second code path."""
+    media_id = seed_media(conn, title="Guide")
+    run_id = seed_run(conn, media_id, words=_diarized_words())
+    _set_provider(conn, "ollama")
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", _unreachable)
+
+    assert finalize.sweep_speaker_passes(conn) == []
+    assert finalize.queue_speaker_pass(conn, media_id, run_id, ["SPEAKER_00"]) is None
+    assert _queued(conn) == []
+
+
+def test_a_run_with_no_clusters_gets_no_note(conn, own_work_dir, monkeypatch):
+    """The false-note guard. `queue_speaker_pass` returns None for a run nobody
+    diarized, and reading that as "the provider cannot answer" would print
+    "start Ollama" on every single-speaker recording."""
+    media_id = seed_media(conn, title="Guide")
+    words = _undiarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+    _set_provider(conn, "ollama")
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", _unreachable)
+
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    assert "speaker_pass_note" not in _run_params(conn, run_id)
+
+
+def test_a_private_recording_gets_no_note_either(conn, own_work_dir, monkeypatch):
+    """A pinned recording is not sent to a cloud provider by a pipeline step,
+    and that is a rule rather than a problem: there is nothing to fix."""
+    media_id = seed_media(conn, title="Guide")
+    words = _diarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+    _set_provider(conn, "openai")
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (media_id,))
+        conn.commit()
+
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    assert "speaker_pass_note" not in _run_params(conn, run_id)
+
+
+def test_the_note_is_cleared_once_the_pass_is_queued(conn, own_work_dir, ollama_ready):
+    """The shape `diarize._note_run` already uses: a note that survived the fix
+    is a note that lies. Re-transcribing is what runs finalize again."""
+    media_id = seed_media(conn, title="Guide")
+    words = _diarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+    _set_provider(conn, "ollama")
+    with db.LOCK:
+        conn.execute(
+            "UPDATE run SET params_json=? WHERE id=?",
+            (json.dumps({"speaker_pass_note": "a note from before the fix"}), run_id),
+        )
+        conn.commit()
+
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    assert len(_queued(conn)) == 1
+    assert "speaker_pass_note" not in _run_params(conn, run_id)
+
+
+def _note_on_the_run(conn, run_id, note):
+    with db.LOCK:
+        conn.execute(
+            "UPDATE run SET params_json=? WHERE id=?",
+            (json.dumps({"speaker_pass_note": note}), run_id),
+        )
+        conn.commit()
+
+
+def test_the_sweep_clears_the_note_when_it_finally_asks(conn, ollama_ready):
+    """The path that actually recovers, and the one `run` cannot cover.
+
+    Ollama was down when the recording finished, so the run carries the note.
+    What fixes it is Robert starting the daemon and the app starting again -
+    the sweep, not a re-transcription. And the sweep looks at each recording
+    once: its `NOT EXISTS (… kind='speakers')` means that after the pass has
+    answered nothing ever visits that row again. A note left on then is a note
+    that lies for good, which is the whole of TASK-089.08's lesson.
+    """
+    media_id, run_id = _diarized(conn)
+    _set_provider(conn, "ollama")
+    _note_on_the_run(conn, run_id, "The speakers were not named automatically: Ollama is not running.")
+
+    assert finalize.sweep_speaker_passes(conn) != []
+    assert "speaker_pass_note" not in _run_params(conn, run_id)

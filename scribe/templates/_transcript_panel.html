@@ -20,6 +20,9 @@
       folders      [{id, name, parent_id, depth}] for the Move select
       diarization_note  what the diarize stage left on this run when it could
                    not work the speakers out, or "" when it could
+      speaker_pass_note  what finalize left when the speaker-naming pass could
+                   not be asked - the provider was chosen and cannot answer -
+                   or "" when it was queued
       hide_ts_key  the localStorage key the timestamp toggle persists under
 
   What the markup promises app.js, so it reads attributes and computes nothing
@@ -165,6 +168,19 @@
         {{ diarization_note }}
         <a href="/settings?section=defaults#hf-token">Open the token field</a>
       </p>
+      {% endif %}
+
+      {% if speaker_pass_note %}
+      {# The voices were separated and nobody could be asked what they are
+         called (TASK-089.10): the provider was chosen and could not answer.
+         Beside the note above because they are different absences - one has
+         no speakers at all, this one has speakers with no names - and a run
+         can be short of both.
+
+         No link here. The fix travels in the sentence and it is not always a
+         screen: "start it" and `ollama pull …` are typed in a terminal, and
+         an anchor under those would name a page that cannot do either. #}
+      <p class="hint" data-speaker-pass-note>{{ speaker_pass_note }}</p>
       {% endif %}
 
       {% if clean_reading %}

@@ -1984,3 +1984,45 @@ def test_the_panel_on_its_own_carries_the_note_as_well(client, conn, transcribed
 
     assert "<html" not in body
     assert "data-diarization-note" in body
+
+
+# --- a speaker pass that could not be asked says so (TASK-089.10) --------------
+
+
+def _speaker_pass_note_on_the_run(conn, run_id, note):
+    with db.LOCK:
+        conn.execute(
+            "UPDATE run SET params_json=? WHERE id=?",
+            (json.dumps({"speaker_pass_note": note}), run_id),
+        )
+        conn.commit()
+
+
+def _speaker_pass_note(body):
+    found = re.search(r"<p[^>]*data-speaker-pass-note[^>]*>(.*?)</p>", body, re.S)
+    return None if found is None else " ".join(found.group(1).split())
+
+
+def test_a_run_whose_speaker_pass_could_not_be_asked_says_so_on_the_page(
+    client, conn, transcribed
+):
+    """TASK-089.08's lesson, applied before the defect can repeat: a note
+    written to `run.params_json` and rendered by nothing says it only to the
+    database. This note exists to be read, so it is on the page beside the
+    diarization one."""
+    _speaker_pass_note_on_the_run(
+        conn,
+        transcribed["run"],
+        "The speakers were not named automatically: Ollama is not running at "
+        "http://127.0.0.1:11434 (start it, then reload).",
+    )
+
+    line = _speaker_pass_note(client.get(f"/media/{transcribed['media']}").text)
+
+    assert line is not None, "the page says nothing about the pass it never asked"
+    assert "not running" in line
+    assert "start it" in line
+
+
+def test_a_run_whose_speakers_were_asked_for_says_nothing_about_a_pass(client, transcribed):
+    assert "data-speaker-pass-note" not in client.get(f"/media/{transcribed['media']}").text

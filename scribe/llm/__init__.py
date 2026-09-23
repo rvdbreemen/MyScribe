@@ -79,6 +79,55 @@ def get_provider(name: str, conn: sqlite3.Connection | None = None, **kwargs) ->
     return provider_class(name)(conn, **kwargs)
 
 
+def why_unavailable(
+    conn: sqlite3.Connection | None, provider_name: str, model: str = ""
+) -> str:
+    """Why this provider cannot answer `model` right now, or "" when it can.
+
+    The question the web panel and the finalize stage both ask before they
+    write a job row (TASK-089.10). Without it a skipped key, a stopped Ollama
+    or a model nobody pulled became an LLM_FAILED job on the board - three
+    retries deep on Ollama - which is a failure somebody has to read instead
+    of a sentence naming the fix.
+
+    Here rather than in either caller: "build it, ask `available()`, swallow
+    an `LlmError`, close it" is four lines that would drift in two spellings,
+    and the runner child must be able to ask it without importing the web
+    layer (ADR-001 keeps that boundary in both directions).
+
+    No remote call, and nothing is loaded. `available()` is the one provider
+    method the seam defines as answerable without a request to somebody
+    else's API: key presence for a cloud provider, and for the local runtime
+    one loopback GET bounded by `PROBE_TIMEOUT` with `trust_env=False`
+    (TASK-089.05 - a proxy variable made a running Ollama read as stopped).
+
+    `model` reaches only a local provider's constructor, because only a local
+    runtime's availability depends on one: `openai_like` takes no `model=`
+    and answers "is there a key" whatever is asked of it. Passing it matters
+    on Ollama, where the id the job would carry is the id to ask about -
+    `OllamaProvider.__init__` otherwise falls back to the saved row, which is
+    the model a *different* request would use.
+
+    An `LlmError` is reported as the reason rather than raised, the way
+    `ai_ui.provider_rows` treats the same call: a provider having a bad day
+    blocks the request and does not take the page down with it. Nothing else
+    is caught - a bug in here must not fail open into "ready".
+    """
+    try:
+        cls = provider_class(provider_name)
+    except ValueError as exc:
+        return str(exc)
+
+    provider = cls(conn, **({"model": model} if model and cls.is_local else {}))
+    try:
+        ready, why = provider.available()
+    except LlmError as exc:
+        return str(exc)
+    finally:
+        provider.close()
+    return "" if ready else why
+
+
 def chat(
     conn: sqlite3.Connection,
     *,
@@ -138,6 +187,7 @@ __all__ = [
     "provider_class",
     "retarget",
     "setting_key",
+    "why_unavailable",
     "with_retry",
 ]
 

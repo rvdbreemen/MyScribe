@@ -224,10 +224,32 @@ def diarization_note(run: dict | None) -> str:
     key is the whole question. It has been written since the assembled 3.1
     fallback shipped and was read by nothing until TASK-089.08 - "says so on
     the run" said it only to the database.
+    """
+    return _run_note(run, "diarization_note")
 
-    A run row whose `params_json` is not JSON is a run with no note, not a
-    500: this is a line beside a transcript, and the transcript is the thing
-    the page exists to show.
+
+def speaker_pass_note(run: dict | None) -> str:
+    """What finalize left on this run about the speaker pass it could not ask.
+
+    The pass names the clusters diarization found, and it is queued by itself
+    after every transcription. When the chosen provider cannot answer - no
+    key, no daemon, a model nobody pulled - nothing is queued and the stage
+    writes this instead (`finalize.SPEAKER_PASS_NOTE`), so the reader is told
+    rather than left with "Speaker 1" and no explanation.
+
+    Beside the diarization note and never instead of it: they are different
+    questions (who was speaking at all, versus what those voices are called)
+    and a run can be short of both.
+    """
+    return _run_note(run, "speaker_pass_note")
+
+
+def _run_note(run: dict | None, key: str) -> str:
+    """One note off `run.params_json`, or "".
+
+    A run row whose params are not JSON has no note, not a 500: this is a line
+    beside a transcript, and the transcript is the thing the page exists to
+    show.
     """
     if run is None:
         return ""
@@ -235,7 +257,7 @@ def diarization_note(run: dict | None) -> str:
         stored = json.loads(run["params_json"] or "{}")
     except (TypeError, ValueError):
         return ""
-    return str(stored.get("diarization_note") or "")
+    return str(stored.get(key) or "")
 
 
 def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
@@ -280,6 +302,7 @@ def page_context(conn: sqlite3.Connection, media_id: int) -> dict:
         "clean_reading": reading,
         "cleanup_status": cleanup,
         "diarization_note": diarization_note(run),
+        "speaker_pass_note": speaker_pass_note(run),
         "speakers": speakers,
         "colors": {s["cluster"]: s["color"] for s in speakers if s["color"]},
         "new_speaker": NEW_SPEAKER,

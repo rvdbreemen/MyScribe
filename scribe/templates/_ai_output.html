@@ -21,6 +21,9 @@
                for the same reason `stale` is: what is there is real, and
                presenting it as a finished answer is the lie
       job      the queued or running llm job for this kind, or none
+      blocked  {why, anchor} when this request was not queued because the
+               provider cannot answer, or none. Filled by the POST alone, so
+               a page render and a two-second poll still probe nothing
       poll     seconds between polls while one is running
 
   The polling attributes are on the section only while a job exists, so a
@@ -54,6 +57,23 @@
     </p>
     {% endif %}
   </header>
+
+  {% if panel.blocked %}
+  {# The question was not asked, and this says why (TASK-089.10). Before the
+     card existed, a skipped key or a stopped Ollama was queued anyway and came
+     back as an LLM_FAILED row on the jobs board - a failure somebody has to go
+     and read instead of a sentence beside the button they pressed.
+
+     The link is here only when the fix is in Settings, because the anchor
+     belongs to the reason: `ollama pull …` and "start it" are done in a
+     terminal on this machine, and a Settings link under those would name a
+     screen that cannot do either. The sentence itself is the provider's own
+     and already names the command. #}
+  <p class="hint blocked" data-blocked>
+    {{ panel.blocked.why }}
+    {% if panel.blocked.anchor %}<a href="{{ panel.blocked.anchor }}">Open Settings &gt; AI providers</a>{% endif %}
+  </p>
+  {% endif %}
 
   {% if panel.job %}
   <p class="hint working">

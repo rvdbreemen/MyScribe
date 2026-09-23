@@ -2286,7 +2286,30 @@ def apply_speakers(
             (named if written else left).append(cluster)
         conn.commit()
 
+    _clear_speaker_pass_note(conn, run_id)
     return {"named": named, "left": left, "threshold": SPEAKER_CONFIDENCE_THRESHOLD}
+
+
+def _clear_speaker_pass_note(conn: sqlite3.Connection, run_id: int) -> None:
+    """Take off the note that says nobody could be asked who these people are.
+
+    Imported lazily and through a function, the way `library_max_name` is and
+    for the same reason: `scribe.stages.finalize` is a stage, and a top-level
+    import here would be a cycle for the sake of one call.
+
+    Unconditional, and that is the whole of it. The note is cleared where the
+    answer lands rather than only where a pass is queued, because the panel is
+    what its own sentence tells the reader to press - and the startup sweep
+    skips any recording that has a `speakers` answer, so after this nothing
+    ever visits that run again. Nor does it wait for a confident name: what
+    shuts the sweep out is the `llm_output` row, so a vague answer would leave
+    "Ollama is not running" standing beside the clusters for good. That is the
+    TASK-089.08 defect, and this is the path the note recommends
+    (TASK-089.10).
+    """
+    from scribe.stages import finalize
+
+    finalize.clear_speaker_pass_note(conn, run_id)
 
 
 def library_max_name() -> int:

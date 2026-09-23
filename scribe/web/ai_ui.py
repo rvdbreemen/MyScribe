@@ -152,13 +152,18 @@ SETTINGS_ANCHOR = "/settings#llm-providers"
 """Where the provider is chosen, in one place: the panel's sentence, the
 settings line and the bulk action's notice all point at this."""
 
-_NO_PROVIDER_LEAD = (
+_NO_PROVIDER_WORDS = (
     "Nothing is sent until somebody has chosen: choose a provider in "
-    f"Settings > AI providers ({SETTINGS_ANCHOR})"
+    "Settings > AI providers"
 )
 """The half of the sentence that is true on every screen (ADR-016). One
 spelling, because the panel, the chat page and the bulk pass all have to say
 it and three wordings would be three answers to the same question."""
+
+_NO_PROVIDER_LEAD = f"{_NO_PROVIDER_WORDS} ({SETTINGS_ANCHOR})"
+"""The same words with the address spelled out, for the channels that carry no
+markup: an `HTTPException` detail and the bulk action's flash are plain text,
+so a link there can only be a URL a reader copies."""
 
 NO_PROVIDER_YET = f"{_NO_PROVIDER_LEAD}."
 """What a screen with no provider select is told: the library's bulk action,
@@ -168,6 +173,11 @@ NO_PROVIDER_FOR_REQUEST = f"{_NO_PROVIDER_LEAD}, or pick one for this request."
 """What the panel and the chat form are told. They each carry a select, so the
 second way out is real there - and only there, or the sentence sends a person
 who ticked forty rows looking for a control that screen does not have."""
+
+NO_PROVIDER_IN_CARD = f"{_NO_PROVIDER_WORDS}, or pick one for this request."
+"""The panel's card says it without the bare URL, because the card carries the
+anchor as a link somebody can click (TASK-089.10). The words are the same
+words: the sentence is one spelling and only its address changes form."""
 
 
 def known_models(conn: sqlite3.Connection, provider_name: str) -> list[str]:
@@ -600,8 +610,15 @@ def panel_for(
     *,
     job: dict | None = None,
     run_id: int | None = None,
+    blocked: dict | None = None,
 ) -> dict:
-    """One output section: the kind, what is stored, and what is on its way."""
+    """One output section: the kind, what is stored, and what is on its way.
+
+    `blocked` is the card for a request that was not queued, and it is filled
+    by the POST alone (TASK-089.10). Deriving it here would put a loopback GET
+    on every transcript render and on every two-second poll, for a question
+    only somebody pressing a button is asking.
+    """
     spec = tasks.task_spec(kind)
     row = latest_output(conn, media_id, kind)
     view = output_view(media_id, kind, row["content"]) if row is not None else None
@@ -617,6 +634,7 @@ def panel_for(
         "stale": is_stale(row, run_id),
         "truncated": was_truncated(row),
         "job": job,
+        "blocked": blocked,
         "poll": POLL_SECONDS,
     }
 
@@ -744,19 +762,63 @@ def _provider(name: str) -> str:
     return name
 
 
-def _chosen_provider(conn: sqlite3.Connection, asked: str) -> str:
-    """Who answers this one request: the form's pick, else the stored choice.
+def _named_provider(conn: sqlite3.Connection, asked: str) -> str:
+    """Who this request names: the form's pick, else the stored choice, else "".
 
     Somebody has chosen when this request names a provider or the row does
-    (ADR-016); with neither, the request is refused rather than sent to
+    (ADR-016). What an empty answer means is the caller's to decide - the
+    panel renders the card, the screens with no select refuse - and the
+    reading itself is one spelling because it is one question.
+    """
+    return (asked or "").strip() or default_provider(conn)
+
+
+def _chosen_provider(conn: sqlite3.Connection, asked: str) -> str:
+    """The provider for a screen that can only answer in plain text.
+
+    With neither a pick nor a row the request is refused rather than sent to
     whichever provider the app happens to ship with. Before `_provider`,
     which would turn "" into an unknown-provider message that names every
     provider except the missing choice.
+
+    The rail's POST does not come through here: it renders the card instead,
+    because a detail string reaches the browser through `textContent` and an
+    anchor in it arrives as inert text (TASK-089.10). This is what the chat
+    form and the library's bulk action still use, and they keep the 400.
     """
-    name = (asked or "").strip() or default_provider(conn)
+    name = _named_provider(conn, asked)
     if not name:
         raise HTTPException(status_code=400, detail=NO_PROVIDER_FOR_REQUEST)
     return _provider(name)
+
+
+def _blocked_card(conn: sqlite3.Connection, provider_name: str, model: str) -> dict | None:
+    """The card for a provider that cannot answer, or None when it can.
+
+    The sentence is the provider's own (`available()` already owns all four of
+    them), and what is added here is where to go. The anchor travels with the
+    reason rather than with the card: a missing key is fixed in Settings, and
+    a daemon that is down or a model that was never pulled is fixed by a
+    command on this machine - a Settings link there would send a reader to a
+    screen that cannot start a daemon (TASK-089.10).
+
+    The class is resolved once, and a name that does not resolve is a card
+    like any other. `why_unavailable` answers that case with the registry's
+    own sentence, so asking `provider_class` a second time for the anchor
+    would raise where the reason had already been found - a 500 out of a route
+    that is here to replace one (found in review 2026-09-23). `ai_run`
+    validates the name before this is reached; callers that do not still get
+    a card, and a saved "openai-router" is fixed in Settings.
+    """
+    why = llm.why_unavailable(conn, provider_name, model)
+    if not why:
+        return None
+    try:
+        local = llm.provider_class(provider_name).is_local
+    except ValueError:
+        local = False
+    return {"why": why, "anchor": "" if local else SETTINGS_ANCHOR}
+
 
 
 def _refuse_if_private(conn: sqlite3.Connection, media_id: int, provider_name: str) -> None:
@@ -800,7 +862,14 @@ def _require_transcript(conn: sqlite3.Connection, media_id: int) -> dict:
     return run
 
 
-def _one_panel(request: Request, conn: sqlite3.Connection, media_id: int, kind: str) -> Response:
+def _one_panel(
+    request: Request,
+    conn: sqlite3.Connection,
+    media_id: int,
+    kind: str,
+    *,
+    blocked: dict | None = None,
+) -> Response:
     """One output section, rendered against the run that is current now.
 
     The run is looked up here rather than passed in because a panel outlives
@@ -815,8 +884,22 @@ def _one_panel(request: Request, conn: sqlite3.Connection, media_id: int, kind: 
         kind,
         job=pending_jobs(conn, media_id).get(kind),
         run_id=run["id"] if run else None,
+        blocked=blocked,
     )
     return render_page(request, "_ai_output.html", panel=panel)
+
+
+def _blocked_panel(
+    request: Request, conn: sqlite3.Connection, media_id: int, kind: str, card: dict
+) -> Response:
+    """The panel with the card, and no job row behind it.
+
+    200 and the panel on the non-htmx path too, rather than the 303 a queued
+    request gets: that redirect would land on a page carrying neither a job
+    nor a card, which is a button that did nothing at all. No `jobs-changed`
+    trigger either - nothing was queued, so the board has not moved.
+    """
+    return _one_panel(request, conn, media_id, kind, blocked=card)
 
 
 @router.get("/media/{media_id}/ai/{kind}", include_in_schema=False)
@@ -868,14 +951,25 @@ def ai_run(
     the runner child makes the call. The checks in front of the row are the
     ones that cost nothing and would otherwise become a failed job somebody has
     to read - an unknown kind, a recording with no words, a missing custom
-    prompt, the pin, and the identical request that is already on its way.
+    prompt, the pin, a window the kind cannot fit in, a provider that cannot
+    answer, and the identical request that is already on its way.
+
+    Two of those answer with the panel and a card rather than with a status
+    code: nobody has chosen, and the chosen provider cannot answer. Both are
+    things a person fixes, and a 400 whose detail app.js writes with
+    `textContent` cannot carry the link to where (TASK-089.10).
     """
     conn = request.app.state.conn
     library._get_media(conn, media_id)
     spec = _spec(kind)
     _require_transcript(conn, media_id)
 
-    provider_name = _chosen_provider(conn, provider)
+    provider_name = _named_provider(conn, provider)
+    if not provider_name:
+        return _blocked_panel(
+            request, conn, media_id, kind, {"why": NO_PROVIDER_IN_CARD, "anchor": SETTINGS_ANCHOR}
+        )
+    _provider(provider_name)
     _refuse_if_private(conn, media_id, provider_name)
 
     asked = (prompt or "").strip()
@@ -893,6 +987,14 @@ def ai_run(
     }
     if asked:
         params["prompt"] = asked
+
+    # Before the window check, and that ordering is the whole of the "one
+    # probe" promise: `_refuse_if_window_too_small` reaches the daemon itself
+    # through `context_tokens_for` -> `window_for_model` -> /api/show, so a
+    # blocked request asked after it would cost two calls instead of one.
+    blocked = _blocked_card(conn, provider_name, params["model"])
+    if blocked is not None:
+        return _blocked_panel(request, conn, media_id, kind, blocked)
 
     _refuse_if_window_too_small(spec, provider_name, params["model"], custom_prompt=asked)
 

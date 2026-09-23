@@ -35,6 +35,7 @@ outcome is recorded in the stage's event instead of raised.
 from __future__ import annotations
 
 import bisect
+import json
 import sqlite3
 import time
 from typing import TYPE_CHECKING, Sequence
@@ -139,6 +140,14 @@ def run(ctx: "RunnerContext") -> None:
         )
         if speaker_job is not None:
             jobs.emit(ctx.conn, ctx.job["id"], "speakers-queued", job_id_queued=speaker_job)
+            # The note is cleared by `queue_speaker_pass` itself, where every
+            # caller's success goes through.
+        else:
+            # Asked again rather than read off `speaker_job`: None means five
+            # different things here, and only one of them is worth telling
+            # somebody about (`_speaker_pass_blocked`).
+            blocked = _speaker_pass_blocked(ctx.conn, ctx.job["media_id"], speakers)
+            _note_run(ctx.conn, run_id, _speaker_pass_note(blocked) if blocked else "")
     except Exception as exc:  # noqa: BLE001 - recorded below, never swallowed silently
         applog.log(
             "finalize.after_commit_failed",
@@ -199,7 +208,17 @@ def sweep_speaker_passes(conn: sqlite3.Connection) -> list[int]:
 
     # `m.private = 0` above only reads the recording's own pin; a folder above
     # it pinned private makes it private too (found in review 2026-09-11).
+    from scribe import llm
     from scribe.llm import privacy
+
+    # Asked once, before the loop. `queue_speaker_pass` asks it again per row
+    # and that is what makes the sweep correct; this is what keeps it quick.
+    # A loopback probe is cheap when the port refuses, but a firewall that
+    # drops instead of refusing costs PROBE_TIMEOUT - and this runs from the
+    # app's lifespan, once per catch-up row, at every start.
+    chosen = llm.default_provider(conn)
+    if rows and chosen and _cannot_answer(conn, chosen):
+        return []
 
     queued: list[int] = []
     for row in rows:
@@ -445,8 +464,15 @@ def queue_speaker_pass(
         return None
     if not llm.provider_class(provider_name).is_local and privacy.is_private(conn, media_id):
         return None
+    if _cannot_answer(conn, provider_name):
+        # No key, no daemon, or a model nobody pulled. Queueing anyway is how
+        # a clean transcription used to leave an LLM_FAILED row on the board -
+        # three retries deep on Ollama - for a pass nobody asked for out loud.
+        # Here rather than only in `run`, so the startup sweep is covered by
+        # the same line instead of by a second one that could drift.
+        return None
 
-    return jobs.enqueue(
+    job_id = jobs.enqueue(
         conn,
         llm_stage.JOB_TYPE,
         media_id=media_id,
@@ -458,6 +484,126 @@ def queue_speaker_pass(
             "run_id": run_id,
         },
     )
+    # The pass is on its way, so a note saying it could not be asked has
+    # stopped being true. Here and not only in `run`, because the sweep is the
+    # path that recovers: the daemon is started, the app starts, the sweep
+    # queues the pass - and then never looks at this recording again, since its
+    # own query skips anything with a `speakers` answer. A note cleared
+    # nowhere else would outlive the fix for good (TASK-089.08).
+    clear_speaker_pass_note(conn, run_id)
+    return job_id
+
+
+SPEAKER_PASS_NOTE = (
+    "The speakers were not named automatically: {why} The transcript is "
+    "complete and the clusters are there - ask again from the AI panel on "
+    "this page once that is sorted."
+)
+"""What a run says when the pass could not be asked (TASK-089.10).
+
+The provider's own sentence carries the fix, because `available()` already
+owns all four of them and a second wording here would be a second answer to
+the same question. Rendered beside the diarization note by
+`_transcript_panel.html`: TASK-089.08 is the lesson that a note nobody renders
+says what it knows only to the database."""
+
+SPEAKER_PASS_KEY = "speaker_pass_note"
+
+
+def _speaker_pass_note(why: str) -> str:
+    """The note, with the provider's sentence closed off before ours begins.
+
+    `available()` ends none of its four answers with a full stop - they finish
+    on "(start it, then reload)", "(pulled: none)", an environment variable -
+    because each is also rendered mid-line beside a provider row. Spliced in
+    raw they run into the sentence after them, so the stop is added here
+    rather than asked of the provider (found in review 2026-09-23).
+    """
+    return SPEAKER_PASS_NOTE.format(why=why.rstrip(" .") + ".")
+
+
+def clear_speaker_pass_note(conn: sqlite3.Connection, run_id: int) -> None:
+    """Take the note off: the pass is on its way, or it has answered.
+
+    Public because the note outlives this module. It is cleared where a pass
+    is queued (`queue_speaker_pass`, which the startup sweep goes through) and
+    where an answer lands (`llm.tasks.apply_speakers`, which is the AI panel -
+    the fix the note's own sentence names). Neither of those two ever visits
+    the other's recording: the sweep skips anything that has a `speakers`
+    answer, so a note cleared in only one of them lies for good in the other
+    (TASK-089.08, TASK-089.10).
+    """
+    _note_run(conn, run_id, "")
+
+
+def _cannot_answer(conn: sqlite3.Connection, provider_name: str) -> str:
+    """Why the chosen provider cannot answer a speaker pass, or "".
+
+    One helper for both callers - `queue_speaker_pass`, which is what the
+    startup sweep goes through, and `run`, which writes the note - because the
+    two must never disagree about what "cannot answer" means. The model is the
+    one the pass would carry in its params, not the provider's class default
+    (TASK-089.06: a saved embedder must not read as ready).
+    """
+    from scribe import llm
+
+    return llm.why_unavailable(conn, provider_name, llm.default_model(conn, provider_name))
+
+
+def _speaker_pass_blocked(
+    conn: sqlite3.Connection, media_id: int, clusters: Sequence[str]
+) -> str:
+    """Why *this* run has no speaker pass, but only when it is a problem to fix.
+
+    `queue_speaker_pass` returns None for five different reasons, and four of
+    them are silence rather than trouble: nothing was diarized, every cluster
+    is already named, nobody chose a provider, the recording is pinned. A
+    caller that read None as "the provider cannot answer" would put "start
+    Ollama" on every single-speaker recording - the false note TASK-089.08 is
+    a lesson about. So the conditions are asked again here, and only the fifth
+    reason becomes a sentence.
+    """
+    if not clusters:
+        return ""
+
+    from scribe import llm
+    from scribe.llm import privacy
+
+    provider_name = llm.default_provider(conn)
+    if not provider_name:
+        return ""
+    if not llm.provider_class(provider_name).is_local and privacy.is_private(conn, media_id):
+        return ""
+    return _cannot_answer(conn, provider_name)
+
+
+def _note_run(conn: sqlite3.Connection, run_id: int, note: str) -> None:
+    """Put the speaker-pass note on the run, or take it off.
+
+    The shape `diarize._note_run` already uses, and for its reason: a note
+    that survived the fix is a note that lies, so the pass being queued is
+    what removes it. Takes the connection rather than the context because the
+    clearing happens in `queue_speaker_pass`, which the startup sweep calls
+    with no runner anywhere - and the sweep is the path that actually
+    recovers. Merged into `params_json` rather than written over it: the
+    diarization stage keeps two keys of its own in there.
+    """
+    with db.LOCK:
+        row = conn.execute("SELECT params_json FROM run WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            return
+        try:
+            params = json.loads(row["params_json"] or "{}")
+        except ValueError:
+            params = {}
+        if note:
+            params[SPEAKER_PASS_KEY] = note
+        elif SPEAKER_PASS_KEY not in params:
+            return  # nothing to clear; leave the row and its other keys alone
+        else:
+            params.pop(SPEAKER_PASS_KEY)
+        conn.execute("UPDATE run SET params_json=? WHERE id=?", (json.dumps(params), run_id))
+        conn.commit()
 
 
 def _commit(

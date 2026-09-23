@@ -108,6 +108,28 @@ def no_ollama(monkeypatch):
 
 
 @pytest.fixture
+def ollama_ready(monkeypatch):
+    """A daemon that is up and has the three model ids these tests name.
+
+    Requested by every test that means to exercise what happens *after* the
+    readiness check TASK-089.10 put in front of the enqueue - the params, the
+    double-click guard, the panel that polls. It is not a loosening of those
+    tests: `conftest` stubs `ollama_setup.state` and never
+    `OllamaProvider.tags`, so until this fixture existed they were answered by
+    whatever happened to be pulled on the machine running them. `qwen3.5:4b`
+    is on Robert's, which is why they were green; `a` and `b` are on nobody's.
+
+    The ids are listed rather than waved through, so a test that starts naming
+    a fourth one has to say so here.
+    """
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        _tags(("qwen3.5:4b", ["completion"]), ("a", ["completion"]), ("b", ["completion"])),
+    )
+
+
+@pytest.fixture
 def media(conn):
     """One recording with the default four-sentence transcript."""
     media_id = seed_media(conn, title="Guide", duration=20.0)
@@ -321,7 +343,9 @@ def test_summary_line_names_the_provider_and_model_and_is_quiet_about_local_ones
     assert ai_ui.summary_line([], "") == "no provider"
 
 
-def test_posting_an_action_enqueues_an_llm_job_with_the_right_params(client, conn, media):
+def test_posting_an_action_enqueues_an_llm_job_with_the_right_params(
+    client, conn, media, ollama_ready
+):
     resp = client.post(
         f"/media/{media}/ai/summary",
         data={"provider": "ollama", "model": "qwen3.5:4b"},
@@ -341,7 +365,7 @@ def test_posting_an_action_enqueues_an_llm_job_with_the_right_params(client, con
     }
 
 
-def test_a_custom_action_carries_the_typed_prompt_into_the_job(client, conn, media):
+def test_a_custom_action_carries_the_typed_prompt_into_the_job(client, conn, media, ollama_ready):
     client.post(
         f"/media/{media}/ai/custom",
         data={"provider": "ollama", "model": "qwen3.5:4b", "prompt": "What about the towel?"},
@@ -362,7 +386,9 @@ def test_a_custom_action_without_a_prompt_is_refused_before_a_job_exists(client,
     assert jobs_of(conn) == []
 
 
-def test_clicking_the_same_action_again_while_it_runs_queues_one_job(client, conn, media):
+def test_clicking_the_same_action_again_while_it_runs_queues_one_job(
+    client, conn, media, ollama_ready
+):
     """Five clicks on Summary is one question asked five times, and on a cloud
     provider it is five paid calls that all return the same answer. The panel
     polls and shows "Working…", but nothing stopped the button being pressed
@@ -381,7 +407,7 @@ def test_clicking_the_same_action_again_while_it_runs_queues_one_job(client, con
     assert f'hx-get="/media/{media}/ai/summary"' in again.text
 
 
-def test_a_finished_action_can_be_asked_again(client, conn, media):
+def test_a_finished_action_can_be_asked_again(client, conn, media, ollama_ready):
     """The guard is about a job that is still queued or running, not about a
     kind that has ever been asked - "regenerate" has to keep working."""
     form = {"provider": "ollama", "model": "qwen3.5:4b"}
@@ -395,7 +421,7 @@ def test_a_finished_action_can_be_asked_again(client, conn, media):
     assert len(jobs_of(conn)) == 2
 
 
-def test_a_different_question_is_a_different_job(client, conn, media):
+def test_a_different_question_is_a_different_job(client, conn, media, ollama_ready):
     """`custom` is the kind where collapsing by (media, kind) would be wrong:
     two questions about one recording are two questions."""
     form = {"provider": "ollama", "model": "qwen3.5:4b"}
@@ -410,7 +436,9 @@ def test_a_different_question_is_a_different_job(client, conn, media):
     ]
 
 
-def test_asking_the_same_kind_of_a_different_model_is_a_different_job(client, conn, media):
+def test_asking_the_same_kind_of_a_different_model_is_a_different_job(
+    client, conn, media, ollama_ready
+):
     """Changing the model and pressing again is a deliberate second request -
     the whole reason the panel carries a model select."""
     client.post(f"/media/{media}/ai/summary", data={"provider": "ollama", "model": "a"}, headers=HX)
@@ -419,7 +447,9 @@ def test_asking_the_same_kind_of_a_different_model_is_a_different_job(client, co
     assert [json.loads(j["params_json"])["model"] for j in jobs_of(conn)] == ["a", "b"]
 
 
-def test_posting_an_action_answers_with_a_panel_that_polls_until_a_row_exists(client, conn, media):
+def test_posting_an_action_answers_with_a_panel_that_polls_until_a_row_exists(
+    client, conn, media, ollama_ready
+):
     resp = client.post(f"/media/{media}/ai/summary", data={"provider": "ollama"}, headers=HX)
 
     body = resp.text
@@ -803,7 +833,7 @@ def test_a_private_media_refuses_a_forced_cloud_provider_with_403_and_no_job(cli
     assert jobs_of(conn) == []
 
 
-def test_a_private_media_still_allows_the_local_provider(client, conn, media):
+def test_a_private_media_still_allows_the_local_provider(client, conn, media, ollama_ready):
     set_private(conn, media_id=media)
 
     resp = client.post(f"/media/{media}/ai/summary", data={"provider": "ollama"}, headers=HX)
@@ -1566,19 +1596,27 @@ def test_a_transcript_page_still_renders_when_the_stored_provider_is_gone(client
 
 
 def test_asking_with_nobody_chosen_writes_no_job_and_says_where_to_choose(client, conn, media):
+    """TASK-089.07 proved the safety half and TASK-089.10 finishes it.
+
+    That task refused with a 400 whose detail carried the sentence and the
+    anchor - but `app.js` renders a detail with `textContent`, so the anchor
+    arrived as inert text: a refusal a reader could not act on. The card is
+    where the link is real, and it is the same card a provider that cannot
+    answer gets, so there is one of it rather than two.
+    """
     resp = client.post(f"/media/{media}/ai/summary", headers=HX)
 
-    assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert "choose a provider" in detail.lower()
-    assert SETTINGS_LINK in detail
+    assert resp.status_code == 200
+    card = card_of(resp.text)
+    assert "choose a provider" in card.lower()
+    assert f'<a href="{SETTINGS_LINK}"' in card
     # This screen does carry a select, so the refusal names the second way out.
     # The bulk action's notice must not: see tests/test_web_library.py.
-    assert "for this request" in detail.lower()
+    assert "for this request" in card.lower()
     assert jobs_of(conn) == []
 
 
-def test_a_provider_picked_in_the_panel_is_somebody_choosing(client, conn, media, no_ollama):
+def test_a_provider_picked_in_the_panel_is_somebody_choosing(client, conn, media, ollama_ready):
     """The request names one, so this request has an answer even though the
     row does not (ADR-016: the panel's select for that one request)."""
     resp = client.post(f"/media/{media}/ai/summary", data={"provider": "ollama"}, headers=HX)
@@ -1638,3 +1676,262 @@ def test_the_effective_line_says_no_provider_rather_than_an_empty_label(conn):
     assert row["provider"] == ""
     assert "no provider chosen" in row["label"].lower()
     assert row["local"] is False
+
+
+# --- a provider that was chosen and cannot answer (TASK-089.10) ----------------------
+#
+# The other half of ADR-016's safety net. TASK-089.07 made "nobody has chosen"
+# safe: nothing is sent, and the panel says where to choose. This is the case
+# where somebody *did* choose and that choice cannot answer - the key was
+# skipped, Ollama is not running, or the model in the saved row was never
+# pulled. Each of those used to be enqueued and became an LLM_FAILED job on the
+# board (three retries deep on Ollama, measured 2026-09-20), which is a failure
+# somebody has to read instead of a card that names the fix.
+#
+# `tags` is the seam throughout, for the reason `no_ollama` gives: it is the
+# method that opens the socket, and `available()` reads the capability off the
+# rows it returns.
+
+
+def card_of(body: str) -> str:
+    """The blocked card inside a panel, or "" when the panel carries none."""
+    found = re.search(r'<p class="hint blocked"[^>]*>(.*?)</p>', body, re.DOTALL)
+    return "" if found is None else found.group(1)
+
+
+def test_a_cloud_provider_with_no_key_anywhere_answers_with_a_card_and_no_job(
+    client, conn, media, monkeypatch
+):
+    """`conftest` deliberately does not stub `os.environ` - a live `-m gpu` run
+    resolves this machine's real token from it - so a test that must see no key
+    deletes the names itself, the way tests/test_stage_diarize.py does."""
+    for name in openai_like.OpenAIProvider.key_env_vars:
+        monkeypatch.delenv(name, raising=False)
+
+    resp = client.post(f"/media/{media}/ai/summary", data={"provider": "openai"}, headers=HX)
+
+    assert resp.status_code == 200
+    card = card_of(resp.text)
+    assert "no API key" in card
+    assert "OPENAI_API_KEY" in card
+    # A key is saved in Settings, so this one does carry the link.
+    assert SETTINGS_LINK in card
+    assert jobs_of(conn) == []
+
+
+def test_an_ollama_that_is_not_running_answers_with_a_card_that_says_to_start_it(
+    client, conn, media, no_ollama
+):
+    resp = client.post(
+        f"/media/{media}/ai/summary",
+        data={"provider": "ollama", "model": "qwen3.5:4b"},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    card = card_of(resp.text)
+    assert "not running" in card
+    assert "start it" in card
+    # The fix is a command on this machine, so the card does not send a reader
+    # to a Settings page that cannot start a daemon.
+    assert SETTINGS_LINK not in card
+    assert jobs_of(conn) == []
+
+
+def test_a_model_that_was_never_pulled_answers_with_the_pull_command_and_no_job(
+    client, conn, media, monkeypatch
+):
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", _tags(("gemma4:12b", ["completion"])))
+
+    resp = client.post(
+        f"/media/{media}/ai/summary",
+        data={"provider": "ollama", "model": "qwen3.5:4b"},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    assert "ollama pull qwen3.5:4b" in card_of(resp.text)
+    assert jobs_of(conn) == []
+
+
+def test_the_check_asks_about_the_model_this_request_named(client, conn, media, monkeypatch):
+    """Criterion 2, and the only shape that proves it.
+
+    `OllamaProvider.__init__` resolves `model or self._saved_model() or
+    self.default_model` (ollama.py:311), so a check that built the provider
+    bare would be asking about the saved row - which is pulled here, as is the
+    class default. Only a check pointed at `params["model"]`, the id the job
+    would carry, goes red on the model this request actually named.
+    """
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "ollama", "gemma4:12b")
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        _tags(("gemma4:12b", ["completion"]), ("qwen3.5:4b", ["completion"])),
+    )
+
+    resp = client.post(
+        f"/media/{media}/ai/summary",
+        data={"provider": "ollama", "model": "vogon-poetry:70b"},
+        headers=HX,
+    )
+
+    assert "ollama pull vogon-poetry:70b" in card_of(resp.text)
+    assert jobs_of(conn) == []
+
+
+def test_a_saved_embedder_blocks_even_though_it_is_pulled(client, conn, media, monkeypatch):
+    """TASK-089.06's failure one layer up: every embedder is pulled, so
+    `bge-m3:latest` in `llm_model_ollama` read as ready and failed in the first
+    summary inside a job. This request names no model, so the saved row is the
+    model the job would carry."""
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "ollama", "bge-m3:latest")
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        _tags(("bge-m3:latest", ["embedding"]), ("qwen3.5:4b", ["completion"])),
+    )
+
+    resp = client.post(f"/media/{media}/ai/summary", data={"provider": "ollama"}, headers=HX)
+
+    card = card_of(resp.text)
+    assert "bge-m3:latest" in card
+    assert "not a model you can chat with" in card
+    assert jobs_of(conn) == []
+
+
+def test_a_blocked_post_costs_one_bounded_probe_and_no_remote_call(
+    client, conn, media, monkeypatch
+):
+    """Criterion 3, shaped like the provider test's own ADR-001 proof: the web
+    process never runs inference, and the one sanctioned exception is Ollama's
+    loopback GET bounded by PROBE_TIMEOUT.
+
+    Exactly one, and that is what puts the check in front of
+    `_refuse_if_window_too_small`: that one reaches the daemon too, through
+    `context_tokens_for` -> `window_for_model` -> /api/show, so a check placed
+    after it would cost a blocked request two calls.
+    """
+    probes, windows = [], []
+
+    def counted(self):
+        probes.append(self.model)
+        raise base.NothingAnswered(f"Ollama is not running at {self.host}")
+
+    def window(cls, model=None):
+        windows.append(model)
+        return None
+
+    def never(self, req):
+        raise AssertionError("the web process completed a request")
+
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", counted)
+    monkeypatch.setattr(ollama.OllamaProvider, "window_for_model", classmethod(window))
+    monkeypatch.setattr(ollama.OllamaProvider, "complete", never)
+
+    client.post(
+        f"/media/{media}/ai/summary",
+        data={"provider": "ollama", "model": "qwen3.5:4b"},
+        headers=HX,
+    )
+
+    assert probes == ["qwen3.5:4b"]
+    # Counted rather than made to raise: `_refuse_if_window_too_small` swallows
+    # every exception by design, so a seam that exploded would be caught there
+    # and the test would pass on a request that had made the call twice.
+    assert windows == []
+    assert jobs_of(conn) == []
+
+
+def test_a_queued_post_does_reach_the_window_check(client, conn, media, monkeypatch, ollama_ready):
+    """The counter above is worth nothing if nothing ever increments it. A
+    provider that can answer goes on to the window check, as it always has."""
+    windows = []
+
+    def window(cls, model=None):
+        windows.append(model)
+        return None
+
+    monkeypatch.setattr(ollama.OllamaProvider, "window_for_model", classmethod(window))
+
+    client.post(
+        f"/media/{media}/ai/summary",
+        data={"provider": "ollama", "model": "qwen3.5:4b"},
+        headers=HX,
+    )
+
+    assert windows == ["qwen3.5:4b"]
+    assert len(jobs_of(conn)) == 1
+
+
+def test_a_blocked_cloud_post_builds_no_client_at_all(client, conn, media, monkeypatch):
+    """A cloud provider's `available()` is key presence and nothing else: no
+    DNS, no TLS, no request. The client is the thing that would make one."""
+
+    def never(self, key):
+        raise AssertionError("the web process built a client for a cloud provider")
+
+    monkeypatch.setattr(openai_like.OpenAILikeProvider, "client", never)
+    for name in openai_like.OpenAIProvider.key_env_vars:
+        monkeypatch.delenv(name, raising=False)
+
+    resp = client.post(f"/media/{media}/ai/summary", data={"provider": "openai"}, headers=HX)
+
+    assert resp.status_code == 200
+    assert card_of(resp.text) != ""
+    assert jobs_of(conn) == []
+
+
+def test_a_blocked_post_without_htmx_answers_with_the_card_rather_than_a_redirect(
+    client, conn, media, no_ollama
+):
+    """The 303 would land on a page that shows neither a job nor a card, which
+    is a button that did nothing at all."""
+    resp = client.post(
+        f"/media/{media}/ai/summary",
+        data={"provider": "ollama", "model": "qwen3.5:4b"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 200
+    assert "not running" in card_of(resp.text)
+    assert jobs_of(conn) == []
+
+
+def test_a_panel_render_and_its_poll_probe_nothing(client, conn, media, monkeypatch):
+    """The card is a POST-only field. A blocked provider must not put a
+    loopback GET on every transcript render and on every two-second poll -
+    which is what computing it in `panel_context` would do.
+    """
+    asked = []
+
+    def counted(self):
+        asked.append(self.model)
+        raise base.NothingAnswered(f"Ollama is not running at {self.host}")
+
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", counted)
+    ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "ollama")
+
+    client.get(f"/media/{media}")
+    client.get(f"/media/{media}/ai/summary", headers=HX)
+
+    assert asked == []
+
+
+def test_a_model_id_from_the_form_reaches_the_card_escaped(client, conn, media, monkeypatch):
+    """The card is a new path from a form field to rendered markup: the model
+    id travels into `available()`'s sentence and out through the template. The
+    rule this file already holds for a model's own output holds here too - the
+    only markup that reaches the browser is markup this app wrote."""
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", _tags(("gemma4:12b", ["completion"])))
+
+    resp = client.post(
+        f"/media/{media}/ai/summary",
+        data={"provider": "ollama", "model": "<script>alert(1)</script>"},
+        headers=HX,
+    )
+
+    assert "<script>alert(1)</script>" not in resp.text
+    assert "&lt;script&gt;" in card_of(resp.text)
+    assert jobs_of(conn) == []
+
