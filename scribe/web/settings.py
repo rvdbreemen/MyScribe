@@ -271,6 +271,9 @@ def models_context() -> dict:
 
 
 def storage_context() -> dict:
+    # `library` in this module is the page module scribe.web.library.
+    from scribe.library import CHANGE_LIBRARY
+
     usage = store_usage(paths.MEDIA_DIR)
     return {
         "storage": {
@@ -278,6 +281,9 @@ def storage_context() -> dict:
             "size": human_size(usage["bytes"]),
             "free_size": human_size(usage["free"]),
             "total_size": human_size(usage["total"]),
+            # TASK-089.19, criterion 10: the store's path is above; how to
+            # point MyScribe at another library is this one line.
+            "change_library": CHANGE_LIBRARY,
         }
     }
 

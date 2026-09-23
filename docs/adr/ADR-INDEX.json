@@ -1118,6 +1118,67 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-019",
+      "title": "An adopted library is the pointer file's second fact, which the engine reports through a result file and the launcher writes",
+      "path": "ADR-019-an-adopted-library-is-the-pointer-file-s-second-fact-which-the-engine-reports-through-a-result-file-and-the-launcher-writes.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-23",
+      "decision_summary": "Chosen option: the pointer's second fact, reported through a result file, because it is the only one that reaches bot...",
+      "topics": [
+        "installer",
+        "library",
+        "setup"
+      ],
+      "aliases": [
+        "adopt a library",
+        "MyScribe.location",
+        "MYSCRIBE_SETUP_RESULT",
+        "pointer file"
+      ],
+      "components": [
+        "packaging.launcher",
+        "scribe.library"
+      ],
+      "symbols": [
+        "_library_door",
+        "adopted_data",
+        "take_setup_result",
+        "write_pointer_data"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "The engine alone decides an adoption; the launcher writes \"data\" only from a result file the engine wrote.",
+          "A pointer \"data\" that names a missing folder stops the launcher with a sentence, and never falls back to /data.",
+          "Writing \"data\" keeps \"home\", and writing \"home\" keeps \"data\".",
+          "--home and MYSCRIBEHOME keep everything under that home: the pointer's \"data\" is not read under them, and an adoption there says it holds for this start only."
+        ],
+        "must_not": [
+          "Copy or move a library to adopt it.",
+          "Let a front-end read a question id to decide that a library was adopted."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testlauncherlibrary.py, all of it.",
+          "tests/testsetuplibrary.py::testthelauncherhearstheadoptionanddotenvisleftalone."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -1478,6 +1539,18 @@
     {
       "source": "ADR-017",
       "target": "ADR-016",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-019",
+      "target": "ADR-011",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-019",
+      "target": "ADR-015",
       "type": "related",
       "resolved": true
     }

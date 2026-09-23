@@ -33,6 +33,14 @@ row or read `.env` for itself - it runs this module in the app's environment
 instead, the same way it runs the doctor. Everything here is also reachable
 from Settings afterwards: an answer given once at the start must never be the
 only place it can be given.
+
+One stated exception, which TASK-089.11's criterion 4 allows by name: which
+library to use (TASK-089.19). The settings rows live in the library's own
+database, so switching libraries from inside the running app would change the
+database under the process that serves it. It is answered again with
+`--setup` and the Setup button, and in a clone with SCRIBE_DATA_DIR in `.env`
+or `install.py --data-dir`; Settings > This machine says so
+(`library.CHANGE_LIBRARY`).
 """
 
 from __future__ import annotations
@@ -56,11 +64,12 @@ from typing import Callable, Iterator
 import httpx2
 
 from scribe import accel, applog, autostart, credentials, db, doctor, env, models, ollama_setup, paths
+from scribe import library as libraries
 from scribe.llm import ollama
 from scribe.stages import diarize
 from scribe.web import ai_ui, transcribe_dialog
 
-CONTRACT = 4
+CONTRACT = 5
 """The version of the document `--plan` prints and `--apply-stdin` reads, and
 the number the stamp is measured against. Raise it whenever a question is added
 to `_questions`.
@@ -81,6 +90,9 @@ sitting for the questions this version added (`setup_needed` in the launcher).
 
 3 since TASK-089.18: the Ollama install offer added `ollama_install`,
 `ollama_new_model`, `ollama_models_dir` and `ollama_pull_resume`.
+
+5 since TASK-089.19: `library` and `library_folder`, adopting a library that
+already exists.
 """
 
 STAMP = "setup.json"
@@ -191,6 +203,10 @@ class Answers:
     watch_folder: str = ""
     # TASK-089.22: None is not answered, False a No that was given.
     start_at_login: bool | None = None
+    # TASK-089.19: "new", the data directory of a library to adopt, or
+    # "named" with the folder somebody typed or browsed; "" is not answered.
+    library: str = ""
+    library_folder: str = ""
 
 
 @dataclass(frozen=True)
@@ -1091,7 +1107,8 @@ def _yes_no(value) -> bool | None:
     return None
 
 
-def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict:
+def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False,
+         named: list[Path] | None = None) -> dict:
     """What this machine has, and what is still open - one JSON-able document.
 
     Nothing here writes, downloads or checks a credential against its service:
@@ -1126,6 +1143,9 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict
         # only that sitting may offer the pull into MyScribe's own install (G6).
         by_hand=not unasked_only,
     )
+    # TASK-089.19: the library question comes first - every other answer is
+    # written into the library it picks.
+    open_questions = _library_questions(conn, named or []) + open_questions
     if unasked_only:
         was_put = {id for id, state_of in states().items() if state_of in PUT}
         open_questions = [q for q in open_questions if q.id not in was_put]
@@ -1142,6 +1162,244 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict
         "downloads": offer,
         "questions": [asdict(question) for question in open_questions],
     }
+
+
+# --- 2. an existing library (TASK-089.19) ---------------------------------------------
+
+
+NEW_LIBRARY = "new"
+NAMED_LIBRARY = "named"
+
+RESULT_VARIABLE = "MYSCRIBE_SETUP_RESULT"
+"""Where the launcher wants to hear what an adoption decided: a file it names
+for the setup child and reads when the child has gone.
+
+A file rather than a line on stdout because one of the launcher's two doors
+never reads stdout: the console door hands the terminal to this engine. One
+channel for both doors. Without the variable nobody is listening - a clone,
+`install.py`, a bare run - and the engine writes SCRIBE_DATA_DIR into `.env`
+itself, which is the documented manual route (`.env.example`)."""
+
+ADOPT_CONSENT = (
+    "Choosing it is the yes: this version migrates it in place - nothing is copied or moved - "
+    "and an older MyScribe must not open it afterwards."
+)
+
+OTHER_ANSWERS_WAIT = (
+    "The other answers in this sitting were not saved: they belong to the library you use, "
+    "and are asked again for it."
+)
+
+
+def _is_release() -> bool:
+    """Is this the payload of a release rather than a clone?
+
+    A release's `app/` has no `.git`, and cannot see a clone's library by
+    itself, so it asks the library question even when nothing was found. A
+    clone asks only when it found one.
+    """
+    return not (env.REPO_DIR / ".git").exists()
+
+
+def _recordings(conn: sqlite3.Connection | None) -> int:
+    """How many recordings the target library holds; 0 with no database.
+    "Holds a library" is this number, not the file: every apply creates an
+    empty, migrated database first."""
+    if conn is None:
+        return 0
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM media WHERE trashed_at IS NULL").fetchone()[0])
+    except sqlite3.Error:
+        return 0
+
+
+def _blind_spot_sentence() -> str:
+    return (
+        f"A MyScribe serving it on port {DEFAULT_PORT} is refused. One on a port nobody named - "
+        "this repository's own --port 4299 among them - cannot be seen from here, so stop it first."
+    )
+
+
+def _library_note(found: libraries.Library) -> str:
+    """What one found library is, and what choosing it means - criteria 1,
+    4, 5, 7 and 11 in the note under its choice. The choice is the explicit
+    yes, so everything the yes has to be told is here."""
+    refused = libraries.newer_than_this_app(found) or libraries.job_running(found)
+    facts = (f"{found.recordings} recording{'' if found.recordings == 1 else 's'}, "
+             f"{models.human(found.size)} on disk ({found.size:,} bytes), found as {found.where}.")
+    if refused:
+        return f"{facts} {refused} It cannot be chosen now."
+    said = [facts]
+    if found.legacy:
+        said.append("A library from before the 2026-09-06 rename: choosing it renames scribe.db to myscribe.db.")
+    said.append(ADOPT_CONSENT)
+    if found.never_asked:
+        said.append(
+            f"{found.never_asked} diarized recording{'' if found.never_asked == 1 else 's'} "
+            f"{'has' if found.never_asked == 1 else 'have'} never been asked who is speaking; "
+            "choosing a cloud provider later sends each of them once. Nothing else about the library "
+            "is sent or changed."
+        )
+    else:
+        said.append("No diarized recording is waiting to be asked who is speaking.")
+    said.append(_blind_spot_sentence())
+    return " ".join(said)
+
+
+def _library_questions(conn: sqlite3.Connection | None, named: list[Path]) -> list[Question]:
+    """Question 2 of the spec's table, and the folder it may ask for.
+
+    Asked while the target holds no recordings - a start never offers to
+    swap a library somebody is using - and only when there is something to
+    say: a library found elsewhere, or a release, which cannot see a clone's
+    library and so always offers to name one. `named` is a folder somebody
+    typed in an earlier pass: it is looked at read-only and listed like a
+    found one, so its numbers are shown before anybody says yes to it.
+    """
+    if _recordings(conn):
+        return []
+    found = libraries.found(paths.DATA_DIR, named)
+    if not found and not _is_release():
+        return []
+    choices = [{
+        "value": NEW_LIBRARY,
+        "label": "Start a new library",
+        "note": f"at {paths.DATA_DIR}; nothing found elsewhere is touched",
+    }]
+    choices += [{"value": str(lib.data_dir), "label": str(lib.data_dir), "note": _library_note(lib)} for lib in found]
+    choices.append({
+        "value": NAMED_LIBRARY,
+        "label": "I already have one: name its folder",
+        "note": ("a release cannot see a library inside a clone by itself. MyScribe looks at the "
+                 "folder first, changes nothing, and shows what it found before you choose it."),
+    })
+    where = "; ".join(f"{lib.data_dir} ({lib.recordings} recordings)" for lib in found)
+    text = (
+        "A MyScribe library already exists on this machine. Use it, start a new one, or name another folder?"
+        if found else
+        "Do you already have a MyScribe library? Name its folder, or start a new one."
+    )
+    return [
+        Question(
+            id="library",
+            kind="choice",
+            text=text,
+            choices=choices,
+            current="",
+            default=NEW_LIBRARY,
+            shown_if=None,
+            if_skipped=(
+                f"A new library is started at {paths.DATA_DIR}."
+                + (f" Left untouched, and still there: {where}." if where else "")
+            ),
+            answer_later=libraries.CHANGE_LIBRARY,
+        ),
+        Question(
+            id="library_folder",
+            kind="text",
+            text=("Which folder holds it? The folder with myscribe.db (or scribe.db) in it. "
+                  "The other answers below are asked again for that library."),
+            choices=[],
+            current="",
+            default=None,
+            shown_if={"question": "library", "equals": NAMED_LIBRARY},
+            if_skipped="Nothing is looked at, and a new library is started.",
+            answer_later=libraries.CHANGE_LIBRARY,
+        ),
+    ]
+
+
+def _refuse_named(folder: str) -> str:
+    """Why a named folder is not one to look at, or "". The location
+    question's refusals that apply to a library: a share, and a path that is
+    not whole. SQLite's WAL does not work over a network filesystem."""
+    text = folder.strip().strip('"')
+    if not text:
+        return "No folder was named."
+    if text.startswith("\\\\") or text.startswith("//"):
+        return (f"{text} is on a network share, and a library cannot live there: MyScribe keeps it in "
+                "SQLite with a write-ahead log, which does not work over a network filesystem.")
+    if not Path(text).is_absolute():
+        return f"{text} is not a full path. Give the whole path, the drive or the mount point included."
+    return ""
+
+
+def _tell_the_door(result: dict) -> str:
+    """Hand what an adoption decided to whoever runs this engine, and say
+    how it was handed. The launcher writes it into its pointer file; with no
+    launcher listening, SCRIBE_DATA_DIR goes into `.env` (see RESULT_VARIABLE)."""
+    listening = os.environ.get(RESULT_VARIABLE, "").strip()
+    if listening:
+        Path(listening).write_text(json.dumps(result), encoding="utf-8")
+        return ""
+    data_dir = result.get("data_dir")
+    if not data_dir:
+        return ""
+    written = env.write_env(libraries.VARIABLE, str(data_dir))
+    return (f"{libraries.VARIABLE}={data_dir} was written to {written}: MyScribe started from this "
+            "checkout uses that library from now on.")
+
+
+def _library_door(answers: Answers, *, port: int, health: Callable[[int], dict | None] | None = None,
+                  others: bool = False) -> int:
+    """A document that chose a library other than a new one: look, refuse or
+    adopt - and write nothing else.
+
+    Everything the rest of the document answers is written into the library
+    in use, and after an adoption that is another library than the one this
+    process was started on. So nothing else is applied and no stamp is
+    written: the door plans again against the library that is now in use, and
+    that library's own stamp decides what is still open.
+    """
+    health = health or _health
+
+    def reopen(sentence: str) -> int:
+        print(sentence)
+        print("still open: library")
+        return 0
+
+    if answers.library == NAMED_LIBRARY:
+        refused = _refuse_named(answers.library_folder)
+        if refused:
+            return reopen(refused)
+        folder = Path(answers.library_folder.strip().strip('"'))
+        found = libraries.inspect(folder, "the folder you named")
+        if found is None:
+            return reopen(f"There is no MyScribe library in {folder}: it holds no myscribe.db or scribe.db. "
+                          "Nothing was changed.")
+        _tell_the_door({"library": str(folder)})
+        print(f"MyScribe looked at {folder} and changed nothing: {_library_note(found)}")
+        print("Choose it in the list to use it.")
+        if others:
+            print(OTHER_ANSWERS_WAIT)
+        return 0
+
+    found = libraries.inspect(Path(answers.library), "the folder chosen")
+    if found is None:
+        return reopen(f"There is no MyScribe library in {answers.library}. Nothing was changed.")
+    if _is_release() and not os.environ.get(RESULT_VARIABLE, "").strip():
+        # Run by hand in a release's environment: the launcher forces its own
+        # SCRIBE_DATA_DIR, so `.env` would point at nothing afterwards, and a
+        # migrated library nothing uses is the worst of both.
+        return reopen(f"Nothing was changed: in a release only the launcher can point {libraries.APP_NAME} "
+                      "at another library. Start MyScribe with --setup and choose it there.")
+    refused = (
+        libraries.newer_than_this_app(found)
+        or libraries.job_running(found)
+        or libraries.served(found, health(port), port)
+    )
+    if refused:
+        return reopen(refused)
+    data_dir = libraries.adopt(found)
+    said = [f"MyScribe now uses the library at {data_dir} ({found.recordings} recordings), migrated in place."]
+    handed = _tell_the_door({"data_dir": str(data_dir)})
+    if handed:
+        said.append(handed)
+    if others:
+        said.append(OTHER_ANSWERS_WAIT)
+    for line in said:
+        print(line)
+    return 0
 
 
 # --- the proof --------------------------------------------------------------------------
@@ -1998,6 +2256,20 @@ def apply(
     report: dict = {"wrote": [], "downloaded": [], "reopen": [], "notes": []}
     answered: list[str] = []
 
+    # 2. the library (TASK-089.19). Only "new" and a skip reach this far - a
+    #    document that chose a library is `_library_door`'s - and either way a
+    #    library found elsewhere is left as it is and said where (criterion 3).
+    if answers.library == NEW_LIBRARY or "library" in answers.skipped:
+        if answers.library == NEW_LIBRARY:
+            answered.append("library")
+        elsewhere = libraries.found(paths.DATA_DIR)
+        if elsewhere:
+            report["notes"].append(
+                "Left untouched, and still there: "
+                + "; ".join(f"{lib.data_dir} ({lib.recordings} recordings)" for lib in elsewhere)
+                + ". " + libraries.CHANGE_LIBRARY
+            )
+
     def accepted(name: str, value: str, question: str) -> bool:
         """A typed credential, checked before it is saved. A refused one is not
         written and its question comes back in `reopen`."""
@@ -2456,6 +2728,8 @@ def from_document(document: dict) -> Answers:
         watch_folder=text("watch_folder"),  # 12. the watch folder (TASK-089.20)
         # TASK-089.22: a null stays a skip through `skipped`; "no" is an answer.
         start_at_login=_yes_no(given.get("start_at_login")),
+        library=text("library"),  # TASK-089.19
+        library_folder=text("library_folder"),
     )
 
 
@@ -2692,7 +2966,15 @@ def main(argv: list[str] | None = None) -> int:
         "--port",
         type=int,
         default=DEFAULT_PORT,
-        help=f"with --prove: the port a running MyScribe would answer on (default {DEFAULT_PORT})",
+        help=(f"with --prove, and when adopting a library: the port a running MyScribe would "
+              f"answer on (default {DEFAULT_PORT})"),
+    )
+    parser.add_argument(
+        "--library",
+        action="append",
+        default=[],
+        type=Path,
+        help="with --plan: a folder somebody named, looked at read-only and listed as a library",
     )
     parser.add_argument("--status", action="store_true", help="print what setup would ask about, as JSON")
     # Recognised so that the refusal can be a sentence rather than an argparse
@@ -2725,7 +3007,7 @@ def main(argv: list[str] | None = None) -> int:
     # branch is above the line where that starts.
     if args.plan:
         with read_only(paths.DB_PATH) as conn:
-            print(json.dumps(plan(conn, unasked_only=args.unasked_only), indent=2))
+            print(json.dumps(plan(conn, unasked_only=args.unasked_only, named=args.library), indent=2))
         return 0
 
     # A proof writes nothing either, so it branches here for the same reason -
@@ -2737,47 +3019,70 @@ def main(argv: list[str] | None = None) -> int:
         print(doctor.render(report))
         return doctor.exit_code(report)
 
+    if args.status:
+        paths.adopt_legacy_db()
+        paths.ensure_dirs()
+        conn = db.connect(paths.DB_PATH)
+        try:
+            db.migrate(conn)
+            print(json.dumps(needed(conn), indent=2))
+            return 0
+        finally:
+            conn.close()
+
+    # The answers are read before anything is written (TASK-089.19): a
+    # document that adopts another library must not first create and migrate
+    # an empty one here, and one that is refused leaves the machine as it was.
+    if args.apply_stdin:
+        try:
+            document = json.loads(sys.stdin.read() or "{}")
+        except ValueError as exc:
+            print(f"the answers were not one JSON document: {exc}", file=sys.stderr)
+            return 1
+        document = document if isinstance(document, dict) else {}
+        claimed = document.get("contract")
+        if claimed is not None and claimed != CONTRACT:
+            # A number that disagrees is a mismatched install, not an old
+            # client (ADR-015): launcher and app ship in one payload. The
+            # number the document claims is not repeated back - it is a
+            # value out of somebody else's file.
+            print(
+                f"these answers were written for another contract; this engine "
+                f"speaks {CONTRACT} and nothing was applied.",
+                file=sys.stderr,
+            )
+            return 2
+        answers = from_document(document)
+    elif _answered_anything(args):
+        answers = Answers(
+            provider=args.provider,
+            tier=args.tier,
+            diarize=args.diarize,
+            fetch_models=args.fetch_models,
+            wanted=args.only,
+        )
+    else:
+        # A plan writes nothing, so the sitting is drawn from the read-only
+        # open; the apply below is what creates and migrates.
+        with read_only(paths.DB_PATH) as looked:
+            answers = _sitting(looked)
+        if answers is None:
+            return 0  # nobody was asked, so there is nothing to apply
+
+    # 2. a library chosen or named (TASK-089.19): nothing else is written.
+    if answers.library and answers.library != NEW_LIBRARY:
+        return _library_door(answers, port=args.port, others=_answers_besides_library(answers))
+
+    # A `scribe.db` from before the 2026-09-06 rename is adopted before this
+    # door opens the database by name: `db.connect` adopts only when it is
+    # given no path, and this one is given one, so a first `python -m
+    # scribe.setup` after an upgrade created an empty `myscribe.db` beside the
+    # old library and orphaned it for good (reproduced in TASK-089.19's notes).
+    paths.adopt_legacy_db()
     paths.ensure_dirs()
     conn = db.connect(paths.DB_PATH)
     try:
         db.migrate(conn)
-        if args.status:
-            print(json.dumps(needed(conn), indent=2))
-            return 0
-
-        if args.apply_stdin:
-            try:
-                document = json.loads(sys.stdin.read() or "{}")
-            except ValueError as exc:
-                print(f"the answers were not one JSON document: {exc}", file=sys.stderr)
-                return 1
-            document = document if isinstance(document, dict) else {}
-            claimed = document.get("contract")
-            if claimed is not None and claimed != CONTRACT:
-                # A number that disagrees is a mismatched install, not an old
-                # client (ADR-015): launcher and app ship in one payload. The
-                # number the document claims is not repeated back - it is a
-                # value out of somebody else's file.
-                print(
-                    f"these answers were written for another contract; this engine "
-                    f"speaks {CONTRACT} and nothing was applied.",
-                    file=sys.stderr,
-                )
-                return 2
-            answers = from_document(document)
-        elif _answered_anything(args):
-            answers = Answers(
-                provider=args.provider,
-                tier=args.tier,
-                diarize=args.diarize,
-                fetch_models=args.fetch_models,
-                wanted=args.only,
-            )
-        else:
-            answers = _sitting(conn)
-            if answers is None:
-                return 0  # nobody was asked, so there is nothing to apply
-
         progress = Progress()
         try:
             report = apply(
@@ -2800,6 +3105,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     finally:
         conn.close()
+
+
+def _answers_besides_library(answers: Answers) -> bool:
+    """Did the document answer anything but the library question? Those
+    answers wait: they belong to the library that ends up in use."""
+    bare = Answers(library=answers.library, library_folder=answers.library_folder, skipped=answers.skipped)
+    return asdict(answers) != asdict(bare)
 
 
 def _sitting(conn: sqlite3.Connection) -> Answers | None:
@@ -2825,6 +3137,24 @@ def _sitting(conn: sqlite3.Connection) -> Answers | None:
         return None
     try:
         given = ask(document["questions"])
+        # TASK-089.19: a folder somebody named is looked at, and the library
+        # question is asked again with it in the list - so its numbers are on
+        # the screen before the yes (criterion 7). Bounded like a typing
+        # mistake is.
+        named: list[Path] = []
+        for _ in range(ASKS_AGAIN):
+            if given.get("library") != NAMED_LIBRARY:
+                break
+            folder = str(given.get("library_folder") or "").strip().strip('"')
+            refused = _refuse_named(folder)
+            if not refused and libraries.inspect(Path(folder)) is None:
+                refused = f"There is no MyScribe library in {folder}."
+            if refused:
+                print(f"  {refused}")
+            else:
+                named.append(Path(folder))
+            again = plan(conn, named=named)
+            given.update(ask([q for q in again["questions"] if q["id"] in ("library", "library_folder")]))
     except EOFError:
         # A terminal that turned out to have nobody at it after all. Nothing is
         # written and no stamp: the questions were not put.

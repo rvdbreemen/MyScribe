@@ -190,6 +190,91 @@ def write_pointer(path: Path, home: Path) -> str:
     return ""
 
 
+# --- an adopted library: the pointer's second fact (TASK-089.19) -------------------
+
+
+DATA_KEY = "data"
+"""The pointer's second fact: the data directory of a library adopted in place.
+
+Decided by the engine (`scribe.setup`), written here only when the engine's
+result names it, and read before anything else exists. `"home"` moves
+everything; `"data"` points at one library that lives somewhere else - a
+clone's `data/`, for one - and moves nothing."""
+
+
+def adopted_data(pointer: Path) -> tuple[Path | None, str]:
+    """The adopted library the pointer names, and what is wrong with it.
+
+    `(None, "")` when it names none, which is every install that never adopted
+    one. A folder that is not there is a problem and never a fallback: starting
+    on `<home>/data` instead would start a second, empty library, and to its
+    owner that looks like every recording gone - the same rule `locate_home`
+    keeps for the home.
+    """
+    document, problem = read_pointer(pointer)
+    if problem:
+        return None, ""  # `locate_home` has already said so, and answered it
+    named = document.get(DATA_KEY)
+    if not isinstance(named, str) or not named.strip():
+        return None, ""
+    data = Path(named.strip())
+    if data.is_dir():
+        return data, ""
+    return None, (f"{pointer} says {APP_NAME}'s library is in {data}, and that folder is not there. "
+                  "If it is on a drive that is not plugged in, quit, plug it in and start "
+                  f"{APP_NAME} again: nothing has been moved and nothing is lost. {APP_NAME} will "
+                  "not quietly start a second, empty library somewhere else.")
+
+
+def write_pointer_data(path: Path, data: Path) -> str:
+    """Record an adopted library; return what went wrong, ``""`` when nothing
+    did. Merged like ``write_pointer``, so the home survives it and it
+    survives the home."""
+    document, problem = read_pointer(path)
+    document = {} if problem else document
+    document[DATA_KEY] = str(data)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    except OSError as error:
+        return (f"The library at {data} could not be saved in {path} ({error}). MyScribe uses it "
+                "for this sitting only; the next start opens the library in its own home.")
+    return ""
+
+
+SETUP_RESULT_VARIABLE = "MYSCRIBE_SETUP_RESULT"
+"""Where `scribe.setup` says what an adoption decided (its RESULT_VARIABLE):
+a file this launcher names for the setup child and reads when it has gone.
+A file, because the console door never reads the child's stdout."""
+
+
+def setup_result_file(layout: "Layout") -> Path:
+    return layout.home / "setup-result.json"
+
+
+def setup_environment(layout: "Layout") -> dict:
+    """The app's environment, plus the one name the engine answers an
+    adoption through."""
+    environment = app_environment(layout)
+    environment[SETUP_RESULT_VARIABLE] = str(setup_result_file(layout))
+    return environment
+
+
+def take_setup_result(layout: "Layout") -> dict:
+    """What the last setup child left for this launcher, removed once read;
+    {} when it left nothing, or nothing readable."""
+    path = setup_result_file(layout)
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        found = {}
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return found if isinstance(found, dict) else {}
+
+
 def payload_dir(environ: dict | None = None) -> Path:
     """Where the build put ``app/`` and ``bin/``: inside the frozen bundle, or
     next to this file when run from a checkout's build output."""
@@ -205,11 +290,18 @@ def payload_dir(environ: dict | None = None) -> Path:
 class Layout:
     """Every path the launcher touches, from two roots."""
 
-    def __init__(self, home: Path, payload: Path, windows: bool = IS_WINDOWS):
+    def __init__(self, home: Path, payload: Path, windows: bool = IS_WINDOWS,
+                 data: Path | None = None, pointer: Path | None = None):
         # Absolute: the sync runs with the home as its working directory.
         self.home = Path(home).absolute()
         self.payload = Path(payload).absolute()
         self.windows = windows
+        # TASK-089.19: an adopted library, named by the pointer's `"data"`
+        # fact. None is `<home>/data`, as it always was.
+        self.data = Path(data).absolute() if data is not None else None
+        # The pointer file an adoption is recorded in; None when the home was
+        # given by hand, which keeps everything under that home.
+        self.pointer = Path(pointer) if pointer is not None else None
 
     app_dir = property(lambda self: self.payload / "app")
     bin_dir = property(lambda self: self.payload / "bin")
@@ -217,7 +309,7 @@ class Layout:
     env_dir = property(lambda self: self.home / "env")
     python_dir = property(lambda self: self.home / "python")
     cache_dir = property(lambda self: self.home / "cache")
-    data_dir = property(lambda self: self.home / "data")
+    data_dir = property(lambda self: self.data if self.data is not None else self.home / "data")
     env_file = property(lambda self: self.home / ".env")
     logs_dir = property(lambda self: self.home / "logs")
     pycache_dir = property(lambda self: self.home / "pycache")
@@ -1368,6 +1460,10 @@ class Launch:
         # True between the engine's two installer event lines (`installer_line`):
         # while it stands, Quit is refused with `QUIT_REFUSED` (ADR-017, M10).
         self.installing = False
+        # What the last apply told this launcher through the result file
+        # (TASK-089.19): `data_dir` after an adoption, `library` for a folder
+        # somebody named that the engine has looked at.
+        self.result: dict = {}
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -1518,6 +1614,27 @@ class Launch:
         if self.app is not None:
             self.app.stop()
 
+    def adopt(self, data: str) -> None:
+        """The engine adopted a library: record it in the pointer file - the
+        engine decided it, this only writes it down (ADR-015) - and use it
+        from here on (TASK-089.19, criterion 8).
+
+        A home given by hand keeps everything under it, so there the library
+        is used for this start and the sentence says how to keep it.
+        """
+        where = Path(data)
+        if self.layout.pointer is None:
+            self.report("error", f"{APP_NAME} uses the library at {where} for this start only: the home was "
+                                 f"given by hand (--home or {HOME_VARIABLE}), which keeps everything under "
+                                 "it. Start without it to keep this library.")
+        else:
+            problem = write_pointer_data(self.layout.pointer, where)
+            if problem:
+                self.report("error", problem)
+        self.layout = Layout(self.layout.home, self.layout.payload, self.layout.windows,
+                             data=where, pointer=self.layout.pointer)
+        self.report("status", f"{APP_NAME} now uses the library at {where}.")
+
     def apply(self, answers: dict) -> tuple[int, list[str]]:
         """Hand the answers to the engine, returning its exit code and what it
         says is still open.
@@ -1546,12 +1663,14 @@ class Launch:
                 reopen.extend(part.strip() for part in line[len(REOPEN_PREFIX):].split(",") if part.strip())
             self.report("busy", line)
 
+        take_setup_result(self.layout)  # nothing left over from an earlier child
         try:
             code = self.watching(run_setup, self.layout, answers, on_line)
         finally:
             # A child that died between the two event lines must not leave
             # Quit refused for good.
             self.installing = False
+        self.result = take_setup_result(self.layout)
         return code, reopen
 
 
@@ -1679,7 +1798,7 @@ def run_setup(layout: Layout, answers: dict, on_line: Callable[[str], None],
     """
     return run_streaming(
         setup_command(layout),
-        env=app_environment(layout),
+        env=setup_environment(layout),
         cwd=layout.app_dir,
         on_line=on_line,
         input=json.dumps(setup_document(layout, answers)),
@@ -1704,7 +1823,7 @@ hidden."""
 CONDITIONS_FOR = "hf_token"
 
 
-def plan_command(layout: Layout, *, unasked_only: bool) -> list[str]:
+def plan_command(layout: Layout, *, unasked_only: bool, named: Iterable[str] = ()) -> list[str]:
     """`--plan`, with `--unasked-only` for the gate and without it by hand.
 
     ADR-015's Must: a plan made for a start lists the questions that are open
@@ -1715,11 +1834,13 @@ def plan_command(layout: Layout, *, unasked_only: bool) -> list[str]:
     command = [str(layout.env_python), "-m", "scribe.setup", "--plan"]
     if unasked_only:
         command.append("--unasked-only")
+    for folder in named:  # a folder the engine looked at and asked to list (TASK-089.19)
+        command += ["--library", str(folder)]
     return command
 
 
 def setup_plan(layout: Layout, report: Callable[[str, str], None], *,
-               unasked_only: bool = True,
+               unasked_only: bool = True, named: Iterable[str] = (),
                on_start: Callable[["subprocess.Popen"], None] | None = None) -> dict | None:
     """What this machine has and what is still open, as the engine sees it.
 
@@ -1731,7 +1852,7 @@ def setup_plan(layout: Layout, report: Callable[[str, str], None], *,
     """
     lines: list[str] = []
     try:
-        code = run_streaming(plan_command(layout, unasked_only=unasked_only),
+        code = run_streaming(plan_command(layout, unasked_only=unasked_only, named=named),
                              env=app_environment(layout), cwd=layout.app_dir,
                              on_line=lines.append, on_start=on_start)
     except Exception as error:
@@ -1918,13 +2039,21 @@ def console_sitting(launch: Launch, report: Callable[[str, str], None]) -> None:
     if not sys.stdin.isatty():
         report("status", NOTHING_WAS_ASKED)
         return
-    try:
-        subprocess.call([str(launch.layout.env_python), "-m", "scribe.setup"],
-                        cwd=str(launch.layout.app_dir), env=app_environment(launch.layout))
-    except Exception as error:
-        report("error", f"The setup questions could not be asked: {error}. MyScribe starts anyway; "
-                        "the questions are also in Settings.")
-        return
+    # A second pass only after an adoption (TASK-089.19): the adopted library
+    # holds its own answers, and this engine asks for them against it.
+    for _ in range(2):
+        take_setup_result(launch.layout)
+        try:
+            subprocess.call([str(launch.layout.env_python), "-m", "scribe.setup"],
+                            cwd=str(launch.layout.app_dir), env=setup_environment(launch.layout))
+        except Exception as error:
+            report("error", f"The setup questions could not be asked: {error}. MyScribe starts anyway; "
+                            "the questions are also in Settings.")
+            return
+        adopted = take_setup_result(launch.layout).get("data_dir")
+        if not adopted:
+            break
+        launch.adopt(str(adopted))
     launch.watching(run_prove, launch.layout, report, launch.port)
 
 
@@ -1940,8 +2069,10 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
     it again at the next start (TASK-089.11).
     """
     applied = False
+    named: list[str] = []
     while True:
-        plan = launch.watching(setup_plan, launch.layout, report, unasked_only=not force_setup)
+        plan = launch.watching(setup_plan, launch.layout, report, unasked_only=not force_setup,
+                               **({"named": named} if named else {}))
         if plan is None:
             return
         answers = ask(plan)
@@ -1956,6 +2087,16 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
                             "the questions are also in Settings.")
             break
         applied = True
+        # TASK-089.19: the engine's result, never a question id, decides
+        # these two. An adopted library holds its own answers, so the sitting
+        # goes on there; a named folder is planned again with it listed.
+        if launch.result.get("data_dir"):
+            launch.adopt(str(launch.result["data_dir"]))
+            named = []
+            continue
+        if launch.result.get("library"):
+            named = [str(launch.result["library"])]
+            continue
         sentence = setup_failure(code, reopen)
         if not sentence:
             break
@@ -2203,7 +2344,7 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
         name = question["id"]
         if skips[name].get():
             return None
-        if question.get("kind") == "secret":
+        if question.get("kind") in ("secret", "text"):
             return entries[name].get().strip() or None
         if question.get("kind") == "yes-no":
             return "yes" if values[name].get() else "no"
@@ -2253,6 +2394,26 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
                 tk.Label(block, text="Accept the model's conditions with the same account at",
                          anchor="w", justify="left", fg="#555").pack(fill="x")
                 link_label(block, CONDITIONS_URL).pack(fill="x")
+        elif kind == "text":
+            # A folder, typed or browsed (TASK-089.19; TASK-089.20's watch
+            # folder is the same kind). Until this the kind fell through to
+            # the radio branch and drew a group with no buttons.
+            entries[name] = tk.Entry(block, width=44)
+            if question.get("current"):
+                entries[name].insert(0, str(question["current"]))
+            entries[name].bind("<KeyRelease>", lambda _event: refresh())
+            entries[name].pack(fill="x")
+
+            def browse(entry=entries[name]) -> None:
+                from tkinter import filedialog
+
+                picked = filedialog.askdirectory(parent=win, mustexist=True)
+                if picked:
+                    entry.delete(0, "end")
+                    entry.insert(0, picked)
+                    refresh()
+
+            tk.Button(block, text="Browse...", command=browse).pack(anchor="w")
         elif kind != "yes-no":
             values[name] = tk.StringVar(value=opening_value(question))
             group = tk.Frame(block)
@@ -2627,7 +2788,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         if windowed and problems:
             show_error(problems[-1])
         return 1
-    layout = Layout(home, payload)
+    # TASK-089.19: an adopted library, the pointer's second fact. Not under a
+    # home given by hand: `--home` and MYSCRIBE_HOME mean "everything here".
+    data, missing, pointer = None, "", None
+    if args.home is None and not os.environ.get(HOME_VARIABLE):
+        pointer = pointer_path()
+        data, missing = adopted_data(pointer)
+    if missing:
+        console("error", missing)
+        if windowed:
+            show_error(missing)
+        return 1
+    layout = Layout(home, payload, data=data, pointer=pointer)
     if args.setup:  # where everything is, and the three ways to move it (ADR-015)
         pointer = pointer_path()
         console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer)))
