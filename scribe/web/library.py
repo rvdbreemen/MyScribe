@@ -999,6 +999,13 @@ def _enqueue_labels(conn: sqlite3.Connection, ids: list[int]) -> str:
         # rule below about silent skips holds hardest for the whole batch.
         return f"Nothing was queued. {ai_ui.NO_PROVIDER_YET}"
     model = ai_ui.default_model(conn, provider_name)
+    # Chosen, and cannot answer (TASK-089.26): a stopped Ollama, a skipped key,
+    # a saved model nobody pulled. Asked once for the batch, before the loop -
+    # every row would carry the same provider and model, and a firewall that
+    # drops rather than refuses costs PROBE_TIMEOUT per question.
+    blocked = ai_ui._blocked_card(conn, provider_name, model)
+    if blocked is not None:
+        return ai_ui.blocked_notice(blocked)
     external = not llm.provider_class(provider_name).is_local
 
     private: list[int] = []

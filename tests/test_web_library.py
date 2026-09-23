@@ -99,6 +99,31 @@ def library(conn):
 HX = {"HX-Request": "true"}
 
 
+@pytest.fixture
+def ollama_ready(monkeypatch):
+    """A daemon that is up and has the model the bulk pass carries.
+
+    Since TASK-089.26 the bulk pass asks whether the chosen provider can
+    answer before it queues anything, so a test about what happens after that
+    - the rows it queues, the ones it skips - states that it can, rather than
+    being answered by whatever this machine has running and pulled.
+    """
+    from scribe.llm import ollama
+
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        lambda self: [{"name": "qwen3.5:4b", "model": "qwen3.5:4b", "capabilities": ["completion"]}],
+    )
+
+
+@pytest.fixture
+def openai_key(monkeypatch):
+    """A key in the environment, so OpenAI reads as able to answer. Not a real
+    one: nothing in these tests builds a client, let alone sends a request."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+
+
 # --- views ---------------------------------------------------------------------
 
 
@@ -1197,7 +1222,7 @@ def _llm_jobs(conn):
     ]
 
 
-def test_bulk_label_queues_one_pass_per_chosen_recording(client, conn, library):
+def test_bulk_label_queues_one_pass_per_chosen_recording(client, conn, library, ollama_ready):
     """How a library that predates the labels pass catches up."""
     seed_run(conn, library["alpha"])
     seed_run(conn, library["gamma"])
@@ -1215,7 +1240,7 @@ def test_bulk_label_queues_one_pass_per_chosen_recording(client, conn, library):
     assert {p["kind"] for p in queued} == {"labels"}
 
 
-def test_bulk_label_skips_a_recording_with_no_transcript(client, conn, library):
+def test_bulk_label_skips_a_recording_with_no_transcript(client, conn, library, ollama_ready):
     """The pass reads words. A job that can only fail is not worth a row on
     the board."""
     seed_run(conn, library["alpha"])
@@ -1231,7 +1256,7 @@ def test_bulk_label_skips_a_recording_with_no_transcript(client, conn, library):
 
 
 def test_a_private_recording_is_skipped_by_a_bulk_pass_to_an_external_model(
-    client, conn, library
+    client, conn, library, openai_key
 ):
     """A private recording is never offered to an external service in bulk.
     Sending one out is a decision taken for that recording, on its own page.
@@ -1258,7 +1283,7 @@ def test_a_private_recording_is_skipped_by_a_bulk_pass_to_an_external_model(
 
 
 def test_the_skipped_private_recordings_are_reported_rather_than_dropped_quietly(
-    client, conn, library
+    client, conn, library, openai_key
 ):
     """A person who ticked forty rows should not have to count the jobs to
     discover that three are not coming."""
@@ -1280,7 +1305,7 @@ def test_the_skipped_private_recordings_are_reported_rather_than_dropped_quietly
     assert "openai" in notice
 
 
-def test_nothing_is_reported_when_nothing_was_skipped(client, conn, library):
+def test_nothing_is_reported_when_nothing_was_skipped(client, conn, library, ollama_ready):
     seed_run(conn, library["alpha"])
     _set_provider(conn, "ollama")
 
@@ -1291,7 +1316,7 @@ def test_nothing_is_reported_when_nothing_was_skipped(client, conn, library):
     assert "HX-Trigger" not in resp.headers
 
 
-def test_bulk_label_of_a_private_recording_is_fine_on_a_local_provider(client, conn, library):
+def test_bulk_label_of_a_private_recording_is_fine_on_a_local_provider(client, conn, library, ollama_ready):
     seed_run(conn, library["gamma"])
     _set_provider(conn, "ollama")
     with db.LOCK:
@@ -1328,3 +1353,121 @@ def test_bulk_label_queues_nothing_and_says_why_when_nobody_has_chosen(client, c
     # provider select on this screen, so the notice must not send a person
     # looking for one. The panel and the chat form get that clause; this does not.
     assert "for this request" not in notice.lower()
+
+
+# --- the bulk pass, with a provider that was chosen and cannot answer (TASK-089.26) --
+#
+# The panel got a card for this in TASK-089.10; the bulk action queued one job
+# per ticked recording regardless, and each became an LLM_FAILED row. This
+# screen has no provider select, so the answer is the shape its notice already
+# has - one sentence and where to fix it - and the readiness is asked once for
+# the batch, not once per row: a firewall that drops rather than refuses would
+# otherwise cost PROBE_TIMEOUT forty times over.
+
+
+def _notice(resp):
+    return json.loads(resp.headers["HX-Trigger"])["scribe-notice"]
+
+
+def test_bulk_label_to_an_ollama_that_is_not_running_queues_nothing_and_says_so(
+    client, conn, library, monkeypatch
+):
+    from scribe.llm import base, ollama
+
+    def down(self):
+        raise base.NothingAnswered(f"Ollama is not running at {self.host}")
+
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", down)
+    seed_run(conn, library["alpha"])
+    seed_run(conn, library["gamma"])
+    _set_provider(conn, "ollama")
+
+    resp = client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["gamma"]]},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    assert _llm_jobs(conn) == []
+    notice = _notice(resp)
+    assert notice.startswith("Nothing was queued.")
+    assert "not running" in notice and "start it" in notice
+    # Starting a daemon is not done in Settings, so the notice names no page.
+    assert "/settings#llm-providers" not in notice
+    assert "for this request" not in notice.lower()
+
+
+def test_bulk_label_to_a_cloud_provider_with_no_key_queues_nothing_and_names_settings(
+    client, conn, library, monkeypatch
+):
+    from scribe.llm import openai_like
+
+    for name in openai_like.OpenAIProvider.key_env_vars:
+        monkeypatch.delenv(name, raising=False)
+    seed_run(conn, library["alpha"])
+    _set_provider(conn, "openai")
+
+    resp = client.post(
+        "/media/bulk", data={"action": "label", "ids": [library["alpha"]]}, headers=HX
+    )
+
+    assert _llm_jobs(conn) == []
+    notice = _notice(resp)
+    assert "no api key" in notice.lower()
+    assert "/settings#llm-providers" in notice
+
+
+def test_bulk_label_about_the_saved_model_never_pulled_queues_nothing(
+    client, conn, library, monkeypatch
+):
+    """The bulk pass carries the saved row's model, so that is the one asked
+    about - here a model the daemon does not have, beside one it does."""
+    from scribe.llm import ollama
+    from scribe.web import ai_ui
+
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        lambda self: [{"name": "qwen3.5:4b", "model": "qwen3.5:4b", "capabilities": ["completion"]}],
+    )
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "ollama", "vogon-poetry:70b")
+    seed_run(conn, library["alpha"])
+    _set_provider(conn, "ollama")
+
+    resp = client.post(
+        "/media/bulk", data={"action": "label", "ids": [library["alpha"]]}, headers=HX
+    )
+
+    assert _llm_jobs(conn) == []
+    assert "ollama pull vogon-poetry:70b" in _notice(resp)
+
+
+def test_a_blocked_bulk_label_asks_once_for_the_batch_and_nothing_remote(
+    client, conn, library, monkeypatch
+):
+    from scribe.llm import base, ollama
+
+    probes = []
+
+    def counted(self):
+        probes.append(self.model)
+        raise base.NothingAnswered(f"Ollama is not running at {self.host}")
+
+    def never(self, *args, **kwargs):
+        raise AssertionError("the web process completed a request")
+
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", counted)
+    monkeypatch.setattr(ollama.OllamaProvider, "complete", never)
+    for key in ("alpha", "beta", "gamma"):
+        seed_run(conn, library[key])
+    _set_provider(conn, "ollama")
+
+    client.post(
+        "/media/bulk",
+        data={"action": "label", "ids": [library["alpha"], library["beta"], library["gamma"]]},
+        headers=HX,
+    )
+
+    assert len(probes) == 1
+    assert _llm_jobs(conn) == []

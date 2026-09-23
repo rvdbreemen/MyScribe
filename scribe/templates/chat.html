@@ -14,6 +14,9 @@
       providers   [{name, label, local, selected, disabled}]
       provider, model, models   what the ask form opens with
       job         the queued or running chat job, or none
+      blocked     {why, anchor} when this turn was not queued because the
+                  provider cannot answer, or none; only the POST fills it
+      question    what was typed, kept in the form beside that card
       poll        seconds between polls while one is running
       messages    [{id, role, mine, created_at, html, citations}] oldest
                   first; `html` is ai_ui.render_markdown of the stored text
@@ -77,11 +80,21 @@
     or pick one below for this question.</p>
   {% endif %}
 
+  {# The question was not asked, and this says why (TASK-089.26) - the card the
+     rail's panel carries since TASK-089.10, with the same rule for its link:
+     there only when the fix is in Settings. #}
+  {% if blocked %}
+  <p class="hint blocked" data-blocked>
+    {{ blocked.why }}
+    {% if blocked.anchor %}<a href="{{ blocked.anchor }}">Open Settings &gt; AI providers</a>{% endif %}
+  </p>
+  {% endif %}
+
   <form class="chat-ask" method="post" action="/media/{{ media.id }}/chat"
         hx-post="/media/{{ media.id }}/chat" hx-target="#chat-panel" hx-select="#chat-panel" hx-swap="outerHTML">
     <label class="field">Question
       <textarea name="question" rows="3" maxlength="2000" required
-                placeholder="What did they decide about the budget?"></textarea>
+                placeholder="What did they decide about the budget?">{{ question or '' }}</textarea>
     </label>
     <div class="chat-controls">
       <label class="field">Provider

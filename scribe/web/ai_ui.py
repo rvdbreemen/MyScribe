@@ -820,6 +820,20 @@ def _blocked_card(conn: sqlite3.Connection, provider_name: str, model: str) -> d
     return {"why": why, "anchor": "" if local else SETTINGS_ANCHOR}
 
 
+def blocked_notice(card: dict) -> str:
+    """The card as the plain text a screen without markup can carry.
+
+    The library's bulk action answers through a flash, which is text: the
+    anchor becomes an address a reader copies, the way `NO_PROVIDER_YET`
+    spells it, and it is there only when the fix is in Settings - the same
+    rule the card follows (TASK-089.26). `available()` ends none of its
+    sentences with a stop, so this adds one.
+    """
+    why = card["why"].rstrip(". ")
+    why = why[:1].upper() + why[1:]
+    where = f" ({card['anchor']})" if card.get("anchor") else ""
+    return f"Nothing was queued. {why}{where}."
+
 
 def _refuse_if_private(conn: sqlite3.Connection, media_id: int, provider_name: str) -> None:
     """The control, not the courtesy.
@@ -1158,6 +1172,25 @@ def chat_ask(
 
     provider_name = _chosen_provider(conn, provider)
     _refuse_if_private(conn, media_id, provider_name)
+    chosen_model = (model or "").strip() or default_model(conn, provider_name)
+
+    # A provider that cannot answer gets the card and no row (TASK-089.26), as
+    # the rail's POST does since TASK-089.10: one bounded probe against the
+    # model this job would carry, and 200 on both paths, because a 303 back to
+    # the chat would land on a page with neither a job nor a card. The form
+    # comes back holding what was typed, so the fix is one restart and a click.
+    blocked = _blocked_card(conn, provider_name, chosen_model)
+    if blocked is not None:
+        context = chat_context(conn, media_id)
+        context.update(
+            provider=provider_name,
+            model=chosen_model,
+            providers=provider_choices(selected=provider_name, private=context["private"]),
+            models=known_models(conn, provider_name),
+            question=asked,
+            blocked=blocked,
+        )
+        return render_page(request, "chat.html", **context)
 
     jobs.enqueue(
         conn,
@@ -1168,7 +1201,7 @@ def chat_ask(
             "kind": chat_tool.CHAT_KIND,
             "question": asked,
             "provider": provider_name,
-            "model": (model or "").strip() or default_model(conn, provider_name),
+            "model": chosen_model,
         },
     )
 

@@ -911,7 +911,7 @@ def test_a_citation_renders_as_a_link_that_seeks_the_player(client, conn, media)
     assert ">1:23<" in body
 
 
-def test_asking_a_question_enqueues_a_chat_job_carrying_the_question(client, conn, media):
+def test_asking_a_question_enqueues_a_chat_job_carrying_the_question(client, conn, media, ollama_ready):
     resp = client.post(
         f"/media/{media}/chat",
         data={"question": "Who mentioned the towel?", "provider": "ollama"},
@@ -1647,7 +1647,7 @@ def test_a_chat_turn_with_nobody_chosen_writes_no_job_and_says_where_to_choose(
     assert jobs_of(conn) == []
 
 
-def test_a_chat_turn_that_names_a_provider_is_somebody_choosing(client, conn, media, no_ollama):
+def test_a_chat_turn_that_names_a_provider_is_somebody_choosing(client, conn, media, ollama_ready):
     resp = client.post(
         f"/media/{media}/chat",
         data={"question": "Who is speaking?", "provider": "ollama"},
@@ -1935,3 +1935,128 @@ def test_a_model_id_from_the_form_reaches_the_card_escaped(client, conn, media, 
     assert "&lt;script&gt;" in card_of(resp.text)
     assert jobs_of(conn) == []
 
+
+# --- chat, with a provider that was chosen and cannot answer (TASK-089.26) ------------
+#
+# TASK-089.10 put the card in front of POST /media/{id}/ai/{kind} and recorded
+# that chat still wrote the row. Same three shapes, same seam, same promise:
+# no job row, one bounded probe, and no request anywhere else. The card lives
+# on the chat page itself, so `card_of` reads it the same way.
+
+
+def test_a_chat_turn_to_a_cloud_provider_with_no_key_answers_with_a_card_and_no_job(
+    client, conn, media, monkeypatch
+):
+    for name in openai_like.OpenAIProvider.key_env_vars:
+        monkeypatch.delenv(name, raising=False)
+
+    resp = client.post(
+        f"/media/{media}/chat", data={"question": "Who is speaking?", "provider": "openai"}, headers=HX
+    )
+
+    assert resp.status_code == 200
+    card = card_of(resp.text)
+    assert "no API key" in card
+    assert "OPENAI_API_KEY" in card
+    assert SETTINGS_LINK in card
+    assert jobs_of(conn) == []
+
+
+def test_a_chat_turn_to_an_ollama_that_is_not_running_answers_with_a_card_and_no_job(
+    client, conn, media, no_ollama
+):
+    resp = client.post(
+        f"/media/{media}/chat",
+        data={"question": "Who is speaking?", "provider": "ollama", "model": "qwen3.5:4b"},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    card = card_of(resp.text)
+    assert "not running" in card
+    assert "start it" in card
+    assert SETTINGS_LINK not in card
+    assert jobs_of(conn) == []
+
+
+def test_a_chat_turn_about_a_model_never_pulled_answers_with_the_pull_command_and_no_job(
+    client, conn, media, monkeypatch
+):
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", _tags(("gemma4:12b", ["completion"])))
+
+    resp = client.post(
+        f"/media/{media}/chat",
+        data={"question": "Who is speaking?", "provider": "ollama", "model": "qwen3.5:4b"},
+        headers=HX,
+    )
+
+    assert resp.status_code == 200
+    assert "ollama pull qwen3.5:4b" in card_of(resp.text)
+    assert jobs_of(conn) == []
+
+
+def test_a_chat_turn_is_checked_against_the_model_it_named(client, conn, media, monkeypatch):
+    """The saved row and the class default are both pulled here; only a check
+    pointed at the model this request carries goes red (TASK-089.06)."""
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "ollama", "gemma4:12b")
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        _tags(("gemma4:12b", ["completion"]), ("qwen3.5:4b", ["completion"])),
+    )
+
+    resp = client.post(
+        f"/media/{media}/chat",
+        data={"question": "Who is speaking?", "provider": "ollama", "model": "vogon-poetry:70b"},
+        headers=HX,
+    )
+
+    assert "ollama pull vogon-poetry:70b" in card_of(resp.text)
+    assert jobs_of(conn) == []
+
+
+def test_a_blocked_chat_turn_makes_one_bounded_probe_and_no_remote_call(
+    client, conn, media, monkeypatch
+):
+    probes = []
+
+    def counted(self):
+        probes.append(self.model)
+        raise base.NothingAnswered(f"Ollama is not running at {self.host}")
+
+    def never(self, *args, **kwargs):
+        raise AssertionError("the web process completed a request")
+
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", counted)
+    monkeypatch.setattr(ollama.OllamaProvider, "complete", never)
+    monkeypatch.setattr(openai_like.OpenAILikeProvider, "client", never)
+
+    client.post(
+        f"/media/{media}/chat",
+        data={"question": "Who is speaking?", "provider": "ollama", "model": "qwen3.5:4b"},
+        headers=HX,
+    )
+
+    assert probes == ["qwen3.5:4b"]
+    assert jobs_of(conn) == []
+
+
+def test_a_blocked_chat_turn_keeps_what_was_typed_and_answers_without_a_redirect(
+    client, conn, media, no_ollama
+):
+    """The question, the provider and the model come back in the form, so the
+    fix is one restart and one click rather than typing it all again. Without
+    htmx the answer is the page with the card: a 303 back to the chat would
+    land on a page that carries neither a job nor a card."""
+    resp = client.post(
+        f"/media/{media}/chat",
+        data={"question": "What about the towel?", "provider": "ollama", "model": "qwen3.5:4b"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 200
+    assert "not running" in card_of(resp.text)
+    assert "What about the towel?" in resp.text
+    assert "selected" in option_of(resp.text, "provider", "ollama")
+    assert 'value="qwen3.5:4b"' in resp.text
+    assert jobs_of(conn) == []
