@@ -658,11 +658,12 @@ def test_a_second_run_starts_no_uv_asks_bare_and_proves(clone, monkeypatch, caps
 
 def test_too_little_room_is_one_sentence_with_both_numbers_and_nothing_downloaded(clone, files, monkeypatch, capsys):
     """The Windows figure: 5.1 GB unpacked plus the 10 GB floor of scribe/doctor.py."""
-    monkeypatch.setattr(install.sys, "platform", "win32")
-    # The whole machine, not half of it: on an arm64 Mac, win32 with the
-    # runner's own architecture is a machine the guard refuses before the
-    # disk is asked (TASK-089.24, the first CI run off Windows).
-    monkeypatch.setattr(install.platform, "machine", lambda: "AMD64")
+    # Only the disk check is told it is on Windows. Patching sys.platform
+    # for the figure moved the whole process: on macOS the guard then
+    # refused an arm64 win32, and on Linux ssl went looking for the Windows
+    # certificate store (TASK-089.24, the first CI runs off Windows).
+    shipped = install.enough_disk
+    monkeypatch.setattr(install, "enough_disk", lambda layout, _platform: shipped(layout, "win32"))
     small = shutil._ntuple_diskusage(total=100 * install.GB, used=97 * install.GB, free=3 * install.GB)
     monkeypatch.setattr(shutil, "disk_usage", lambda _path: small)
 
