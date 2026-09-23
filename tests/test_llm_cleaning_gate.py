@@ -142,18 +142,18 @@ RUN_ON_PART = (
 a stretch, so a cleaning of this has two stamps to drop."""
 
 
-def test_a_cleaning_with_some_parts_unchanged_is_still_published():
-    """The shape measured on 2026-09-11, and a gap the copy rule leaves open.
+def test_one_copied_part_that_skipped_the_grouping_refuses_the_reading():
+    """The shape measured on 2026-09-11, refused since TASK-088 (ADR-010).
 
     qwen3.5:4b's reading of media 12 had 11 parts. Part 0 came back with its
     input's counts - 963 words in and out, 45 of 45 stamps; a copy by every
-    count kept, though the text itself was not - and the other ten
-    changed words (ratios 0.79-0.999), so not every part was a copy and the
-    reading published, at 0.894 and 0.902. That part had work to do: 43 of
-    its 45 lines continue the speaker before them, as every line after the
-    first does here. The rule refuses only a reading that is a copy
-    throughout; refusing one copied part is ADR-010's open question, for
-    Robert. Pinned, so that closing the gap has to move this test."""
+    count kept, though the text itself was not - and the other ten changed
+    words (ratios 0.79-0.999), so the reading published, at 0.894 and 0.902.
+    That part had work to do: 43 of its 45 lines continue the speaker before
+    them, as every line after the first does here, and `cleanup.md` keeps only
+    the stamp that starts each stretch. A copy of such a part skipped the
+    grouping it was asked for, and one such part now refuses the reading -
+    ten good parts do not buy it through."""
     cleaned = "[0:00] SPEAKER_00: So the towel is the most important item."
     run_on_as_paragraphs = RUN_ON_PART.replace("\n", "\n\n")
 
@@ -163,7 +163,66 @@ def test_a_cleaning_with_some_parts_unchanged_is_still_published():
     )
 
     assert [part["unchanged"] for part in verdict["chunks"]] == [True, False]
+    assert not verdict["ok"]
+    assert verdict["reasons"] == [
+        "part 0 came back as it went in, though 2 of its 3 lines continue the "
+        "speaker before them: the grouping cleanup asks for was skipped"
+    ]
+
+
+# --- TASK-088 #2: an honest copy still passes -----------------------------------------
+#
+# The part rule keys on a line that continues the speaker before it, not on
+# sameness alone. A part with no such line has nothing to group: the answer
+# `cleanup.md` asks for is the input with blank lines added, so a copy of it
+# is honest. Each copied part sits next to a changed one, because a reading
+# that is a copy throughout is refused by the older rule whatever its shape.
+
+CHANGED_PART = "[1:00] SPEAKER_01: The answer is forty-two."
+CHANGED_SOURCE = "[1:00] SPEAKER_01: uh the answer is um forty-two"
+
+
+def test_a_copied_one_line_part_still_passes():
+    one_line = "[0:00] SPEAKER_00: Don't panic."
+
+    verdict = tasks.check_cleaning([one_line, CHANGED_SOURCE], [one_line + "\n", CHANGED_PART])
+
+    assert [part["unchanged"] for part in verdict["chunks"]] == [True, False]
     assert verdict["ok"], verdict["reasons"]
+
+
+def test_a_copied_part_of_alternating_speakers_still_passes():
+    verdict = tasks.check_cleaning(
+        [COPIED_PART, CHANGED_SOURCE], [COPIED_PART.replace("\n", "\n\n"), CHANGED_PART]
+    )
+
+    assert [part["unchanged"] for part in verdict["chunks"]] == [True, False]
+    assert verdict["ok"], verdict["reasons"]
+
+
+def test_a_copied_part_without_speaker_labels_still_passes():
+    """A judgement call, pinned so it is seen: an undiarized run sends lines
+    without a label, and nothing then says the speaker continued - it may as
+    well have changed. The rule refuses only on what the transcript says, so
+    unlabelled lines never count as continuing."""
+    unlabelled = "[0:00] so the towel is\n[0:04] Note: a hitchhiker can have"
+
+    verdict = tasks.check_cleaning([unlabelled, CHANGED_SOURCE], [unlabelled, CHANGED_PART])
+
+    assert verdict["ok"], verdict["reasons"]
+
+
+def test_a_continuing_line_past_the_first_hour_is_seen():
+    """Stamps go to h:mm:ss from an hour up, and media 12 runs past one."""
+    late = (
+        "[1:02:03] SPEAKER_00: so the towel is\n"
+        "[1:02:07] SPEAKER_00: the most important item"
+    )
+
+    verdict = tasks.check_cleaning([late, CHANGED_SOURCE], [late, CHANGED_PART])
+
+    assert not verdict["ok"]
+    assert verdict["reasons"][0].startswith("part 0 came back as it went in, though 1 of its 2 lines")
 
 
 def test_a_part_with_its_punctuation_fixed_is_a_change():
@@ -428,6 +487,77 @@ def test_a_rerun_publishes_its_own_parts_not_another_models_newer_ones(conn, mon
     )
     assert reading["text"] == final["content"]
     assert "Local:" not in reading["text"]
+
+
+# --- TASK-088 #3: a refused reading can be repaired by running it again -------------
+
+
+def _cleaner_that_copies_the_first_part(state: dict):
+    """Copies the part that starts with `state["first_line"]` while
+    `state["copy"]` holds, and cleans every other part (and that one, once it
+    is lifted)."""
+    clean = naming("Clean")
+
+    def answer(req):
+        lines = [line for line in req.user.splitlines() if line.startswith("[")]
+        if state["copy"] and lines and lines[0] == state["first_line"]:
+            return "\n\n".join(lines)
+        return clean(req)
+
+    return answer
+
+
+def test_a_rerun_asks_again_for_the_parts_of_a_refused_reading(conn, monkeypatch):
+    """ADR-010 decided the refusal and its repair together. `stored_chunk`
+    keys a part by provider, model, prompt version and segments and never
+    asked whether the reading it went into was published, so a rerun pulled
+    the copy back in and was refused again - repairable only by emptying the
+    cache. A part named by a refused reading is asked again; every part of it
+    is, because the verdict is about the reading, not about one part."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    wide = dict(media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1",
+                budget_tokens=100)
+    state = {"copy": True, "first_line": None}
+    provider, calls = fake_provider(_cleaner_that_copies_the_first_part(state))
+    register(monkeypatch, provider)
+    chunks = tasks.plan_task(conn, **wide).chunks
+    assert len(chunks) > 1, "the reuse path exists only for a reading in parts"
+    state["first_line"] = chunks[0].text.splitlines()[0]
+
+    first = tasks.run_task(conn, **wide)
+    assert _params(conn, first)["gate"]["published"] is False, "run 1 must be refused"
+    assert _reading(conn, media_id) is None
+
+    state["copy"] = False
+    asked_before = len(calls)
+    again = tasks.run_task(conn, **wide)
+
+    asked = calls[asked_before:]
+    assert any(chunks[0].text.splitlines()[0] in req.user for req in asked), (
+        "the copied part was reused, not asked again"
+    )
+    assert len(asked) == len(chunks)
+    reading = _reading(conn, media_id)
+    assert reading is not None and reading["llm_output_id"] == again, reading
+
+
+def test_a_rerun_still_reuses_the_parts_of_a_published_reading(conn, monkeypatch):
+    """The other side: resuming and re-running stay free for a reading that
+    was published. Only a refusal costs the parts their reuse."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    wide = dict(media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1",
+                budget_tokens=100)
+    provider, calls = fake_provider(naming("Clean"))
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, **wide)
+    assert _reading(conn, media_id) is not None
+    asked_before = len(calls)
+    tasks.run_task(conn, **wide)
+
+    assert len(calls) == asked_before
 
 
 def test_a_refusal_is_reported_with_the_numbers_it_rested_on(conn, media, monkeypatch):
