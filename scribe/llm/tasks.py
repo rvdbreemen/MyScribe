@@ -1427,7 +1427,48 @@ def stored_chunk(conn: sqlite3.Connection, plan: TaskPlan, chunk: Chunk) -> dict
         return None
     if not isinstance(params, dict) or params.get("segment_ids") != list(chunk.segment_ids):
         return None
+    if int(row["id"]) in refused_part_ids(conn, plan):
+        return None
     return {"id": row["id"], "content": row["content"]}
+
+
+# --- TASK-088: a refused reading's parts are asked again ----------------------
+
+
+def refused_part_ids(conn: sqlite3.Connection, plan: TaskPlan) -> set[int]:
+    """The parts that went into a reading the gate refused, in this run.
+
+    ADR-010 decided the refusal of a copied part together with its repair.
+    `stored_chunk` keys a part by provider, model, prompt version and
+    segments, and did not ask whether the reading it went into was published,
+    so a rerun pulled a refused reading's parts back in and was refused again:
+    repairable only by emptying the cache. A part named in the
+    `chunk_output_ids` of a final row whose `gate` says it was not published
+    is asked again instead - every part of that reading, not only the one a
+    reason names, because the verdict is about the reading.
+
+    A final row without a `gate` (made before TASK-055, or by a kind the gate
+    does not judge) refuses nothing. An interrupted run has no final row, so
+    resuming it still reuses every part. A reading that was published before
+    this rule existed and would be refused now takes two reruns to repair: the
+    first reuses its parts and is refused, the second asks them again.
+    """
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT params_json FROM llm_output WHERE media_id=? AND run_id IS ? AND kind=?",
+            (plan.media_id, plan.run_id, plan.kind),
+        ).fetchall()
+    refused: set[int] = set()
+    for row in rows:
+        try:
+            params = json.loads(row["params_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        gate = params.get("gate") if isinstance(params, dict) else None
+        if isinstance(gate, dict) and gate.get("published") is False:
+            ids = params.get("chunk_output_ids") or []
+            refused.update(int(i) for i in ids if isinstance(i, int))
+    return refused
 
 
 def reasoning_record(response: ChatResponse, cap: int) -> dict[str, Any]:
@@ -2365,6 +2406,35 @@ recording of 168 words came back as 5742, because its transcript was a
 112-word "La, la" loop and the model carried the loop on."""
 
 
+# --- TASK-088: a copied part that skipped the grouping ------------------------
+
+_SOURCE_LINE = re.compile(r"^\[(?:\d+:)?\d{1,2}:\d{2}\]\s+(?:(SPEAKER_\d+):\s)?")
+"""A line as `chunking.timestamped_line` writes it: `[m:ss]` or `[h:mm:ss]`,
+then pyannote's cluster label when the run was diarized. The label is matched
+by its shape, so an undiarized line whose text starts "Note:" has none."""
+
+
+def continuing_lines(source: str) -> tuple[int, int]:
+    """How many of `source`'s stamped lines continue the speaker before them,
+    and how many stamped lines there are.
+
+    A line continues when it carries the same label as the stamped line just
+    before it. An unlabelled line never does: an undiarized run does not say
+    who spoke, so it does not say the speaker stayed either. Those are the
+    lines `cleanup.md` asks to fold into the stretch before them, keeping only
+    the stamp and label that start it.
+    """
+    labels = [
+        match.group(1)
+        for match in (_SOURCE_LINE.match(line) for line in source.splitlines())
+        if match
+    ]
+    continuing = sum(
+        1 for before, label in zip(labels, labels[1:]) if label is not None and label == before
+    )
+    return continuing, len(labels)
+
+
 def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
     """Does this cleaned reading still say what the transcript said?
 
@@ -2402,21 +2472,29 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
     cleaning of the same run, since `apply_cleanup` writes `clean_reading`
     only on a pass and a refusal leaves the older row in place.
 
-    That guards a total copy, and the live check of TASK-029 produced none;
-    the copy it did produce still publishes. Measured 2026-09-11 on a copy of
+    **And one copied part, when it had grouping to do** (TASK-088, ADR-010
+    as decided on 2026-09-19). A part that came back unchanged is refused on
+    its own when its source has a line continuing the speaker before it
+    (`continuing_lines`): `cleanup.md` asks to fold such a line into the
+    stretch before it, and a copy did not. The rule keys on that line, not on
+    sameness: a copied part of one line, of alternating speakers or of
+    unlabelled lines had no such line to fold, and passes. A rerun can repair
+    the refusal, because `stored_chunk` does not reuse a refused reading's
+    parts (`refused_part_ids`).
+
+    The whole-reading rule came first and guards a total copy; the live check
+    of TASK-029 produced none. The copy it did produce is the shape the part
+    rule was built from. Measured 2026-09-11 on a copy of
     the library: qwen3.5:4b with think:false answered media 12's part 0 with
     its input's counts, twice - 963 words in and out, 45 of 45 stamps, and
     5,486 characters against the chunk's 5,442, one more for each of its 44
     line breaks. The answers were not kept, so "a copy with blank lines
     added" is inferred from those counts, not compared. The other ten parts
     changed words (ratios 0.79-0.999), so not every part was a copy and the
-    reading passed, at 0.894 and 0.902, as it did before this rule. That part
-    had work to do: 43 of its 45 lines continue the speaker before them, and
-    `cleanup.md` keeps only the stamp that starts each stretch. Refusing one
-    copied part is ADR-010's open question, for Robert: it would refuse this
-    reading, and a rerun on the same provider, model and prompt version
-    reuses the stored parts, copy included (`stored_chunk` does not ask
-    whether a reading was published), so it would be refused again.
+    reading passed, at 0.894 and 0.902, under the whole-reading rule alone.
+    That part had work to do: 43 of its 45 lines continue the speaker before
+    them, and `cleanup.md` keeps only the stamp that starts each stretch. The
+    part rule refuses that reading.
     """
     # A part is compared with its own part only. When the counts differ the
     # mapping is not what the caller thinks it is, so no part is paired at
@@ -2457,6 +2535,16 @@ def check_cleaning(source: Sequence[str], cleaned: Sequence[str]) -> dict:
             "whitespace aside): nothing was cleaned"
         )
     for part in per_chunk:
+        # TASK-088: one copied part refuses the reading when its source had
+        # lines to fold into the stretch before them.
+        if part["unchanged"]:
+            continuing, lines = continuing_lines(source[part["index"]])
+            if continuing:
+                reasons.append(
+                    f"part {part['index']} came back as it went in, though {continuing} of its "
+                    f"{lines} lines continue the speaker before them: the grouping cleanup "
+                    "asks for was skipped"
+                )
         if part["ratio"] < CLEAN_MIN_RATIO:
             reasons.append(
                 f"part {part['index']} kept {part['ratio']:.0%} of its words "

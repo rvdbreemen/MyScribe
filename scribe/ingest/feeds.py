@@ -455,7 +455,11 @@ def poll(
         doctor.require_disk_headroom()
     except doctor.NotEnoughDisk as exc:
         result = f"not checked: {exc}"
-        _record(conn, feed_id, result=result[:200], failed=True, now=stamp)
+        # TASK-091: the stored line gives up the path's middle, never the
+        # amounts or "nothing was downloaded"; the answer keeps it whole.
+        prefix = "not checked: "
+        stored = prefix + exc.fitted(200 - len(prefix))
+        _record(conn, feed_id, result=stored[:200], failed=True, now=stamp)
         return {"queued": [], "new": 0, "error": result}
     try:
         info = probe(feed["url"], limit=None)

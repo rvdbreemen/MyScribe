@@ -1218,6 +1218,36 @@ def test_a_refused_cleaning_says_why_instead_of_saying_nothing(client, conn, tra
     assert "data-reading-toggle" not in body
 
 
+# --- TASK-088: a copied part's refusal reads on the page like any other ------------
+
+
+def test_a_part_copied_without_its_grouping_says_so_on_the_page(client, conn, transcribed):
+    """The page joins the gate's reasons as they are, so the part rule's
+    reason needs no page change - shown here with the reason the gate itself
+    writes, not a hand-typed one."""
+    from scribe.llm import tasks
+
+    run_on = "[0:00] SPEAKER_00: so the towel\n[0:04] SPEAKER_00: is important"
+    verdict = tasks.check_cleaning(
+        [run_on, "[1:00] SPEAKER_01: uh forty-two"], [run_on, "[1:00] SPEAKER_01: Forty-two."]
+    )
+    assert not verdict["ok"]
+    media_id, run_id = transcribed["media"], transcribed["run"]
+    _cleanup_answer(conn, media_id, run_id, {
+        "finish_reason": "stop",
+        "gate": {"published": False, "reasons": verdict["reasons"],
+                 "words_in": verdict["words_in"], "words_out": verdict["words_out"]},
+    })
+
+    line = _status_line(client.get(f"/media/{media_id}").text)
+
+    assert line is not None and "not shown" in line
+    assert (
+        "part 0 came back as it went in, though 1 of its 2 lines continue the speaker "
+        "before them: the grouping cleanup asks for was skipped"
+    ) in line
+
+
 def test_a_cleanup_answer_from_before_the_gate_says_it_was_never_checked(client, conn, transcribed):
     """Row 15 in the live library: made on 2026-09-10 before cleanings were
     checked at all, so it carries no verdict. That is not a refusal, and the

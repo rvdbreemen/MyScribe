@@ -147,11 +147,33 @@ def test_a_feed_that_is_still_asking_is_not_polled(conn, monkeypatch):  # noqa: 
     assert [f["id"] for f in feeds.due_feeds(conn, now=checked["checked_at"] + 1)] == []
 
 
-def test_a_poll_below_the_disk_floor_queues_nothing_and_says_so(conn, monkeypatch):  # noqa: F811
+def _dir_of_length(base: pathlib.Path, length: int) -> pathlib.Path:
+    """A directory under `base` whose full path is `length` characters long,
+    or one level deeper than `base` when `base` is already that long."""
+    pad = length - len(str(base)) - 1
+    return base / ("d" * max(pad, 1))
+
+
+@pytest.mark.parametrize("data_dir", ["short", "long"])
+def test_a_poll_below_the_disk_floor_queues_nothing_and_says_so(  # noqa: F811
+    conn, monkeypatch, tmp_path, data_dir
+):
     """An episode is marked seen the moment a poll queues it, so queueing into
     a disk that will refuse every download does not delay the catalogue - it
     loses it, and the Feeds page would say "3 new" while all three died. The
-    probe is not even opened, and the entries stay unseen for next time."""
+    probe is not even opened, and the entries stay unseen for next time.
+
+    And the stored refusal keeps what a person acts on, however long the data
+    directory's path is (TASK-091). 'long' is 150 characters: from 142 the
+    old `result[:200]` cut the amount needed and "nothing was downloaded"
+    away. 'short' is the library conftest fences the test into."""
+    if data_dir == "long":
+        from scribe import paths
+
+        library = _dir_of_length(tmp_path, 150)
+        library.mkdir(parents=True)
+        monkeypatch.setattr(paths, "DATA_DIR", library)
+        assert len(str(doctor.disk_probe_path())) > 141
     feed_id = feeds.subscribe(conn, "https://feed.test/rss", entries=[entry(0)])
     feeds.answer(conn, feed_id)
     feed = dict(conn.execute("SELECT * FROM feed WHERE id=?", (feed_id,)).fetchone())
@@ -175,6 +197,44 @@ def test_a_poll_below_the_disk_floor_queues_nothing_and_says_so(conn, monkeypatc
         "the Feeds page must not call this a healthy check"
     )
     assert row["failures"] == 1  # counted as a failure, so the backoff applies
+    # TASK-091: what a person acts on survives the store, whatever the path.
+    stored = row["last_result"]
+    assert len(stored) <= 200, len(stored)
+    assert "only 1.0 GB free" in stored, stored
+    assert f"keeps {doctor.DISK_FLOOR_GB} GB clear" in stored, stored
+    assert stored.endswith("nothing was downloaded."), stored
+
+
+def test_a_disk_floor_refusal_at_the_longest_windows_path_is_pinned(conn, monkeypatch):  # noqa: F811
+    """TASK-091 #3. Windows allows a path of 260 characters (MAX_PATH), and the
+    Feeds page stores 200. The path gives up its middle - the drive and the
+    folder a person recognises stay - and every word after it survives. Not
+    created on disk: `disk_probe_path` is replaced, because a directory that
+    long cannot hold anything under MAX_PATH."""
+    longest = pathlib.PureWindowsPath("C:\\" + "\\".join(["a" * 50] * 4) + "\\" + "b" * 53)
+    assert len(str(longest)) == 260
+    monkeypatch.setattr(doctor, "disk_probe_path", lambda: longest)
+    monkeypatch.setattr(
+        shutil, "disk_usage",
+        lambda _p: shutil._ntuple_diskusage(total=1000 * 2**30, used=0, free=2**30),
+    )
+    feed_id = feeds.subscribe(conn, "https://feed.test/rss", entries=[entry(0)])
+    feeds.answer(conn, feed_id)
+    feed = dict(conn.execute("SELECT * FROM feed WHERE id=?", (feed_id,)).fetchone())
+
+    out = feeds.poll(conn, feed, probe=lambda url, **kw: None, known_sources=lambda c, e: [],
+                     options={})
+
+    stored = conn.execute("SELECT last_result FROM feed WHERE id=?", (feed_id,)).fetchone()[0]
+    assert stored == (
+        # 48 characters are left for the path: its first 23, an ellipsis,
+        # its last 24.
+        "not checked: only 1.0 GB free at C:\\" + "a" * 20 + "\u2026" + "b" * 24 + ", "
+        "and this app keeps 10 GB clear on the drive your recordings land on. "
+        "Free up space and retry; nothing was downloaded."
+    )
+    assert len(stored) == 200
+    assert str(longest) in out["error"], "the answer to the button keeps the whole path"
 
 
 def test_an_answered_feed_polls_as_before(conn):  # noqa: F811
@@ -279,3 +339,45 @@ def test_the_floor_is_named_once(conn):  # noqa: F811
         source = path.read_text(encoding="utf-8")
         assert "BULK_PRIORITY" in source, path
         assert "priority=-10" not in source.replace(" ", ""), path
+
+
+def test_a_refusal_that_fits_is_stored_whole(conn, monkeypatch):  # noqa: F811
+    """The other side of the 200 characters: a path short enough to fit - 42
+    characters, the length of a release install - is stored as it is, with
+    nothing shortened. The fixed words leave 48 for the path at "1.0 GB"."""
+    install = pathlib.PureWindowsPath("C:\\Users\\guest\\AppData\\Local\\MyScribe\\data")
+    assert len(str(install)) == 42
+    monkeypatch.setattr(doctor, "disk_probe_path", lambda: install)
+    monkeypatch.setattr(
+        shutil, "disk_usage",
+        lambda _p: shutil._ntuple_diskusage(total=1000 * 2**30, used=0, free=2**30),
+    )
+    feed_id = feeds.subscribe(conn, "https://feed.test/rss", entries=[entry(0)])
+    feeds.answer(conn, feed_id)
+    feed = dict(conn.execute("SELECT * FROM feed WHERE id=?", (feed_id,)).fetchone())
+
+    out = feeds.poll(conn, feed, probe=lambda url, **kw: None, known_sources=lambda c, e: [],
+                     options={})
+
+    stored = conn.execute("SELECT last_result FROM feed WHERE id=?", (feed_id,)).fetchone()[0]
+    assert stored == out["error"]
+    assert stored == (
+        f"not checked: only 1.0 GB free at {install}, and this app keeps 10 GB clear on "
+        "the drive your recordings land on. Free up space and retry; nothing was downloaded."
+    )
+    assert "\u2026" not in stored
+
+
+def test_a_refusal_with_no_room_for_the_path_drops_the_whole_path():
+    """TASK-091 #2's other way out: when not even a shortened path fits, the
+    path goes and the words a person acts on stay."""
+    text = doctor.disk_refusal(1.0, "C:\\" + "a" * 257, limit=140)
+
+    assert text == (
+        "only 1.0 GB free, and this app keeps 10 GB clear on the drive your "
+        "recordings land on. Free up space and retry; nothing was downloaded."
+    )
+    assert doctor.disk_refusal(1.0, "/srv/myscribe") == (
+        "only 1.0 GB free at /srv/myscribe, and this app keeps 10 GB clear on the drive "
+        "your recordings land on. Free up space and retry; nothing was downloaded."
+    ), "unlimited, the message is what it always was"
