@@ -115,29 +115,43 @@ user-owned private repository, so `SHA256SUMS` is the part you can check.
 
 ### From a clone
 
-Clone, then one command on every OS. `pyproject.toml` holds the pins and
-`uv.lock` the exact, hashed set for each platform (ADR-012): Windows gets
-torch built for CUDA 12.8 from PyTorch's index, Linux PyPI's torch with its
-CUDA wheels, an Apple Silicon Mac PyPI's CPU + MPS torch plus `mlx-whisper`.
-The first sync's size per platform is in `scribe/footprint.json`, with the
-date and the source of every figure; the launcher shows it before it starts.
+Clone, then one command on every OS:
 
 ```sh
-uv sync                                    # makes .venv from uv.lock
-.venv/bin/python -m scribe.doctor          # add --no-gpu to skip the model load
-.venv/bin/python -m scribe                 # opens http://127.0.0.1:4242
+python install.py                          # the pinned uv, .venv from uv.lock, the questions, the proof
+python install.py --start                  # the same, then start the app at http://127.0.0.1:4242
 ```
 
-On Windows the paths are `.venv\Scripts\python`. Then read the doctor's
-`accel` and `gpu-runtime` lines: they say which device each stage will use.
-ADR-012 explains why the app registers torch's DLL directory before
-CTranslate2 loads on Windows.
+`install.py` runs on the Python you already have (3.9 or newer, standard
+library only). It fetches the uv that `packaging/tools.json` pins, checks its
+sha256, and syncs `.venv` from `uv.lock` with it, frozen - never with the uv
+on `PATH`, because an older uv rewrites `uv.lock` wholesale. `pyproject.toml`
+holds the pins and `uv.lock` the exact, hashed set per platform (ADR-012):
+Windows gets torch built for CUDA 12.8, Linux PyPI's torch with its CUDA
+wheels, an Apple Silicon Mac PyPI's CPU + MPS torch plus `mlx-whisper`. The
+first sync's size is in `scribe/footprint.json`, and the free space is
+checked before it starts. On Windows and Linux a pinned ffmpeg lands in
+`.tools/bin` when none is on `PATH`; on a Mac one line says `brew install
+ffmpeg`.
 
-To change a pin, edit `pyproject.toml` and run `uv lock`; commit both files.
-Re-run the doctor on real hardware after any change to the ML stack. Use the
-uv the project pins, not whatever is on `PATH`: an older uv rewrites
-`uv.lock` wholesale, and `packaging/tools.json` names the version and its
-sha256.
+It then hands the terminal to `python -m scribe.setup`, which asks only what
+is still open, and ends with the doctor's proof report and the start command.
+`--check` prints that report alone. `--data-dir DIR` puts the library outside
+the clone: a library inside it is deleted by `git clean -fdx`. Re-running is
+cheap - a `.venv` synced from the current `uv.lock` is left alone - and
+`scripts/start.ps1` and `scripts/start.sh` say `run python install.py` after
+a pull that moved the lock. While a MyScribe runs from the same checkout the
+sync is refused; stop it first, or pass `--no-sync`.
+
+The environment's python is `.venv\Scripts\python` on Windows and
+`.venv/bin/python` elsewhere. `python -m scribe.doctor` (add `--no-gpu` to
+skip the model load) says on its `accel` and `gpu-runtime` lines which device
+each stage will use; ADR-012 explains why the app registers torch's DLL
+directory before CTranslate2 loads on Windows.
+
+To change a pin, edit `pyproject.toml` and run `uv lock` with the pinned uv
+(`.tools/bin/uv` after an install); commit both files and re-run the doctor
+on real hardware after any change to the ML stack.
 
 ### Then
 

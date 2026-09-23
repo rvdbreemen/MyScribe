@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import scribe
-from scribe import db, jobs
+from scribe import db, env, jobs, paths
 from scribe.app import create_app
 
 
@@ -43,9 +43,18 @@ def _row(conn, job_id):
 
 
 def test_health_ok_with_version(client):
+    """The body, exactly: `ok` and the version the launcher reads, plus the
+    two fields that say what this app serves (TASK-089.17, G5) - the source
+    tree it runs from and the library it opened. Pinned as a whole so that a
+    field cannot appear or go without this line moving."""
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "version": scribe.__version__}
+    assert resp.json() == {
+        "ok": True,
+        "version": scribe.__version__,
+        "app_dir": str(env.REPO_DIR),
+        "data_dir": str(paths.DATA_DIR),
+    }
 
 
 # --- GET /api/jobs ------------------------------------------------------------

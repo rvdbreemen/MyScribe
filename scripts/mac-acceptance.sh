@@ -41,8 +41,7 @@ echo
 if [ ! -x "$py" ]; then
   echo "No venv at $py"
   echo "README.md has the install; on a Mac it is:"
-  echo "  python3 -m venv .venv"
-  echo "  .venv/bin/pip install -r requirements.txt -r requirements-ml.txt -r requirements-macos.txt"
+  echo "  python3 install.py"
   echo "  brew install ffmpeg"
   exit 1
 fi

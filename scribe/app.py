@@ -50,7 +50,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 import scribe
-from scribe import applog, db, fsbrowse, guard, jobs, media, paths, supervisor, web
+from scribe import applog, db, env, fsbrowse, guard, jobs, media, paths, supervisor, web
 from scribe.ingest import feeds, recording, watching
 from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options, replayable
 from scribe.stages import finalize, probe, transcribe, url_stage
@@ -295,7 +295,19 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
-        return {"ok": True, "version": scribe.__version__}
+        """`ok` and the version, which the launcher reads, plus what this app
+        serves: the source tree it runs from and the library it opened
+        (TASK-089.17, G5). `install.py` reads `app_dir` before it syncs over a
+        checkout, and `scribe.setup --prove` reads `data_dir` before it loads
+        a model. The host check covers the whole app, so no web page can read
+        this; a local process that can could read the file system as well.
+        """
+        return {
+            "ok": True,
+            "version": scribe.__version__,
+            "app_dir": str(env.REPO_DIR),
+            "data_dir": str(paths.DATA_DIR),
+        }
 
     @app.post("/api/media", status_code=201)
     async def add_media(request: Request) -> dict:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -43,19 +44,40 @@ def sha256(data: bytes) -> str:
 
 
 def fetch(url: str, expected: str) -> bytes:
-    """``url``'s bytes, from the cache when present; refused on a bad sum."""
+    """``url``'s bytes, from the cache when present; refused on a bad sum.
+
+    A cached file whose sum is wrong is thrown away and fetched once more:
+    it is a download that was cut short, and until TASK-089.17 it failed
+    every later run on the same file. The cache is written under a temporary
+    name and renamed once complete, so a crash halfway leaves nothing under
+    the name the next run trusts. A failure to fetch is one sentence naming
+    the URL, not a traceback: `install.py` shows it to a person.
+    """
     CACHE.mkdir(parents=True, exist_ok=True)
     cached = CACHE / expected
     if cached.exists():
         data = cached.read_bytes()
-    else:
-        print(f"fetch {url}", flush=True)
+        if sha256(data) == expected:
+            return data
+        print(f"cached {cached.name} has the wrong sum; fetching it again", flush=True)
+        cached.unlink()
+    print(f"fetch {url}", flush=True)
+    try:
         with urllib.request.urlopen(url, timeout=300) as response:
             data = response.read()
+    except (OSError, http.client.HTTPException) as error:  # URLError is an OSError
+        raise SystemExit(f"could not fetch {url}: {error}") from None
     actual = sha256(data)
     if actual != expected:
         raise SystemExit(f"checksum mismatch for {url}: expected {expected}, got {actual}")
-    cached.write_bytes(data)
+    part = cached.with_name(cached.name + ".part")
+    try:
+        part.write_bytes(data)
+        os.replace(part, cached)
+    except OSError as error:
+        if part.exists():
+            part.unlink()
+        raise SystemExit(f"could not save {url} under {cached}: {error}") from None
     return data
 
 

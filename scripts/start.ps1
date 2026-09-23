@@ -46,14 +46,28 @@ $repo = Split-Path -Parent $PSScriptRoot
 $py = Join-Path $repo '.venv\Scripts\python.exe'
 
 if (-not (Test-Path -LiteralPath $py)) {
-    Write-Error @"
-No venv at $py
-README.md has the install; the short version is:
-  py -3.12 -m venv .venv
-  .venv\Scripts\pip install -r requirements.txt
-  .venv\Scripts\pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
-"@
+    Write-Output "No venv at $py"
+    Write-Output "Run python install.py first (README.md, 'From a clone'): it makes .venv from uv.lock with the pinned uv."
     exit 1
+}
+
+# The environment was synced from one uv.lock, and install.py wrote that
+# lock's digest into .venv. A pull that moves the lock leaves .venv behind
+# it, and an app started from it fails on a missing module somewhere down a
+# transcription rather than here. Refused, with the fix; a .venv made before
+# the stamp existed is said and started.
+$stamp = Join-Path $repo '.venv\.myscribe-sync.json'
+if (Test-Path -LiteralPath $stamp) {
+    $lock = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $repo 'uv.lock')).Hash.ToLower()
+    $recorded = ''
+    try { $recorded = [string](Get-Content -LiteralPath $stamp -Raw | ConvertFrom-Json).lock_sha256 } catch {}
+    if ($recorded.ToLower() -ne $lock) {
+        Write-Output "uv.lock changed since .venv was synced: run python install.py, then start again."
+        exit 1
+    }
+}
+else {
+    Write-Output "No sync stamp in .venv (made before install.py?): run python install.py once to record it."
 }
 
 # The port the app will actually use, so the check below asks about the right

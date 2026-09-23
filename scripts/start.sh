@@ -34,9 +34,32 @@ done
 
 if [ ! -x "$py" ]; then
   echo "No venv at $py" >&2
-  echo "README.md has the install; the short version is:" >&2
-  echo "  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-ml.txt" >&2
+  echo "Run python install.py first (README.md, 'From a clone'): it makes .venv from uv.lock with the pinned uv." >&2
   exit 1
+fi
+
+# The environment was synced from one uv.lock, and install.py wrote that
+# lock's digest into .venv. A pull that moves the lock leaves .venv behind
+# it, and an app started from it fails on a missing module somewhere down a
+# transcription rather than here. Refused, with the fix; a .venv made before
+# the stamp existed is said and started.
+stamp="$repo/.venv/.myscribe-sync.json"
+if [ -f "$stamp" ]; then
+  if ! "$py" - "$repo/uv.lock" "$stamp" <<'PY'
+import hashlib, json, sys
+lock = hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
+try:
+    recorded = json.load(open(sys.argv[2], encoding="utf-8")).get("lock_sha256")
+except (OSError, ValueError):
+    recorded = None
+sys.exit(0 if recorded == lock else 1)
+PY
+  then
+    echo "uv.lock changed since .venv was synced: run python install.py, then start again." >&2
+    exit 1
+  fi
+else
+  echo "No sync stamp in .venv (made before install.py?): run python install.py once to record it."
 fi
 
 # The port the app will actually use, so the check below asks about the right
