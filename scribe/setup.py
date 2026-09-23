@@ -2483,6 +2483,9 @@ def _answered_anything(args: argparse.Namespace) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if "--apply-stdin" in (sys.argv[1:] if argv is None else argv):  # PROBE, TASK-089.24: reverted next commit
+        print("PROBE: the setup engine is broken on purpose (TASK-089.24 red probe)", flush=True)
+        return 3
     parser = argparse.ArgumentParser(prog="scribe.setup", description=__doc__.split("\n\n")[0])
     parser.add_argument("--plan", action="store_true", help="print what was found and what is open, as JSON")
     parser.add_argument(
