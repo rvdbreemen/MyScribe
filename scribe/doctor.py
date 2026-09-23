@@ -51,7 +51,60 @@ class NotEnoughDisk(RuntimeError):
     Its own class, so `runner._ERROR_CODES` can give it a code the board tells
     apart from a network error (`DOWNLOAD_FAILED`) and from a write that
     already hit a full volume (`DISK_FULL`).
+
+    It carries what it measured (`free_gb`, `path`), so a caller with less
+    room than the message needs can ask for `fitted(limit)` instead of cutting
+    the end off (TASK-091). `str(exc)` stays the whole message.
     """
+
+    def __init__(self, message: str, *, free_gb: float | None = None, path: object = None):
+        super().__init__(message)
+        self.free_gb = free_gb
+        self.path = path
+
+    def fitted(self, limit: int) -> str:
+        """The message in at most `limit` characters, shortening the path."""
+        if self.free_gb is None or self.path is None:
+            return str(self)[:limit]
+        return disk_refusal(self.free_gb, self.path, limit=limit)
+
+
+# --- TASK-091: the refusal keeps what a person acts on ------------------------
+
+ELLIPSIS = "…"
+
+
+def disk_refusal(free_gb: float, path: object, *, limit: int | None = None) -> str:
+    """The disk-floor refusal, in at most `limit` characters when given one.
+
+    What a person acts on - how much is free, how much this app keeps clear,
+    that nothing was downloaded - sits on both sides of the path, and a path
+    can be 260 characters on Windows. So when the message is too long, the
+    path gives up its middle (its start names the drive, its end the folder a
+    person recognises), and gives up all of itself when even that does not
+    fit. The words around it are never cut. Counted for the Feeds page's
+    200-character store: with its "not checked: " in front, the fixed words
+    take 152 of them at "1.0 GB", so a path over 48 characters used to lose
+    "nothing was downloaded", and one over 141 the amount needed.
+    """
+    def message(where: str) -> str:
+        at = f" at {where}" if where else ""
+        return (
+            f"only {free_gb:.1f} GB free{at}, and this app keeps "
+            f"{DISK_FLOOR_GB} GB clear on the drive your recordings land on. "
+            "Free up space and retry; nothing was downloaded."
+        )
+
+    full = str(path)
+    text = message(full)
+    if limit is None or len(text) <= limit:
+        return text
+    room = limit - len(message("x")) + 1  # characters the path may take
+    if room < 3:
+        return message("")[:limit]
+    head = (room - 1) // 2
+    tail = room - 1 - head
+    return message(full[:head] + ELLIPSIS + full[len(full) - tail:])
 
 
 def disk_probe_path() -> Path:
@@ -97,11 +150,8 @@ def require_disk_headroom() -> None:
     except OSError:
         return
     if free < DISK_FLOOR_GB:
-        raise NotEnoughDisk(
-            f"only {free:.1f} GB free at {disk_probe_path()}, and this app keeps "
-            f"{DISK_FLOOR_GB} GB clear on the drive your recordings land on. "
-            "Free up space and retry; nothing was downloaded."
-        )
+        where = disk_probe_path()
+        raise NotEnoughDisk(disk_refusal(free, where), free_gb=free, path=where)
 
 
 @dataclass(frozen=True)

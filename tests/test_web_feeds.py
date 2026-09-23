@@ -321,3 +321,32 @@ def test_a_choice_that_is_not_on_offer_is_a_400_and_leaves_the_question_open(
 
     assert response.status_code == 400
     assert feeds.is_asking(conn, feed_id) is True
+
+
+# --- TASK-091: the Feeds page shows a refusal that kept its point ---------------------
+
+
+def test_the_feeds_page_shows_a_disk_refusal_that_kept_what_to_do(client, conn, monkeypatch):
+    """The stored line is what the page prints under the feed. At the longest
+    path Windows allows it still says how much is free, how much is needed
+    and that nothing was downloaded; the path gave up its middle."""
+    import shutil
+    from pathlib import PureWindowsPath
+
+    from scribe import doctor
+
+    longest = PureWindowsPath("C:\\" + "\\".join(["a" * 50] * 4) + "\\" + "b" * 53)
+    monkeypatch.setattr(doctor, "disk_probe_path", lambda: longest)
+    monkeypatch.setattr(
+        shutil, "disk_usage",
+        lambda _p: shutil._ntuple_diskusage(total=1000 * 2**30, used=0, free=2**30),
+    )
+    feed_id = _subscribe(conn)
+    feed = dict(conn.execute("SELECT * FROM feed WHERE id=?", (feed_id,)).fetchone())
+    feeds.poll(conn, feed, probe=lambda url, **kw: None, known_sources=lambda c, e: [], options={})
+
+    body = client.get("/feeds").text
+
+    assert "only 1.0 GB free at C:\\" + "a" * 20 + "\u2026" + "b" * 24 in body
+    assert "keeps 10 GB clear" in body
+    assert "Free up space and retry; nothing was downloaded." in body
