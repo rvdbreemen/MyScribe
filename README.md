@@ -6,9 +6,12 @@ everything; nothing leaves the machine unless you pick a cloud provider.
 
 Runs on Windows, Linux and macOS. Windows and Linux are verified on the
 author's machine (Windows 11 native, Ubuntu 24.04 under WSL2, both with an
-RTX 3080); macOS on an Apple M2 (macOS 26.3): the doctor green and a
-two-speaker file transcribed on MLX and diarized on MPS through the app. An
-Intel Mac has not been tried. Wherever something fails, the doctor's output
+RTX 3080); macOS once, on 2026-09-11, on a friend's Apple M2 (macOS 26.3),
+not the author's: the doctor green and a two-speaker file transcribed on MLX
+and diarized on MPS through the app. Everything built for macOS since then is
+unverified on a Mac until the points in
+[docs/macos-acceptance.md](docs/macos-acceptance.md) have been run. An Intel
+Mac has not been tried. Wherever something fails, the doctor's output
 is the bug report.
 
 ## What it does
