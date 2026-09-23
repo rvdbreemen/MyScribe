@@ -3,11 +3,11 @@ id: TASK-089.10
 title: >-
   An AI action that cannot be answered shows what is missing instead of queueing
   a job that fails
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 05:53'
+updated_date: '2026-09-23 18:05'
 labels:
   - llm
   - web
@@ -38,7 +38,7 @@ This is the safety net that makes skipping honest. Every 'decide later' in the s
 - [x] #2 The check uses the model the job would use: the saved row, not the class default (TASK-089.06).
 - [x] #3 The check makes no remote call: key presence and the loopback probe only, bounded the way available() already is. Nothing is loaded in the web process (ADR-001).
 - [x] #4 The automatic speaker-naming pass in finalize skips with a run note when the provider cannot answer, and sweep_speaker_passes queues nothing for it. The note says what to fix.
-- [ ] #5 A provider that can answer behaves exactly as before. The existing ai_run tests stay green, unchanged.
+- [x] #5 A provider that can answer behaves exactly as before. The existing ai_run tests stay green, unchanged.
 - [x] #6 A request that names no provider at all - no row, nothing in the form - comes back with the same card, naming the same fix (choose a provider in Settings > AI providers) and creating no job row. TASK-089.07 proved the safety half on 2026-09-21 and refuses with those words; what it does not have is the card and a link a person can click, and the card is built here so there is one of it. Red first against the plain 400 that task left behind.
 <!-- AC:END -->
 
@@ -308,4 +308,12 @@ tests/test_app.py, tests/test_launcher.py, tests/test_ollama_setup.py, tests/tes
 and the task-089.17 and task-089.18 task files.
 
 Orchestrator, 2026-09-23. Criterion 5 stays unticked on purpose. Its substance holds (a provider that can answer takes the same path, proven by the unchanged params assertion), but its words say the existing tests stay green 'unchanged', and 19 gained a fixture because this change introduces the readiness dependency. Whether the fixture counts as unchanged is Robert's call, not the agent's; the recommendation is to accept it, since no assertion moved. The follow-up the notes asked for is TASK-089.26, now Done. sweep 2026-09-23: 84 test files, one per process, fenced - 3282 passed, 0 failed, 10 skipped; test_llm_live has only live tests (exit 5, all deselected); git status hash identical before and after. Evidence: d0ea7837-…/scratchpad/ev/sweep/.
+
+Criterion 5 accepted by Robert on 2026-09-23: the ollama_ready fixture on the 19 existing tests counts as unchanged, since no assertion moved.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+POST /media/{id}/ai/{kind} asks llm.why_unavailable about the model the job would carry (key presence or one bounded loopback probe, nothing remote) and answers a provider that cannot answer with the panel and a card naming the fix, writing no job row; a request naming no provider gets the same card. The automatic speaker pass skips with a run note that is cleared wherever the pass is queued or answered. Verified red first, seven mutants plus a verifier round, the full per-file sweep (3282 passed), and a real run on port 4299 during TASK-089.26. Chat and the bulk action were finished in TASK-089.26.
+<!-- SECTION:FINAL_SUMMARY:END -->

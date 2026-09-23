@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 05:53'
+updated_date: '2026-09-23 18:05'
 labels:
   - llm
   - packaging
@@ -125,4 +125,6 @@ NOT RUN - Robert's, boxes stay unticked
 - #16, macOS dmg path: for TASK-089 criterion 10's bundled list, not run. Command: `python3 install.py` on a Mac without Ollama, keep Ollama, yes. Expected: the dmg's URL, 197,972,871 bytes and sha256 7bde8d83…b44f shown; Finder opens the image; after dragging Ollama to Applications and starting it, Check again finds it; no marker in the data directory; gemma4:12b never listed.
 
 Validation: sweep 2026-09-23: 84 test files, one per process, fenced - 3282 passed, 0 failed, 10 skipped; test_llm_live has only live tests (exit 5, all deselected); git status hash identical before and after. Evidence: d0ea7837-…/scratchpad/ev/sweep/. Criteria 13 and 16 stay unticked: they are Robert's runs on a machine without Ollama; the task stays In Progress until then.
+
+Signer, 2026-09-23, measured rather than assumed: Get-AuthenticodeSignature on ollama.exe, ollama app.exe and unins000.exe of the Ollama 0.34.2 installed on Robert's machine gives Valid and the subject 'CN=Ollama Inc., O=Ollama Inc., L=Toronto, S=Ontario, C=CA, SERIALNUMBER=2713355, …' for all three. SIGNER_PATTERN accepts it, and it is now a case in test_the_signer_must_be_valid_and_ollama_inc_anchored (80 passed). Still not read: the certificate on the pinned v0.34.3 OllamaSetup.exe itself; the same publisher signing 0.34.2's binaries makes a different signer unlikely, and a different one would fail safe. Robert has no code-signing certificate and needs none: the check reads Ollama's signature, it signs nothing.
 <!-- SECTION:NOTES:END -->

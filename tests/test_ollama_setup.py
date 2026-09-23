@@ -952,6 +952,11 @@ def _powershell_answering(monkeypatch, status: str, subject: str, exit_code: int
 
 @pytest.mark.parametrize("status,subject,accepted", [
     ("Valid", "CN=Ollama Inc., O=Ollama Inc., L=Palo Alto, S=California, C=US", True),
+    # Measured 2026-09-23 with Get-AuthenticodeSignature on ollama.exe, ollama app.exe and
+    # unins000.exe of the Ollama 0.34.2 installed on the reference machine: all three Valid.
+    ("Valid", "CN=Ollama Inc., O=Ollama Inc., L=Toronto, S=Ontario, C=CA, SERIALNUMBER=2713355, "
+              "OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Ontario, "
+              "OID.1.3.6.1.4.1.311.60.2.1.3=CA", True),
     ("Valid", "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US", False),
     ("Valid", "CN=Not Ollama Inc., O=Not Ollama Inc., C=US", False),
     ("NotSigned", "", False),
