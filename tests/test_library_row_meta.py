@@ -276,7 +276,7 @@ def test_the_bulk_bar_offers_labelling(client):  # noqa: F811
     assert '<option value="label">' in body
 
 
-def test_labelling_a_selection_queues_one_job_per_file(conn, client):  # noqa: F811
+def test_labelling_a_selection_queues_one_job_per_file(conn, client, ollama_ready):  # noqa: F811
     # Somebody chose one: with no `llm_provider` row this queues nothing at all
     # and says why (ADR-016), which is the subject of its own test next door.
     _set_provider(conn, "ollama")
@@ -297,7 +297,7 @@ def test_labelling_a_selection_queues_one_job_per_file(conn, client):  # noqa: F
     assert {p["kind"] for p in queued} == {"labels"}
 
 
-def test_a_file_without_a_transcript_is_skipped_and_said_so(conn, client):  # noqa: F811
+def test_a_file_without_a_transcript_is_skipped_and_said_so(conn, client, ollama_ready):  # noqa: F811
     """AC3: there is nothing for the pass to read, and a person who ticked
     forty rows should not have to count the jobs to find that out."""
     _set_provider(conn, "ollama")  # as above (ADR-016)

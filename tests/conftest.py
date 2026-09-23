@@ -9,6 +9,7 @@ import pytest
 import contextlib
 import shutil
 import threading
+from pathlib import Path
 
 from scribe import applog, credentials, env, paths
 
@@ -220,3 +221,137 @@ def _no_card_from_this_machine(monkeypatch):
     from scribe import accel
 
     monkeypatch.setattr(accel, "memory", lambda: None)
+
+
+
+OLLAMA_PORT = 11434
+"""Where this machine's Ollama daemon listens, and so the port no test reaches."""
+
+
+@pytest.fixture(autouse=True)
+def _no_daemon_answers_a_test(monkeypatch):
+    """No test is answered by the Ollama daemon running on this machine.
+
+    `_no_ollama_from_this_machine` stubs the detector; this closes the port.
+    Measured for TASK-090 with a socket tripwire: 61 tests in 11 files - the
+    settings page, the AI panel, the glossary, exports - opened a real socket
+    to 127.0.0.1:11434 and were answered by whatever this laptop had running
+    and pulled. A suite that answers differently when Ollama is up tests the
+    machine, not the code.
+
+    Closed at the socket rather than by stubbing a provider method, because
+    the tests that are about those methods hand them a MockTransport, which
+    never opens a socket and so is untouched here. A connection to the port is
+    refused the way a stopped daemon refuses it, a state every caller already
+    handles. A test that means a daemon to be up stubs `tags` itself
+    (`ollama_ready`) and wins; one that needs a real listener on this port
+    asks for `ollama_port_open`.
+    """
+    import errno
+    import socket
+
+    shipped_connect = socket.socket.connect
+    shipped_connect_ex = socket.socket.connect_ex
+
+    def _to_ollama(address) -> bool:
+        return isinstance(address, tuple) and len(address) >= 2 and address[1] == OLLAMA_PORT
+
+    def connect(self, address):
+        if _to_ollama(address):
+            raise ConnectionRefusedError(f"the test suite keeps port {OLLAMA_PORT} closed (TASK-090)")
+        return shipped_connect(self, address)
+
+    def connect_ex(self, address):
+        if _to_ollama(address):
+            return errno.ECONNREFUSED
+        return shipped_connect_ex(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    return shipped_connect, shipped_connect_ex
+
+
+@pytest.fixture
+def ollama_ready(monkeypatch):
+    """A daemon that is up and has qwen3.5:4b, the model a test names when it
+    names none.
+
+    For a test about what happens once a provider can answer - the rows a
+    bulk pass queues, the speaker pass a re-transcription asks for. Since
+    TASK-089.10 and TASK-089.26 those ask whether Ollama can answer before
+    they write a job, and since TASK-090 the port is closed, so a test that
+    needs the answer to be yes has to say so. tests/test_web_ai.py and
+    tests/test_web_library.py keep their own, which name more models.
+    """
+    from scribe.llm import ollama
+
+    monkeypatch.setattr(
+        ollama.OllamaProvider,
+        "tags",
+        lambda self: [{"name": "qwen3.5:4b", "model": "qwen3.5:4b", "capabilities": ["completion"]}],
+    )
+
+
+@pytest.fixture
+def ollama_port_open(monkeypatch, _no_daemon_answers_a_test):
+    """Port 11434 as the operating system has it, for a test that serves on it."""
+    import socket
+
+    shipped_connect, shipped_connect_ex = _no_daemon_answers_a_test
+    monkeypatch.setattr(socket.socket, "connect", shipped_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", shipped_connect_ex)
+
+_FENCED = ("DATA_DIR", "DB_PATH", "WORK_DIR", "MEDIA_DIR", "MODELS_DIR")
+"""The five places a test could write into somebody's library (TASK-090)."""
+
+
+@pytest.fixture(autouse=True)
+def _library_under_tmp_path(tmp_path, monkeypatch):
+    """Every test gets a library of its own, under its own tmp_path.
+
+    `scribe.paths` is fixed at import from SCRIBE_DATA_DIR, else the
+    repository's `data/`, and until TASK-090 only LOGS_DIR was fenced here:
+    35 test files patched what they needed and the rest relied on never
+    reaching it. Two did - the doctor's checks probed and migrated the live
+    database, and the runner's cleanup removed WORK_DIR/<job id> from the
+    live scratch. This points all five at a directory nobody else owns.
+
+    The environment is fenced too, for what runs outside this process or
+    reloads `paths`: a child a test starts inherits SCRIBE_DATA_DIR, and
+    `paths.refresh()` rebuilds the same five from it. SCRIBE_ENV_FILE names a
+    file that does not exist, so no test reads the developer's `.env` and
+    the tokens in it.
+
+    A test that wants another place patches it afterwards and wins, because
+    its own fixtures run after this one.
+    """
+    library = tmp_path / "library"
+    monkeypatch.setenv("SCRIBE_DATA_DIR", str(library))
+    monkeypatch.setenv(env.PATH_VARIABLE, str(tmp_path / "no-such.env"))
+    monkeypatch.setattr(paths, "DATA_DIR", library)
+    monkeypatch.setattr(paths, "DB_PATH", library / "myscribe.db")
+    monkeypatch.setattr(paths, "MEDIA_DIR", library / "media")
+    monkeypatch.setattr(paths, "WORK_DIR", library / "work")
+    monkeypatch.setattr(paths, "MODELS_DIR", library / "models")
+    return library
+
+
+@pytest.fixture(autouse=True)
+def _the_library_is_out_of_reach(tmp_path, _library_under_tmp_path):
+    """Every test starts with the five paths under its own tmp_path.
+
+    Checked at setup, before the test's own fixtures run, so a test that
+    points one somewhere else on purpose still can; what this catches is a
+    test that never thought about it and would have reached `data/`.
+    """
+    import os
+
+    for name in _FENCED:
+        value = getattr(paths, name)
+        assert Path(value).resolve().is_relative_to(tmp_path.resolve()), (
+            f"paths.{name} is {value}, outside this test's tmp_path: "
+            "a test run here would reach the library in it"
+        )
+    assert not Path(os.environ.get(env.PATH_VARIABLE, "") or "\0").is_file() or os.environ[env.PATH_VARIABLE] == "", (
+        f"{env.PATH_VARIABLE} names a .env that exists; a test would read the developer's tokens"
+    )

@@ -621,7 +621,7 @@ def test_finalize_writes_the_speakers_attribute_worked_out(conn, data_dir):
     assert [r["speaker"] for r in rows] == ["SPEAKER_00", "SPEAKER_01", None]
 
 
-def test_a_re_transcription_asks_who_is_speaking_again(conn, data_dir):
+def test_a_re_transcription_asks_who_is_speaking_again(conn, data_dir, ollama_ready):
     """Robert, 2026-09-11: re-transcribing means analysing the speakers again,
     even when every name carried over by voice (TASK-031). The names stay on
     the new run meanwhile, and the pass never writes over one a person typed
