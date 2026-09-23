@@ -1120,6 +1120,66 @@
       }
     },
     {
+      "id": "ADR-018",
+      "title": "A machine with an NVIDIA card never falls back to the CPU unless the Settings switch is on",
+      "path": "ADR-018-a-machine-with-an-nvidia-card-never-falls-back-to-the-cpu-unless-the-settings-switch-is-on.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-23",
+      "decision_summary": "Chosen option: refuse, with a switch that is off by default, decided by Robert on 2026-09-22 (TASK-092 description).",
+      "topics": [
+        "accelerator",
+        "gpu"
+      ],
+      "aliases": [
+        "broken driver",
+        "cpu fallback",
+        "cpu_fallback"
+      ],
+      "components": [
+        "scribe.accel"
+      ],
+      "symbols": [
+        "cpu_fallback_allowed",
+        "diarization_device",
+        "GpuUnreachable",
+        "transcription_backend"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "With CUDA unreachable, transcriptionbackend() and diarizationdevice() raise GpuUnreachable when the probe finds NVIDIA hardware, unless the switch is on or CUDAVISIBLEDEVICES is set.",
+          "The switch is one setting row, cpufallback. Exactly 1 is on; a missing row or any other value is off, the shape ADR-016 gives the provider.",
+          "The refusal is raised before any model is built. The job ends failed with GPUUNREACHABLE, exit 1, and a sentence naming the driver, nvidia-smi, the switch and where it is in Settings.",
+          "A run records the backend it used (paramsjson.device).",
+          "The probe lives in scribe/accel.py; the stages do not import the doctor."
+        ],
+        "must_not": [
+          "Answer cpu behind present-but-unreachable hardware with the switch off.",
+          "Refuse a machine where the probe finds no NVIDIA hardware, or a Mac.",
+          "Read CUDAVISIBLEDEVICES as a broken driver: setting it is a choice."
+        ],
+        "exceptions": [
+          "macOS: it has no CUDA, and the probe answers True for an operating system it was not taught. Whether Metal gets the same rule is left open.",
+          "An explicit device in the job's parameters is never second-guessed."
+        ],
+        "verification": [
+          "tests/testcpufallback.py and tests/testaccel.py, one pytest process per file."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
       "id": "ADR-019",
       "title": "An adopted library is the pointer file's second fact, which the engine reports through a result file and the launcher writes",
       "path": "ADR-019-an-adopted-library-is-the-pointer-file-s-second-fact-which-the-engine-reports-through-a-result-file-and-the-launcher-writes.md",
@@ -1538,6 +1598,18 @@
     },
     {
       "source": "ADR-017",
+      "target": "ADR-016",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-018",
+      "target": "ADR-012",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-018",
       "target": "ADR-016",
       "type": "related",
       "resolved": true
