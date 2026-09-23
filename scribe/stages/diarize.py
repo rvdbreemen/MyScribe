@@ -626,6 +626,12 @@ def run(ctx: "RunnerContext") -> None:
     # alone: when nothing loads, the note below has to say *where* the token
     # came from, and that is the one thing a bare string cannot tell it.
     token = credentials.resolve(ctx.conn, credentials.HUGGINGFACE)
+    # The same rule as transcription (TASK-092), decided before the pipeline is
+    # asked for: no CPU behind an NVIDIA card CUDA cannot reach unless the
+    # Settings switch is on. An explicit device is never second-guessed.
+    device = ctx.params.get("device") or accel.diarization_device(
+        cpu_fallback=accel.cpu_fallback_allowed(ctx.conn)
+    )
     try:
         turns, embeddings = diarize(
             wav,
@@ -633,7 +639,7 @@ def run(ctx: "RunnerContext") -> None:
             min_speakers=ctx.params.get("min_speakers"),
             max_speakers=ctx.params.get("max_speakers"),
             on_progress=ctx.report,
-            device=ctx.params.get("device"),
+            device=device,
             token=token.value,
             source_out=loaded,
         )

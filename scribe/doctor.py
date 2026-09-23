@@ -19,6 +19,7 @@ never opened.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import os
 import shutil
@@ -333,108 +334,6 @@ SMOKE_CLIP = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "cl
 
 _PIN_HINT = "Install the locked stack: uv sync (on Windows it takes torch from the cu128 index)"
 
-_NVIDIA_PCI_VENDOR = "10de"
-"""NVIDIA's PCI vendor id. The one signal that does not need a driver: the
-firmware enumerates a card whether or not anything can talk to it."""
-
-_NVIDIA_SMI_LOCATIONS = (
-    Path(r"C:\Windows\System32\nvidia-smi.exe"),
-    Path(r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
-    Path("/usr/bin/nvidia-smi"),
-    Path("/usr/local/nvidia/bin/nvidia-smi"),
-)
-"""Where the driver leaves its own tool when it is not on this process's PATH."""
-
-_SYSFS_PCI_DEVICES = Path("/sys/bus/pci/devices")
-"""Linux's PCI enumeration: one directory per device, each with a `vendor` file."""
-
-
-def nvidia_hardware_present() -> bool:
-    """Is there an NVIDIA card in this machine - driver or no driver?
-
-    The question `torch.cuda.is_available()` cannot answer. It says only that
-    no device could be opened, which is equally true of a laptop that never
-    had a card and of a 3080 behind a driver that broke this morning. One of
-    those is a machine working as designed and the other has quietly stopped
-    transcribing, so the doctor has to tell them apart before it decides
-    whether to fail.
-
-    Two signals, and deliberately not `CUDA_VISIBLE_DEVICES` - that variable
-    simulates both cases identically, which is the whole reason this function
-    exists. The driver's own `nvidia-smi` being installed is one; the PCI
-    vendor id the firmware enumerated is the other, and it is there before any
-    driver is. `nvidia-smi` is only ever looked for, never run: on a broken
-    driver it exits non-zero while the card is still in the machine, and
-    reading that as "no hardware" would soften exactly the case ADR-012 wants
-    red.
-
-    Every doubt answers True. Being wrong that way costs a fix hint somebody
-    does not need; being wrong the other way hides a dead card. So an error
-    reading the registry or sysfs, a list that cannot be read at all, and an
-    operating system this function has not been taught are all hardware
-    present.
-
-    Not tried on a real machine without an NVIDIA card by anybody
-    (TASK-089.12, criterion 9). What the tests pin is the rule, with this
-    function replaced.
-    """
-    if shutil.which("nvidia-smi") or any(path.exists() for path in _NVIDIA_SMI_LOCATIONS):
-        return True
-    if sys.platform == "win32":
-        return _nvidia_in_windows_pci()
-    if sys.platform.startswith("linux"):
-        return _nvidia_in_sysfs()
-    return True
-
-
-def _nvidia_in_windows_pci() -> bool:
-    """The PCI devices Windows enumerated, read from the registry.
-
-    `Enum\\PCI` holds one subkey per vendor and device, named `VEN_10DE&DEV_`
-    and the rest, and it is filled by enumeration rather than by a driver
-    install - which is the case a `nvidia-smi` lookup misses. Measured here:
-    0.3 ms and two vendor keys. `wmic` is gone in Windows 11 24H2 and a CIM
-    call costs a second and a process.
-
-    The loop asks for exactly the number of subkeys `QueryInfoKey` reports, so
-    a read that is refused raises out of it instead of ending it: a denied
-    enumeration must never be read as "finished, none found".
-    """
-    try:
-        import winreg
-
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Enum\PCI") as key:
-            for index in range(winreg.QueryInfoKey(key)[0]):
-                if f"ven_{_NVIDIA_PCI_VENDOR}" in winreg.EnumKey(key, index).lower():
-                    return True
-    except (ImportError, OSError):
-        return True
-    return False
-
-
-def _nvidia_in_sysfs() -> bool:
-    """The PCI devices the kernel enumerated: one `vendor` file per device.
-
-    The same ground truth as the registry read above, and the same rule: a
-    directory that is not there, a list that comes back empty and a file that
-    will not open are all "learned nothing", and that counts as present.
-    """
-    try:
-        vendors = sorted(_SYSFS_PCI_DEVICES.glob("*/vendor"))
-    except OSError:
-        return True
-    if not vendors:
-        return True
-    for vendor in vendors:
-        try:
-            found = vendor.read_text(encoding="utf-8").strip().lower()
-        except OSError:
-            return True
-        if found == f"0x{_NVIDIA_PCI_VENDOR}":
-            return True
-    return False
-
-
 def check_gpu_runtime() -> Check:
     """Is there a CUDA torch, and does it see the card?
 
@@ -481,7 +380,7 @@ def check_gpu_runtime() -> Check:
         # stopped working, so the variable softens nothing; what decides is
         # whether this machine has NVIDIA hardware at all.
         hidden = "CUDA_VISIBLE_DEVICES" in os.environ
-        if not hidden and not nvidia_hardware_present():
+        if not hidden and not accel.nvidia_hardware_present():
             # Information, not a failure: CPU transcription is a supported
             # mode (README.md), and telling a machine that never had a driver
             # to check one is advice it cannot follow. The shape of the Apple
@@ -557,6 +456,16 @@ def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None, *, reco
         wall = time.perf_counter() - run_start
     except ImportError as exc:
         return Check(name="gpu-smoke", ok=False, detail=f"not installed ({exc})", fix_hint=_PIN_HINT)
+    except accel.GpuUnreachable as exc:
+        # What a job gets on this machine is the same refusal (TASK-092), and
+        # the cuDNN hint below would send somebody after the wrong thing.
+        return Check(
+            name="gpu-smoke",
+            ok=False,
+            detail=f"GpuUnreachable: {exc}",
+            fix_hint="Check the NVIDIA driver with nvidia-smi, or turn on "
+            f"'{accel.CPU_FALLBACK_LABEL}' in {accel.CPU_FALLBACK_WHERE}.",
+        )
     except Exception as exc:  # noqa: BLE001 - any GPU failure is a red check, not a crash
         return Check(
             name="gpu-smoke",
@@ -1339,7 +1248,28 @@ def _stderr_is_a_terminal() -> bool:
         return False
 
 
+def _report_a_crash() -> None:
+    """Have a process that dies say where it died (TASK-093).
+
+    The doctor renders once, at the end, so a check that kills the process
+    takes the whole table with it: the runs that measured TASK-093's access
+    violation left 0 bytes and an exit code. faulthandler writes the Python
+    frames to stderr when the process gets a fatal signal or, on Windows, an
+    access violation - the check's function among them - and costs nothing
+    otherwise. Left alone when something already enabled it (pytest, or
+    -X faulthandler), and skipped when there is no stderr to write to
+    (pythonw) or it has no file descriptor (a captured stream).
+    """
+    if faulthandler.is_enabled():
+        return
+    try:
+        faulthandler.enable(file=sys.stderr)
+    except (AttributeError, ValueError, OSError, RuntimeError):
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _report_a_crash()
     # The doctor loads a model too, so it can meet the same modal box the
     # runner can. A check that hangs is worse than a check that fails.
     cuda_setup.silence_loader_dialogs()

@@ -81,6 +81,9 @@ def test_the_backend_is_mlx_on_apple_silicon_with_mlx_whisper_and_cpu_without(mo
     assert accel.transcription_backend() == "mlx"
 
     monkeypatch.setattr(accel.importlib.util, "find_spec", lambda name: None)
+    # "cpu" is the answer only where no NVIDIA card is being passed over
+    # (TASK-092); this machine's registry would otherwise say there is one.
+    monkeypatch.setattr(accel, "nvidia_hardware_present", lambda: False)
     assert accel.transcription_backend() == "cpu"
 
 
@@ -97,6 +100,7 @@ def test_diarization_picks_mps_on_a_mac_and_cpu_elsewhere(monkeypatch):
     monkeypatch.setattr(accel, "mps_available", lambda: True)
     assert accel.diarization_device() == "mps"
     monkeypatch.setattr(accel, "mps_available", lambda: False)
+    monkeypatch.setattr(accel, "nvidia_hardware_present", lambda: False)  # TASK-092, as above
     assert accel.diarization_device() == "cpu"
     assert accel.describe() == "transcription on cpu, diarization on cpu" or "transcription on" in accel.describe()
 

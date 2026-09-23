@@ -73,7 +73,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 
-from scribe import autostart, credentials, db, doctor, fsbrowse, glossary, jobs, paths
+from scribe import accel, autostart, credentials, db, doctor, fsbrowse, glossary, jobs, paths
 from scribe.exports.options import PRESETS
 from scribe.ingest import watching
 from scribe.llm import base as llm_base
@@ -102,6 +102,8 @@ FLASH_TERM_ADDED = "Added to the glossary. It biases the next transcription and 
 FLASH_TERM_REMOVED = "Term removed. Re-run the corrections to take its changes back out of the transcripts."
 FLASH_AUTOSTART_ON = "MyScribe will start when you log in."
 FLASH_AUTOSTART_OFF = "MyScribe will not start when you log in."
+FLASH_CPU_FALLBACK_ON = "A job will run on the CPU when the GPU cannot be reached."
+FLASH_CPU_FALLBACK_OFF = "A job is refused when the GPU cannot be reached."
 
 # The form field carrying the folder to watch, and the one carrying its switch.
 FIELD_WATCH_PATH = "path"
@@ -419,6 +421,7 @@ def page_context(
         **defaults_context(conn),
         **watch_context(conn, watcher=watcher),
         **autostart_context(),
+        **cpu_fallback_context(conn),
         **glossary_context(conn),
         **presets_context(conn),
         **ai_ui.settings_context(conn),
@@ -775,6 +778,45 @@ async def set_autostart(request: Request) -> Response:
             status_code=500, detail=f"the login entry could not be changed: {refused}"
         ) from None
     return _autostart_answer(request, flash=FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF)
+
+
+# --- the CPU switch (TASK-092) ---------------------------------------------------------------
+#
+# One row, `accel.SETTING_CPU_FALLBACK`, off by default: a machine with an NVIDIA
+# card that CUDA cannot reach refuses a job rather than running it thirty times
+# slower on the CPU without a word. On writes the row; off deletes it, so off
+# and never-asked are one state, as ADR-016 has it for the provider. Reading it
+# costs no torch: the web process never asks whether there is a card (ADR-001).
+
+FIELD_CPU_FALLBACK = "enabled"
+
+
+def cpu_fallback_context(conn: sqlite3.Connection, *, flash: str | None = None) -> dict:
+    """What _settings_cpu_fallback.html renders from."""
+    return {
+        "cpu_fallback": {"on": accel.cpu_fallback_allowed(conn), "label": accel.CPU_FALLBACK_LABEL},
+        "flash": flash,
+    }
+
+
+@router.post("/settings/cpu-fallback", include_in_schema=False)
+async def set_cpu_fallback(request: Request) -> Response:
+    conn = request.app.state.conn
+    fields = transcribe_dialog._fields(await request.form())
+    wanted = library._truthy(fields.get(FIELD_CPU_FALLBACK))
+    with db.LOCK:
+        if wanted:
+            conn.execute(
+                "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+                (accel.SETTING_CPU_FALLBACK, accel.CPU_FALLBACK_ON),
+            )
+        else:
+            conn.execute("DELETE FROM setting WHERE key=?", (accel.SETTING_CPU_FALLBACK,))
+        conn.commit()
+    flash = FLASH_CPU_FALLBACK_ON if wanted else FLASH_CPU_FALLBACK_OFF
+    if not library._is_htmx(request):
+        return _back_to("machine", "cpu-fallback")
+    return render(request, "_settings_cpu_fallback.html", oob=True, **cpu_fallback_context(conn, flash=flash))
 
 
 # --- the glossary --------------------------------------------------------------------------
