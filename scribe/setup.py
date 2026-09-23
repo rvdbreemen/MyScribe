@@ -55,12 +55,12 @@ from typing import Callable, Iterator
 
 import httpx2
 
-from scribe import accel, applog, credentials, db, doctor, env, models, ollama_setup, paths
+from scribe import accel, applog, autostart, credentials, db, doctor, env, models, ollama_setup, paths
 from scribe.llm import ollama
 from scribe.stages import diarize
 from scribe.web import ai_ui, transcribe_dialog
 
-CONTRACT = 3
+CONTRACT = 4
 """The version of the document `--plan` prints and `--apply-stdin` reads, and
 the number the stamp is measured against. Raise it whenever a question is added
 to `_questions`.
@@ -187,6 +187,10 @@ class Answers:
     ollama_models_dir: bool | None = None
     ollama_pull_resume: bool | None = None
     skipped: list[str] = field(default_factory=list)
+    # 12. the watch folder (TASK-089.20): a full path, or "" for nothing asked.
+    watch_folder: str = ""
+    # TASK-089.22: None is not answered, False a No that was given.
+    start_at_login: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -382,6 +386,26 @@ def _row(conn: sqlite3.Connection | None, key: str) -> str:
         return ""
 
 
+# --- 12. the watch folder (TASK-089.20) -------------------------------------------
+
+
+def _watch_folders(conn: sqlite3.Connection | None) -> list[str]:
+    """The folders this library watches, as a person reads them, or [] -
+    including when there is no database yet.
+
+    Every row and not only the enabled ones: a folder somebody switched off in
+    Settings is still a decision made there, and a question that came back
+    for it would be asking them to make it again. A switched-off row says so.
+    """
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute("SELECT path, enabled FROM watch_folder ORDER BY id").fetchall()
+    except sqlite3.Error:  # a library from before this table existed
+        return []
+    return [str(row["path"]) + ("" if row["enabled"] else " (off)") for row in rows]
+
+
 def label_of(provider: str) -> str:
     """A provider's name as a person reads it. `Provider` carries a registry
     name and no label, and the credential table already holds the spellings
@@ -440,6 +464,24 @@ def found_table(conn: sqlite3.Connection | None = None) -> list[dict]:
         }
         for row in credentials.proxies()
     ]
+    # 12. the watch folder (TASK-089.20): a re-run shows the folders that are
+    #     watched instead of asking. One row, the paths in `source`, and the
+    #     credential key set so the generic renderers print it as they do a
+    #     found credential.
+    watched = _watch_folders(conn)
+    if watched:
+        rows.append(
+            {
+                "kind": "watch_folder",
+                "name": "watch_folder",
+                "label": "Watch folders",
+                "found": True,
+                "source": ", ".join(watched),
+                "also_in": [],
+                "conflict": False,
+                "note": "",
+            }
+        )
     return rows
 
 
@@ -605,8 +647,8 @@ def _questions(
 
     The numbers in the comments are the rows of the design spec's table
     (section 1); the questions this engine does not own - where everything
-    goes, adopting a library, the watch folder, start at login - belong to
-    TASK-089.14, .19, .20 and .21 and are not built here.
+    goes, and adopting a library - belong to TASK-089.14 and .19 and are not
+    built here.
     """
     open_questions: list[Question] = []
 
@@ -726,6 +768,50 @@ def _questions(
                     "progress shown."
                 ),
                 answer_later="python -m scribe.setup --fetch-models",
+            )
+        )
+
+    # 12. A folder to watch, while no row says one is (TASK-089.20). Skip is
+    #     the default; the row it writes is the one Settings writes, after
+    #     the same four refusals, so a refused path reopens it rather than
+    #     ending the sitting.
+    if not _watch_folders(conn):
+        open_questions.append(
+            Question(
+                id="watch_folder",
+                kind="text",
+                text="Is there a folder MyScribe should watch for new recordings? Give its full path.",
+                choices=[],
+                current="",
+                default=None,
+                shown_if=None,
+                if_skipped="Nothing is watched; recordings come in through the transcribe dialog only.",
+                answer_later="Settings > Watch folders",
+            )
+        )
+
+    # 13. Start MyScribe when you log in (TASK-089.22). A thin layer over
+    #     `scribe.autostart`: asked only while the OS holds no entry - a re-run
+    #     shows the one it holds in the found table instead - and only where
+    #     there is something safe to register. Default No: a program that
+    #     loads a model and holds VRAM is not something to find running by
+    #     surprise (R3).
+    entry = _login_entry()
+    if entry is not None and not entry.on and entry.command:
+        open_questions.append(
+            Question(
+                id="start_at_login",
+                kind="yes-no",
+                text="Start MyScribe when you log in? Watch folders and feeds only work while it runs.",
+                choices=[{"value": "yes", "label": "Yes"}, {"value": "no", "label": "No"}],
+                current="",
+                default="no",
+                shown_if=None,
+                if_skipped=(
+                    "Nothing is written. Watch folders and feeds only work while MyScribe "
+                    "runs, so until you start it by hand nothing is watched."
+                ),
+                answer_later="Settings > Start at login",
             )
         )
 
@@ -946,6 +1032,65 @@ def _ollama_model_question(
     )
 
 
+# --- start at login (TASK-089.22) ------------------------------------------------------
+
+
+def _login_entry() -> autostart.Entry | None:
+    """The login entry as the OS holds it right now, or None when the OS would
+    not say.
+
+    Read where it is needed, as a credential is: `_questions` decides whether
+    to ask and `plan` shows the state, and one more read of one value costs
+    less than a parameter through `_questions`, whose signature a test pins.
+    An OS that will not answer costs this question and its row, never the
+    plan - a plan is what a front-end draws before anybody has typed, and
+    every other question on it is still worth asking.
+    """
+    try:
+        return autostart.status()
+    except (OSError, ValueError):
+        return None
+
+
+def _login_row(entry: autostart.Entry) -> dict:
+    """The found row for the login entry, so a re-run shows the current state
+    instead of asking (criterion 4).
+
+    The keys every other row has, so `render` and the launcher print it as
+    they print a credential, plus the three Settings shows: `on`, `where` and
+    the command exactly as the OS holds it - or, while it is off, exactly what
+    switching it on would write.
+    """
+    return {
+        "kind": "login",
+        "name": "start_at_login",
+        "label": "Start at login",
+        "found": entry.on,
+        "source": entry.where if entry.on else "",
+        "also_in": [],
+        "conflict": False,
+        "note": entry.command,
+        "on": entry.on,
+        "where": entry.where,
+        "command": entry.command,
+    }
+
+
+def _yes_no(value) -> bool | None:
+    """A yes-no answer as a document carries it - a boolean, or the word a
+    front-end took from the choices - and None for anything else, which is
+    "not answered" and writes nothing."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in ("yes", "true", "1"):
+            return True
+        if word in ("no", "false", "0"):
+            return False
+    return None
+
+
 def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict:
     """What this machine has, and what is still open - one JSON-able document.
 
@@ -984,9 +1129,15 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict
     if unasked_only:
         was_put = {id for id, state_of in states().items() if state_of in PUT}
         open_questions = [q for q in open_questions if q.id not in was_put]
+    found = found_table(conn)
+    # TASK-089.22: the login entry as the OS holds it, so a re-run shows the
+    # state instead of asking. Not in `found_table`, which is the credentials view.
+    entry = _login_entry()
+    if entry is not None:
+        found.append(_login_row(entry))
     return {
         "contract": CONTRACT,
-        "found": found_table(conn),
+        "found": found,
         "ollama": _ollama(state, marker=marker, standing=standing, offer=install_offer),
         "downloads": offer,
         "questions": [asdict(question) for question in open_questions],
@@ -1917,6 +2068,44 @@ def apply(
             report["wrote"].append("defaults")
         answered.append("default_diarize")
 
+    # 12. the watch folder (TASK-089.20). The row Settings writes, through the
+    #     function Settings calls, with the defaults as they stand after the
+    #     tier above was written - and nothing is ingested here: the watcher
+    #     thread the app starts takes the folder in. `scribe.web.settings` is
+    #     a page module and is imported where it is needed, as
+    #     `_queue_doctor_job` does. A refusal is a sentence in the notes and
+    #     the question comes back; the FastAPI exception stops here, and only
+    #     its sentence goes on.
+    if answers.watch_folder:
+        from fastapi import HTTPException
+        from scribe.web import settings as settings_ui
+
+        try:
+            settings_ui.add_watched(conn, answers.watch_folder, transcribe_dialog.read_defaults(conn))
+        except HTTPException as refused:
+            report["notes"].append(f"watch_folder: {refused.detail}")
+            report["reopen"].append("watch_folder")
+        else:
+            report["wrote"].append("watch_folder")
+            answered.append("watch_folder")
+    # TASK-089.22: start at login. A No is an answer too and is recorded as
+    # one, or it would come back at every start (criterion 3). A Yes makes the
+    # one call the Settings switch makes - `autostart.enable()` with no
+    # arguments - so both doors register the identical item (criterion 2). An
+    # OS that refuses, or a machine with nothing to start, reopens the question
+    # and the sitting still ends.
+    if answers.start_at_login is not None:
+        answered.append("start_at_login")
+        if answers.start_at_login:
+            try:
+                entry = autostart.enable()
+            except (autostart.NothingToStart, OSError, ValueError) as refused:
+                report["notes"].append(f"start_at_login: {refused}")
+                report["reopen"].append("start_at_login")
+            else:
+                report["wrote"].append("start_at_login")
+                report["notes"].append(f"MyScribe starts when you log in: {entry.where}")
+
     if answers.fetch_models:
         answered.append("fetch_models")
         try:
@@ -2264,6 +2453,9 @@ def from_document(document: dict) -> Answers:
         ollama_models_dir=yes_no("ollama_models_dir"),
         ollama_pull_resume=yes_no("ollama_pull_resume"),
         skipped=skipped,
+        watch_folder=text("watch_folder"),  # 12. the watch folder (TASK-089.20)
+        # TASK-089.22: a null stays a skip through `skipped`; "no" is an answer.
+        start_at_login=_yes_no(given.get("start_at_login")),
     )
 
 

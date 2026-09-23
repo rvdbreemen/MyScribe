@@ -1051,3 +1051,23 @@ def test_the_settings_page_survives_an_os_that_will_not_answer(client, monkeypat
 
     assert page.status_code == 200
     assert "Start at login" in page.text
+
+
+# --- the installer and the switch register the identical item (TASK-089.22) ---------
+
+
+def test_the_installer_and_the_switch_register_the_identical_item(client, conn, login_entry):
+    """AC2 of TASK-089.22, seen from this side. A Yes in the first-run sitting
+    and a click on this card go through one function with no arguments, so on
+    one fake OS they leave a byte-identical value."""
+    from scribe import setup
+
+    on = client.post("/settings/autostart", data={"enabled": "1"}, follow_redirects=False)
+    assert on.status_code in (200, 303)
+    by_the_switch = login_entry.value
+    assert by_the_switch is not None
+
+    login_entry.value = None
+    setup.apply(setup.Answers(start_at_login=True), conn)
+
+    assert login_entry.value == by_the_switch
