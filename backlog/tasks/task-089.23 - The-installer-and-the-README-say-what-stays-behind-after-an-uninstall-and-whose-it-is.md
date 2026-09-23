@@ -4,8 +4,10 @@ title: >-
   The installer and the README say what stays behind after an uninstall, and
   whose it is
 status: To Do
-assignee: []
+assignee:
+  - '@claude'
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-23 20:26'
 labels:
   - packaging
   - windows
@@ -37,10 +39,36 @@ Needs a real machine: A real install and uninstall on Windows (Robert, or a VM) 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The Inno welcome text says what the first start will ask, that the location can be chosen there and that %LOCALAPPDATA%\MyScribe is only the default, and what is left alone on uninstall. Its size figure agrees with the total of TASK-089.14 or is gone. The diff of myscribe.iss is shown.
-- [ ] #2 It says in one sentence that an Ollama and a model that MyScribe installed survive an uninstall and belong to the user, and how to remove them with Ollama's own uninstaller.
-- [ ] #3 The README has a short 'Uninstalling' section per OS: what the uninstaller removes, what stays (the home or the folder the pointer file names, the pointer file itself, Ollama and its models), and how to remove each by hand.
-- [ ] #4 For a clone the README documents `.tools/`: what is in it, that deleting it is safe, and that `python install.py` fetches it again.
+- [x] #1 The Inno welcome text says what the first start will ask, that the location can be chosen there and that %LOCALAPPDATA%\MyScribe is only the default, and what is left alone on uninstall. Its size figure agrees with the total of TASK-089.14 or is gone. The diff of myscribe.iss is shown.
+- [x] #2 It says in one sentence that an Ollama and a model that MyScribe installed survive an uninstall and belong to the user, and how to remove them with Ollama's own uninstaller.
+- [x] #3 The README has a short 'Uninstalling' section per OS: what the uninstaller removes, what stays (the home or the folder the pointer file names, the pointer file itself, Ollama and its models), and how to remove each by hand.
+- [x] #4 For a clone the README documents `.tools/`: what is in it, that deleting it is safe, and that `python install.py` fetches it again.
 - [ ] #5 An uninstall on Windows removes the login item of TASK-089.21. Needs a real uninstall: Robert runs it on Windows or in a VM and shows what is left on disk and in the login items. If it was not run, the notes say so.
-- [ ] #6 README.md:87-89 and myscribe.iss:18 agree about where the program is installed, and the .iss header cites ADR-011.
+- [x] #6 README.md:87-89 and myscribe.iss:18 agree about where the program is installed, and the .iss header cites ADR-011.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Re-read the .iss welcome text (TASK-089.14 already dropped the "about 3 GB" and says the first start asks where everything goes) and the README install/uninstall passages; reproduce both drifts (README:87-89 vs .iss:18, .iss:1 citing ADR-008).
+2. .iss: header cites ADR-011; WelcomeLabel2 says what the first start asks (location, then the setup questions), that %LOCALAPPDATA%\MyScribe is only the default, what an uninstall removes and leaves, and one sentence that an Ollama and a model MyScribe installed stay and are the user's, removed with Ollama's own uninstaller. No size figure (it cannot read footprint.json; the first start shows the size).
+3. .iss: remove the TASK-089.21 login item on uninstall with an [Registry] entry (HKCU Run value "MyScribe", ValueType none, uninsdeletevalue) - the value name from scribe/autostart.py.
+4. README: fix the Windows install folder sentence; add an "Uninstalling" section per OS (what the uninstaller removes, what stays - the home or the folder the pointer names, the pointer file, the login item on macOS/Linux, OLLAMA_MODELS, Ollama and its models - and how to remove each by hand); document .tools/ for a clone. Every size figure checked against scribe/footprint.json and scribe/ollama_release.json.
+5. Evidence: the .iss diff, the README diff, a grep that the numbers match their sources. #5 (a real uninstall) is written up for Robert as exact steps and expected output; not run here.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Built 2026-09-23 by the orchestrator in MyScribe-wt-setup (the build agent stopped after writing the plan above).
+
+CHANGED: packaging/windows/myscribe.iss - header cites ADR-011; a [Registry] entry removes the login item on uninstall and writes nothing at install; WelcomeLabel2 says where the program goes, that the library folder is only the default and is chosen at the first start, that uninstall removes the program and its login item and leaves the library, and that an Ollama and a model MyScribe installed stay, belong to the user, and are removed with Ollama's own uninstaller under Windows Settings > Apps. No size figure (the existing test that keeps GB figures out still passes). README.md - the Windows install sentence names both folders; a '.tools/' paragraph in 'From a clone'; a new '## Uninstalling' section for Windows, macOS, Linux and a clone.
+
+SOURCES, read 2026-09-23: Inno Setup help, [Registry] section (jrsoftware.org/ishelp/topic_registrysection.htm), verbatim: ValueType none - 'Setup will create the key but not a value'; dontcreatekey - 'Setup will not attempt to create the key or any value if the key did not already exist'; uninsdeletevalue - 'Delete the value when the program is uninstalled.' The entry is ValueType none + uninsdeletevalue dontcreatekey, and not uninsdeletekey, which would take every other program's login item with it. docs.ollama.com/windows: 'The Ollama Windows installer registers an Uninstaller application. Under Add or remove programs...', models in %HOMEPATH%\.ollama, and 'If you have changed the OLLAMA_MODELS location, the installer will not remove your downloaded models'. docs.ollama.com/linux: the Uninstall section's eight commands; the README links to it rather than copying them. Every path in the new text was checked against the code: the program folder against the .iss DefaultDirName, the library and the pointer file against the launcher's default_home and pointer_path (MyScribe.location beside the home), the login items against scribe/autostart.py (RUN_KEY, APP_NAME, LABEL, DESKTOP_NAME), .tools/ against .gitignore:70 and install.py TOOLS_STAMP.
+
+The task text's 'MyScribe may have installed ... a model of 3.4 to 7.6 GB' was not repeated: the README names no size (scribe/ollama_release.json holds the model sizes, 3,389,983,735 and 7,556,508,396 bytes, if one is ever wanted).
+
+TESTS: tests/test_uninstall_text.py, 5 tests, red first on a copy of the worktree's HEAD with only the new test added (5 failed, red-test_uninstall_text.txt), green after (5 passed). They pin the registry entry against autostart's own constants, ADR-011 in the header, the welcome text's two promises, the README and .iss agreeing on the program folder, and an Uninstalling section per platform naming the pointer file and both login-item files. tests/test_launcher.py (reads WelcomeLabel2): 102 passed, 1 skipped.
+
+#5 NOT RUN - Robert's, on Windows or in a VM: install a build of this branch's installer, switch Settings > Start at login on, check reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v MyScribe (a value), uninstall under Settings > Apps, then reg query again (expected: 'unable to find'), check that %LOCALAPPDATA%\Programs\MyScribe is gone and %LOCALAPPDATA%\MyScribe is still there, and that the other Run values are all still present. The macOS and Linux sections are written from the code and say so; macOS is point 7 of docs/macos-acceptance.md.
+<!-- SECTION:NOTES:END -->
