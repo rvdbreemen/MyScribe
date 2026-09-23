@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-11 21:24'
+updated_date: '2026-09-23 22:07'
 labels:
   - packaging
   - dependencies
@@ -39,4 +39,6 @@ ADR-012: three hand-maintained requirement files (gpu, ml, macos) had drifted in
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-09-11 on the M2 with uv 0.12.13: uv lock resolves 153 packages for the three platforms, uv lock --check OK. A fresh env from uv sync --frozen (uv-managed CPython 3.12.14) has every verified package at the same version; three are gone on macOS because nothing there needs them - the old files were frozen on Windows: colorama (colorlog/tqdm/pytest, win32 only), tzdata (pandas, win32 only), greenlet (sqlalchemy, linux+win32). Doctor on that env: accel mlx/mps, gpu-runtime OK, gpu-smoke 77 words from 30s. Repo .venv converted by uv sync (uninstalled exactly those 3). Suite from it: 1654 passed, 18 skipped. Behaviour change: the yt-dlp hints now say 'uv lock --upgrade-package yt-dlp && uv sync' (urls.UPDATE_COMMAND) and the doctor's fix hints say uv sync; tests/test_ingest_urls.py assertions moved with them. AC 5 (RTX 3080 doctor from uv sync --frozen) still open.
+
+2026-09-24 (orchestrator). #5 is closed by Robert's fresh-clone run of python install.py (TASK-089.17 #1): that makes .venv with the pinned uv and uv sync --frozen; running .venv/Scripts/python -m scribe.doctor afterwards, without --no-gpu, on the RTX 3080 is the evidence this criterion asks for.
 <!-- SECTION:NOTES:END -->

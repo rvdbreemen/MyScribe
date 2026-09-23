@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-19 16:58'
+updated_date: '2026-09-23 22:07'
 labels:
   - packaging
   - release
@@ -41,4 +41,6 @@ Installing MyScribe means cloning, a venv, and a different pip command per OS - 
 
 <!-- SECTION:NOTES:BEGIN -->
 AC5 geverifieerd 2026-09-19. README.md regels 64-94 beschrijven de install per platform: een tabel met de drie artefactnamen, en per OS de first-open-stappen voor ongetekende artefacten - macOS Control-click, Open, dan Open Anyway; Windows SmartScreen More info, Run anyway met de installatielocatie %LOCALAPPDATA%\MyScribe; Linux chmod +x. Daaronder de verificatie tegen SHA256SUMS. docs/RELEASING.md (commit d4bdfc0) beschrijft het snijden van een release: de drie plekken waar de versie moet kloppen, de volgorde commit-CI-merge-tag, wat elke job bewijst, de generale repetitie via workflow_dispatch, en de vier dingen die op weg naar v0.5.0 echt misgingen.
+
+2026-09-24 (orchestrator). Status of what is left, with who unblocks it. #1 and #2 need a v* tag, which publishes a release; Robert chose no tag in this session. What was proven without one: release.yml dispatched on task-089-installer-first-slice (run 35913685730) built all three artifacts and every smoke passed, and a deliberately broken setup turned all three red (run 35923728188). Attestations stay conditional: 'Feature not available for user-owned private repositories' - a public repository may lift that, to be seen on the first public tag. #3 needs a tag that disagrees with scribe.__version__; the job that checks it ran green on the dispatches. #4 needs Robert's RTX 3080 doctor on an installed build and a Mac.
 <!-- SECTION:NOTES:END -->

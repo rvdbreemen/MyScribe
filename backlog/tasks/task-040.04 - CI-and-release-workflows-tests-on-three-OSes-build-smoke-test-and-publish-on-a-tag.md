@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-19 16:58'
+updated_date: '2026-09-23 22:07'
 labels:
   - ci
   - release
@@ -44,4 +44,6 @@ AC4 proven in the v0.5.0 release run: macos printed "MACOS_CERTIFICATE is not co
 AC2 is met in every part but one, and the exception is not fixable here: attestations. actions/attest-build-provenance answered "Feature not available for user-owned private repositories" and failed the publish over three good builds. It is now conditional, the way signing already was, and SHA256SUMS is published either way. The criterion as written cannot be satisfied while this repository is a user-owned private one.
 
 AC3 bewezen door run 35447454324 (event: workflow_dispatch): de jobs 'the tag is the version', windows-x64, macos-arm64 en linux-x64 zijn alle vier groen, elk inclusief 'Build the artifact and prove it starts'; de job 'publish' is overgeslagen. De run uploadde precies drie workflow-artifacts (myscribe-windows-x64, myscribe-macos-arm64, myscribe-linux-x64) en er is geen release aangemaakt. Dat is exact wat dit criterium vraagt: dezelfde build- en smoke-jobs, artifacts naar de run, geen publicatie.
+
+2026-09-24 (orchestrator). #2 still waits on attestations, which GitHub refuses for a user-owned private repository. Everything else in it was re-proven on 2026-09-23 without a tag: tag-vs-version job, three builds, three smokes (run 35913685730), and a red probe (run 35923728188). If the repository goes public, the next tag's publish step shows whether attestations then work.
 <!-- SECTION:NOTES:END -->
