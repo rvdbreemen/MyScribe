@@ -27,6 +27,13 @@ as "Ollama was present".
 
 TASK-089 criterion 2, TASK-089.17 criterion 1.
 
+Partly seen already, not by a person: on 2026-09-23 GitHub's `macos-latest`
+runner (Apple Silicon) ran `python3 install.py --non-interactive` in CI run
+35921408104. It synced, and its proof reported `transcription on mlx,
+diarization on mps` and `large-v3-turbo on mlx/float16: 77 words from 30s in
+34.4s`, exit 0. What a runner cannot show is the questions a person answers
+and a Mac somebody actually uses, so this point still wants the sitting.
+
     git clone https://github.com/rvdbreemen/MyScribe.git ~/MyScribe-mac
     cd ~/MyScribe-mac
     python3 install.py
