@@ -368,6 +368,9 @@ def _fake_torch(monkeypatch, cuda, device=False):
     module.__version__ = "2.10.0+cu128" if cuda else "2.10.0+cpu"
     module.version = types.SimpleNamespace(cuda=cuda)
     module.cuda = types.SimpleNamespace(is_available=lambda: device)
+    # What `accel` asks on a Mac (TASK-089.24: the first CI run on macOS
+    # found this module without it). No MPS, because no case here has one.
+    module.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False))
     monkeypatch.setitem(sys.modules, "torch", module)
     return module
 

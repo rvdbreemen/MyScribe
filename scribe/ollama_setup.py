@@ -108,8 +108,11 @@ class State:
         return self.state != ABSENT
 
 
-def install_locations(environ: Mapping[str, str] | None = None) -> tuple[Path, ...]:
-    """Where Ollama's own installers put the binary, on this platform.
+def install_locations(
+    environ: Mapping[str, str] | None = None, platform: str | None = None
+) -> tuple[Path, ...]:
+    """Where Ollama's own installers put the binary, on `platform` (this one
+    unless another is named).
 
     Read out of Ollama's install scripts on 2026-09-21; both were fetched again
     that day and are byte-identical to the copies
@@ -135,12 +138,18 @@ def install_locations(environ: Mapping[str, str] | None = None) -> tuple[Path, .
 
     `%LOCALAPPDATA%` comes from the environment that was asked about, so a test
     that hands over a fake one is answered about that machine and not this one.
+    The platform is a parameter for the same reason: an install plan for
+    Windows names Windows's folder wherever it is built. Until TASK-089.24 it
+    read `sys.platform` here, so a Windows plan built on a Mac named
+    `/Applications` - found by the first CI run on macOS, where a test then
+    wrote a fake binary into the runner's real /Applications.
     """
     found = os.environ if environ is None else environ
-    if sys.platform == "win32":
+    platform = sys.platform if platform is None else platform
+    if platform == "win32":
         local = (found.get("LOCALAPPDATA") or "").strip()
         return (Path(local) / "Programs" / "Ollama" / "ollama.exe",) if local else ()
-    if sys.platform == "darwin":
+    if platform == "darwin":
         return (
             Path("/Applications/Ollama.app/Contents/Resources/ollama"),
             Path("/usr/local/bin/ollama"),
@@ -184,7 +193,11 @@ def variables(environ: Mapping[str, str] | None = None) -> tuple[credentials.Sou
     return tuple(rows)
 
 
-def _binary(environ: Mapping[str, str], locations: Sequence[Path] | None = None) -> str:
+def _binary(
+    environ: Mapping[str, str],
+    locations: Sequence[Path] | None = None,
+    platform: str | None = None,
+) -> str:
     """The `ollama` binary on this machine, or "".
 
     `path=` from the same environment the rest of the answer is built from, so
@@ -193,7 +206,7 @@ def _binary(environ: Mapping[str, str], locations: Sequence[Path] | None = None)
     machine would still be answered by this one's PATH. The known locations
     come second, for an Ollama that was installed but never put on PATH.
     """
-    known = install_locations(environ) if locations is None else locations
+    known = install_locations(environ, platform) if locations is None else locations
     found = shutil.which(BINARY, path=environ.get("PATH", "")) or ""
     if not found:
         found = next((str(path) for path in known if Path(path).exists()), "")
@@ -437,7 +450,7 @@ def install_plan(
     landed = str(into / artifact["name"])
 
     if key == "win32":
-        known = install_locations(environ)
+        known = install_locations(environ, key)
         install_dir = str(known[0].parent) if known else artifact["install_dir"]
         command = [landed, *artifact["args"]]
         # Popen turns a list into this very line on Windows, so what is shown
@@ -974,7 +987,7 @@ def install(
         take_back()
         return Outcome(ok=False, installed=False, sentence=_ended(f"Ollama's installer ended with exit code {code}"))
 
-    binary = _binary(environ)
+    binary = _binary(environ, platform=plan["platform"])
     if not binary:
         take_back()
         return Outcome(ok=False, installed=False, sentence=_ended(

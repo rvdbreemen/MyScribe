@@ -2139,7 +2139,7 @@ def test_the_critique_scenario_a_failed_download_then_the_users_own_install_stop
             monkeypatch.delenv(name, raising=False)
     # Sitting one: absent, yes, the download fails.
     monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
-    monkeypatch.setattr(ollama_setup, "install_locations", lambda environ=None: ())
+    monkeypatch.setattr(ollama_setup, "install_locations", lambda environ=None, platform=None: ())
     absent_daemon = PullingDaemon(refuse=True)
     serving(monkeypatch, absent_daemon)
     assert setup.plan(library)["ollama"]["state"] == ollama_setup.ABSENT
@@ -2149,6 +2149,7 @@ def test_the_critique_scenario_a_failed_download_then_the_users_own_install_stop
     # Sitting two: the user's own ollama.exe is on PATH and stopped.
     (theirs / "ollama.exe").write_bytes(b"MZ")
     (theirs / "ollama").write_bytes(b"MZ")
+    (theirs / "ollama").chmod(0o755)  # shutil.which wants the execute bit off Windows (TASK-089.24)
     monkeypatch.setenv("PATH", str(theirs))
     monkeypatch.setattr(subprocess, "Popen", _raiser("subprocess.Popen"))
     monkeypatch.setattr(ollama_setup, "install", _raiser("ollama_setup.install"))

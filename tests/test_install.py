@@ -659,6 +659,10 @@ def test_a_second_run_starts_no_uv_asks_bare_and_proves(clone, monkeypatch, caps
 def test_too_little_room_is_one_sentence_with_both_numbers_and_nothing_downloaded(clone, files, monkeypatch, capsys):
     """The Windows figure: 5.1 GB unpacked plus the 10 GB floor of scribe/doctor.py."""
     monkeypatch.setattr(install.sys, "platform", "win32")
+    # The whole machine, not half of it: on an arm64 Mac, win32 with the
+    # runner's own architecture is a machine the guard refuses before the
+    # disk is asked (TASK-089.24, the first CI run off Windows).
+    monkeypatch.setattr(install.platform, "machine", lambda: "AMD64")
     small = shutil._ntuple_diskusage(total=100 * install.GB, used=97 * install.GB, free=3 * install.GB)
     monkeypatch.setattr(shutil, "disk_usage", lambda _path: small)
 
@@ -1106,6 +1110,7 @@ def test_start_sh_sends_a_stale_environment_back_to_install_py(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="no pwsh on PATH: start.ps1 is not driven here, only read")
+@pytest.mark.skipif(sys.platform != "win32", reason="start.ps1 is the Windows start script (Test-NetConnection); macOS and Linux use start.sh, driven above")
 def test_start_ps1_sends_a_stale_environment_back_to_install_py(tmp_path):
     def pwsh(repo: Path, port: int) -> subprocess.CompletedProcess:
         # `-File script --port N`: the remaining arguments bind to $Args.

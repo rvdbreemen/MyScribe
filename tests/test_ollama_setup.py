@@ -258,6 +258,9 @@ def test_the_binary_on_the_path_alone_makes_it_present(serving, no_ollama_anywhe
     binary.mkdir()
     (binary / "ollama.exe").write_text("", encoding="utf-8")
     (binary / "ollama").write_text("", encoding="utf-8")
+    # shutil.which wants the execute bit on macOS and Linux; Windows reads
+    # the extension instead (TASK-089.24, the first CI run off Windows).
+    (binary / "ollama").chmod(0o755)
     serving(Daemon(answer=refused))
 
     found = ollama_setup.state(locations=(), environ={"PATH": str(binary)})
@@ -667,8 +670,10 @@ def fake_popen(monkeypatch, *, exit_code=0, interrupts=0, on_wait=None) -> list[
 
 
 def install_a_binary(tmp_path) -> Path:
-    """What a finished Windows installer leaves at the known location."""
-    where = ollama_setup.install_locations(environ_for(tmp_path))[0]
+    """What a finished Windows installer leaves at the known location - the
+    Windows one, on whatever machine the test runs: on macOS the default was
+    the runner's real /Applications (TASK-089.24)."""
+    where = ollama_setup.install_locations(environ_for(tmp_path), "win32")[0]
     where.parent.mkdir(parents=True, exist_ok=True)
     where.write_bytes(b"MZ")
     return where

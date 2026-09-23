@@ -1168,6 +1168,7 @@ def test_the_flag_reaches_the_window_and_not_only_the_parser(tmp_path, monkeypat
         return 0
 
     monkeypatch.setattr(launcher, "run_window", _capture)
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: True)  # the window door, on any runner
 
     assert launcher.main(["--at-login", "--no-browser", "--home", str(tmp_path)]) == 0
     assert seen == {"open_browser": False, "force_setup": False, "at_login": True}
@@ -1349,6 +1350,11 @@ def test_the_location_is_asked_before_anything_is_written_or_downloaded(layout, 
         return 0 if launcher.first_run(launch, lambda: None, launch.report) else 1
 
     monkeypatch.setattr(launcher, "run_window", window)
+    # The window door is the subject, so the test says there is one. Left to
+    # the machine, a Linux runner without Tk took the console door, which
+    # this test never replaced, and waited on the stand-in app for good
+    # (TASK-089.24: the first CI run of this file on Linux hung here).
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: True)
 
     code = launcher.main(["--payload", str(layout.payload), "--port", str(_free_port()), "--no-browser"])
 
@@ -1447,7 +1453,9 @@ def test_the_question_shows_the_default_the_total_and_every_volume(layout, tmp_p
     whole task exists for (AC #2)."""
     _shipped_install_numbers(layout)
     free = {Path("C:/"): 9.4, Path("D:/"): 412.0}
-    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda path: _usage(free[Path(path)]))
+    # Any other disk - the one the default home is on, which is C: only on
+    # Windows and "/" on the macOS runner (TASK-089.24) - has plenty.
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda path: _usage(free.get(Path(path), 500.0)))
 
     text = launcher.location_question(
         layout, tmp_path / "MyScribe.location", volumes=[Path("C:/"), Path("D:/")],
@@ -1489,6 +1497,7 @@ def test_the_question_says_where_the_answer_can_be_given_later(layout, tmp_path)
 def test_setup_prints_the_home_in_force_and_where_it_came_from(layout, tmp_path, monkeypatch, capsys):
     """`--setup` is where somebody looks after the fact (AC #10)."""
     monkeypatch.setattr(launcher, "run_window", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: True)  # the window door, on any runner
     home = tmp_path / "chosen"
 
     assert launcher.main(["--setup", "--home", str(home), "--payload", str(layout.payload)]) == 0
