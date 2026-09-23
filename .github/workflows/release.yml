@@ -74,19 +74,6 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
-      - name: Install uv
-        if: runner.os != 'Windows'
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install uv (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          irm https://astral.sh/uv/install.ps1 | iex
-          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-        shell: pwsh
-
       - name: Make room (Linux)
         if: runner.os == 'Linux'
         # The same clearing ci.yml does, for a hungrier reason. The smoke test
@@ -120,12 +107,24 @@ jobs:
       - name: Build the artifact and prove it starts
         shell: bash
         # --smoke runs the frozen launcher the build just produced: first sync,
-        # /health, a page, quit. "The build produced a file" is not the thing a
-        # release needs to be true.
+        # the setup engine with `{}` answers over stdin, /health, a page, quit
+        # (TASK-089.15). "The build produced a file" is not the thing a release
+        # needs to be true. On a failure build_release.py prints the
+        # launcher's own <home>/logs/launcher-smoke.log, because the Windows
+        # binary is windowed and has no console of its own.
+        #
+        # The runner's own Python, and no uv here at all (TASK-089.24):
+        # build_release.py is standard library only and makes its build
+        # environment with the uv inside the payload, the one pinned by
+        # version and sha256 in packaging/tools.json. `uv run` used to create
+        # the whole project environment first, only to start a script that
+        # never imports it - and the floating install script that provided uv
+        # was a second, unpinned copy.
         run: |
           extra=""
           if [ "$RUNNER_OS" = "macOS" ]; then extra="--ffmpeg-dir packaging/build/ffmpeg"; fi
-          uv run python packaging/build_release.py --platform ${{ matrix.platform }} --smoke $extra
+          py=$(command -v python3 || command -v python)
+          "$py" packaging/build_release.py --platform ${{ matrix.platform }} --smoke $extra
 
       - name: Sign (macOS)
         # Only when the secrets exist. An unsigned artifact is a real thing a

@@ -3,9 +3,11 @@ id: TASK-089.24
 title: >-
   CI installs through install.py on three runners and the release smoke walks
   the setup path
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-20 18:40'
+updated_date: '2026-09-23 20:05'
 labels:
   - ci
   - release
@@ -42,3 +44,9 @@ Needs a real machine: GitHub's three runners, which are billed; macOS minutes co
 - [ ] #4 The Windows smoke is no longer mute: on failure the run prints <home>/logs/launcher-smoke.log. A deliberately failing probe shows the launcher's own lines in the Windows log.
 - [ ] #5 release.yml runs build_release.py without first creating the project environment (`uv run --no-project`, or plain python; today :128 uses `uv run python`). The Windows job time before and after is reported. The expected saving of about 3 minutes was read off log timestamps in the design run and has not been measured.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. ci.yml: Make room (Linux) and brew ffmpeg (macOS) before the install; install with python install.py --non-interactive; .tools/bin on GITHUB_PATH so uv lock --check uses the pinned uv; Doctor, check-pin and Suite in .venv's python; apt and choco ffmpeg steps removed because install.py fetches the pinned ffmpeg on Windows and Linux. 2. release.yml: no uv install at all - build_release.py is stdlib only and uses the payload's pinned uv; run it with the runner's python. The smoke (sync, setup with {} over stdin, /health, a page) and the smoke-log print exist since TASK-089.15. 3. Push this branch, dispatch ci.yml and release.yml (publish only runs on a tag), read the logs and minutes. 4. Red probes for #2 and #4 on a separate probe branch, deleted afterwards.
+<!-- SECTION:PLAN:END -->
