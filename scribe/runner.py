@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from scribe import applog, cuda_setup, db, doctor, jobs, paths, stages_fake
+from scribe import accel, applog, cuda_setup, db, doctor, jobs, paths, stages_fake
 from scribe.ingest import urls
 from scribe.llm import privacy as llm_privacy
 from scribe.llm.base import ContextTooLong, LlmError
@@ -75,6 +75,10 @@ _ERROR_CODES: dict[type[BaseException], str] = {
     # doctor's own floor. Not DISK_FULL: that one means a write already hit a
     # full volume and there is half a file to clean up (TASK-043).
     doctor.NotEnoughDisk: "DISK_LOW",
+    # An NVIDIA card CUDA cannot reach, and the CPU switch off (TASK-092). A
+    # refusal before any model was built, not a crash: exit 1 like every
+    # failed job, with the sentence naming the driver and the switch.
+    accel.GpuUnreachable: "GPU_UNREACHABLE",
     # An llm job that asked a provider for something it would not give: no key,
     # a model id that does not exist, a prompt that did not fit, an answer that
     # was not the shape it promised. One code because one thing has to change -

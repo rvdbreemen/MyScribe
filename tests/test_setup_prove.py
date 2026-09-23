@@ -624,7 +624,7 @@ def test_a_machine_with_no_nvidia_card_is_not_declared_broken(tmp_path, monkeypa
     module.cuda = types.SimpleNamespace(is_available=lambda: False)
     monkeypatch.setitem(sys.modules, "torch", module)
     monkeypatch.setattr(doctor.cuda_setup, "ensure_cuda_libs", lambda: None)
-    monkeypatch.setattr(doctor, "nvidia_hardware_present", lambda: False)
+    monkeypatch.setattr(doctor.accel, "nvidia_hardware_present", lambda: False)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     with setup.read_only(paths.DB_PATH) as conn:

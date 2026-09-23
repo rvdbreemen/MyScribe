@@ -1,0 +1,35 @@
+{#
+  The CPU switch (TASK-092): what settings.html includes, and what
+  POST /settings/cpu-fallback returns to swap in its place.
+
+  Context (from scribe.web.settings.cpu_fallback_context):
+
+      cpu_fallback  {on, label}: the `cpu_fallback` row read on this request;
+                    no row is off
+      flash         a line for the page's status region, or none
+      oob           whether this is a fragment response carrying the flash
+                    out of band
+#}
+<section id="cpu-fallback" class="panel">
+  <h2>{{ cpu_fallback.label }}</h2>
+  <p class="hint">
+    On a machine with an NVIDIA card, a job whose GPU cannot be reached - a driver that stopped
+    working, a card the system no longer sees - is refused with a sentence rather than run on the
+    CPU, which is about thirty times slower. Turn this on to have such a job run on the CPU anyway;
+    every transcript records which one it ran on. A machine without an NVIDIA card always uses the
+    CPU and is not affected.
+  </p>
+  <dl class="facts">
+    <dt>Run on the CPU when the GPU is unavailable</dt>
+    <dd>{{ 'On' if cpu_fallback.on else 'Off' }}</dd>
+  </dl>
+  <form method="post" action="/settings/cpu-fallback"
+        hx-post="/settings/cpu-fallback" hx-target="#cpu-fallback" hx-swap="outerHTML">
+    <input type="hidden" name="enabled" value="{{ '0' if cpu_fallback.on else '1' }}">
+    <button type="submit">
+      {{ 'Refuse jobs when the GPU is unavailable' if cpu_fallback.on else 'Run on the CPU when the GPU is unavailable' }}
+    </button>
+  </form>
+
+  {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
+</section>

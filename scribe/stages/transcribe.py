@@ -557,6 +557,7 @@ def load_model(
     *,
     device: str | None = None,
     compute_type: str | None = None,
+    cpu_fallback: bool = False,
 ) -> tuple[Any, str, str]:
     """Construct a WhisperModel; returns (model, device, compute_type).
 
@@ -565,9 +566,13 @@ def load_model(
     `ensure_cuda_libs()` has to run - before `faster_whisper` is imported at
     all, because CTranslate2 delay-loads cuDNN and a late fix arrives after the
     DLL search has already failed.
+
+    With no device named, `accel` picks one - and refuses the CPU behind an
+    NVIDIA card it cannot reach unless `cpu_fallback` says yes (TASK-092).
+    That refusal is raised here, before the DLLs and before any model.
     """
     if device is None:
-        device = accel.transcription_backend()
+        device = accel.transcription_backend(cpu_fallback=cpu_fallback)
     if device == mlx_backend.DEVICE:
         # Apple Silicon: the same weights on the Apple GPU through Metal.
         # CTranslate2 has no Metal backend, so faster-whisper is not an option
@@ -626,6 +631,7 @@ def transcribe_audio(
     search_seconds: float = SEARCH_SECONDS,
     lookahead_seconds: float = LOOKAHEAD_SECONDS,
     on_segment: Callable[[dict], None] | None = None,
+    cpu_fallback: bool = False,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Transcribe one prepared wav; returns (info, segments, words).
 
@@ -649,7 +655,7 @@ def transcribe_audio(
     the language Whisper detected - because that is what goes in the run row.
     """
     model, device, compute_type = load_model(
-        model_name, device=device, compute_type=compute_type
+        model_name, device=device, compute_type=compute_type, cpu_fallback=cpu_fallback
     )
     extractor = getattr(model, "feature_extractor", None)
     duration = wav_duration(wav)
@@ -819,6 +825,9 @@ def run(ctx: "RunnerContext") -> None:
         device=ctx.params.get("device"),
         compute_type=ctx.params.get("compute_type"),
         on_segment=glimpse.add,
+        # The Settings switch (TASK-092): whether a card CUDA cannot reach
+        # may be passed over for the CPU. Off without a row.
+        cpu_fallback=accel.cpu_fallback_allowed(ctx.conn),
     )
     glimpse.flush()
 
