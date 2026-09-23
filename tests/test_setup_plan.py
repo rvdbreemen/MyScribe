@@ -26,6 +26,7 @@ import os
 import shutil
 import sqlite3
 import sys
+from pathlib import Path
 
 import httpx2
 import pytest
@@ -128,6 +129,10 @@ def test_a_plan_says_what_was_found_what_ollama_is_and_what_is_open(library, no_
 
     assert set(document["ollama"]) == {
         "state", "present", "binary", "version", "chat_models", "variables", "note",
+        # TASK-089.18: what a front-end renders beside the sentence - the
+        # copyable pull command, whether a Check again applies, the marker's
+        # standing, and the install offer (null in every state but absent).
+        "check_again", "pull_command", "marker", "offer",
     }
     assert set(document["downloads"]) == {"catalogue", "backend", "note", "entries", "total_bytes"}
     assert document["downloads"]["backend"] in ("mlx", setup.NOT_MLX)
@@ -1481,7 +1486,7 @@ def test_a_question_a_later_version_adds_is_asked_exactly_once(
         "watch_folder", "choice", "Which folder should MyScribe watch?",
         [{"value": "none", "label": "None", "note": ""}], "", None, None,
         "Nothing is watched.", "Settings > Watch folders")
-    monkeypatch.setattr(setup, "_questions", lambda conn, state, offer: [before, added])
+    monkeypatch.setattr(setup, "_questions", lambda conn, state, offer, **kwargs: [before, added])
     monkeypatch.setattr(sys, "stdin", io.StringIO(
         json.dumps({"contract": setup.CONTRACT, "answers": {"hf_token": None}})))
     assert setup.main(["--apply-stdin"]) == 0
@@ -1564,6 +1569,12 @@ def test_every_open_question_says_where_its_answer_can_be_given_later(library, n
         if asked["id"] == "fetch_models":
             assert asked["answer_later"] == "python -m scribe.setup --fetch-models"
             continue
+        if asked["id"].startswith("ollama_"):
+            # The install offer has no Settings row to give later, on purpose:
+            # it is the same offer at the next sitting for as long as Ollama
+            # is absent, or the vendor's page (spec rows 7-8a, ADR-017).
+            assert "--setup" in asked["answer_later"] or "ollama.com/download" in asked["answer_later"]
+            continue
         assert asked["id"] in LATER_ROUTES, "a new question needs its route in the table"
         assert "Settings" in asked["answer_later"]
 
@@ -1595,3 +1606,556 @@ def test_the_ollama_model_question_names_the_settings_route_that_writes_its_row(
 
     assert asked is not None and "Settings" in asked["answer_later"]
     assert LATER_ROUTES["llm_model_ollama"] == ("POST", "/settings/llm")
+
+
+# --- the Ollama install offer (TASK-089.18, ADR-017) ------------------------------------
+#
+# The plan carries the offer and the sitting applies it; both ends are tested
+# here at the level the doors use them. Every state but `absent` is a machine
+# that has an Ollama, and the seams planted below - a `subprocess.Popen`, an
+# `httpx2.Client.send`, a variable writer that each raise - prove that nothing
+# runs, downloads or writes on any of them.
+
+
+import subprocess
+import urllib.request
+
+
+class Refused(RuntimeError):
+    pass
+
+
+def _raiser(what):
+    def raise_it(*args, **kwargs):
+        raise Refused(f"{what} was reached")
+
+    return raise_it
+
+
+@pytest.fixture
+def nothing_runs(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _raiser("subprocess.Popen"))
+    monkeypatch.setattr(subprocess, "run", _raiser("subprocess.run"))
+    monkeypatch.setattr(urllib.request, "urlopen", _raiser("urllib.request.urlopen"))
+    monkeypatch.setattr(httpx2.Client, "send", _raiser("httpx2.Client.send"))
+    monkeypatch.setattr(ollama_setup, "set_user_variable", _raiser("set_user_variable"))
+    monkeypatch.setattr(ollama_setup, "unset_user_variable", _raiser("unset_user_variable"))
+
+
+@pytest.fixture
+def fenced_home(tmp_path, monkeypatch):
+    """LOCALAPPDATA, USERPROFILE and MYSCRIBE_HOME of this test's own, so that
+    an install plan built here names no folder of the developer's."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "Users" / "someone"))
+    monkeypatch.setenv("MYSCRIBE_HOME", str(tmp_path / "MyScribeHome"))
+    monkeypatch.setattr(accel, "memory", lambda: None)
+
+
+def a_state(kind, **fields) -> ollama_setup.State:
+    return ollama_setup.State(state=kind, **fields)
+
+
+def machine(monkeypatch, kind, **fields):
+    """The detector answering one state, for the whole sitting - `plan` and
+    `apply` both ask it, and both have to see the same machine."""
+    found = a_state(kind, **fields)
+    monkeypatch.setattr(ollama_setup, "state", lambda **kwargs: found)
+    return found
+
+
+PRESENT_STATES = (
+    ollama_setup.INSTALLED_NOT_RUNNING,
+    ollama_setup.RUNNING_NO_CHAT_MODEL,
+    ollama_setup.READY,
+    ollama_setup.UNKNOWN,
+)
+
+
+def applied(monkeypatch, answers: dict) -> int:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"contract": setup.CONTRACT, "answers": answers})))
+    return setup.main(["--apply-stdin"])
+
+
+# --- the offer exists only in state absent (#1) ---------------------------------------
+
+
+@pytest.mark.parametrize("kind", PRESENT_STATES)
+def test_no_install_question_and_nothing_run_or_downloaded_in_any_present_state(
+        library, no_weights, fenced_home, nothing_runs, monkeypatch, kind):
+    """`unknown` included: an Ollama that cannot be read counts as present
+    (ADR-017's 'cannot be read' row), and the offer stays away."""
+    machine(monkeypatch, kind, binary="C:/somewhere/ollama.exe" if kind != ollama_setup.UNKNOWN else "")
+
+    document = setup.plan(library)
+    assert question(document, "ollama_install") is None
+    assert question(document, "ollama_new_model") is None
+    assert question(document, "ollama_models_dir") is None
+    assert document["ollama"]["offer"] is None
+
+    # A document that says yes anyway - a stale front-end, a hand-written one -
+    # is refused by the engine's own re-detection, and every raiser stays quiet.
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b", "ollama_models_dir": "yes"}) == 0
+    assert ollama_setup.read_marker() is None
+    assert _rows(library) == {}
+
+
+def test_the_offer_is_built_when_ollama_is_absent_and_no_provider_row_says_otherwise(library, no_weights, fenced_home, nothing_runs):
+    """The conftest stub answers `absent`. The question, its default No, the
+    model question under it, and what a skip costs."""
+    document = setup.plan(library)
+
+    offer = question(document, "ollama_install")
+    assert offer is not None and offer["kind"] == "yes-no" and offer["default"] == "no"
+    assert offer["shown_if"] is None, "shown while question 5 is open: a yes also answers it (spec row 7)"
+    assert "Nothing is downloaded" in offer["if_skipped"]
+    assert "ollama.com/download" in offer["answer_later"]
+    model = question(document, "ollama_new_model")
+    assert model is not None and model["shown_if"] == {"question": "ollama_install", "equals": "yes"}
+    assert model["default"] == "qwen3.5:4b"
+    assert document["ollama"]["offer"]["url"] == ollama_setup.release()["artifacts"][sys.platform if sys.platform in ("win32", "darwin") else "linux"]["url"]
+
+
+def test_the_offer_stays_out_when_a_cloud_provider_is_stored_and_in_when_ollama_is(library, no_weights, fenced_home, nothing_runs):
+    ai_ui.setting_put(library, ai_ui.PROVIDER_SETTING, "openrouter")
+    assert question(setup.plan(library), "ollama_install") is None
+
+    ai_ui.setting_put(library, ai_ui.PROVIDER_SETTING, "ollama")
+    asked = question(setup.plan(library), "ollama_install")
+    assert asked is not None and asked["shown_if"] is None
+
+
+def test_declining_the_offer_writes_nothing(library, no_weights, fenced_home, nothing_runs, monkeypatch, capsys):
+    before = _rows(library)
+
+    assert applied(monkeypatch, {"ollama_install": "no", "ollama_new_model": "gemma4:12b"}) == 0
+
+    assert _rows(library) == before
+    assert ollama_setup.read_marker() is None
+    assert "saved: nothing" in capsys.readouterr().out
+    assert stamp_document()["questions"]["ollama_install"] == "answered"
+
+
+# --- a present Ollama is left alone, with the sentence and the command (#2) -------------
+
+
+def test_running_without_a_chat_model_gets_a_sentence_the_pull_command_and_check_again_and_no_pull(
+        library, no_weights, fenced_home, monkeypatch, ollama_state_unstubbed):
+    """R2: the copyable `ollama pull qwen3.5:4b`, a Check again, and no offer
+    to pull into it. POST /api/pull is never called, even when a document
+    claims a resume - there is no marker."""
+    daemon = Daemon()  # answering, no models at all
+    serving(monkeypatch, daemon)
+
+    document = setup.plan(library)
+
+    assert document["ollama"]["state"] == ollama_setup.RUNNING_NO_CHAT_MODEL
+    assert document["ollama"]["pull_command"] == "ollama pull qwen3.5:4b"
+    assert "ollama pull qwen3.5:4b" in document["ollama"]["note"]
+    assert document["ollama"]["check_again"] is True
+    assert document["ollama"]["marker"]["standing"] is False
+    assert not [q for q in ids(document) if q.startswith("ollama_")]
+
+    assert applied(monkeypatch, {"ollama_pull_resume": "yes", "ollama_install": "yes"}) == 0
+    assert [(m, p) for m, p in daemon.asked if m == "POST"] == []
+    assert "/api/pull" not in {p for _, p in daemon.asked}
+
+
+def test_installed_but_not_running_gets_a_sentence_and_check_again_and_no_process(
+        library, no_weights, fenced_home, nothing_runs, monkeypatch):
+    machine(monkeypatch, ollama_setup.INSTALLED_NOT_RUNNING, binary="C:/Users/x/AppData/Local/Programs/Ollama/ollama.exe")
+
+    document = setup.plan(library)
+
+    assert "not answering" in document["ollama"]["note"]
+    assert document["ollama"]["check_again"] is True
+    assert document["ollama"]["pull_command"] == ""
+    assert not [q for q in ids(document) if q.startswith("ollama_")]
+    assert applied(monkeypatch, {"ollama_install": "yes"}) == 0  # the raising Popen stayed quiet
+
+
+# --- what the question shows (#3) -----------------------------------------------------
+
+
+def test_the_question_shows_url_bytes_sha256_command_folder_no_admin_and_self_update(library, no_weights, fenced_home, nothing_runs):
+    document = setup.plan(library)
+    offer = document["ollama"]["offer"]
+    text = question(document, "ollama_install")["text"]
+
+    assert offer["url"] in text
+    assert f"{offer['bytes']:,} bytes" in text
+    assert offer["sha256"] in text
+    for line in offer["shown"]:
+        assert line in text
+    assert offer["install_dir"] in text
+    if offer["runs_here"] and offer["platform"] == "win32":
+        assert "no administrator" in text.lower()
+        assert "updates itself" in text
+    assert "MyScribe will then use this Ollama" in text
+
+
+# --- the room question (#10) ------------------------------------------------------------
+
+
+def _usage(free_bytes: int):
+    return lambda _path: shutil._ntuple_diskusage(total=100 * 2**30, used=10 * 2**30, free=free_bytes)
+
+
+def test_with_room_at_the_default_folder_nothing_is_asked(library, no_weights, fenced_home, nothing_runs, monkeypatch):
+    monkeypatch.setattr(shutil, "disk_usage", _usage(50 * 2**30))
+
+    document = setup.plan(library)
+
+    assert question(document, "ollama_models_dir") is None
+    assert document["ollama"]["offer"]["room"]["enough"] is True
+
+
+def test_short_at_the_default_folder_asks_with_both_numbers_and_default_yes(library, no_weights, fenced_home, nothing_runs, monkeypatch):
+    monkeypatch.setattr(shutil, "disk_usage", _usage(2 * 10**9))
+
+    document = setup.plan(library)
+
+    asked = question(document, "ollama_models_dir")
+    assert asked is not None and asked["kind"] == "yes-no" and asked["default"] == "yes"
+    assert asked["shown_if"] == {"question": "ollama_install", "equals": "yes"}
+    assert "2.0 GB" in asked["text"] and "3.4 GB" in asked["text"]
+    assert f"{ollama_setup.MODEL_BYTES['qwen3.5:4b']:,}" in asked["text"]
+    assert document["ollama"]["offer"]["with_myscribe"] in asked["text"]
+
+
+def test_short_everywhere_ends_the_offer_with_both_numbers_and_nothing_installed(
+        library, no_weights, fenced_home, nothing_runs, monkeypatch, capsys):
+    monkeypatch.setattr(shutil, "disk_usage", _usage(2 * 10**9))
+    before = _rows(library)
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b", "ollama_models_dir": "yes"}) == 0
+
+    out = capsys.readouterr().out
+    assert "2.0 GB" in out and "3.4 GB" in out
+    assert _rows(library) == before and ollama_setup.read_marker() is None
+
+
+def test_a_no_to_the_room_question_ends_the_offer_and_writes_no_variable(
+        library, no_weights, fenced_home, nothing_runs, monkeypatch, capsys):
+    monkeypatch.setattr(shutil, "disk_usage", _usage(2 * 10**9))
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_models_dir": "no"}) == 0
+
+    out = capsys.readouterr().out
+    assert "2.0 GB" in out and "3.4 GB" in out
+    assert ollama_setup.read_marker() is None
+
+
+@pytest.mark.parametrize("kind", PRESENT_STATES + (ollama_setup.ABSENT,))
+def test_the_variable_writer_is_never_reached_outside_absent_and_yes(
+        library, no_weights, fenced_home, nothing_runs, monkeypatch, kind):
+    machine(monkeypatch, kind)
+    monkeypatch.setattr(shutil, "disk_usage", _usage(2 * 10**9))
+
+    assert applied(monkeypatch, {"ollama_install": "no", "ollama_models_dir": "yes"}) == 0
+    assert applied(monkeypatch, {"ollama_install": None, "ollama_models_dir": "yes"}) == 0
+    if kind != ollama_setup.ABSENT:
+        assert applied(monkeypatch, {"ollama_install": "yes", "ollama_models_dir": "yes"}) == 0
+
+
+# --- after the install: the poll, the pull, the rows and the probe (#8, #11, #12) ---------
+
+
+def fake_install(monkeypatch, tmp_path, *, ok=True, model="qwen3.5:4b", models_dir=""):
+    """`ollama_setup.install` replaced by one that behaves as a finished
+    Windows install would: exit 0, a binary at the known path, a marker."""
+    calls: list[dict] = []
+    binary = tmp_path / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe"
+
+    def install(plan, **kwargs):
+        calls.append({"plan": plan, **kwargs})
+        if not ok:
+            return ollama_setup.Outcome(ok=False, installed=False, sentence="the download did not get through; get it from https://ollama.com/download, then Check again")
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"MZ")
+        marker = {"tag": plan["tag"], "version": plan["tag"].lstrip("v"), "binary": str(binary),
+                  "model": model, "installed": 1789930000.0, "models_dir": models_dir}
+        ollama_setup.write_marker(marker)
+        return ollama_setup.Outcome(ok=True, installed=True, sentence="Ollama's installer finished", marker=marker)
+
+    monkeypatch.setattr(ollama_setup, "install", install)
+    return calls
+
+
+def fast_poll(monkeypatch):
+    monkeypatch.setattr(ollama_setup, "VERSION_WAIT_S", 0.0)
+    monkeypatch.setattr(ollama_setup, "POLL_S", 0.0)
+
+
+class PullingDaemon(Daemon):
+    """A Daemon whose POST /api/pull answers with the lines it was given."""
+
+    def __init__(self, *names, version="0.34.3", pull_lines=({"status": "success"},), refuse=False):
+        super().__init__(*names, version=version)
+        self.pull_lines = list(pull_lines)
+        self.refuse = refuse
+        self.pulled: list[str] = []
+
+    def __call__(self, request):
+        if self.refuse:
+            raise httpx2.ConnectError("connection refused", request=request)
+        if request.url.path == "/api/pull":
+            self.asked.append((request.method, request.url.path))
+            self.pulled.append(json.loads(request.content)["model"])
+            body = "".join(json.dumps(line) + "\n" for line in self.pull_lines).encode()
+            self.names.append(self.pulled[-1])  # from now on the daemon has it
+            return httpx2.Response(200, content=body)
+        return super().__call__(request)
+
+
+def a_probe(said: list[str]):
+    from scribe import doctor
+
+    def probe(conn):
+        said.append("probed")
+        return doctor.Check(name="ai-provider", ok=True, optional=True, detail="Ollama (qwen3.5:4b) answered in 1.2s")
+
+    return probe
+
+
+def test_a_yes_installs_polls_pulls_and_writes_the_model_and_the_provider_when_no_row(
+        library, no_weights, fenced_home, monkeypatch, tmp_path, capsys):
+    """The whole yes, on a machine where the installer starts the daemon: the
+    version answers, the one model is pulled, `llm_model_ollama` is written,
+    `llm_provider=ollama` because no row existed, the marker is cleared, and
+    the one-word probe is announced."""
+    calls = fake_install(monkeypatch, tmp_path)
+    fast_poll(monkeypatch)
+    daemon = PullingDaemon()
+    serving(monkeypatch, daemon)
+    probed: list[str] = []
+    monkeypatch.setattr(setup, "_ollama_probe", a_probe(probed))
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b"}) == 0
+
+    assert len(calls) == 1 and calls[0]["model"] == "qwen3.5:4b"
+    assert daemon.pulled == ["qwen3.5:4b"]
+    assert ai_ui.setting_get(library, ai_ui.MODEL_SETTING_PREFIX + "ollama") == "qwen3.5:4b"
+    assert ai_ui.setting_get(library, ai_ui.PROVIDER_SETTING) == "ollama"
+    assert ollama_setup.read_marker() is None, "seen ready: from now on that Ollama is the user's"
+    assert probed == ["probed"]
+    out = capsys.readouterr().out
+    assert "answered in 1.2s" in out
+    assert "llm_model_ollama" in out and "provider" in out
+
+
+def test_an_existing_provider_row_is_not_overwritten_by_the_pull(library, no_weights, fenced_home, monkeypatch, tmp_path):
+    ai_ui.setting_put(library, ai_ui.PROVIDER_SETTING, "ollama")
+    fake_install(monkeypatch, tmp_path)
+    fast_poll(monkeypatch)
+    serving(monkeypatch, PullingDaemon())
+    monkeypatch.setattr(setup, "_ollama_probe", a_probe([]))
+    # The document also names a cloud provider: the answer to 5 is written
+    # first and the pull never touches it.
+    ai_ui.setting_put(library, ai_ui.PROVIDER_SETTING, "openrouter")
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b"}) == 0
+
+    assert ai_ui.setting_get(library, ai_ui.PROVIDER_SETTING) == "openrouter"
+    assert ai_ui.setting_get(library, ai_ui.MODEL_SETTING_PREFIX + "ollama") == "qwen3.5:4b"
+
+
+def test_a_daemon_that_never_answers_after_the_install_reads_not_answering_yet_and_keeps_the_marker(
+        library, no_weights, fenced_home, monkeypatch, tmp_path, capsys):
+    fake_install(monkeypatch, tmp_path)
+    fast_poll(monkeypatch)
+    serving(monkeypatch, PullingDaemon(refuse=True))
+    probed: list[str] = []
+    monkeypatch.setattr(setup, "_ollama_probe", a_probe(probed))
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b"}) == 0
+
+    out = capsys.readouterr().out
+    assert "not answering yet" in out and "Check again" in out
+    assert "fail" not in out.lower()
+    assert ollama_setup.read_marker() is not None
+    assert ai_ui.setting_get(library, ai_ui.MODEL_SETTING_PREFIX + "ollama") is None
+    assert probed == []
+
+
+def test_a_pull_that_fails_writes_no_row_and_says_ollama_s_words(library, no_weights, fenced_home, monkeypatch, tmp_path, capsys):
+    fake_install(monkeypatch, tmp_path)
+    fast_poll(monkeypatch)
+    serving(monkeypatch, PullingDaemon(pull_lines=({"status": "pulling"}, {"error": "manifest: file does not exist"})))
+    monkeypatch.setattr(setup, "_ollama_probe", a_probe([]))
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b"}) == 0
+
+    assert "file does not exist" in capsys.readouterr().out
+    assert ai_ui.setting_get(library, ai_ui.MODEL_SETTING_PREFIX + "ollama") is None
+    assert ollama_setup.read_marker() is not None, "the pull is offered again by hand"
+
+
+def test_a_failed_install_ends_on_its_sentence_with_nothing_written(library, no_weights, fenced_home, monkeypatch, tmp_path, capsys):
+    fake_install(monkeypatch, tmp_path, ok=False)
+    daemon = PullingDaemon()
+    serving(monkeypatch, daemon)
+    before = _rows(library)
+
+    assert applied(monkeypatch, {"ollama_install": "yes"}) == 0
+
+    assert "https://ollama.com/download" in capsys.readouterr().out
+    assert daemon.pulled == [] and _rows(library) == before
+    assert ollama_setup.read_marker() is None
+    assert stamp_document()["questions"]["ollama_install"] == "open", "offered again while Ollama is absent"
+
+
+# --- the marker's one exception: the pull, by hand, default No (#6, #7) --------------------
+
+
+def standing_marker(tmp_path, **changes) -> dict:
+    binary = tmp_path / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"MZ")
+    marker = {"tag": "v0.34.3", "version": "0.34.3", "binary": str(binary), "model": "qwen3.5:4b",
+              "installed": 1789930000.0, "models_dir": ""}
+    marker.update(changes)
+    ollama_setup.write_marker(marker)
+    return marker
+
+
+def test_the_resume_is_offered_by_hand_only_with_its_default_on_no(library, no_weights, fenced_home, nothing_runs, monkeypatch, tmp_path):
+    marker = standing_marker(tmp_path)
+    machine(monkeypatch, ollama_setup.RUNNING_NO_CHAT_MODEL, binary=marker["binary"], version="0.34.3")
+
+    by_hand = setup.plan(library)
+    at_a_start = setup.plan(library, unasked_only=True)
+
+    asked = question(by_hand, "ollama_pull_resume")
+    assert asked is not None and asked["kind"] == "yes-no" and asked["default"] == "no"
+    assert "qwen3.5:4b" in asked["text"]
+    assert by_hand["ollama"]["marker"] == {"standing": True, "lapsed": False, "model": "qwen3.5:4b"}
+    assert question(at_a_start, "ollama_pull_resume") is None, "never at a start"
+    assert question(by_hand, "ollama_install") is None, "a binary exists: the installer is never offered again"
+
+
+def test_a_plain_start_never_pulls(library, no_weights, fenced_home, monkeypatch, tmp_path):
+    """No answer, a skipped answer and an empty document all pull nothing;
+    only a yes does."""
+    marker = standing_marker(tmp_path)
+    daemon = PullingDaemon(version="0.34.3")
+    serving(monkeypatch, daemon)
+    machine(monkeypatch, ollama_setup.RUNNING_NO_CHAT_MODEL, binary=marker["binary"], version="0.34.3")
+
+    assert applied(monkeypatch, {}) == 0
+    assert applied(monkeypatch, {"ollama_pull_resume": None}) == 0
+    assert applied(monkeypatch, {"ollama_pull_resume": "no"}) == 0
+
+    assert daemon.pulled == []
+    assert ollama_setup.read_marker() == marker
+
+
+def test_a_yes_to_the_resume_pulls_the_one_model_agreed_to_and_clears_the_marker(
+        library, no_weights, fenced_home, monkeypatch, tmp_path):
+    marker = standing_marker(tmp_path)
+    daemon = PullingDaemon(version="0.34.3")
+    serving(monkeypatch, daemon)
+    machine(monkeypatch, ollama_setup.RUNNING_NO_CHAT_MODEL, binary=marker["binary"], version="0.34.3")
+    monkeypatch.setattr(setup, "_ollama_probe", a_probe([]))
+
+    assert applied(monkeypatch, {"ollama_pull_resume": "yes", "ollama_new_model": "gemma4:12b"}) == 0
+
+    assert daemon.pulled == ["qwen3.5:4b"], "the model in the marker, never one named later"
+    assert ai_ui.setting_get(library, ai_ui.MODEL_SETTING_PREFIX + "ollama") == "qwen3.5:4b"
+    assert ollama_setup.read_marker() is None
+
+
+def test_with_the_marker_standing_and_ollama_stopped_it_is_not_started_and_no_pull_is_offered(
+        library, no_weights, fenced_home, nothing_runs, monkeypatch, tmp_path):
+    marker = standing_marker(tmp_path)
+    machine(monkeypatch, ollama_setup.INSTALLED_NOT_RUNNING, binary=marker["binary"])
+
+    document = setup.plan(library)
+
+    assert question(document, "ollama_pull_resume") is None
+    assert question(document, "ollama_install") is None
+    assert document["ollama"]["marker"]["standing"] is True
+    assert document["ollama"]["check_again"] is True
+    assert applied(monkeypatch, {"ollama_pull_resume": "yes"}) == 0
+    assert ollama_setup.read_marker() == marker
+
+
+@pytest.mark.parametrize("lapse", ["version", "path", "no_binary", "unreadable", "field"])
+def test_a_lapsed_marker_offers_no_pull_and_apply_removes_it(library, no_weights, fenced_home, monkeypatch, tmp_path, lapse):
+    marker = standing_marker(tmp_path)
+    binary, version = marker["binary"], "0.34.3"
+    if lapse == "version":
+        version = "0.34.4"
+    elif lapse == "path":
+        other = tmp_path / "theirs" / "ollama.exe"
+        other.parent.mkdir()
+        other.write_bytes(b"MZ")
+        binary = str(other)
+    elif lapse == "no_binary":
+        Path(marker["binary"]).unlink()
+    elif lapse == "unreadable":
+        ollama_setup.marker_path().write_text("{", encoding="utf-8")
+    elif lapse == "field":
+        ollama_setup.marker_path().write_text(json.dumps({k: v for k, v in marker.items() if k != "version"}), encoding="utf-8")
+    daemon = PullingDaemon(version=version)
+    serving(monkeypatch, daemon)
+    machine(monkeypatch, ollama_setup.RUNNING_NO_CHAT_MODEL, binary=binary, version=version)
+
+    document = setup.plan(library)
+    assert question(document, "ollama_pull_resume") is None
+    assert document["ollama"]["marker"]["standing"] is False
+    assert document["ollama"]["pull_command"] == "ollama pull qwen3.5:4b"
+    assert ollama_setup.marker_path().exists(), "a plan never writes, so the file is still there"
+
+    assert applied(monkeypatch, {"ollama_pull_resume": "yes"}) == 0
+
+    assert daemon.pulled == []
+    assert not ollama_setup.marker_path().exists(), "apply drops what plan saw lapse"
+
+
+def test_the_marker_is_cleared_once_ollama_has_been_seen_ready(library, no_weights, fenced_home, nothing_runs, monkeypatch, tmp_path):
+    marker = standing_marker(tmp_path)
+    machine(monkeypatch, ollama_setup.READY, binary=marker["binary"], version="0.34.3", chat_models=("qwen3.5:4b",))
+
+    document = setup.plan(library)
+    assert document["ollama"]["marker"] == {"standing": False, "lapsed": True, "model": "qwen3.5:4b"}
+
+    assert applied(monkeypatch, {}) == 0
+    assert not ollama_setup.marker_path().exists()
+
+
+def test_the_critique_scenario_a_failed_download_then_the_users_own_install_stopped_gets_no_installer(
+        library, no_weights, fenced_home, monkeypatch, tmp_path, ollama_state_unstubbed, capsys):
+    """The scenario that broke the first marker: a download fails (no marker),
+    the user installs Ollama themselves and stops it to free VRAM, and the next
+    sitting must not run OllamaSetup.exe over it."""
+    theirs = tmp_path / "their-bin"
+    theirs.mkdir()
+    fake_install(monkeypatch, tmp_path, ok=False)
+    # The real detector reads `os.environ`, and this machine's holds four
+    # OLLAMA_* names: without this no sitting here could ever be absent.
+    for name in list(os.environ):
+        if name.upper().startswith(ollama_setup.VARIABLE_PREFIX):
+            monkeypatch.delenv(name, raising=False)
+    # Sitting one: absent, yes, the download fails.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    monkeypatch.setattr(ollama_setup, "install_locations", lambda environ=None: ())
+    absent_daemon = PullingDaemon(refuse=True)
+    serving(monkeypatch, absent_daemon)
+    assert setup.plan(library)["ollama"]["state"] == ollama_setup.ABSENT
+    assert applied(monkeypatch, {"ollama_install": "yes"}) == 0
+    assert ollama_setup.read_marker() is None
+
+    # Sitting two: the user's own ollama.exe is on PATH and stopped.
+    (theirs / "ollama.exe").write_bytes(b"MZ")
+    (theirs / "ollama").write_bytes(b"MZ")
+    monkeypatch.setenv("PATH", str(theirs))
+    monkeypatch.setattr(subprocess, "Popen", _raiser("subprocess.Popen"))
+    monkeypatch.setattr(ollama_setup, "install", _raiser("ollama_setup.install"))
+
+    document = setup.plan(library)
+
+    assert document["ollama"]["state"] == ollama_setup.INSTALLED_NOT_RUNNING
+    assert question(document, "ollama_install") is None
+    assert document["ollama"]["offer"] is None
+    assert applied(monkeypatch, {"ollama_install": "yes"}) == 0

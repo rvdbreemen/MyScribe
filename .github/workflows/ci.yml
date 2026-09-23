@@ -82,6 +82,19 @@ jobs:
         # fails, and it costs seconds. --no-gpu: no runner has a card.
         run: uv run python -m scribe.doctor --no-gpu
 
+      - name: The Ollama pin still matches its release
+        if: runner.os == 'Linux'
+        # scribe/ollama_release.json pins the installer MyScribe offers when a
+        # machine has no Ollama (ADR-017, M7). One GET of the tag's metadata,
+        # one GET of its sha256sum.txt and one HEAD per artifact: size and
+        # digest are compared without downloading a 1.57 GB installer. Red
+        # here means the pin needs the release step in docs/RELEASING.md.
+        # Once, on Linux: three runners asking would be three times the same
+        # answer against the API's rate limit.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run python -m scribe.ollama_setup --check-pin
+
       - name: Suite
         if: runner.os != 'Windows'
         run: uv run python -m pytest -q

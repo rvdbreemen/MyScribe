@@ -2047,3 +2047,90 @@ def test_the_volume_measured_is_the_one_the_doctor_measures(tmp_path, layout):
     assert launcher.disk_probe_path(deep) == tmp_path
     launcher.prepare_home(deep)
     assert launcher.disk_probe_path(deep) == deep.data_dir
+
+
+# --- Quit while a third-party installer runs (TASK-089.18, criterion 14; ADR-017) ---------
+
+
+class _SetupChild:
+    """The setup child as Quit sees it: alive until terminated."""
+
+    def __init__(self):
+        self.terminated = False
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -15
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def test_the_installer_event_line_is_read_and_nothing_else_is_mistaken_for_it():
+    assert launcher.installer_line('{"event": "installer", "running": true}') is True
+    assert launcher.installer_line('  {"event": "installer", "running": false}') is False
+    assert launcher.installer_line('{"event": "progress", "repo": "x", "percent": 3}') is None
+    assert launcher.installer_line('{"event": "installer"}') is None
+    assert launcher.installer_line("Ollama's installer is running") is None
+    assert launcher.installer_line("{not json") is None
+
+
+def test_quit_is_refused_with_a_sentence_while_the_installer_runs_and_stops_the_child_afterwards(layout, monkeypatch):
+    """The launcher's half of criterion 14. While the engine says the
+    third-party installer is running, `stop_setup` terminates nothing and says
+    why; once the engine says it has finished, the same Quit stops that one
+    process, as before."""
+    reports: list[tuple[str, str]] = []
+    launch = launcher.Launch(layout, _free_port(), False, lambda s, t: reports.append((s, t)))
+    child = _SetupChild()
+    seen: list[tuple[bool, bool]] = []
+
+    def run_setup(_layout, answers, on_line, on_start=None):
+        on_start(child)
+        on_line('{"event": "installer", "running": true}')
+        assert launch.installing is True
+        launch.stop_setup()
+        seen.append((child.terminated, launch.installing))
+        on_line("a line of prose while it runs")
+        on_line('{"event": "installer", "running": false}')
+        assert launch.installing is False
+        launch.stop_setup()
+        seen.append((child.terminated, launch.installing))
+        return 0
+
+    monkeypatch.setattr(launcher, "run_setup", run_setup)
+
+    code, reopen = launch.apply({})
+
+    assert code == 0 and reopen == []
+    assert seen == [(False, True), (True, False)]
+    refused = [text for state, text in reports if state == "status" and text == launcher.QUIT_REFUSED]
+    assert refused == [launcher.QUIT_REFUSED], "one sentence, said once, when Quit was refused"
+    assert "installer" in launcher.QUIT_REFUSED.lower() and "quit" in launcher.QUIT_REFUSED.lower()
+    assert not any("clean" in text.lower() for _, text in reports), "nothing promises Quit is clean (M10)"
+    assert not any('"event"' in text for state, text in reports if state == "busy"), "the event line is not a log line"
+
+
+def test_stop_while_installing_reaches_neither_the_child_nor_the_app(layout):
+    reports: list[tuple[str, str]] = []
+    launch = launcher.Launch(layout, _free_port(), False, lambda s, t: reports.append((s, t)))
+    child = _SetupChild()
+    launch.keep_setup_child(child)
+    stopped: list[str] = []
+    launch.app = types.SimpleNamespace(stop=lambda timeout=None: stopped.append("app"))
+    launch.installing = True
+
+    assert launch.quit_refused() == launcher.QUIT_REFUSED
+    launch.stop()
+
+    assert child.terminated is False and stopped == []
+    assert reports == [("status", launcher.QUIT_REFUSED)]
+
+    launch.installing = False
+    assert launch.quit_refused() == ""
+    launch.stop()
+    assert child.terminated is True and stopped == ["app"]

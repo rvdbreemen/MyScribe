@@ -55,11 +55,12 @@ from typing import Callable, Iterator
 
 import httpx2
 
-from scribe import applog, credentials, db, doctor, env, models, ollama_setup, paths
+from scribe import accel, applog, credentials, db, doctor, env, models, ollama_setup, paths
+from scribe.llm import ollama
 from scribe.stages import diarize
 from scribe.web import ai_ui, transcribe_dialog
 
-CONTRACT = 2
+CONTRACT = 3
 """The version of the document `--plan` prints and `--apply-stdin` reads, and
 the number the stamp is measured against. Raise it whenever a question is added
 to `_questions`.
@@ -77,6 +78,9 @@ A document that claims another number is refused with the usage code and
 nothing of it is applied; one that claims no number at all is taken at the word
 of the engine it is talking to. A stamp that claims a lower one reopens the
 sitting for the questions this version added (`setup_needed` in the launcher).
+
+3 since TASK-089.18: the Ollama install offer added `ollama_install`,
+`ollama_new_model`, `ollama_models_dir` and `ollama_pull_resume`.
 """
 
 STAMP = "setup.json"
@@ -175,6 +179,13 @@ class Answers:
     wanted: list[str] = field(default_factory=list)
     llm_keys: dict[str, str] = field(default_factory=dict)
     ollama_model: str = ""
+    # The install offer (TASK-089.18). Three states for the two yes-no answers:
+    # None was not answered, False is a No that is still an answer - it is
+    # stamped, so the next start does not ask again - and True is the yes.
+    ollama_install: bool | None = None
+    ollama_new_model: str = ""
+    ollama_models_dir: bool | None = None
+    ollama_pull_resume: bool | None = None
     skipped: list[str] = field(default_factory=list)
 
 
@@ -432,9 +443,28 @@ def found_table(conn: sqlite3.Connection | None = None) -> list[dict]:
     return rows
 
 
-def _ollama(state: ollama_setup.State) -> dict:
+def _ollama(
+    state: ollama_setup.State,
+    *,
+    marker: dict | None = None,
+    standing: bool = False,
+    offer: dict | None = None,
+) -> dict:
     """The Ollama state, as data. `variables` are names and places, never a
-    value: `credentials.Source` is built that way."""
+    value: `credentials.Source` is built that way.
+
+    Beside the sentence, what a front-end renders for an Ollama that is left
+    alone (R2): the copyable pull command when it runs without a chat model,
+    whether a Check again applies, and the marker's standing - `lapsed` is a
+    file that no longer counts, which `apply` removes because a plan writes
+    nothing. `offer` is the install plan, and it is null in every state but
+    absent (TASK-089.18).
+    """
+    check_again = state.state in (
+        ollama_setup.INSTALLED_NOT_RUNNING,
+        ollama_setup.RUNNING_NO_CHAT_MODEL,
+        ollama_setup.UNKNOWN,
+    )
     return {
         "state": state.state,
         "present": state.present,
@@ -443,7 +473,47 @@ def _ollama(state: ollama_setup.State) -> dict:
         "chat_models": list(state.chat_models),
         "variables": [str(source) for source in state.variables],
         "note": ollama_setup.describe(state),
+        "check_again": check_again,
+        "pull_command": (
+            f"ollama pull {ollama_setup.DEFAULT_MODEL}"
+            if state.state == ollama_setup.RUNNING_NO_CHAT_MODEL
+            else ""
+        ),
+        "marker": {
+            "standing": standing,
+            "lapsed": ollama_setup.marker_path().exists() and not standing,
+            "model": str((marker or {}).get("model") or ""),
+        },
+        "offer": offer,
     }
+
+
+def _offer(state: ollama_setup.State) -> dict | None:
+    """The install plan with the model choices and the room, or None.
+
+    Built only in state absent, and only then does `accel.memory()` import
+    torch - a plan on a machine that has an Ollama stays the four-second plan
+    it was (ADR-001, and the risk the task names). The room is measured at
+    Ollama's default folder for the default model, which is the Enter answer;
+    `apply` measures again for the model that was chosen, and again before the
+    pull (criterion 10).
+    """
+    if state.state != ollama_setup.ABSENT:
+        return None
+    offer = ollama_setup.install_plan()
+    memory = accel.memory()
+    offer["memory_bytes"] = memory
+    offer["threshold_bytes"] = ollama_setup.GEMMA_THRESHOLD_BYTES
+    offer["threshold_is_an_estimate"] = True
+    offer["choices"] = ollama_setup.choices(memory, accel.is_apple_silicon())
+    needed = ollama_setup.MODEL_BYTES[ollama_setup.DEFAULT_MODEL]
+    default_dir = ollama_setup.default_models_dir()
+    offer["models_dir"] = str(default_dir)
+    offer["room"] = ollama_setup.room(default_dir, needed)
+    with_us = ollama_setup.models_dir_with_myscribe()
+    offer["with_myscribe"] = str(with_us)
+    offer["room_with_myscribe"] = ollama_setup.room(with_us, needed)
+    return offer
 
 
 NOT_MLX = models.NOT_MLX
@@ -515,7 +585,18 @@ def question_of(credential: str) -> str:
     return "hf_token" if credential == credentials.HUGGINGFACE.name else f"llm_key_{credential}"
 
 
-def _questions(conn: sqlite3.Connection | None, state: ollama_setup.State, offer: dict) -> list[Question]:
+YES_NO = [{"value": "yes", "label": "Yes"}, {"value": "no", "label": "No"}]
+
+
+def _questions(
+    conn: sqlite3.Connection | None,
+    state: ollama_setup.State,
+    offer: dict,
+    *,
+    install_offer: dict | None = None,
+    marker: dict | None = None,
+    by_hand: bool = False,
+) -> list[Question]:
     """The questions that are open on this machine, in the order they are asked.
 
     One predicate per question and no branch anywhere else: a question that was
@@ -578,6 +659,12 @@ def _questions(conn: sqlite3.Connection | None, state: ollama_setup.State, offer
                 answer_later="Settings > AI providers > Save key",
             )
         )
+
+    # 7, 8, 8a. Ollama is not on this machine: install it, which model, and
+    #    where its models go when the default volume is too small - and, by
+    #    hand only, the one exception to "left alone": the pull into
+    #    MyScribe's own install (TASK-089.18, ADR-017).
+    open_questions += _ollama_questions(state, stored_provider, install_offer, marker, by_hand)
 
     # 9. Which of an existing Ollama's models to use. Never an offer to pull
     #    one, and never for an Ollama this install put there (TASK-089.18).
@@ -683,6 +770,145 @@ def _provider_question(state: ollama_setup.State) -> Question:
     )
 
 
+def _install_text(offer: dict) -> str:
+    """Question 7's text: everything ADR-017's Must says is shown before the
+    question - the artifact's URL, size and sha256, the exact command line,
+    where it installs - plus the two sentences a Windows user is owed (no
+    administrator; Ollama updates itself afterwards), and what a yes means for
+    question 5."""
+    shown = offer["shown"]
+    if offer["platform"] == "win32":
+        how = (
+            f"check that sum and that the signer is {offer['signer']}, then run exactly: {shown[0]}. "
+            f"It installs into {offer['install_dir']} for your account - no administrator is needed - "
+            "and Ollama updates itself afterwards."
+        )
+    elif offer["platform"] == "darwin":
+        how = (
+            f"check that sum, then open it: {shown[0]}. Drag Ollama into {offer['install_dir']}, start it, "
+            "then press Check again. Nobody has run this on a Mac yet."
+        )
+    else:
+        how = (
+            "and show you these four commands to run yourself, because Ollama's script needs root and can "
+            "install drivers, so MyScribe does not run it: " + "; ".join(shown) + f". It installs into "
+            f"{offer['install_dir']}. Then press Check again."
+        )
+    return (
+        "Ollama is not on this machine. Install it, and let it answer questions about a transcript? "
+        f"MyScribe would download {offer['name']} {offer['tag']} from {offer['url']} "
+        f"({offer['bytes']:,} bytes, sha256 {offer['sha256']}), {how} "
+        "MyScribe will then use this Ollama unless you chose another provider above."
+    )
+
+
+def _ollama_questions(
+    state: ollama_setup.State,
+    stored_provider: str,
+    install_offer: dict | None,
+    marker: dict | None,
+    by_hand: bool,
+) -> list[Question]:
+    """Rows 7, 8 and 8a of the spec's table, and the G6 exception.
+
+    7 exists only in state absent, and only while the provider is Ollama or
+    undecided - a stored cloud provider is a machine that chose. Its `shown_if`
+    is None on purpose while question 5 is open: the one condition a front-end
+    interprets is "equals one value" (ADR-015), and this offer is for Ollama
+    *or* undecided, so the text says what a yes means instead (spec row 7). 8
+    hangs under 7. 8a exists only when Ollama's default folder is short of the
+    default model, and never otherwise (G8). The resume question exists only
+    by hand - `--setup`, never a start - with a marker that still counts and a
+    daemon that answers without a chat model; its default is No, so nothing is
+    ever pulled by itself (G6).
+    """
+    asked: list[Question] = []
+    if (
+        install_offer is not None
+        and state.state == ollama_setup.ABSENT
+        and stored_provider in ("", ai_ui.llm.PROVIDERS["ollama"].name)
+    ):
+        asked.append(
+            Question(
+                id="ollama_install",
+                kind="yes-no",
+                text=_install_text(install_offer),
+                choices=[dict(choice) for choice in YES_NO],
+                current="",
+                default="no",
+                shown_if=None,
+                if_skipped=(
+                    "Nothing is downloaded and nothing runs. Recordings pinned private cannot use AI "
+                    "until a local provider exists."
+                ),
+                answer_later=(
+                    "the same offer at the next start or with --setup, for as long as Ollama is absent; "
+                    f"or install it yourself from {install_offer['vendor_page']}"
+                ),
+            )
+        )
+        asked.append(
+            Question(
+                id="ollama_new_model",
+                kind="choice",
+                text="Which model should the new Ollama get?",
+                choices=[dict(choice) for choice in install_offer["choices"]],
+                current="",
+                default=ollama_setup.DEFAULT_MODEL,
+                shown_if={"question": "ollama_install", "equals": "yes"},
+                if_skipped="Ollama is installed with no model; the report gives the copyable pull command.",
+                answer_later=(
+                    "--setup while this install's marker stands, as a question whose default is No; "
+                    "or `ollama pull <model>`"
+                ),
+            )
+        )
+        room = install_offer["room"]
+        if not room["enough"]:
+            variable = (
+                " A yes sets OLLAMA_MODELS for your account before the installer starts."
+                if install_offer["platform"] == "win32"
+                else " A yes shows the command that sets OLLAMA_MODELS; MyScribe writes no setting of Ollama's here."
+            )
+            asked.append(
+                Question(
+                    id="ollama_models_dir",
+                    kind="yes-no",
+                    text=(
+                        f"Ollama's default model folder {room['path']} has {models.human(room['free'])} free "
+                        f"({room['free']:,} bytes) and {ollama_setup.DEFAULT_MODEL} needs "
+                        f"{models.human(room['needed'])} ({room['needed']:,} bytes). Keep Ollama's models with "
+                        f"MyScribe instead, at {install_offer['with_myscribe']}?{variable}"
+                    ),
+                    choices=[dict(choice) for choice in YES_NO],
+                    current="",
+                    default="yes",
+                    shown_if={"question": "ollama_install", "equals": "yes"},
+                    if_skipped="The offer ends with both numbers: nothing is installed and nothing is pulled.",
+                    answer_later="the same offer at the next start or with --setup, for as long as Ollama is absent",
+                )
+            )
+    if by_hand and marker is not None and state.state == ollama_setup.RUNNING_NO_CHAT_MODEL:
+        model = str(marker["model"])
+        asked.append(
+            Question(
+                id="ollama_pull_resume",
+                kind="yes-no",
+                text=(
+                    f"MyScribe installed this Ollama ({marker['version']} at {marker['binary']}) and the "
+                    f"pull of {model} it was asked for did not finish. Pull {model} into it now?"
+                ),
+                choices=[dict(choice) for choice in YES_NO],
+                current="",
+                default="no",
+                shown_if=None,
+                if_skipped=f"Nothing is pulled and Ollama is left alone; the copyable command is `ollama pull {model}`.",
+                answer_later=f"--setup again while this marker stands; or `ollama pull {model}`",
+            )
+        )
+    return asked
+
+
 def _ollama_model_question(
     conn: sqlite3.Connection | None, state: ollama_setup.State, stored_provider: str
 ) -> Question | None:
@@ -736,19 +962,32 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False) -> dict
     `not_needed` and was never put, so it is still asked once it goes.
     """
     state = ollama_setup.state()
+    # The marker is read, never written, here: a plan that saw it lapse says so
+    # in the document, and `apply` is what removes the file (TASK-089.18).
+    marker = ollama_setup.read_marker()
+    standing = ollama_setup.valid_marker(state, marker)
+    stored_provider = _row(conn, ai_ui.PROVIDER_SETTING)
+    install_offer = _offer(state) if stored_provider in ("", ai_ui.llm.PROVIDERS["ollama"].name) else None
     # The tier decides which Whisper repository is offered, so the offer is
     # made for the one this library is set to rather than for the default
     # (TASK-089.16): choosing the largest model and then downloading the turbo
     # weights is what AC5 of TASK-040.06 claimed was already true.
     offer = downloads(_row(conn, transcribe_dialog.SETTING_TIER) or "")
-    open_questions = _questions(conn, state, offer)
+    open_questions = _questions(
+        conn, state, offer,
+        install_offer=install_offer,
+        marker=marker if standing else None,
+        # A start asks with `unasked_only`; `--setup` asks everything, and
+        # only that sitting may offer the pull into MyScribe's own install (G6).
+        by_hand=not unasked_only,
+    )
     if unasked_only:
         was_put = {id for id, state_of in states().items() if state_of in PUT}
         open_questions = [q for q in open_questions if q.id not in was_put]
     return {
         "contract": CONTRACT,
         "found": found_table(conn),
-        "ollama": _ollama(state),
+        "ollama": _ollama(state, marker=marker, standing=standing, offer=install_offer),
         "downloads": offer,
         "questions": [asdict(question) for question in open_questions],
     }
@@ -1563,6 +1802,12 @@ def _validate(answers: Answers) -> None:
             raise ValueError(f"unknown provider {name!r}")
     if answers.ollama_model and "\n" in answers.ollama_model:
         raise ValueError("a model name is one line")
+    if answers.ollama_new_model and answers.ollama_new_model not in ollama_setup.MODEL_BYTES:
+        # Only what the offer listed: a tag nobody was shown is not a thing
+        # a new Ollama pulls on somebody's word.
+        raise ValueError(
+            f"unknown model {answers.ollama_new_model!r}: the offer lists {', '.join(ollama_setup.MODEL_BYTES)}"
+        )
 
 
 def apply(
@@ -1573,8 +1818,15 @@ def apply(
     on_progress=None,
     check: Callable[[str, str], Verdict] | None = None,
     announce: Callable[[str], None] | None = None,
+    on_event: Callable[[bool], None] | None = None,
+    probe: Callable[[sqlite3.Connection], doctor.Check] | None = None,
 ) -> dict:
     """Write the answers down and do what they ask for. Returns a report.
+
+    `on_event` is told when a third-party installer starts and ends, and
+    `probe` is the one-word check announced after a model was pulled into an
+    Ollama MyScribe installed (TASK-089.18); both are seams for the same
+    reason `check` is one.
 
     A typed secret goes to its settings row and nowhere else. That reverses two
     recorded things knowingly (TASK-040.06's criterion #2 and the reason the
@@ -1646,6 +1898,11 @@ def apply(
         report["wrote"].append("llm_model_ollama")
         answered.append("llm_model_ollama")
 
+    # After the provider row, so that a cloud choice made in this sitting is
+    # the row the pull leaves alone; before the weights, so that a yes to
+    # Ollama is honoured even when that download then fails (TASK-089.18).
+    _apply_ollama(answers, conn, report, answered, announce, on_progress, on_event, probe)
+
     # The tier and the speakers default are written one row at a time. Through
     # `save_defaults` they went in one executemany with the language, so
     # answering the tier wrote a `default_diarize` nobody answered - a row
@@ -1682,6 +1939,209 @@ def apply(
 
     _write_stamp(answers, report, answered, conn)
     return report
+
+
+def _ollama_probe(conn: sqlite3.Connection) -> doctor.Check:
+    """The one-word probe after a pull, under TASK-089.13's rule: a local
+    provider answers on the same card as a transcription, so it waits on the
+    same gate `--prove` uses, and reads "not tested" with the reason while an
+    app answers or a job runs."""
+    gate = _gate(conn, DEFAULT_PORT, _health)
+    if not gate.may_load:
+        return doctor.Check(name="ai-provider", ok=False, tested=False, optional=True, detail=gate.reason)
+    return _provider_word(conn, "ollama")
+
+
+def _both_numbers(room: dict, model: str) -> str:
+    """What a folder that is too small says: both numbers, with their bytes."""
+    return (
+        f"{room['path']} has {models.human(room['free'])} free ({room['free']:,} bytes) and {model} needs "
+        f"{models.human(room['needed'])} ({room['needed']:,} bytes)."
+    )
+
+
+def _apply_ollama(
+    answers: Answers,
+    conn: sqlite3.Connection,
+    report: dict,
+    answered: list[str],
+    announce: Callable[[str], None] | None,
+    on_progress,
+    on_event: Callable[[bool], None] | None,
+    probe: Callable[[sqlite3.Connection], doctor.Check] | None,
+) -> None:
+    """Rows 7-8a and the G6 exception, applied - or refused.
+
+    The engine detects again here rather than trusting the document: a yes
+    written for a machine that was absent when the plan was drawn, and has an
+    Ollama by the time the answers arrive, installs nothing (ADR-017). A
+    marker the plan saw lapse is removed here, because a plan writes nothing.
+    A No is recorded like any other answer, so the next start does not ask
+    again; the offer itself comes back only while Ollama is absent.
+    """
+    say = announce if announce is not None else (lambda line: None)
+    probe = _ollama_probe if probe is None else probe
+    state = ollama_setup.state()
+    marker = ollama_setup.read_marker()
+    standing = ollama_setup.valid_marker(state, marker)
+    if ollama_setup.marker_path().exists() and not standing:
+        ollama_setup.remove_marker()
+
+    for question, given in (
+        ("ollama_install", answers.ollama_install),
+        ("ollama_models_dir", answers.ollama_models_dir),
+        ("ollama_pull_resume", answers.ollama_pull_resume),
+    ):
+        if given is not None:
+            answered.append(question)
+    if answers.ollama_new_model:
+        answered.append("ollama_new_model")
+
+    if answers.ollama_install:
+        if state.state != ollama_setup.ABSENT:
+            report["notes"].append(
+                f"Ollama is on this machine now ({ollama_setup.describe(state)}) and is left alone: "
+                "nothing was installed."
+            )
+        else:
+            _install_ollama(answers, conn, report, say, on_progress, on_event, probe)
+    elif answers.ollama_pull_resume:
+        if standing and marker is not None and state.state == ollama_setup.RUNNING_NO_CHAT_MODEL:
+            _pull_into_own(
+                str(marker["model"]), conn, report, say, on_progress, probe,
+                models_dir=str(marker.get("models_dir") or ""),
+            )
+        elif standing and marker is not None:
+            report["notes"].append(ollama_setup.not_answering_yet_sentence(str(marker["model"])))
+        else:
+            report["notes"].append(
+                "No pull: that Ollama is left alone. The copyable command is "
+                f"`ollama pull {ollama_setup.DEFAULT_MODEL}`."
+            )
+
+
+def _install_ollama(
+    answers: Answers,
+    conn: sqlite3.Connection,
+    report: dict,
+    say: Callable[[str], None],
+    on_progress,
+    on_event: Callable[[bool], None] | None,
+    probe: Callable[[sqlite3.Connection], doctor.Check],
+) -> None:
+    """The yes, in the order the plan showed it: room, the artifact and its
+    checks, the installer, the poll, the room again, the pull.
+
+    Both room checks are for the model that was chosen, not the default the
+    plan measured for (criterion 10). A folder that is too small ends the
+    whole offer with both numbers and installs nothing, as Robert decided
+    (row 8a, G8); on macOS and Linux the variable stays a sentence with the
+    command, so `models_dir` reaches `install` on Windows only.
+    """
+    plan = ollama_setup.install_plan()
+    model = answers.ollama_new_model or ollama_setup.DEFAULT_MODEL
+    needed = ollama_setup.MODEL_BYTES[model]
+    models_dir: Path | None = None
+    at_default = ollama_setup.room(ollama_setup.default_models_dir(), needed)
+    if not at_default["enough"]:
+        if answers.ollama_models_dir is not True:
+            report["notes"].append(_both_numbers(at_default, model) + " Nothing was installed and nothing was pulled.")
+            report["reopen"].append("ollama_install")
+            return
+        with_us = ollama_setup.models_dir_with_myscribe()
+        there = ollama_setup.room(with_us, needed)
+        if not there["enough"]:
+            report["notes"].append(_both_numbers(there, model) + " Nothing was installed and nothing was pulled.")
+            report["reopen"].append("ollama_install")
+            return
+        if plan["platform"] == "win32":
+            models_dir = with_us
+        else:
+            report["notes"].append(ollama_setup.models_dir_sentence(plan["platform"], with_us))
+
+    say(f"downloading {plan['name']} {plan['tag']} ({plan['bytes']:,} bytes)")
+    outcome = ollama_setup.install(
+        plan, models_dir=models_dir, model=model, on_progress=on_progress, on_line=say, on_event=on_event,
+    )
+    report["notes"].append(outcome.sentence)
+    if not outcome.installed:
+        # A failure, or the Mac's guided path: by MyScribe's own test Ollama
+        # is still absent, so the offer comes back at the next sitting.
+        report["reopen"].append("ollama_install")
+        return
+
+    provider = ollama.OllamaProvider(conn)
+    try:
+        say(f"waiting up to {int(ollama_setup.VERSION_WAIT_S)} s for Ollama to answer /api/version")
+        version = ollama_setup.wait_for_version(provider)
+        if not version:
+            report["notes"].append(ollama_setup.not_answering_yet_sentence(model))
+            return
+        where = models_dir if models_dir is not None else ollama_setup.default_models_dir()
+        again = ollama_setup.room(where, needed)
+        if not again["enough"]:
+            report["notes"].append(
+                _both_numbers(again, model) + " Nothing was pulled; the pull is offered again in a --setup sitting."
+            )
+            return
+        _pull_into_own(
+            model, conn, report, say, on_progress, probe,
+            provider=provider, models_dir=str(models_dir) if models_dir is not None else "",
+        )
+    finally:
+        provider.close()
+
+
+def _pull_into_own(
+    model: str,
+    conn: sqlite3.Connection,
+    report: dict,
+    say: Callable[[str], None],
+    on_progress,
+    probe: Callable[[sqlite3.Connection], doctor.Check],
+    *,
+    provider: ollama.OllamaProvider | None = None,
+    models_dir: str = "",
+) -> None:
+    """The one pull ADR-017 allows: into the Ollama MyScribe installed, of the
+    one model that was agreed to. On success the rows the yes meant -
+    `llm_model_ollama`, and `llm_provider` only where no row says otherwise -
+    the marker goes, because that Ollama has now been seen ready, and the
+    one-word probe is announced. Where the models landed is checked, never
+    assumed (criterion 10)."""
+    own = provider is None
+    provider = ollama.OllamaProvider(conn) if provider is None else provider
+    try:
+        say(f"pulling {model} into Ollama")
+        try:
+            ollama_setup.pull(provider, model, on_progress=on_progress)
+        except ollama_setup.PullError as exc:
+            report["notes"].append(
+                f"{exc}. The pull is offered again in a --setup sitting, or run `ollama pull {model}` yourself."
+            )
+            return
+    finally:
+        if own:
+            provider.close()
+
+    ai_ui.setting_put(conn, ai_ui.MODEL_SETTING_PREFIX + "ollama", model)
+    report["wrote"].append("llm_model_ollama")
+    if not _row(conn, ai_ui.PROVIDER_SETTING):
+        ai_ui.setting_put(conn, ai_ui.PROVIDER_SETTING, "ollama")
+        report["wrote"].append("provider")
+    ollama_setup.remove_marker()
+    if models_dir:
+        if ollama_setup.models_landed(Path(models_dir)):
+            report["notes"].append(f"{model} landed in {models_dir}, where OLLAMA_MODELS points.")
+        else:
+            report["notes"].append(
+                f"OLLAMA_MODELS was set to {models_dir} for your account, but {model} did not land there: "
+                "the Ollama the installer started did not read the variable. The model is in Ollama's own "
+                "folder; an Ollama started later from the Start menu reads the variable, and the next pull "
+                "goes where it points."
+            )
+    check = probe(conn)
+    say(f"{label_of('ollama')}: {check.detail}")
 
 
 def _states(answers: Answers, report: dict, answered: list[str], conn: sqlite3.Connection) -> dict[str, str]:
@@ -1771,6 +2231,22 @@ def from_document(document: dict) -> Answers:
         for name in credentials.CREDENTIALS
         if text(f"llm_key_{name}")
     }
+    def yes_no(key: str) -> bool | None:
+        """A yes-no answer in three states: a yes, a No that is still an
+        answer, and nothing said. A word that is neither is nothing said."""
+        value = given.get(key)
+        if value is True:
+            return True
+        if value is False:
+            return False
+        if isinstance(value, str):
+            word = value.strip().lower()
+            if word in ("yes", "true", "1"):
+                return True
+            if word in ("no", "false", "0"):
+                return False
+        return None
+
     fetch = given.get("fetch_models")
     return Answers(
         hf_token=text("hf_token"),
@@ -1783,6 +2259,10 @@ def from_document(document: dict) -> Answers:
         fetch_models=fetch is True or (isinstance(fetch, str) and fetch.strip().lower() in ("yes", "true", "1")),
         llm_keys=keys,
         ollama_model=text("llm_model_ollama"),
+        ollama_install=yes_no("ollama_install"),
+        ollama_new_model=text("ollama_new_model"),
+        ollama_models_dir=yes_no("ollama_models_dir"),
+        ollama_pull_resume=yes_no("ollama_pull_resume"),
         skipped=skipped,
     )
 
@@ -1866,6 +2346,22 @@ class Progress:
             file=self.stream,
             flush=True,
         )
+
+    def installer(self, running: bool) -> None:
+        """One line when a third-party installer starts and one when it ends.
+
+        JSON on a pipe, which is what the launcher reads to refuse Quit in
+        between (TASK-089.18, criterion 14); prose on a terminal. A pipe whose
+        reader has gone - a launcher that died on the Ctrl-C the installer must
+        survive - is not a reason to stop: the line is dropped and the install
+        goes on to write its marker.
+        """
+        if self.tty:
+            line = "Ollama's installer is running; Ctrl-C waits for it." if running else "Ollama's installer has finished."
+        else:
+            line = json.dumps({"event": "installer", "running": running})
+        with contextlib.suppress(OSError):
+            print(line, file=self.stream, flush=True)
 
 
 def render(document: dict) -> str:
@@ -2090,9 +2586,11 @@ def main(argv: list[str] | None = None) -> int:
             if answers is None:
                 return 0  # nobody was asked, so there is nothing to apply
 
+        progress = Progress()
         try:
             report = apply(
-                answers, conn, on_progress=Progress(), check=verify, announce=lambda line: print(line)
+                answers, conn, on_progress=progress, on_event=progress.installer, check=verify,
+                announce=lambda line: print(line),
             )
         except models.ModelError as exc:
             print(f"\n{exc}")

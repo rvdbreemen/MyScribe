@@ -58,6 +58,25 @@ def cuda_available() -> bool:
     return bool(torch.cuda.is_available())
 
 
+def memory() -> int | None:
+    """Bytes of memory on CUDA device 0 as torch reports them, or None without
+    a card.
+
+    The number the Ollama model offer compares against (TASK-089.18): Robert's
+    nominal 16 GB card reports 17,179,344,896 here, 15.9995 GiB, which is why
+    that threshold is set in bytes and says its unit. Reading it goes through
+    torch's lazy init and opens a CUDA context on device 0, the same cost
+    `doctor.check_gpu_runtime` pays - so the setup engine asks only when it is
+    building an offer, on a machine with no Ollama, and never from the web
+    process (ADR-001).
+    """
+    if not cuda_available():
+        return None
+    import torch
+
+    return int(torch.cuda.get_device_properties(0).total_memory)
+
+
 def mps_available() -> bool:
     """PyTorch's Metal backend, built and with a device behind it."""
     if not is_apple_silicon():

@@ -484,3 +484,1128 @@ def test_a_machine_that_will_not_say_where_it_keeps_things_has_no_locations():
         pytest.skip("the empty-LOCALAPPDATA case is Windows only")
 
     assert ollama_setup.install_locations({}) == ()
+
+
+# =====================================================================================
+# The install offer (TASK-089.18, ADR-017): what is shown, what is checked, what
+# runs, and what is left behind.
+#
+# Every seam below is a module attribute looked up at call time - `subprocess.Popen`,
+# `ollama_setup.download_client`, `ollama_setup.verify_signer`,
+# `ollama_setup.set_user_variable` - so a test that plants a raiser proves the
+# absence of a download or a process for the whole call, not for one argument it
+# remembered to pass. Nothing here opens a socket: the artifact server is an
+# `httpx2.MockTransport` that honours Range, and the daemon is `Daemon` above.
+# =====================================================================================
+
+import hashlib
+import shutil
+import subprocess
+import urllib.request
+from pathlib import Path
+
+from scribe import accel, paths
+
+REAL_MEMORY = accel.memory
+"""`accel.memory` as it ships, captured at import - before tests/conftest.py's
+autouse stub replaces it - for the one test that is about the reader."""
+
+
+class Refused(RuntimeError):
+    """Raised by every seam a test plants to prove that nothing reached it."""
+
+
+def _raiser(what):
+    def raise_it(*args, **kwargs):
+        raise Refused(f"{what} was reached: {args[:1]}")
+
+    return raise_it
+
+
+@pytest.fixture
+def fenced(tmp_path, monkeypatch):
+    """A data directory, a home and an account of this test's own.
+
+    `marker_path()` reads `paths.DATA_DIR`, `install_plan` reads LOCALAPPDATA and
+    the models folder reads USERPROFILE and MYSCRIBE_HOME - all of which point
+    at this machine's real ones unless a test says otherwise. Returns the data
+    directory.
+    """
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(paths, "DATA_DIR", data)
+    monkeypatch.setattr(paths, "DB_PATH", data / "myscribe.db")
+    for name in ("MEDIA_DIR", "LOGS_DIR", "WORK_DIR", "MODELS_DIR"):
+        monkeypatch.setattr(paths, name, data / name.removesuffix("_DIR").lower())
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "Users" / "someone"))
+    monkeypatch.setenv("MYSCRIBE_HOME", str(tmp_path / "MyScribeHome"))
+    for name in credentials.PROXY_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setattr(credentials, "system_proxies", lambda: {})
+    return data
+
+
+@pytest.fixture
+def nothing_runs(monkeypatch):
+    """Every way of running or fetching something, replaced by a raiser."""
+    monkeypatch.setattr(subprocess, "Popen", _raiser("subprocess.Popen"))
+    monkeypatch.setattr(subprocess, "run", _raiser("subprocess.run"))
+    monkeypatch.setattr(urllib.request, "urlopen", _raiser("urllib.request.urlopen"))
+    monkeypatch.setattr(httpx2.Client, "send", _raiser("httpx2.Client.send"))
+    monkeypatch.setattr(ollama_setup, "set_user_variable", _raiser("set_user_variable"))
+    monkeypatch.setattr(ollama_setup, "unset_user_variable", _raiser("unset_user_variable"))
+
+
+def environ_for(tmp_path) -> dict:
+    return {
+        "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+        "USERPROFILE": str(tmp_path / "Users" / "someone"),
+        "HOME": str(tmp_path / "Users" / "someone"),
+        "PATH": str(tmp_path / "no-ollama-here"),
+    }
+
+
+class ArtifactServer:
+    """A release server for one small artifact, honouring `Range`.
+
+    `break_after` makes the first response die mid-stream after that many
+    bytes, which is how an interrupted download is built; `ignore_range` is the
+    server that answers 200 to a resume, which a client must treat as a fresh
+    start; `status` overrides the answer altogether.
+    """
+
+    def __init__(self, body: bytes, *, break_after: int | None = None, ignore_range=False, status=None):
+        self.body = body
+        self.break_after = break_after
+        self.ignore_range = ignore_range
+        self.status = status
+        self.requests: list[httpx2.Request] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(request)
+        if self.status is not None:
+            return httpx2.Response(self.status, content=b"nope")
+        wanted = request.headers.get("Range")
+        start = 0
+        if wanted and not self.ignore_range:
+            start = int(wanted.removeprefix("bytes=").rstrip("-"))
+            if start >= len(self.body):
+                return httpx2.Response(416)
+        content = self.body[start:]
+        if self.break_after is not None:
+            cut = self.break_after
+            self.break_after = None
+
+            def stream():
+                yield content[:cut]
+                raise httpx2.ReadError("the connection dropped")
+
+            return httpx2.Response(206 if start else 200, content=stream(),
+                                   headers={"Content-Length": str(len(content))})
+        return httpx2.Response(206 if start else 200, content=content,
+                               headers={"Content-Length": str(len(content))})
+
+
+def serve_artifact(monkeypatch, server: ArtifactServer) -> ArtifactServer:
+    monkeypatch.setattr(
+        ollama_setup, "download_client",
+        lambda: httpx2.Client(transport=httpx2.MockTransport(server), follow_redirects=True),
+    )
+    return server
+
+
+FAKE_ARTIFACT = bytes(range(256)) * 40  # 10,240 bytes, nothing like an installer
+FAKE_SHA = hashlib.sha256(FAKE_ARTIFACT).hexdigest()
+
+
+def a_plan(tmp_path, platform="win32", *, body=FAKE_ARTIFACT) -> dict:
+    """The shipped plan, with the artifact figures swapped for the fake's so
+    that a small body can pass the checks. Everything else - the URL, the
+    argv, the folder - is the real pin's."""
+    plan = ollama_setup.install_plan(platform, environ_for(tmp_path), into=tmp_path / "downloads")
+    plan["bytes"] = len(body)
+    plan["sha256"] = hashlib.sha256(body).hexdigest()
+    return plan
+
+
+class FakeProcess:
+    def __init__(self, argv, *, exit_code=0, interrupts=0, on_wait=None):
+        self.argv = argv
+        self.exit_code = exit_code
+        self.interrupts = interrupts
+        self.on_wait = on_wait
+        self.waits = 0
+        self.returncode = None
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.interrupts:
+            self.interrupts -= 1
+            raise KeyboardInterrupt
+        if self.on_wait is not None:
+            self.on_wait()
+        self.returncode = self.exit_code
+        return self.exit_code
+
+    def poll(self):
+        return self.returncode
+
+
+def fake_popen(monkeypatch, *, exit_code=0, interrupts=0, on_wait=None) -> list[FakeProcess]:
+    """`subprocess.Popen` replaced by a recorder. Returns the list it fills."""
+    started: list[FakeProcess] = []
+
+    def popen(argv, **kwargs):
+        made = FakeProcess(list(argv), exit_code=exit_code, interrupts=interrupts, on_wait=on_wait)
+        started.append(made)
+        return made
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return started
+
+
+def install_a_binary(tmp_path) -> Path:
+    """What a finished Windows installer leaves at the known location."""
+    where = ollama_setup.install_locations(environ_for(tmp_path))[0]
+    where.parent.mkdir(parents=True, exist_ok=True)
+    where.write_bytes(b"MZ")
+    return where
+
+
+def signer_says(monkeypatch, ok: bool, why: str = "") -> list[Path]:
+    checked: list[Path] = []
+
+    def verify(path, *, run=None):
+        checked.append(Path(path))
+        return ok, why
+
+    monkeypatch.setattr(ollama_setup, "verify_signer", verify)
+    return checked
+
+
+def variable_recorder(monkeypatch) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(ollama_setup, "set_user_variable", lambda name, value: calls.append(("set", name)))
+    monkeypatch.setattr(ollama_setup, "unset_user_variable", lambda name: calls.append(("unset", name)))
+    return calls
+
+
+# --- the pin (#4) -----------------------------------------------------------------
+
+
+def test_the_pin_names_a_url_size_and_sha256_per_platform():
+    """scribe/ollama_release.json: the three platforms, each with the four
+    figures a person is shown before the question, and none of the forms
+    ADR-017 forbids anywhere in the file."""
+    pin = ollama_setup.release()
+
+    assert pin["tag"].startswith("v")
+    for platform in ("win32", "darwin", "linux"):
+        artifact = pin["artifacts"][platform]
+        assert artifact["url"].startswith(f"https://github.com/ollama/ollama/releases/download/{pin['tag']}/")
+        assert artifact["url"].endswith(artifact["name"])
+        assert isinstance(artifact["bytes"], int) and artifact["bytes"] > 0
+        assert len(artifact["sha256"]) == 64 and int(artifact["sha256"], 16)
+    text = ollama_setup.RELEASE_PATH.read_text(encoding="utf-8")
+    assert "releases/latest" not in text
+    assert not any(f"ollama.com/download/{x}" in text for x in ("Ollama", "ollama")), "an unpinned vendor URL"
+    assert "| sh" not in text and "| iex" not in text
+
+
+def test_the_shown_figures_are_the_pin_s(tmp_path):
+    """What `install_plan` shows is read out of the pin and never typed twice."""
+    pin = ollama_setup.release()
+
+    for platform in ("win32", "darwin", "linux"):
+        plan = ollama_setup.install_plan(platform, environ_for(tmp_path), into=tmp_path / "dl")
+        artifact = pin["artifacts"][platform]
+        assert (plan["url"], plan["bytes"], plan["sha256"], plan["tag"]) == (
+            artifact["url"], artifact["bytes"], artifact["sha256"], pin["tag"])
+        assert plan["vendor_page"] == "https://ollama.com/download"
+
+
+def test_the_windows_plan_shows_the_exact_argv_the_folder_no_admin_and_self_update(tmp_path):
+    """Criterion 3's list, as data: the command is the argv that will run, the
+    folder is the one install.ps1:118 uses, and both sentences a person is owed
+    are in the plan rather than in a front-end."""
+    plan = ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+
+    assert plan["runs_here"] is True
+    assert plan["command"][0] == str(tmp_path / "dl" / "OllamaSetup.exe")
+    assert plan["command"][1:] == ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"]
+    assert plan["shown"] == [" ".join(plan["command"])]
+    assert plan["install_dir"] == str(tmp_path / "AppData" / "Local" / "Programs" / "Ollama")
+    assert plan["needs_admin"] is False
+    assert plan["self_updates"] is True
+    assert plan["signer"] == "O=Ollama Inc."
+
+
+def test_the_mac_plan_opens_the_image_and_the_linux_plan_runs_nothing(tmp_path):
+    """macOS: the one command MyScribe runs is `open` on the verified image
+    (ADR-017, Exceptions). Linux: the commands are shown - download, check,
+    read, run - and `command` is empty, because a root script that can install
+    drivers is not run behind a yes or no (ADR-017, Must). No line pipes."""
+    mac = ollama_setup.install_plan("darwin", environ_for(tmp_path), into=tmp_path / "dl")
+    linux = ollama_setup.install_plan("linux", environ_for(tmp_path), into=tmp_path / "dl")
+
+    assert mac["runs_here"] is True
+    assert mac["command"] == ["open", str(tmp_path / "dl" / "Ollama.dmg")]
+
+    assert linux["runs_here"] is False
+    assert linux["command"] == []
+    assert len(linux["shown"]) == 4
+    assert linux["shown"][0].startswith("curl -fsSL -o ")
+    assert linux["url"] in linux["shown"][0]
+    assert linux["sha256"] in linux["shown"][1]
+    assert linux["shown"][3].startswith("sh ")
+    assert not any("|" in line for line in linux["shown"])
+    assert linux["signer"] == ""
+
+
+def test_the_launcher_s_footprint_figures_equal_the_pin():
+    """Drift guard. The launcher's location question still reads
+    `scribe/footprint.json` (it may import nothing from the app, ADR-011), so
+    the installer and model bytes there must be the pin's - or the question
+    would show a number for a release nobody fetches."""
+    paper = json.loads((Path(ollama_setup.__file__).with_name("footprint.json")).read_text(encoding="utf-8"))
+    pin = ollama_setup.release()
+
+    assert paper["ollama"]["model"] == ollama_setup.DEFAULT_MODEL
+    assert paper["ollama"]["model_bytes"] == pin["models"][ollama_setup.DEFAULT_MODEL]["bytes"]
+    assert paper["ollama"]["installer_bytes"]["win32"] == pin["artifacts"]["win32"]["bytes"]
+    assert paper["ollama"]["installer_bytes"]["darwin"] == pin["artifacts"]["darwin"]["bytes"]
+    assert pin["tag"] in paper["ollama"]["source"]
+
+
+# --- the download (#4, #17) -------------------------------------------------------
+
+
+def test_a_download_streams_to_a_part_file_and_lands_only_when_size_and_sum_match(tmp_path, monkeypatch):
+    server = serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    seen: list[tuple[str, int, int]] = []
+
+    landed = ollama_setup.download(
+        "https://example.invalid/OllamaSetup.exe", tmp_path / "dl", "OllamaSetup.exe",
+        expected_bytes=len(FAKE_ARTIFACT), expected_sha256=FAKE_SHA,
+        on_progress=lambda name, done, total: seen.append((name, done, total)),
+    )
+
+    assert landed == tmp_path / "dl" / "OllamaSetup.exe"
+    assert landed.read_bytes() == FAKE_ARTIFACT
+    assert not (tmp_path / "dl" / "OllamaSetup.exe.part").exists()
+    assert seen and seen[-1] == ("OllamaSetup.exe", len(FAKE_ARTIFACT), len(FAKE_ARTIFACT))
+    assert "Range" not in server.requests[0].headers
+
+
+def test_a_404_ends_on_the_vendor_page_and_leaves_nothing(tmp_path, monkeypatch):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT, status=404))
+
+    with pytest.raises(ollama_setup.InstallError) as refused_:
+        ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                              expected_bytes=1, expected_sha256="0" * 64)
+
+    assert "https://ollama.com/download" in str(refused_.value)
+    assert "Check again" in str(refused_.value)
+    assert not (tmp_path / "dl").exists() or not list((tmp_path / "dl").iterdir())
+
+
+def test_a_wrong_sum_ends_on_the_vendor_page_and_removes_the_part(tmp_path, monkeypatch):
+    """A whole file with the wrong sha256 is not kept for a resume: resuming
+    it would only reproduce the mismatch."""
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+
+    with pytest.raises(ollama_setup.InstallError) as refused_:
+        ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                              expected_bytes=len(FAKE_ARTIFACT), expected_sha256="0" * 64)
+
+    assert "sha256" in str(refused_.value) and "https://ollama.com/download" in str(refused_.value)
+    assert not (tmp_path / "dl" / "x.exe").exists()
+    assert not (tmp_path / "dl" / "x.exe.part").exists()
+
+
+def test_a_wrong_sum_names_both_digests_in_full(tmp_path, monkeypatch):
+    """A digest that differs in its last hex digit must read differently: a
+    twelve-character prefix printed the same figure twice."""
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    near = FAKE_SHA[:-1] + ("0" if FAKE_SHA[-1] != "0" else "1")
+
+    with pytest.raises(ollama_setup.InstallError) as refused_:
+        ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                              expected_bytes=len(FAKE_ARTIFACT), expected_sha256=near)
+
+    assert FAKE_SHA in str(refused_.value) and near in str(refused_.value)
+
+
+def test_a_short_file_is_a_mismatch_too(tmp_path, monkeypatch):
+    """The server ends early with a 200 and the right prefix: the byte count
+    catches what the sum would also catch, with a sentence that says which."""
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT[:100]))
+
+    with pytest.raises(ollama_setup.InstallError) as refused_:
+        ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                              expected_bytes=len(FAKE_ARTIFACT), expected_sha256=FAKE_SHA)
+
+    assert f"{len(FAKE_ARTIFACT):,}" in str(refused_.value)
+
+
+def test_an_interrupted_download_resumes_from_its_part_with_a_range_request(tmp_path, monkeypatch):
+    """The first attempt dies after 3,000 bytes and raises; the second asks for
+    `bytes=3000-`, gets a 206, and the sum is over the whole file."""
+    server = serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT, break_after=3000))
+
+    with pytest.raises(ollama_setup.InstallError) as first:
+        ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                              expected_bytes=len(FAKE_ARTIFACT), expected_sha256=FAKE_SHA)
+    part = tmp_path / "dl" / "x.exe.part"
+    assert part.exists() and part.stat().st_size == 3000, "the part is kept for the resume"
+    assert "https://ollama.com/download" in str(first.value)
+
+    landed = ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                                   expected_bytes=len(FAKE_ARTIFACT), expected_sha256=FAKE_SHA)
+
+    assert server.requests[1].headers["Range"] == "bytes=3000-"
+    assert landed.read_bytes() == FAKE_ARTIFACT
+    assert not part.exists()
+
+
+def test_a_server_that_ignores_range_starts_the_file_over(tmp_path, monkeypatch):
+    """A 200 to a Range request is the whole file again; appending it to the
+    part would be a corrupt file with a plausible size."""
+    part = tmp_path / "dl" / "x.exe.part"
+    part.parent.mkdir()
+    part.write_bytes(FAKE_ARTIFACT[:3000])
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT, ignore_range=True))
+
+    landed = ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                                   expected_bytes=len(FAKE_ARTIFACT), expected_sha256=FAKE_SHA)
+
+    assert landed.read_bytes() == FAKE_ARTIFACT
+
+
+def test_a_file_that_already_landed_is_checked_and_not_fetched_again(tmp_path, monkeypatch):
+    (tmp_path / "dl").mkdir()
+    (tmp_path / "dl" / "x.exe").write_bytes(FAKE_ARTIFACT)
+    server = serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+
+    ollama_setup.download("https://example.invalid/x.exe", tmp_path / "dl", "x.exe",
+                          expected_bytes=len(FAKE_ARTIFACT), expected_sha256=FAKE_SHA)
+
+    assert server.requests == []
+
+
+def test_ctrl_c_during_the_download_keeps_the_part_and_writes_no_marker(tmp_path, monkeypatch, fenced):
+    """A cancelled download is `absent` again at the next sitting: no marker,
+    and the part stays so that the same button finishes it (G6)."""
+
+    def dies(request):
+        def stream():
+            yield FAKE_ARTIFACT[:1000]
+            raise KeyboardInterrupt
+
+        return httpx2.Response(200, content=stream(), headers={"Content-Length": str(len(FAKE_ARTIFACT))})
+
+    monkeypatch.setattr(ollama_setup, "download_client",
+                        lambda: httpx2.Client(transport=httpx2.MockTransport(dies)))
+
+    with pytest.raises(KeyboardInterrupt):
+        ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert (tmp_path / "downloads" / "OllamaSetup.exe.part").stat().st_size == 1000
+    assert ollama_setup.read_marker() is None
+
+
+def test_a_failed_download_names_a_configured_proxy_and_an_unconfigured_one_is_not_mentioned(
+        tmp_path, monkeypatch, fenced):
+    """Criterion 17: the same clause the two earlier downloads add
+    (`credentials.proxy_note`), on the installer's download."""
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT, status=404))
+    plain = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", environ=environ_for(tmp_path))
+    assert "proxy" not in plain.sentence
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.corp:3128")
+    behind = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert behind.ok is False
+    assert "a proxy is configured at proxy.corp:3128" in behind.sentence
+    assert behind.sentence.endswith(credentials.proxy_note())
+    assert behind.sentence.removesuffix(credentials.proxy_note()) == plain.sentence
+
+
+# --- the signer (#5) ----------------------------------------------------------------
+
+
+def _powershell_answering(monkeypatch, status: str, subject: str, exit_code: int = 0) -> list[list[str]]:
+    """`subprocess.run` replaced by the JSON PowerShell really prints. The shape
+    was read on this machine on 2026-09-23 against notepad.exe:
+    {"status":"Valid","subject":"CN=Microsoft Windows, O=Microsoft Corporation, ..."}."""
+    calls: list[list[str]] = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, exit_code, stdout=json.dumps({"status": status, "subject": subject}), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+@pytest.mark.parametrize("status,subject,accepted", [
+    ("Valid", "CN=Ollama Inc., O=Ollama Inc., L=Palo Alto, S=California, C=US", True),
+    ("Valid", "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US", False),
+    ("Valid", "CN=Not Ollama Inc., O=Not Ollama Inc., C=US", False),
+    ("NotSigned", "", False),
+    ("HashMismatch", "CN=Ollama Inc., O=Ollama Inc., C=US", False),
+])
+def test_the_signer_must_be_valid_and_ollama_inc_anchored(monkeypatch, tmp_path, status, subject, accepted):
+    """install.ps1:84-87's rule: Status Valid and a subject carrying
+    `O=Ollama Inc.` between commas, so that `O=Not Ollama Inc.` does not pass.
+    The certificate on the pinned installer is unread (nobody downloaded it);
+    a mismatch fails safe, which is the side the check is built for."""
+    calls = _powershell_answering(monkeypatch, status, subject)
+
+    ok, why = ollama_setup.verify_signer(tmp_path / "OllamaSetup.exe")
+
+    assert ok is accepted, why
+    assert calls and calls[0][0].lower().startswith("powershell")
+    assert "Get-AuthenticodeSignature" in " ".join(calls[0])
+    if not accepted:
+        assert why
+
+
+def test_a_powershell_that_prints_nonsense_or_fails_refuses(monkeypatch, tmp_path):
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="not json", stderr=""))
+    assert ollama_setup.verify_signer(tmp_path / "x.exe")[0] is False
+
+    monkeypatch.setattr(subprocess, "run", _raiser("powershell"))
+    ok, why = ollama_setup.verify_signer(tmp_path / "x.exe")
+    assert ok is False and "powershell" in why.lower()
+
+
+def test_windows_refuses_an_installer_whose_signer_is_not_ollama_and_runs_nothing(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    signer_says(monkeypatch, False, "signed by O=Somebody Else")
+    started = fake_popen(monkeypatch)
+    variables = variable_recorder(monkeypatch)
+
+    outcome = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads",
+                                   models_dir=tmp_path / "models", environ=environ_for(tmp_path))
+
+    assert outcome.ok is False and outcome.installed is False
+    assert "O=Somebody Else" in outcome.sentence and "https://ollama.com/download" in outcome.sentence
+    assert started == [], "the installer never ran"
+    assert variables == [], "OLLAMA_MODELS was never written"
+    assert ollama_setup.read_marker() is None
+
+
+# --- the executed command is the shown command (#3) ---------------------------------
+
+
+def test_the_executed_command_equals_the_shown_command(tmp_path, monkeypatch, fenced):
+    """The argv `subprocess.Popen` receives is `plan["command"]`, list for
+    list, and it runs only after the sum and the signer passed."""
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    checked = signer_says(monkeypatch, True)
+    started = fake_popen(monkeypatch, on_wait=lambda: install_a_binary(tmp_path))
+    plan = a_plan(tmp_path)
+
+    outcome = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert outcome.ok is True
+    assert [p.argv for p in started] == [plan["command"]]
+    assert checked == [Path(plan["command"][0])], "the signer was asked about the very file that ran"
+
+
+def test_the_shown_command_is_the_executed_one_even_with_a_space_in_the_path(tmp_path):
+    """Criterion 3 compares what the person reads with what runs. A data
+    directory under a folder named "Jan de Vries" put a bare space in the shown
+    line, which then read as a different command. On Windows Popen turns a list
+    into its command line with subprocess.list2cmdline, so that is the line to
+    show; on macOS the line is shell words that split back into the argv."""
+    import shlex
+    import subprocess
+
+    into = tmp_path / "Jan de Vries" / "downloads"
+    windows = ollama_setup.install_plan("win32", {"LOCALAPPDATA": str(tmp_path)}, into=into)
+    mac = ollama_setup.install_plan("darwin", {"HOME": str(tmp_path)}, into=into)
+
+    assert windows["shown"] == [subprocess.list2cmdline(windows["command"])]
+    assert mac["shown"] == [shlex.join(mac["command"])]
+    assert shlex.split(mac["shown"][0]) == mac["command"]
+
+
+def test_the_mac_path_opens_the_verified_image_writes_no_marker_and_waits(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    started = fake_popen(monkeypatch)
+    plan = a_plan(tmp_path, "darwin")
+
+    outcome = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert [p.argv for p in started] == [["open", str(tmp_path / "downloads" / "Ollama.dmg")]]
+    assert outcome.installed is False and ollama_setup.read_marker() is None
+    assert "Check again" in outcome.sentence
+
+
+def test_the_linux_path_shows_the_commands_and_runs_and_fetches_nothing(tmp_path, monkeypatch, fenced, nothing_runs):
+    plan = a_plan(tmp_path, "linux")
+
+    outcome = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert outcome.ok is False and outcome.installed is False
+    for line in plan["shown"]:
+        assert line in outcome.sentence
+    assert "Check again" in outcome.sentence
+    assert ollama_setup.read_marker() is None
+
+
+# --- the marker (#6, #7) ----------------------------------------------------------------
+
+
+def test_the_marker_is_written_only_after_exit_zero_and_a_binary_at_the_known_path(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    signer_says(monkeypatch, True)
+    plan = a_plan(tmp_path)
+
+    fake_popen(monkeypatch, exit_code=1)
+    failed = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+    assert failed.ok is False and ollama_setup.read_marker() is None
+    assert "exit code 1" in failed.sentence
+
+    fake_popen(monkeypatch, exit_code=0)
+    no_binary = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+    assert no_binary.ok is False and ollama_setup.read_marker() is None
+    assert "no ollama" in no_binary.sentence.lower()
+
+    fake_popen(monkeypatch, exit_code=0, on_wait=lambda: install_a_binary(tmp_path))
+    done = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path), model="qwen3.5:4b")
+
+    assert done.ok is True and done.installed is True
+    marker = ollama_setup.read_marker()
+    assert marker is not None
+    assert set(ollama_setup.MARKER_FIELDS) <= set(marker)
+    assert marker["tag"] == plan["tag"] and marker["version"] == plan["tag"].lstrip("v")
+    assert marker["binary"] == str(install_a_binary(tmp_path))
+    assert marker["model"] == "qwen3.5:4b"
+    assert not (tmp_path / "downloads" / "OllamaSetup.exe").exists(), "1.57 GB of installer is not kept after it ran"
+
+
+def test_a_failed_download_leaves_no_marker(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT, status=404))
+    started = fake_popen(monkeypatch)
+
+    outcome = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert outcome.ok is False and ollama_setup.read_marker() is None and started == []
+
+
+def a_marker(tmp_path, **changes) -> dict:
+    """A marker as `install` writes one, bound to the binary the fake installer
+    leaves, with any field overridden."""
+    binary = install_a_binary(tmp_path)
+    marker = {"tag": "v0.34.3", "version": "0.34.3", "binary": str(binary), "model": "qwen3.5:4b",
+              "installed": 1789930000.0, "models_dir": ""}
+    marker.update(changes)
+    return marker
+
+
+def stopped(binary: Path) -> ollama_setup.State:
+    return ollama_setup.State(state=ollama_setup.INSTALLED_NOT_RUNNING, binary=str(binary))
+
+
+def running(binary: Path, version="0.34.3") -> ollama_setup.State:
+    return ollama_setup.State(state=ollama_setup.RUNNING_NO_CHAT_MODEL, binary=str(binary), version=version)
+
+
+def test_a_marker_stands_for_the_same_version_at_the_same_path(tmp_path, fenced):
+    marker = a_marker(tmp_path)
+    binary = Path(marker["binary"])
+
+    assert ollama_setup.valid_marker(running(binary), marker) is True
+    assert ollama_setup.valid_marker(stopped(binary), marker) is True, "stopped: the version is unread, not wrong"
+
+
+def test_the_marker_lapses_when_the_version_differs(tmp_path, fenced):
+    """Ollama updated itself. The honest reason for a lapse, and the one the
+    binding is chosen to fail towards (G7)."""
+    marker = a_marker(tmp_path)
+
+    assert ollama_setup.valid_marker(running(Path(marker["binary"]), version="0.34.4"), marker) is False
+
+
+def test_the_marker_lapses_when_the_path_differs(tmp_path, fenced):
+    marker = a_marker(tmp_path)
+    elsewhere = tmp_path / "elsewhere" / "ollama.exe"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b"MZ")
+
+    assert ollama_setup.valid_marker(running(elsewhere), marker) is False
+
+
+def test_the_marker_lapses_when_no_binary_stands_at_the_recorded_path(tmp_path, fenced):
+    marker = a_marker(tmp_path)
+    Path(marker["binary"]).unlink()
+
+    assert ollama_setup.valid_marker(running(Path(marker["binary"])), marker) is False
+
+
+def test_the_marker_lapses_when_it_cannot_be_read_or_lacks_a_field(tmp_path, fenced):
+    ollama_setup.marker_path().write_text("{not json", encoding="utf-8")
+    assert ollama_setup.read_marker() is None
+
+    ollama_setup.marker_path().write_text("[1, 2]", encoding="utf-8")
+    assert ollama_setup.read_marker() is None
+
+    marker = a_marker(tmp_path)
+    binary = Path(marker["binary"])
+    for field in ollama_setup.MARKER_FIELDS:
+        short = {k: v for k, v in marker.items() if k != field}
+        assert ollama_setup.valid_marker(running(binary), short) is False, f"a marker without {field} stood"
+    assert ollama_setup.valid_marker(running(binary), None) is False
+
+
+def test_the_marker_lapses_once_ollama_has_been_seen_ready_or_is_absent(tmp_path, fenced):
+    marker = a_marker(tmp_path)
+    binary = Path(marker["binary"])
+
+    ready = ollama_setup.State(state=ollama_setup.READY, binary=str(binary), version="0.34.3", chat_models=("qwen3.5:4b",))
+    assert ollama_setup.valid_marker(ready, marker) is False
+    assert ollama_setup.valid_marker(ollama_setup.State(state=ollama_setup.ABSENT), marker) is False
+
+
+def test_a_replaced_ollama_lapses_the_marker(tmp_path, fenced):
+    """The user removes what MyScribe installed and installs their own - another
+    version, or another path - and never pulls a chat model. That Ollama is
+    theirs: the marker lapses and R2's copyable command is what they get."""
+    marker = a_marker(tmp_path)
+    binary = Path(marker["binary"])
+
+    assert ollama_setup.valid_marker(running(binary, version="0.35.0"), marker) is False
+    theirs = tmp_path / "their-ollama" / "ollama.exe"
+    theirs.parent.mkdir()
+    theirs.write_bytes(b"MZ")
+    assert ollama_setup.valid_marker(running(theirs, version="0.34.3"), marker) is False
+
+
+def test_the_same_version_installed_again_at_the_same_path_is_what_the_binding_cannot_tell(tmp_path, fenced):
+    """Said in the notes and pinned here: version and path together cannot tell
+    a reinstall of the same version at the same path from MyScribe's own. That
+    case gets the one question whose default is No (ADR-017, Open Questions)."""
+    marker = a_marker(tmp_path)
+
+    assert ollama_setup.valid_marker(running(Path(marker["binary"])), marker) is True
+
+
+# --- OLLAMA_MODELS and the folders (#10) ----------------------------------------------
+
+
+def test_the_default_models_folder_per_platform_is_the_faq_s(tmp_path):
+    """docs.ollama.com/faq, read 2026-09-23: `C:\\Users\\%username%\\.ollama\\models`,
+    `~/.ollama/models`, `/usr/share/ollama/.ollama/models`."""
+    environ = environ_for(tmp_path)
+
+    assert ollama_setup.default_models_dir("win32", environ) == Path(environ["USERPROFILE"]) / ".ollama" / "models"
+    assert ollama_setup.default_models_dir("darwin", environ) == Path(environ["HOME"]) / ".ollama" / "models"
+    assert ollama_setup.default_models_dir("linux", environ) == Path("/usr/share/ollama/.ollama/models")
+
+
+def test_the_folder_with_myscribe_is_beside_the_library_and_never_inside_a_git_tree(tmp_path):
+    """Row 8a: outside the git working tree in a clone (`git clean -fdx`) and
+    nothing an uninstall removes - the library folder survives both."""
+    library = tmp_path / "home" / "data"
+    assert ollama_setup.models_dir_with_myscribe(environ_for(tmp_path), data_dir=library, platform="win32") == library / "ollama-models"
+
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    in_tree = clone / "data"
+    environ = dict(environ_for(tmp_path), MYSCRIBE_HOME=str(tmp_path / "MyScribeHome"))
+    assert ollama_setup.models_dir_with_myscribe(environ, data_dir=in_tree, platform="win32") == tmp_path / "MyScribeHome" / "ollama-models"
+    environ.pop("MYSCRIBE_HOME")
+    assert ollama_setup.models_dir_with_myscribe(environ, data_dir=in_tree, platform="win32") == Path(environ["LOCALAPPDATA"]) / "MyScribe" / "ollama-models"
+    assert ollama_setup.models_dir_with_myscribe(environ, data_dir=in_tree, platform="linux") == Path(environ["HOME"]) / ".local" / "share" / "MyScribe" / "ollama-models"
+
+
+def test_room_is_measured_on_the_nearest_folder_that_exists(tmp_path, monkeypatch):
+    asked: list[Path] = []
+
+    def usage(path):
+        asked.append(Path(path))
+        return shutil._ntuple_diskusage(total=10 * 2**30, used=8 * 2**30, free=2 * 2**30)
+
+    monkeypatch.setattr(shutil, "disk_usage", usage)
+
+    found = ollama_setup.room(tmp_path / "not" / "there" / "yet", needed=3 * 2**30)
+
+    assert asked == [tmp_path]
+    assert found["enough"] is False and found["free"] == 2 * 2**30 and found["needed"] == 3 * 2**30
+
+
+def test_on_windows_the_variable_is_set_after_the_checks_and_before_the_installer_and_removed_on_failure(
+        tmp_path, monkeypatch, fenced):
+    """Row 8a's order: sum, signer, then OLLAMA_MODELS, then the installer.
+    A failed download or a refused signer writes nothing; an installer that
+    then fails takes the variable with it, so `state()` reads absent again."""
+    order: list[str] = []
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    monkeypatch.setattr(ollama_setup, "verify_signer", lambda path, run=None: (order.append("signer"), (True, ""))[1])
+    monkeypatch.setattr(ollama_setup, "set_user_variable", lambda name, value: order.append(f"set {name}"))
+    monkeypatch.setattr(ollama_setup, "unset_user_variable", lambda name: order.append(f"unset {name}"))
+    environ = environ_for(tmp_path)
+
+    def popen(argv, **kwargs):
+        order.append("installer")
+        assert environ.get("OLLAMA_MODELS") == str(tmp_path / "models"), "the child chain inherits it"
+        return FakeProcess(list(argv), exit_code=3)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    outcome = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", models_dir=tmp_path / "models", environ=environ)
+
+    assert outcome.ok is False
+    assert order == ["signer", "set OLLAMA_MODELS", "installer", "unset OLLAMA_MODELS"]
+    assert "OLLAMA_MODELS" not in environ
+    assert ollama_setup.read_marker() is None
+
+
+def test_on_windows_the_variable_stays_with_a_finished_install_and_is_named_in_the_sentence(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    signer_says(monkeypatch, True)
+    variables = variable_recorder(monkeypatch)
+    fake_popen(monkeypatch, on_wait=lambda: install_a_binary(tmp_path))
+
+    outcome = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", models_dir=tmp_path / "models",
+                                   environ=environ_for(tmp_path))
+
+    assert outcome.installed is True and variables == [("set", "OLLAMA_MODELS")]
+    assert outcome.variable == "OLLAMA_MODELS"
+    assert str(tmp_path / "models") in outcome.sentence
+    assert ollama_setup.read_marker()["models_dir"] == str(tmp_path / "models")
+
+
+def test_elsewhere_the_variable_is_a_sentence_with_the_command_and_is_never_written(tmp_path, fenced, nothing_runs):
+    """macOS and Linux: a systemd unit wants root and a launch agent is a
+    second mechanism nobody has run (G8), so it stays a sentence."""
+    for platform in ("darwin", "linux"):
+        sentence = ollama_setup.models_dir_sentence(platform, tmp_path / "models")
+        assert "OLLAMA_MODELS" in sentence and str(tmp_path / "models") in sentence
+        assert "launchctl setenv OLLAMA_MODELS" in sentence or "Environment=OLLAMA_MODELS=" in sentence
+
+
+def test_no_variable_is_written_without_a_models_folder(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    signer_says(monkeypatch, True)
+    variables = variable_recorder(monkeypatch)
+    fake_popen(monkeypatch, on_wait=lambda: install_a_binary(tmp_path))
+
+    outcome = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", models_dir=None, environ=environ_for(tmp_path))
+
+    assert outcome.installed is True and variables == [] and outcome.variable == ""
+
+
+def test_where_the_models_landed_is_checked_and_never_assumed(tmp_path):
+    """Whether the daemon inherits the variable is unmeasured (criterion 13),
+    so a sentence about where the model went is earned by a folder with blobs
+    in it."""
+    folder = tmp_path / "models"
+    assert ollama_setup.models_landed(folder) is False
+    (folder / "blobs").mkdir(parents=True)
+    assert ollama_setup.models_landed(folder) is False
+    (folder / "blobs" / "sha256-abc").write_bytes(b"x")
+    assert ollama_setup.models_landed(folder) is True
+
+
+# --- the installer process and Ctrl-C (#14) -------------------------------------------
+
+
+def test_ctrl_c_while_the_installer_runs_waits_for_it_and_says_so(monkeypatch):
+    """The engine's half of criterion 14: a KeyboardInterrupt during the wait
+    prints one line and waits again; the installer is never interrupted. The
+    event line brackets the run for the launcher's half."""
+    said: list[str] = []
+    events: list[bool] = []
+    started = fake_popen(monkeypatch, exit_code=0, interrupts=1)
+
+    code = ollama_setup.run_installer(["x.exe", "/VERYSILENT"], on_line=said.append, on_event=events.append)
+
+    assert code == 0
+    assert started[0].waits == 2, "waited again after the interrupt"
+    assert events == [True, False]
+    assert len(said) == 1 and "installer" in said[0].lower() and "wait" in said[0].lower()
+
+
+def test_the_event_line_is_printed_false_even_when_the_installer_fails(monkeypatch):
+    events: list[bool] = []
+    fake_popen(monkeypatch, exit_code=7)
+
+    assert ollama_setup.run_installer(["x.exe"], on_event=events.append) == 7
+    assert events == [True, False]
+
+
+# --- the version poll (#8) ----------------------------------------------------------
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def test_the_version_is_polled_and_a_late_answer_is_recorded(serving):
+    answers = iter([refused, refused, None])
+
+    def late(request):
+        turn = next(answers)
+        if turn is not None:
+            return turn(request)
+        return httpx2.Response(200, json={"version": "0.34.3"})
+
+    serving(Daemon(answer=late))
+    clock = Clock()
+    provider = ollama.OllamaProvider()
+
+    found = ollama_setup.wait_for_version(provider, deadline=120.0, clock=clock, sleep=clock.sleep)
+
+    assert found == "0.34.3"
+    assert len(clock.slept) == 2, "slept between the two refusals and the answer"
+
+
+def test_a_daemon_that_never_answers_reads_installed_not_answering_yet_not_failure(serving, tmp_path, fenced):
+    serving(Daemon(answer=refused))
+    clock = Clock()
+    provider = ollama.OllamaProvider()
+    marker = a_marker(tmp_path)
+    ollama_setup.write_marker(marker)
+
+    found = ollama_setup.wait_for_version(provider, deadline=120.0, clock=clock, sleep=clock.sleep)
+
+    assert found == ""
+    assert clock.now >= 120.0
+    sentence = ollama_setup.not_answering_yet_sentence()
+    assert "not answering yet" in sentence and "Check again" in sentence
+    assert "fail" not in sentence.lower()
+    assert ollama_setup.read_marker() == marker, "the marker stands: the pull is offered by hand later"
+
+
+# --- the pull (#11, #17) --------------------------------------------------------------
+
+
+def pulling(monkeypatch, *lines, status=200):
+    """A daemon whose POST /api/pull streams these NDJSON lines."""
+    asked: list[tuple[str, str, bytes]] = []
+
+    def handler(request):
+        asked.append((request.method, request.url.path, request.content))
+        if request.url.path == "/api/pull":
+            body = "".join(json.dumps(line) + "\n" for line in lines).encode()
+            return httpx2.Response(status, content=body)
+        return httpx2.Response(404, json={})
+
+    def factory(*, base_url, timeout):
+        return httpx2.Client(base_url=base_url, timeout=timeout, transport=httpx2.MockTransport(handler))
+
+    monkeypatch.setattr(ollama, "default_client_factory", factory)
+    return asked
+
+
+def test_a_pull_with_an_error_line_after_200_is_reported_failed_with_ollama_s_words(monkeypatch):
+    asked = pulling(monkeypatch, {"status": "pulling manifest"}, {"error": "pull model manifest: file does not exist"})
+
+    with pytest.raises(ollama_setup.PullError) as failed:
+        ollama_setup.pull(ollama.OllamaProvider(), "qwen3.5:4b")
+
+    assert "file does not exist" in str(failed.value)
+    assert [(m, p) for m, p, _ in asked] == [("POST", "/api/pull")]
+    assert json.loads(asked[0][2]) == {"model": "qwen3.5:4b", "stream": True}
+
+
+def test_a_pull_whose_stream_ends_without_success_is_failed(monkeypatch):
+    pulling(monkeypatch, {"status": "pulling manifest"}, {"status": "pulling abc", "total": 10, "completed": 5})
+
+    with pytest.raises(ollama_setup.PullError) as failed:
+        ollama_setup.pull(ollama.OllamaProvider(), "qwen3.5:4b")
+
+    assert "success" in str(failed.value)
+
+
+def test_a_pull_that_ends_in_success_passes_and_reports_progress(monkeypatch):
+    pulling(monkeypatch, {"status": "pulling manifest"},
+            {"status": "pulling abc", "digest": "sha256:abc", "total": 100, "completed": 40},
+            {"status": "pulling abc", "digest": "sha256:abc", "total": 100, "completed": 100},
+            {"status": "verifying sha256 digest"}, {"status": "success"})
+    seen: list[tuple[str, int, int]] = []
+
+    ollama_setup.pull(ollama.OllamaProvider(), "qwen3.5:4b", on_progress=lambda name, done, total: seen.append((name, done, total)))
+
+    assert seen == [("qwen3.5:4b", 40, 100), ("qwen3.5:4b", 100, 100)]
+
+
+def test_a_pull_the_daemon_refuses_with_a_status_is_failed_and_a_dead_daemon_names_a_proxy(monkeypatch, fenced):
+    pulling(monkeypatch, {"error": "nope"}, status=500)
+    with pytest.raises(ollama_setup.PullError):
+        ollama_setup.pull(ollama.OllamaProvider(), "qwen3.5:4b")
+
+    def factory(*, base_url, timeout):
+        return httpx2.Client(base_url=base_url, timeout=timeout, transport=httpx2.MockTransport(refused))
+
+    monkeypatch.setattr(ollama, "default_client_factory", factory)
+    with pytest.raises(ollama_setup.PullError) as plain:
+        ollama_setup.pull(ollama.OllamaProvider(), "qwen3.5:4b")
+    assert "proxy" not in str(plain.value)
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+    with pytest.raises(ollama_setup.PullError) as behind:
+        ollama_setup.pull(ollama.OllamaProvider(), "qwen3.5:4b")
+    assert str(behind.value).endswith(credentials.proxy_note())
+    assert "proxy.corp:3128" in str(behind.value)
+
+
+# --- the model offer and its unit (#9) -----------------------------------------------
+
+
+def test_gemma_is_listed_at_the_threshold_not_below_and_never_on_apple_silicon():
+    """22 GiB = 23,622,320,128 bytes, compared in bytes against the reported
+    total. Robert's nominal 16 GB card reports 17,179,344,896 bytes (measured
+    with torch on 2026-09-20): the only measured case, and it is not listed."""
+
+    def listed(cuda, apple=False):
+        return [c["value"] for c in ollama_setup.choices(cuda, apple)]
+
+    assert listed(23_622_320_128) == ["qwen3.5:4b", "gemma4:12b"]
+    assert listed(23_622_320_127) == ["qwen3.5:4b"]
+    assert listed(17_179_344_896) == ["qwen3.5:4b"]
+    assert listed(None) == ["qwen3.5:4b"]
+    assert listed(100 * 2**30, apple=True) == ["qwen3.5:4b"], "never on Apple Silicon until a Mac has measured it"
+    assert ollama_setup.GEMMA_THRESHOLD_BYTES == 23_622_320_128
+
+
+def test_every_choice_names_its_bytes_its_unit_and_the_estimate():
+    for choice in ollama_setup.choices(30 * 2**30, False):
+        assert f"{ollama_setup.MODEL_BYTES[choice['value']]:,} bytes" in choice["note"]
+        assert "GB" in choice["note"] and "10^9" in choice["note"], "the unit is named"
+    gemma = ollama_setup.choices(30 * 2**30, False)[1]
+    assert "estimate" in gemma["note"] and "23,622,320,128" in gemma["note"]
+    assert ollama_setup.choices(None, False)[0]["value"] == ollama_setup.DEFAULT_MODEL == "qwen3.5:4b"
+
+
+def test_the_memory_read_is_none_without_a_card(monkeypatch):
+    """`accel.memory()` is the number the threshold was modelled on. It imports
+    torch, which is why the plan asks for it only when the offer is built."""
+    monkeypatch.setattr(accel, "memory", REAL_MEMORY)
+    monkeypatch.setattr(accel, "cuda_available", lambda: False)
+    assert accel.memory() is None
+
+
+# --- the pin's owner (#15) ---------------------------------------------------------
+
+
+class ReleaseApi:
+    """GitHub's answer about one tag, built from the pin, with knobs to
+    change one thing at a time."""
+
+    def __init__(self, pin, *, digest_of=None, size_of=None, head_status=200, api_status=200):
+        self.pin = pin
+        self.digest_of = digest_of or {}
+        self.size_of = size_of or {}
+        self.head_status = head_status
+        self.api_status = api_status
+        self.asked: list[tuple[str, str]] = []
+
+    def __call__(self, request):
+        self.asked.append((request.method, str(request.url)))
+        url = str(request.url)
+        tag = self.pin["tag"]
+        artifacts = self.pin["artifacts"].values()
+        if url.endswith(f"/releases/tags/{tag}"):
+            assets = [{"name": a["name"], "size": self.size_of.get(a["name"], a["bytes"]),
+                       "digest": "sha256:" + self.digest_of.get(a["name"], a["sha256"]),
+                       "browser_download_url": a["url"]} for a in artifacts]
+            assets.append({"name": "sha256sum.txt", "size": 1472, "digest": "sha256:" + "a" * 64,
+                           "browser_download_url": f"https://github.com/ollama/ollama/releases/download/{tag}/sha256sum.txt"})
+            return httpx2.Response(self.api_status, json={"tag_name": tag, "assets": assets})
+        if url.endswith("/sha256sum.txt"):
+            lines = "".join(f"{self.digest_of.get(a['name'], a['sha256'])}  ./{a['name']}\n" for a in artifacts)
+            return httpx2.Response(200, text=lines)
+        if request.method == "HEAD":
+            for a in artifacts:
+                if url == a["url"]:
+                    return httpx2.Response(self.head_status, headers={"Content-Length": str(self.size_of.get(a["name"], a["bytes"]))})
+        return httpx2.Response(404)
+
+
+def pin_client(api):
+    return httpx2.Client(transport=httpx2.MockTransport(api), follow_redirects=True)
+
+
+def test_check_pin_passes_on_metadata_that_agrees_and_asks_for_no_installer():
+    pin = ollama_setup.release()
+    api = ReleaseApi(pin)
+
+    problems = ollama_setup.check_pin(pin, client=pin_client(api))
+
+    assert problems == []
+    assert [m for m, _ in api.asked if m == "GET"] == ["GET", "GET"], "the tag's metadata and sha256sum.txt, nothing else"
+    assert all(u.endswith(f"/releases/tags/{pin['tag']}") or u.endswith("sha256sum.txt") for m, u in api.asked if m == "GET")
+    assert not any("releases/latest" in u for _, u in api.asked)
+    assert [m for m, _ in api.asked if m == "HEAD"] == ["HEAD"] * 3
+
+
+def test_check_pin_turns_red_on_a_changed_digest_size_or_missing_url():
+    pin = ollama_setup.release()
+    sha = pin["artifacts"]["win32"]["sha256"]
+    wrong = sha[:-1] + ("0" if sha[-1] != "0" else "1")
+
+    assert any("digest" in p for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, digest_of={"OllamaSetup.exe": wrong}))))
+    assert any("bytes" in p for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, size_of={"Ollama.dmg": 1}))))
+    assert any("HEAD" in p for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, head_status=404))))
+    assert any("api" in p.lower() for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, api_status=404))))
+
+
+def test_check_pin_names_both_digests_in_full():
+    """The CI log is what a person reads when the pin goes red (criterion 15);
+    a digest changed in its last hex digit must not print as two equal prefixes."""
+    pin = ollama_setup.release()
+    sha = pin["artifacts"]["win32"]["sha256"]
+    wrong = sha[:-1] + ("0" if sha[-1] != "0" else "1")
+
+    problems = ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, digest_of={"OllamaSetup.exe": wrong})))
+    api_line = next(p for p in problems if "API's digest" in p)
+
+    assert wrong in api_line and sha in api_line
+
+
+def test_check_pin_uses_the_token_it_is_given_and_never_prints_it(capsys):
+    pin = ollama_setup.release()
+    api = ReleaseApi(pin)
+    seen: list[str] = []
+
+    def watching(request):
+        seen.append(request.headers.get("Authorization", ""))
+        return api(request)
+
+    problems = ollama_setup.check_pin(pin, client=httpx2.Client(transport=httpx2.MockTransport(watching)), token="ghp_not_a_real_token")
+
+    assert problems == []
+    assert seen[0] == "Bearer ghp_not_a_real_token"
+    assert "ghp_not_a_real_token" not in capsys.readouterr().out
+
+
+def test_the_command_line_check_exits_one_on_a_mutated_pin(tmp_path, monkeypatch, capsys):
+    """`python -m scribe.ollama_setup --check-pin --release <file>`, the CI step,
+    on a copy whose one hex digit was changed."""
+    pin = ollama_setup.release()
+    api = ReleaseApi(pin)
+    monkeypatch.setattr(ollama_setup, "pin_client", lambda: pin_client(api))
+    text = ollama_setup.RELEASE_PATH.read_text(encoding="utf-8")
+    sha = pin["artifacts"]["darwin"]["sha256"]
+    mutated = tmp_path / "ollama_release.json"
+    mutated.write_text(text.replace(sha, sha[:-1] + ("0" if sha[-1] != "0" else "1")), encoding="utf-8")
+
+    assert ollama_setup.main(["--check-pin"]) == 0
+    assert ollama_setup.main(["--check-pin", "--release", str(mutated)]) == 1
+    assert "Ollama.dmg" in capsys.readouterr().out

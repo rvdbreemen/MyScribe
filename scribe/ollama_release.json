@@ -1,0 +1,64 @@
+{
+  "_comment": "The one Ollama release MyScribe offers to install when none is on the machine (ADR-017, TASK-089.18). Under scribe/ because the payload ships scribe/ and not packaging/ (packaging/build_payload.py APP_PATHS). Every artifact here is fetched from this exact URL and checked against these exact bytes and this exact sha256 before anything runs; a 404 or a mismatch ends on the vendor's download page, never on another URL. Nothing here is a fallback. The owner of this file is the release step in docs/RELEASING.md, and `python -m scribe.ollama_setup --check-pin` (run by ci.yml) compares it with the release's own metadata without downloading an installer.",
+
+  "tag": "v0.34.3",
+  "published": "2026-09-19",
+  "read": "2026-09-23",
+  "sources": [
+    "GitHub API, repos/ollama/ollama/releases/tags/v0.34.3 (never the latest endpoint): the size and digest field of each asset, read with the GitHub command-line client on 2026-09-23. v0.34.3 was the latest release that day, not a prerelease and not a draft; ADR-017's v0.34.2 figures (2026-09-20) were re-read the same day and still match that older tag word for word.",
+    "sha256sum.txt of the same release (1,472 bytes, sha256 141291a7339affb0b6ad0f1c0f8c996b6678d7542c4ef429063f7eb495911665), fetched on 2026-09-23: every digest below appears in it and agrees with the API's digest field. Two sources, and they agree.",
+    "The installers themselves were not downloaded and not run for this file: the machine it was written on has Ollama 0.34.2 running and is not the absent case."
+  ],
+
+  "artifacts": {
+    "win32": {
+      "name": "OllamaSetup.exe",
+      "url": "https://github.com/ollama/ollama/releases/download/v0.34.3/OllamaSetup.exe",
+      "bytes": 1570198936,
+      "sha256": "fe1cce219b07ba13982a9419bfa3697c911bf77667ee636c967baed1b06ee3a0",
+      "args": ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+      "signer_subject": "O=Ollama Inc.",
+      "install_dir": "%LOCALAPPDATA%\\Programs\\Ollama",
+      "notes": [
+        "The flags are install.ps1:271 of this release's own install.ps1 (sha256 2960b27506320691d983429d905f144898c59cf8c9390c8622af7a0bf313c30d, 22,627 bytes), re-read on 2026-09-23; the served copy at ollama.com/install.ps1 had that same sha256 that day. docs.ollama.com/windows (read 2026-09-23) documents no silent flags, so the flags rest on that script alone.",
+        "The signer rule is install.ps1:84-87 of the same script: the subject must carry O=Ollama Inc., anchored so that O=Not Ollama Inc. does not pass. UNVERIFIED: the certificate on the pinned installer has not been read by anybody here, because reading it means downloading the 1.57 GB installer. If it reads differently the check fails safe and the install ends on the vendor page.",
+        "The install folder is install.ps1:118 and docs.ollama.com/windows (read 2026-09-23: 'installs in your account without requiring Administrator rights', 'at least 4GB of space for the binary install'). The same page says the installer keeps Ollama up to date afterwards, and docs.ollama.com/faq (same day) says Ollama on macOS and Windows downloads its updates automatically."
+      ]
+    },
+    "darwin": {
+      "name": "Ollama.dmg",
+      "url": "https://github.com/ollama/ollama/releases/download/v0.34.3/Ollama.dmg",
+      "bytes": 197972871,
+      "sha256": "7bde8d83cc7c2ac54e3dc51f618f4357e3b976f29f01f3efee896a301576b44f",
+      "install_dir": "/Applications/Ollama.app",
+      "notes": [
+        "Guided, and unverified on a real Mac (ADR-017, Exceptions): MyScribe downloads and checks the image, opens it with `open`, and waits with Check again while the person drags Ollama into Applications and starts it. No marker is written, because no installer process finishes here for MyScribe to see.",
+        "The folder is install.sh:66-83 as read on 2026-09-20; nobody here has a Mac."
+      ]
+    },
+    "linux": {
+      "name": "install.sh",
+      "url": "https://github.com/ollama/ollama/releases/download/v0.34.3/install.sh",
+      "bytes": 15902,
+      "sha256": "25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f",
+      "install_dir": "/usr/local/bin/ollama, /usr/share/ollama",
+      "notes": [
+        "MyScribe runs nothing on Linux: the script needs root or sudo (install.sh:110-118), removes an existing library directory (install.sh:164-167) and can install graphics drivers (install.sh:353, :381), all as read on 2026-09-20 in the copy whose sha256 this entry pins; the release asset and the served copy at ollama.com/install.sh were byte-identical on 2026-09-23. A yes shows four commands - download it from this URL, check its sha256 against this figure, read it, run it - and the person runs them and presses Check again.",
+        "UNVERIFIED: the tarball the script then downloads is Ollama's choice on the day it runs and is not pinned here; docs.ollama.com/linux (read 2026-09-23) says the script does not install GPU drivers, while the script read on 2026-09-20 has driver-install branches - a conflict reported, not resolved. Nobody here has run this path (TASK-089.18 criterion 16, Robert's WSL)."
+      ]
+    }
+  },
+
+  "models": {
+    "qwen3.5:4b": {
+      "bytes": 3389983735,
+      "note": "The default. The size is what the Ollama on the reference machine reported for it on /api/tags on 2026-09-20 and again on 2026-09-23 (read only). It is the model that provably answered here on 2026-09-02, and it fits beside whatever else holds video memory (scribe/llm/ollama.py, default_model)."
+    },
+    "gemma4:12b": {
+      "bytes": 7556508396,
+      "note": "Listed only on a CUDA card reporting at least 23,622,320,128 bytes (22 GiB) and never on Apple Silicon: an estimate modelled on one measured card (scribe/ollama_setup.py, GEMMA_THRESHOLD_BYTES). The size is the reference machine's /api/tags figure, read the same two days."
+    }
+  },
+
+  "vendor_page": "https://ollama.com/download"
+}

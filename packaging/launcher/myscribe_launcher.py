@@ -1299,6 +1299,41 @@ def progress_line(line: str) -> dict | None:
     return event
 
 
+def installer_line(line: str) -> bool | None:
+    """The engine's line saying a third-party installer started (True) or
+    ended (False), or None for anything else.
+
+    `scribe.setup` prints `{"event": "installer", "running": true}` before it
+    hands Ollama's installer to the operating system and the same with false
+    after it has returned, on a pipe. Between the two the launcher refuses
+    Quit (ADR-017, M10): the tree kill Quit uses on the app, or even the
+    single terminate() it uses on the setup child, would leave a third-party
+    installer half-way through writing somebody's Program Files.
+    """
+    text = line.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        event = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(event, dict) or event.get("event") != "installer":
+        return None
+    running = event.get("running")
+    return running if isinstance(running, bool) else None
+
+
+INSTALLER_RUNNING = "Ollama's installer is running. Quit waits until it has finished."
+INSTALLER_DONE = "Ollama's installer has finished."
+QUIT_REFUSED = (
+    "Ollama's installer is still running, so MyScribe cannot quit yet: stopping a third-party "
+    "installer half-way is the one thing it must not do (ADR-017). Quit again once it has finished."
+)
+"""What Quit says while the installer runs. It promises nothing about what Quit
+does to an Ollama the installer has started: that is unmeasured (TASK-089.18,
+criterion 13), and until it is measured no sentence here says Quit is clean."""
+
+
 def progress_headline(event: dict) -> str:
     """What the headline says while a download runs: the repository by name,
     because "Saving your answers..." for a whole download is what this
@@ -1330,6 +1365,9 @@ class Launch:
         self.app: AppProcess | None = None
         self.setup_child: subprocess.Popen | None = None
         self.serving = False
+        # True between the engine's two installer event lines (`installer_line`):
+        # while it stands, Quit is refused with `QUIT_REFUSED` (ADR-017, M10).
+        self.installing = False
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -1455,6 +1493,9 @@ class Launch:
         TASK-089.18 measures what Quit may promise around a freshly installed
         Ollama; until it has, nothing here says Quit is clean.
         """
+        if self.installing:
+            self.report("status", QUIT_REFUSED)
+            return
         child = self.setup_child
         if child is None or child.poll() is not None:
             return
@@ -1464,7 +1505,15 @@ class Launch:
         except subprocess.TimeoutExpired:
             pass  # a child that will not go is left; killing its tree is the thing forbidden
 
+    def quit_refused(self) -> str:
+        """The sentence Quit shows instead of quitting, or "" when it may quit.
+        The window and the console door ask this before `stop`."""
+        return QUIT_REFUSED if self.installing else ""
+
     def stop(self) -> None:
+        if self.installing:
+            self.report("status", QUIT_REFUSED)
+            return
         self.stop_setup()
         if self.app is not None:
             self.app.stop()
@@ -1479,6 +1528,13 @@ class Launch:
         reopen: list[str] = []
 
         def on_line(line: str) -> None:
+            running = installer_line(line)
+            if running is not None:
+                # Read here and turned into a headline; the JSON is not a log
+                # line. Quit reads the flag (TASK-089.18, criterion 14).
+                self.installing = running
+                self.report("status", INSTALLER_RUNNING if running else INSTALLER_DONE)
+                return
             if progress_line(line) is not None:
                 self.report("progress", line)
                 return
@@ -1490,7 +1546,12 @@ class Launch:
                 reopen.extend(part.strip() for part in line[len(REOPEN_PREFIX):].split(",") if part.strip())
             self.report("busy", line)
 
-        code = self.watching(run_setup, self.layout, answers, on_line)
+        try:
+            code = self.watching(run_setup, self.layout, answers, on_line)
+        finally:
+            # A child that died between the two event lines must not leave
+            # Quit refused for good.
+            self.installing = False
         return code, reopen
 
 
@@ -2318,8 +2379,15 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
 
         `launch.stop()` terminates the setup child and tree-kills the app; the
         two are deliberately different, so that no tree kill can pass over an
-        Ollama a third-party installer has just started (ADR-017's M10).
+        Ollama a third-party installer has just started (ADR-017's M10). While
+        that installer runs, Quit is refused with a sentence and the window
+        stays (TASK-089.18, criterion 14).
         """
+        why = launch.quit_refused()
+        if why:
+            status.set(why)
+            append(why)
+            return
         status.set("Stopping MyScribe...")
         root.update_idletasks()
         launch.stop()

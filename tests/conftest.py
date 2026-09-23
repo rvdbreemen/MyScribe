@@ -202,3 +202,21 @@ def library_db_unstubbed(monkeypatch):
     monkeypatch.setattr(credentials, "library_db", _LIBRARY_DB)
     assert credentials.library_db is _LIBRARY_DB, "the stub is still in place; this fixture proved nothing"
     return _LIBRARY_DB
+
+
+@pytest.fixture(autouse=True)
+def _no_card_from_this_machine(monkeypatch):
+    """No test is answered by the graphics card on the developer's machine.
+
+    `accel.memory()` imports torch and opens a CUDA context on device 0 to read
+    the card's total memory, for the model offer a sitting builds when no
+    Ollama is on the machine (TASK-089.18) - and the fixture above makes every
+    machine such a machine. Without this, every plan in the suite would pay
+    for torch in its process, which pytest.ini's default run is written not to
+    do. None reads as "no card": the default model is offered and nothing
+    bigger. A test about the threshold hands `ollama_setup.choices()` its bytes
+    itself; the one about the reader puts the shipped function back.
+    """
+    from scribe import accel
+
+    monkeypatch.setattr(accel, "memory", lambda: None)
