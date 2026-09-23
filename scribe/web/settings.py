@@ -26,8 +26,9 @@ the web process (ADR-001):
   deletes the row and the default root returns.
 * **The watch folders.** Folders that ingest by themselves: a file dropped
   in one becomes a recording and a queued job without anybody opening the
-  dialog. The rows are `watch_folder`, added and switched off here and read
-  by the watcher thread the lifespan starts; each carries its own transcribe
+  dialog. The rows are `watch_folder`, added here and by the first-run setup
+  through the same `add_watched`, switched off here, and read by the watcher
+  thread the lifespan starts; each carries its own transcribe
   options, because nobody is at the dialog when the file lands. A path is
   checked against `fsbrowse`'s roots, against being inside `DATA_DIR` (the
   app's own scratch is full of things that look like media), and against
@@ -77,7 +78,7 @@ from scribe import autostart, credentials, db, doctor, fsbrowse, glossary, jobs,
 from scribe.exports.options import PRESETS
 from scribe.ingest import watching
 from scribe.llm import base as llm_base
-from scribe.options import parse_options
+from scribe.options import TranscribeOptions, parse_options
 from scribe.stages import correct, transcribe
 from scribe.web import ai_ui, exports_ui, library, render, transcribe_dialog
 from scribe.web.transcribe_dialog import human_size
@@ -270,6 +271,9 @@ def models_context() -> dict:
 
 
 def storage_context() -> dict:
+    # `library` in this module is the page module scribe.web.library.
+    from scribe.library import CHANGE_LIBRARY
+
     usage = store_usage(paths.MEDIA_DIR)
     return {
         "storage": {
@@ -277,6 +281,9 @@ def storage_context() -> dict:
             "size": human_size(usage["bytes"]),
             "free_size": human_size(usage["free"]),
             "total_size": human_size(usage["total"]),
+            # TASK-089.19, criterion 10: the store's path is above; how to
+            # point MyScribe at another library is this one line.
+            "change_library": CHANGE_LIBRARY,
         }
     }
 
@@ -681,6 +688,25 @@ def parse_watch_path(conn: sqlite3.Connection, raw: str | None) -> Path:
     return path
 
 
+def add_watched(conn: sqlite3.Connection, raw: str | None, options: TranscribeOptions) -> Path:
+    """Watch a folder after the four refusals, or a 4xx saying which one.
+
+    The one function behind both doors that add a folder - this form and the
+    first-run setup engine (`scribe.setup`, TASK-089.20) - so the refusals and
+    their sentences exist once (ADR-015: an answer given at the start is the
+    same answer Settings takes). The fourth refusal is not in
+    `parse_watch_path`: the column is UNIQUE, so a folder already registered
+    is `watching.add_folder`'s IntegrityError, said here as the 409 the route
+    has always answered with.
+    """
+    path = parse_watch_path(conn, raw)
+    try:
+        watching.add_folder(conn, path, options)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"{path} is already being watched") from None
+    return path
+
+
 def _get_watch_folder(conn: sqlite3.Connection, folder_id: int) -> dict:
     for folder in watching.folders(conn, enabled_only=False):
         if folder["id"] == folder_id:
@@ -699,13 +725,8 @@ async def add_watch_folder(request: Request) -> Response:
     """
     conn = request.app.state.conn
     fields = transcribe_dialog._fields(await request.form())
-    path = parse_watch_path(conn, fields.get(FIELD_WATCH_PATH))
     options = parse_options(fields)
-
-    try:
-        watching.add_folder(conn, path, options)
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail=f"{path} is already being watched") from None
+    add_watched(conn, fields.get(FIELD_WATCH_PATH), options)
     return _watch_answer(request, conn, flash=FLASH_WATCH_ADDED)
 
 

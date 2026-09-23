@@ -25,13 +25,14 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
 import httpx2
 import pytest
 
-from scribe import accel, credentials, db, models, ollama_setup, paths, setup
+from scribe import accel, autostart, credentials, db, models, ollama_setup, paths, setup
 from scribe.llm import base, ollama
 from scribe.web import ai_ui, transcribe_dialog
 
@@ -120,7 +121,7 @@ def test_a_plan_says_what_was_found_what_ollama_is_and_what_is_open(library, no_
     assert set(document) == {"contract", "found", "ollama", "downloads", "questions"}
 
     kinds = {row["kind"] for row in document["found"]}
-    assert kinds <= {"credential", "proxy"}, "one table, and a discriminator that says which"
+    assert kinds <= {"credential", "proxy", "watch_folder", "login"}, "one table, and a discriminator that says which"
     for row in document["found"]:
         assert set(row) >= {"kind", "name", "found", "source", "also_in", "conflict"}
     assert [row["name"] for row in document["found"] if row["kind"] == "credential"] == [
@@ -144,7 +145,7 @@ def test_a_plan_says_what_was_found_what_ollama_is_and_what_is_open(library, no_
             "shown_if", "if_skipped", "answer_later",
         }
         assert asked["text"] and asked["if_skipped"] and asked["answer_later"]
-        assert asked["kind"] in ("secret", "choice", "yes-no")
+        assert asked["kind"] in ("secret", "choice", "yes-no", "text")
 
 
 def test_a_plan_is_the_same_document_the_engine_hands_a_caller(library, no_weights, capsys):
@@ -1538,6 +1539,8 @@ LATER_ROUTES = {
     "llm_key_openai": ("POST", "/settings/llm/{provider}/key"),
     "llm_model_ollama": ("POST", "/settings/llm"),
     "default_tier": ("POST", "/settings"),
+    "watch_folder": ("POST", "/settings/watch"),
+    "start_at_login": ("POST", "/settings/autostart"),
 }
 """Per question, the Settings route that takes its answer later.
 
@@ -2160,3 +2163,533 @@ def test_the_critique_scenario_a_failed_download_then_the_users_own_install_stop
     assert question(document, "ollama_install") is None
     assert document["ollama"]["offer"] is None
     assert applied(monkeypatch, {"ollama_install": "yes"}) == 0
+# --- the watch folder (TASK-089.20) -----------------------------------------------------
+#
+# One more question, and the row it writes is the row Settings writes: through
+# `watching.add_folder`, after the four refusals the form applies and with the
+# form's own sentences. Nothing is ingested in the sitting; the watcher thread
+# the app starts takes the folder in, as it does for a row added in Settings.
+# The imports sit here rather than at the top so the block merges as one piece
+# beside the questions TASK-089.18 and TASK-089.22 add in the same file.
+
+import time
+from pathlib import Path
+
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+
+from scribe import fsbrowse
+from scribe.app import create_app
+from scribe.ingest import watching
+from scribe.options import TranscribeOptions
+from scribe.web import settings as settings_page
+
+HX = {"HX-Request": "true"}
+
+
+@pytest.fixture
+def roots_cover_tmp(tmp_path, monkeypatch):
+    """tmp_path under a browse root, the way tests/test_ingest_watching.py widens
+    them: on Linux and macOS the temp directory is outside the home directory,
+    and a folder outside the roots is refused before any other check gets its
+    turn. `roots_from_setting` reads the module attribute at call time, so the
+    default the library falls back to is this one."""
+    monkeypatch.setattr(fsbrowse, "ALLOWED_ROOTS", (*fsbrowse.ALLOWED_ROOTS, tmp_path))
+
+
+@pytest.fixture
+def inbox(tmp_path, roots_cover_tmp):
+    """A folder to watch: outside the data directory, inside the roots, and on
+    the same volume as the store so the watcher's hardlink works."""
+    path = tmp_path / "inbox"
+    path.mkdir()
+    return path
+
+
+def watch_rows(conn) -> list[tuple]:
+    """Every `watch_folder` row as the three columns `add_folder` writes."""
+    return [
+        tuple(row)
+        for row in conn.execute("SELECT path, enabled, options_json FROM watch_folder ORDER BY id")
+    ]
+
+
+def refusal_of(conn, raw: str) -> str:
+    """The sentence `parse_watch_path` itself raises for this input - the form's
+    own, asked for rather than copied into this file."""
+    with pytest.raises(HTTPException) as raised:
+        settings_page.parse_watch_path(conn, raw)
+    return raised.value.detail
+
+
+def form_of(options: TranscribeOptions) -> dict[str, str]:
+    """The option fields as `_settings_watch.html` posts them: the language
+    select, the tier radio and the diarize checkbox behind its hidden 0."""
+    return {
+        "language": options.language or "",
+        "tier": options.tier,
+        "diarize": "1" if options.diarize else "0",
+    }
+
+
+def apply_watch(conn, raw: str) -> dict:
+    return setup.apply(setup.Answers(watch_folder=raw), conn)
+
+
+def test_the_watch_folder_question_is_open_with_skip_as_its_default(library, no_weights):
+    """Spec row 12: skippable, default skip, and its answer_later names the
+    Settings card that writes the same row."""
+    asked = question(setup.plan(library), "watch_folder")
+
+    assert asked is not None
+    assert asked["kind"] == "text" and asked["choices"] == [], "a typed path, not a pick"
+    assert asked["default"] is None, "skip is the default"
+    assert asked["if_skipped"]
+    assert asked["answer_later"] == "Settings > Watch folders"
+    assert LATER_ROUTES["watch_folder"] == ("POST", "/settings/watch"), "and the route exists"
+
+
+def test_a_skipped_watch_folder_writes_no_row_and_is_stamped_skipped(library, no_weights, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        json.dumps({"contract": setup.CONTRACT, "answers": {"watch_folder": None}})))
+
+    assert setup.main(["--apply-stdin"]) == 0
+
+    assert watch_rows(library) == []
+    assert stamp_document()["questions"]["watch_folder"] == "skipped"
+    assert "watch_folder" in ids(setup.plan(library)), "still open on this machine, for `--setup`"
+    assert "watch_folder" not in ids(setup.plan(library, unasked_only=True)), "and a start does not nag"
+
+
+def test_the_engine_writes_the_row_settings_writes_byte_for_byte(library, no_weights, inbox):
+    """Same input, same row: path, enabled and options_json compared as the
+    columns `add_folder` wrote them. The stored defaults are moved off the
+    model's own first (tier max, speakers off), so an engine that passed
+    `TranscribeOptions()` instead of `read_defaults` would show as a different
+    row rather than as the same one by luck."""
+    transcribe_dialog.save_tier(library, "max")
+    transcribe_dialog.save_diarize(library, False)
+
+    report = apply_watch(library, str(inbox))
+
+    assert report["wrote"] == ["watch_folder"] and report["reopen"] == [] and report["notes"] == []
+    (engine_row,) = watch_rows(library)
+    assert json.loads(engine_row[2]) == {**TranscribeOptions().model_dump(), "tier": "max", "diarize": False}
+    library.execute("DELETE FROM watch_folder")
+    library.commit()
+
+    posted = form_of(transcribe_dialog.read_defaults(library))
+    app = create_app(db_path=paths.DB_PATH, start_supervisor=False)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        resp = client.post("/settings/watch", data={"path": str(inbox), **posted}, headers=HX)
+    assert resp.status_code == 200, resp.text
+
+    (settings_row,) = watch_rows(library)
+    assert engine_row == settings_row
+
+
+@pytest.mark.parametrize("shape", ["missing", "a file", "relative"])
+def test_a_folder_that_is_not_an_existing_directory_is_refused_with_the_forms_sentence(
+        library, no_weights, inbox, shape):
+    """Refusal one, in the two sentences the form has for it. The note is the
+    form's sentence behind the question id, the way every note of `apply`
+    is written; nothing is written and the question comes back."""
+    a_file = inbox / "not-a-folder.mp3"
+    a_file.write_bytes(b"not a folder")
+    raw = {"missing": str(inbox / "nowhere"), "a file": str(a_file), "relative": "recordings/inbox"}[shape]
+
+    report = apply_watch(library, raw)
+
+    assert report["notes"] == [f"watch_folder: {refusal_of(library, raw)}"]
+    assert report["reopen"] == ["watch_folder"] and report["wrote"] == []
+    assert watch_rows(library) == []
+    assert stamp_document()["questions"]["watch_folder"] == "open"
+
+
+def test_a_folder_outside_the_browse_roots_is_refused_and_the_roots_are_not_widened(
+        library, no_weights, tmp_path):
+    """Refusal two, and criterion 4: the sentence says where to widen the roots,
+    and the installer does not do it by itself - the roots are the documented
+    boundary of what this app may read (spec section 8, open question 1)."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    ai_ui.setting_put(library, fsbrowse.SETTING_KEY, str(allowed))
+
+    report = apply_watch(library, str(elsewhere))
+
+    sentence = refusal_of(library, str(elsewhere))
+    assert "widen them under Settings" in sentence
+    assert report["notes"] == [f"watch_folder: {sentence}"]
+    assert report["reopen"] == ["watch_folder"] and report["wrote"] == []
+    assert watch_rows(library) == []
+    assert _rows(library)[fsbrowse.SETTING_KEY] == str(allowed), "the roots row is as it was"
+
+
+def test_a_folder_inside_the_data_directory_is_refused_with_the_forms_sentence(
+        library, no_weights, roots_cover_tmp):
+    """Refusal three: the app's own scratch is full of things that look like
+    media, and watching it would have the app ingesting its own files."""
+    inside = paths.DATA_DIR / "recordings"
+    inside.mkdir()
+
+    report = apply_watch(library, str(inside))
+
+    sentence = refusal_of(library, str(inside))
+    assert "own data directory" in sentence
+    assert report["notes"] == [f"watch_folder: {sentence}"]
+    assert report["reopen"] == ["watch_folder"] and report["wrote"] == []
+    assert watch_rows(library) == []
+
+
+def test_a_folder_already_watched_is_refused_with_the_routes_409_sentence(library, no_weights, inbox):
+    """Refusal four lives in the route and not in `parse_watch_path`: the UNIQUE
+    column's IntegrityError, turned into a 409. The engine's sentence is
+    compared with what the route really answers, not with a copy."""
+    watching.add_folder(library, inbox, TranscribeOptions())
+    app = create_app(db_path=paths.DB_PATH, start_supervisor=False)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        resp = client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+    assert resp.status_code == 409
+
+    report = apply_watch(library, str(inbox))
+
+    assert report["notes"] == [f"watch_folder: {resp.json()['detail']}"]
+    assert report["reopen"] == ["watch_folder"] and report["wrote"] == []
+    assert len(watch_rows(library)) == 1, "the row that was there, and no second one"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the default browse root is the profile's drive on Windows only")
+def test_on_windows_a_folder_on_a_second_drive_is_refused_and_says_where_to_widen(
+        library, no_weights, monkeypatch):
+    """The case that bites on the reference machine: recordings on D:, profile
+    on C:, default roots. The drive's root is an existing directory and the
+    refusal comes before any write, so nothing is created there."""
+    profile = os.path.normcase(Path.home().anchor)
+    others = [
+        drive for drive in os.listdrives()
+        if os.path.normcase(drive) != profile and Path(drive).is_dir()
+    ]
+    if not others:
+        pytest.skip("this machine has one drive")
+    second = others[0]
+    monkeypatch.setattr(fsbrowse, "ALLOWED_ROOTS", fsbrowse.default_roots())
+
+    report = apply_watch(library, second)
+
+    sentence = refusal_of(library, second)
+    assert "widen them under Settings" in sentence
+    assert report["notes"] == [f"watch_folder: {sentence}"]
+    assert report["reopen"] == ["watch_folder"] and report["wrote"] == []
+    assert watch_rows(library) == []
+    assert fsbrowse.SETTING_KEY not in _rows(library), "and no roots row was written to make it fit"
+
+
+def test_a_refused_folder_reopens_the_question_at_the_next_plan(
+        library, no_weights, inbox, monkeypatch, capsys):
+    """Through the door a front-end uses: the sentence reaches stdout with the
+    id, the stamp says open, and a start puts the question again."""
+    raw = str(inbox / "nowhere")
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        json.dumps({"contract": setup.CONTRACT, "answers": {"watch_folder": raw}})))
+
+    assert setup.main(["--apply-stdin"]) == 0
+
+    printed = capsys.readouterr().out
+    assert refusal_of(library, raw) in printed and "still open: watch_folder" in printed
+    assert stamp_document()["questions"]["watch_folder"] == "open"
+    assert "watch_folder" in ids(setup.plan(library, unasked_only=True)), "open was never put"
+    assert watch_rows(library) == []
+
+
+def test_a_library_with_a_watched_folder_is_not_asked_and_shows_the_folder(library, no_weights, inbox):
+    """Criterion 5. Any row counts, a switched-off one included: somebody
+    chose that in Settings, and a re-run shows it rather than asking."""
+    folder_id = watching.add_folder(library, inbox, TranscribeOptions())
+
+    document = setup.plan(library)
+
+    assert question(document, "watch_folder") is None
+    (row,) = [r for r in document["found"] if r["kind"] == "watch_folder"]
+    assert row["found"] is True and str(inbox) in row["source"]
+    assert set(row) >= {"kind", "name", "label", "found", "source", "also_in", "conflict", "note"}
+
+    watching.set_enabled(library, folder_id, False)
+
+    document = setup.plan(library)
+    assert question(document, "watch_folder") is None
+    (row,) = [r for r in document["found"] if r["kind"] == "watch_folder"]
+    assert str(inbox) in row["source"] and "off" in row["source"]
+
+
+def test_render_prints_the_watched_folders(library, no_weights, inbox):
+    watching.add_folder(library, inbox, TranscribeOptions())
+
+    printed = setup.render(setup.plan(library))
+
+    found, still_open = printed.split("Still open")
+    assert "Watch folders" in found and str(inbox) in found
+    assert "watch_folder" not in still_open
+
+
+def test_nothing_is_ingested_in_the_sitting_and_the_watcher_takes_the_file_in_at_start(
+        library, no_weights, inbox):
+    """Criterion 6, with the real lifespan: the real Watcher thread, the real
+    watchdog observer and the startup reconcile, on this test's data directory.
+
+    A file that is already in the folder when the question is answered is the
+    strongest form of "nothing is ingested in the sitting": `apply` writes the
+    row and leaves the file where it is. The file is stamped 60 s old, as
+    tests/test_ingest_watching.py's `drop` does, because reconcile takes in
+    only what has held still for `QUIESCE_SECONDS`.
+
+    In-process rather than `python -m scribe` in a child: `--no-supervisor`
+    switches the watcher off with it (`create_app`: a second observer over the
+    same folders would be a second ingest), and without the flag the
+    supervisor hands the queued job to a runner child that loads a model
+    (ADR-001) - on a scratch directory with no weights, on a machine short of
+    memory. `start_watcher=True, start_supervisor=False` is the combination
+    the lifespan offers and the CLI does not.
+    """
+    recording = inbox / "meeting.mp3"
+    body = b"a recording of something"
+    recording.write_bytes(body)
+    old = time.time() - 60
+    os.utime(recording, (old, old))
+
+    apply_watch(library, str(inbox))
+
+    assert library.execute("SELECT count(*) FROM media").fetchone()[0] == 0, "the sitting ingests nothing"
+    assert library.execute("SELECT count(*) FROM job").fetchone()[0] == 0
+
+    app = create_app(db_path=paths.DB_PATH, start_supervisor=False, start_watcher=True)
+    with TestClient(app, base_url="http://127.0.0.1"):
+        assert app.state.watcher is not None and app.state.supervisor is None
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if library.execute("SELECT count(*) FROM media").fetchone()[0]:
+                break
+            time.sleep(0.25)
+
+    (media_row,) = library.execute("SELECT id, orig_name, size_bytes FROM media").fetchall()
+    assert media_row["orig_name"] == "meeting.mp3" and media_row["size_bytes"] == len(body)
+    (job,) = library.execute("SELECT type, status, media_id FROM job").fetchall()
+    assert (job["type"], job["status"], job["media_id"]) == ("transcribe", "queued", media_row["id"]), (
+        "queued, and never claimed: no supervisor runs here")
+    assert recording.read_bytes() == body, "the user's file is left as it was"
+# --- start MyScribe at login (TASK-089.22) --------------------------------------------
+#
+# A thin layer over `scribe.autostart` (TASK-089.21): the engine asks only while
+# the OS holds no entry and there is something safe to register, and a Yes makes
+# the one call the Settings switch makes. Every test in this file runs against
+# the recording mechanism below - autouse, because `plan()` reads the entry, so
+# without it every test above would ask this developer's own Run key, and an
+# `apply()` with a Yes could write it. What the mechanisms themselves do is
+# tests/test_autostart.py's subject.
+
+
+class _RecordingMechanism:
+    """One login entry in memory, and every method the engine called on it. A
+    write that never happened is what criterion 5 has to prove, and a log is
+    the only thing that can."""
+
+    where = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MyScribe"
+
+    def __init__(self):
+        self.value: str | None = None
+        self.calls: list[str] = []
+
+    def render(self, command) -> str:
+        return subprocess.list2cmdline([str(part) for part in command])
+
+    def read(self) -> str | None:
+        self.calls.append("read")
+        return self.value
+
+    def write(self, command) -> None:
+        self.calls.append("write")
+        self.value = self.render(command)
+
+    def remove(self) -> None:
+        self.calls.append("remove")
+        self.value = None
+
+
+AT_LOGIN = (r"C:\Program Files\MyScribe\MyScribe.exe", "--at-login", "--no-browser")
+
+
+@pytest.fixture(autouse=True)
+def login_entry(monkeypatch):
+    """The OS every sitting in this file registers with: no entry, and one
+    fixed command to register."""
+    mechanism = _RecordingMechanism()
+    monkeypatch.setattr(autostart, "default_mechanism", lambda *args, **kwargs: mechanism)
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: AT_LOGIN)
+    return mechanism
+
+
+def test_the_login_question_is_open_with_default_no_and_says_what_skipping_costs(
+        library, no_weights, capsys):
+    """AC1. Default No, because starting a program at every login is something
+    a person opts into (R3) - and the if_skipped sentence has to be true:
+    watch folders and feeds only do work while the app runs."""
+    asked = question(setup.plan(library), "start_at_login")
+
+    assert asked is not None, "open on a machine whose OS holds no entry"
+    assert asked["kind"] == "yes-no"
+    assert [choice["value"] for choice in asked["choices"]] == ["yes", "no"]
+    assert asked["default"] == "no"
+    assert asked["current"] == ""
+    assert "watch folders" in asked["if_skipped"].lower() and "feeds" in asked["if_skipped"].lower()
+    assert "while MyScribe runs" in asked["if_skipped"]
+    assert asked["answer_later"] == "Settings > Start at login"
+
+    assert setup.main(["--plan"]) == 0
+    assert question(json.loads(capsys.readouterr().out), "start_at_login") == asked
+
+
+def test_enter_at_the_console_answers_no_to_the_login_question(library, no_weights, monkeypatch):
+    """AC1 at the console: Enter is No. The same row every other door renders,
+    read as a document and mapped to an answer that writes nothing."""
+    asked = question(setup.plan(library), "start_at_login")
+    assert asked is not None
+    monkeypatch.setattr(setup.getpass, "getpass", lambda prompt="": pytest.fail("no secret was asked"))
+
+    given = setup.ask([asked], out=io.StringIO(), read=lambda: "")
+
+    assert given == {"start_at_login": "no"}
+    assert setup.from_document({"contract": setup.CONTRACT, "answers": given}).start_at_login is False
+
+
+def test_yes_calls_the_same_enable_the_settings_switch_calls_with_no_arguments(
+        library, no_weights, monkeypatch, login_entry):
+    """AC2. `set_autostart` (scribe/web/settings.py) calls `autostart.enable()`
+    with no arguments; so must the sitting, or the two doors could register
+    two different items. Proven twice: the spy sees the bare call, and what the
+    mechanism holds afterwards is byte for byte what `enable()` alone writes."""
+    real_enable = autostart.enable
+    seen: list[tuple] = []
+
+    def spy(*args, **kwargs):
+        seen.append((args, kwargs))
+        return real_enable(*args, **kwargs)
+
+    monkeypatch.setattr(autostart, "enable", spy)
+
+    report = setup.apply(setup.Answers(start_at_login=True), library)
+
+    assert seen == [((), {})], "the call the Settings switch makes, and no other"
+    by_the_sitting = login_entry.value
+    assert by_the_sitting is not None and "--at-login" in by_the_sitting
+    assert "start_at_login" in report["wrote"]
+    assert stamp_document()["questions"]["start_at_login"] == "answered"
+
+    login_entry.value = None
+    real_enable()
+    assert login_entry.value == by_the_sitting
+
+
+@pytest.mark.parametrize("given,state", [("no", "answered"), (None, "skipped")])
+def test_no_and_skip_register_nothing_and_neither_returns_at_the_next_start(
+        library, no_weights, monkeypatch, login_entry, given, state):
+    """AC3. No and a skip both leave the OS alone. They differ in the stamp -
+    No was answered, null was skipped (TASK-089.11) - and both count as put, so
+    a start does not ask again while `--setup` still lists the question."""
+    answers = setup.from_document({"contract": setup.CONTRACT, "answers": {"start_at_login": given}})
+    assert answers.start_at_login is (False if given == "no" else None)
+    assert ("start_at_login" in answers.skipped) is (given is None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        json.dumps({"contract": setup.CONTRACT, "answers": {"start_at_login": given}})))
+
+    assert setup.main(["--apply-stdin"]) == 0
+
+    assert "write" not in login_entry.calls and login_entry.value is None
+    assert stamp_document()["questions"]["start_at_login"] == state
+    assert "start_at_login" in ids(setup.plan(library)), "still open on this machine, and `--setup` lists it"
+    assert "start_at_login" not in ids(setup.plan(library, unasked_only=True)), "but a start does not put it again"
+
+
+def test_the_question_is_absent_while_the_os_holds_an_entry_and_the_found_row_says_so(
+        library, no_weights, login_entry):
+    """AC4. A re-run on a machine that already starts MyScribe at login shows
+    the entry - where it is and what it runs - instead of asking again. Off,
+    the row is still there and says so, and the question is open."""
+    login_entry.write(AT_LOGIN)
+
+    document = setup.plan(library)
+
+    assert question(document, "start_at_login") is None
+    row = next(r for r in document["found"] if r["kind"] == "login")
+    assert set(row) >= {"kind", "name", "label", "found", "source", "also_in", "conflict", "note"}
+    assert row["found"] is True and row["on"] is True
+    assert row["source"] == login_entry.where and row["where"] == login_entry.where
+    assert "--at-login" in row["command"]
+    assert login_entry.where in setup.render(document), "and a terminal is shown where"
+
+    login_entry.value = None
+    document = setup.plan(library)
+    row = next(r for r in document["found"] if r["kind"] == "login")
+    assert row["found"] is False and row["on"] is False
+    assert question(document, "start_at_login") is not None
+
+
+def test_no_question_where_nothing_is_known_to_start_or_the_os_will_not_answer(
+        library, no_weights, monkeypatch, login_entry):
+    """AC4's other half. A release whose launcher never said where it is has
+    nothing safe to register, so there is nothing to ask; and a registry that
+    will not answer costs this question, not the plan - every other question on
+    it is still worth asking."""
+    assert question(setup.plan(library), "start_at_login") is not None, "open while there is something to start"
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: None)
+
+    assert question(setup.plan(library), "start_at_login") is None
+    assert "write" not in login_entry.calls
+
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: AT_LOGIN)
+
+    def refuses():
+        raise OSError("the registry said no")
+
+    monkeypatch.setattr(login_entry, "read", refuses)
+
+    document = setup.plan(library)
+
+    assert question(document, "start_at_login") is None
+    assert not [r for r in document["found"] if r["kind"] == "login"], "no state is known, so none is claimed"
+    assert "hf_token" in ids(document), "the rest of the plan survives"
+
+
+@pytest.mark.parametrize("document", ["{}", json.dumps({"contract": setup.CONTRACT, "answers": {}})])
+def test_an_empty_document_makes_no_os_call_at_all(library, no_weights, monkeypatch, login_entry, document):
+    """AC5. `--non-interactive` is install.py's word (TASK-089.17); at the engine
+    it is a document with no answers. While the question is open on this
+    machine, that document has to leave the OS untouched - not one read, and
+    certainly no write."""
+    assert "start_at_login" in ids(setup.plan(library)), "open, and still not registered below"
+    login_entry.calls.clear()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(document))
+
+    assert setup.main(["--apply-stdin"]) == 0
+
+    assert login_entry.calls == [], "no call of any kind"
+    assert login_entry.value is None
+    assert "start_at_login" not in stamp_document()["questions"]
+
+
+def test_a_sitting_with_nobody_there_makes_no_os_write(library, no_weights, monkeypatch, login_entry, capsys):
+    """AC5, the launcher's own case: a child with NUL for stdin renders the plan
+    - which reads the entry, so it can say whether MyScribe starts at login -
+    and registers nothing."""
+    import getpass as real_getpass
+
+    monkeypatch.setattr(real_getpass, "getpass", lambda *a, **k: pytest.fail("getpass with nobody there"))
+    with open(os.devnull) as nothing:
+        monkeypatch.setattr(sys, "stdin", nothing)
+
+        assert setup.main([]) == 0
+
+    assert "start_at_login" in capsys.readouterr().out, "it was among what would have been asked"
+    assert set(login_entry.calls) <= {"read"}, "a plan reads; nothing here writes"
+    assert login_entry.value is None
+    assert not setup.stamp_path().exists()

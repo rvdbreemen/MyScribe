@@ -9,9 +9,13 @@ DB_PATH = DATA_DIR / "myscribe.db"
 LEGACY_DB_NAME = "scribe.db"
 
 
-def adopt_legacy_db() -> bool:
+def adopt_legacy_db(new: Path | None = None) -> bool:
     """Rename a `scribe.db` from before the rename to `myscribe.db`, with its
     WAL and shared-memory sidecars, when the new file does not exist yet.
+
+    `new` is the `myscribe.db` to adopt into, DB_PATH when not given. A path
+    because a library adopted by the first-run sitting lives somewhere other
+    than DATA_DIR at the moment it is adopted (TASK-089.19).
 
     Called by db.connect() before the default database is opened, which is
     the one moment nothing has it open: the web process connects before it
@@ -20,7 +24,7 @@ def adopt_legacy_db() -> bool:
     `-wal` is a database missing its last transactions. Returns whether a
     rename happened. Backups (`scribe.db.backup-*`) are left where they are.
     """
-    new = DB_PATH
+    new = DB_PATH if new is None else Path(new)
     old = new.with_name(LEGACY_DB_NAME)
     if new.exists() or not old.exists():
         return False

@@ -1,10 +1,11 @@
-; MyScribe's Windows installer (ADR-008). Built by packaging/build_release.py:
+; MyScribe's Windows installer (ADR-011). Built by packaging/build_release.py:
 ;   iscc /DMyAppVersion=.. /DMySource=.. /DMyOutputDir=.. /DMyOutputName=.. myscribe.iss
 ;
 ; Per user, so it needs no administrator: everything goes under
 ; %LOCALAPPDATA%\Programs\MyScribe. The app's own data - the database, media,
 ; models and the environment it installs on first start - lives in
-; %LOCALAPPDATA%\MyScribe, which is deliberately *not* this directory: an
+; %LOCALAPPDATA%\MyScribe by default, or wherever the first start was told to
+; put it (TASK-089.14), which is deliberately *not* this directory: an
 ; uninstall or an update must not take a transcript with it.
 
 #define MyAppName "MyScribe"
@@ -38,6 +39,19 @@ Source: "{#MySource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: desktopicon
 
+[Registry]
+; The login item Settings > Start at login writes (scribe/autostart.py,
+; TASK-089.21): a value named MyScribe under this user's own Run key. It is
+; removed on uninstall and never written here (TASK-089.23). Inno Setup's
+; help, [Registry] section, read 2026-09-23: "If none (the default setting)
+; is specified, Setup will create the key but not a value"; dontcreatekey:
+; "Setup will not attempt to create the key or any value if the key did not
+; already exist"; uninsdeletevalue: "Delete the value when the program is
+; uninstalled." So an install writes nothing - a login item is a choice the
+; person makes, default No (TASK-089.22) - and an uninstall takes it away.
+; UNVERIFIED on a real uninstall until TASK-089.23 criterion 5 is run.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MyScribe"; Flags: uninsdeletevalue dontcreatekey
+
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "Start {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
@@ -51,4 +65,4 @@ SetupAppTitle={#MyAppName}
 ; No size in gigabytes here: this text cannot read scribe/footprint.json, so a
 ; number in it would be one nobody updates, and the first start already shows
 ; the size it is about to download - per platform, per model (TASK-089.14).
-WelcomeLabel2=This installs [name/ver] for your account only.%n%nThe first start asks where everything should go, then downloads the speech engine and shows its progress. Later starts skip that. Your recordings, transcripts and models are kept in %LOCALAPPDATA%\MyScribe unless you choose another folder, and are left alone when you uninstall.
+WelcomeLabel2=This installs [name/ver] for your account only, into %LOCALAPPDATA%\Programs\MyScribe.%n%nThe first start asks where your recordings, transcripts and models should go - %LOCALAPPDATA%\MyScribe is only the default - then downloads the speech engine with its progress, and asks a few questions you can skip. Later starts skip all of that.%n%nUninstalling removes the program and its login item, and leaves that folder alone: it is yours. If MyScribe installed Ollama and a model for you, they stay too and belong to you; remove them with Ollama's own uninstaller under Windows Settings > Apps.

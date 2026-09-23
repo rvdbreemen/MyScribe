@@ -23,3 +23,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-015 | Accepted | `{packaging/launcher/**,install.py}`, `scribe/setup.py`, `install.py` | Chosen option: one app-side engine behind a versioned JSON contract: only there does a question exist once, does dete... |
 | ADR-016 | Accepted | `scribe/**` | Chosen option: a missing row selects no provider, decided by Robert on 2026-09-20 (R1 in docs/superpowers/specs/2026-... |
 | ADR-017 | Accepted | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b... |
+| ADR-019 | Proposed | - | Chosen option: the pointer's second fact, reported through a result file, because it is the only one that reaches bot... |

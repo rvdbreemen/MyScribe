@@ -1328,3 +1328,40 @@ def test_the_first_run_is_one_sequence_in_one_order(layout, tmp_path, monkeypatc
                           "--port", str(_free_port()), "--no-browser"]) == 0
 
     assert order == ["location", "tools", "sync", "plan", "sitting", "apply", "prove", "start"]
+
+
+# --- TASK-089.19: a folder is typed or browsed ------------------------------------
+
+
+def a_folder(id="library_folder", shown_if=None) -> dict:
+    return {
+        "id": id, "kind": "text", "text": "Which folder holds it?",
+        "choices": [], "current": "", "default": None, "shown_if": shown_if,
+        "if_skipped": "Nothing is looked at.", "answer_later": "--setup",
+    }
+
+
+def test_a_text_question_is_an_entry_with_a_browse_button_and_hands_over_what_was_typed(layout, monkeypatch):
+    """Until TASK-089.19 a `text` question fell through to the radio branch
+    and drew a group with no buttons: a folder could be neither typed nor
+    browsed (TASK-089.20's watch folder had the same gap)."""
+    plan = a_plan(a_choice(id="library", choices=(("new", "Start a new library"), ("named", "Name its folder"))),
+                  a_folder(shown_if={"question": "library", "equals": "named"}))
+
+    def person(sitting):
+        sitting.pick("named")
+        sitting.type(r"D:\old\data")
+
+    answers, sitting = hold(monkeypatch, layout, plan, touch=person)
+
+    assert len(sitting.entries) == 1
+    assert "show" not in sitting.entries[0].kwargs, "a folder is not a secret"
+    assert "Browse..." in sitting.buttons
+    assert answers == {"library": "named", "library_folder": r"D:\old\data"}
+
+
+def test_a_text_question_its_condition_hides_is_not_handed_over(layout, monkeypatch):
+    plan = a_plan(a_choice(id="library", choices=(("new", "Start a new library"), ("named", "Name its folder"))),
+                  a_folder(shown_if={"question": "library", "equals": "named"}))
+    answers, _sitting = hold(monkeypatch, layout, plan, touch=lambda sitting: sitting.pick("new"))
+    assert answers == {"library": "new"}

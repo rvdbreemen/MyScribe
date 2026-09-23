@@ -88,8 +88,10 @@ Nothing is signed yet, so each OS will say so the first time:
   note says the same. Copying it out of the dmg keeps the flag, which is why
   the bundled tools are installed as fresh files rather than copied.
 * **Windows** - SmartScreen will warn about an unknown publisher: **More
-  info → Run anyway**. It installs for your account only, into
-  `%LOCALAPPDATA%\MyScribe`, and leaves your recordings there on uninstall.
+  info → Run anyway**. It installs for your account only: the program into
+  `%LOCALAPPDATA%\Programs\MyScribe`, your library into
+  `%LOCALAPPDATA%\MyScribe` unless the first start is told otherwise. An
+  uninstall leaves the library alone (see [Uninstalling](#uninstalling)).
 * **Linux** - make the AppImage executable (`chmod +x`) and run it.
 
 The first start asks where everything should go, shows the free space on each
@@ -156,6 +158,12 @@ To change a pin, edit `pyproject.toml` and run `uv lock` with the pinned uv
 (`.tools/bin/uv` after an install); commit both files and re-run the doctor
 on real hardware after any change to the ML stack.
 
+`.tools/` in the clone holds what `install.py` fetched for it: `bin/` with
+the pinned uv (and on Windows and Linux ffmpeg and ffprobe, when none was on
+`PATH`), plus a small stamp saying which pin each came from. Git ignores it.
+Deleting it is safe: the app then uses whatever is on `PATH`, and the next
+`python install.py` fetches it again, checked against the same sha256.
+
 ### Then
 
 - Copy `.env.example` to `.env` for the optional keys: a Hugging Face token
@@ -169,6 +177,51 @@ on real hardware after any change to the ML stack.
   python, refuse a second instance on a port that already answers, and take
   `--detached` (`-Detached`) for a run that outlives the terminal - which is
   what a long transcribe queue wants.
+
+## Uninstalling
+
+An uninstall removes the program. Your library - recordings, transcripts,
+database, models and logs - is yours and always stays, wherever it is, and
+so does anything MyScribe installed for you from somebody else.
+
+**Windows** (Settings > Apps > MyScribe > Uninstall) removes
+`%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, and the login item if
+*Start at login* was on. It leaves:
+
+- the library: `%LOCALAPPDATA%\MyScribe`, or the folder the first start was
+  told to use. Delete it by hand when you no longer want the recordings.
+- `%LOCALAPPDATA%\MyScribe.location`, the one-line file that remembers a
+  library you moved elsewhere. Safe to delete once the library is gone.
+- Ollama and its models, if MyScribe installed them: they are an ordinary
+  Ollama install now. Remove Ollama under Settings > Apps, as
+  [Ollama's own page](https://docs.ollama.com/windows) says; its models live
+  in `%HOMEPATH%\.ollama`. If MyScribe set `OLLAMA_MODELS` because the
+  default drive was short of room, the models are in the folder that
+  variable names - Ollama's uninstaller leaves those - and the variable is
+  under Settings > System > About > Advanced system settings > Environment
+  Variables, for your account.
+
+**macOS** - drag `MyScribe.app` to the Bin. Switch *Start at login* off in
+Settings first, or delete
+`~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist` by hand. The
+library stays in `~/Library/Application Support/MyScribe` (or the folder you
+chose), with `~/Library/Application Support/MyScribe.location` beside it if
+you moved it. An Ollama you installed through MyScribe is
+`/Applications/Ollama.app`; its models are in `~/.ollama`. Written from the
+code, not yet run on a Mac ([docs/macos-acceptance.md](docs/macos-acceptance.md)).
+
+**Linux** - delete the AppImage. Switch *Start at login* off first, or
+delete `~/.config/autostart/myscribe.desktop` (under `$XDG_CONFIG_HOME` if
+you set it). The library stays in `~/.local/share/MyScribe` (under
+`$XDG_DATA_HOME` if set), with `MyScribe.location` beside it if you moved
+it. MyScribe never installs Ollama on Linux - it shows Ollama's commands and
+you run them - so removing it is
+[Ollama's uninstall section](https://docs.ollama.com/linux). Written from
+the code, not yet run on a Linux desktop.
+
+**A clone** is a folder: delete it. With the default `--data-dir` the
+library is `data/` inside it and goes with it; `git clean -fdx` deletes it
+too.
 
 ## Configuration
 

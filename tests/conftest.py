@@ -355,3 +355,37 @@ def _the_library_is_out_of_reach(tmp_path, _library_under_tmp_path):
     assert not Path(os.environ.get(env.PATH_VARIABLE, "") or "\0").is_file() or os.environ[env.PATH_VARIABLE] == "", (
         f"{env.PATH_VARIABLE} names a .env that exists; a test would read the developer's tokens"
     )
+
+
+# --- TASK-089.19: no library on this machine is found by a test ----------------------
+
+_MACHINE_CANDIDATES = None
+"""`scribe.library.machine_candidates` as it ships, captured on first use by
+`machine_candidates_unstubbed` - importing `scribe.library` here at the top
+would pull `scribe.db` into every test's collection for nothing."""
+
+
+@pytest.fixture(autouse=True)
+def _no_library_found_on_this_machine(monkeypatch):
+    """The first-run sitting looks for a library in `<repo>/data`, in the
+    per-user MyScribe folder and in any SCRIBE_DATA_DIR a layer names
+    (TASK-089.19). Every one of those is somebody's real library on the
+    machine running the suite - in the main checkout `<repo>/data` is Robert's
+    live one - and even a read-only look is a look his rule forbids. So no
+    test finds any; a test about finding hands `library.found` its own."""
+    global _MACHINE_CANDIDATES
+    from scribe import library
+
+    if _MACHINE_CANDIDATES is None:
+        _MACHINE_CANDIDATES = library.machine_candidates
+    monkeypatch.setattr(library, "machine_candidates", lambda: [])
+
+
+@pytest.fixture
+def machine_candidates_unstubbed(monkeypatch, _no_library_found_on_this_machine):
+    """The shipped lookup, for the tests about the lookup itself. Its three
+    sources are still fenced: `env.REPO_DIR` and the per-user folder are the
+    test's to point, and the registry and `.env` are stubbed above."""
+    from scribe import library
+
+    monkeypatch.setattr(library, "machine_candidates", _MACHINE_CANDIDATES)
