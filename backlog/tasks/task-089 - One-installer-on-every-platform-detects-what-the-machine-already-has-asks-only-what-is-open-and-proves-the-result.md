@@ -3,10 +3,10 @@ id: TASK-089
 title: >-
   One installer on every platform detects what the machine already has, asks
   only what is open, and proves the result
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 22:07'
+updated_date: '2026-09-23 22:52'
 labels:
   - packaging
   - ux

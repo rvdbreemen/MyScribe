@@ -3,11 +3,11 @@ id: TASK-089.23
 title: >-
   The installer and the README say what stays behind after an uninstall, and
   whose it is
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 20:26'
+updated_date: '2026-09-23 22:52'
 labels:
   - packaging
   - windows

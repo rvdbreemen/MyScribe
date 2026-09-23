@@ -52,6 +52,9 @@ def machine(monkeypatch, *, card: bool, reachable: bool = False, hidden: str | N
     monkeypatch.setattr(accel, "nvidia_hardware_present", probe)
     monkeypatch.setattr(accel, "mlx_available", lambda: False)
     monkeypatch.setattr(accel, "mps_available", lambda: False)
+    # A machine with an NVIDIA card is not a Mac, whatever runs the test: the
+    # macOS CI runner found every refusal test passing on the exemption.
+    monkeypatch.setattr(accel, "_on_macos", lambda: False)
     if hidden is None:
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     else:
@@ -208,7 +211,7 @@ def test_a_mac_is_not_refused_whatever_the_probe_says(monkeypatch):
     the rule must not read that as a broken card. Mac behaviour is unchanged,
     and the mps question stays open (task text)."""
     asked = machine(monkeypatch, card=True, reachable=False)
-    monkeypatch.setattr(accel.sys, "platform", "darwin")
+    monkeypatch.setattr(accel, "_on_macos", lambda: True)
 
     assert accel.transcription_backend() == "cpu"
     assert accel.diarization_device() == "cpu"

@@ -259,10 +259,17 @@ def _refuse_the_cpu(cpu_fallback: bool) -> None:
     """
     if cpu_fallback or "CUDA_VISIBLE_DEVICES" in os.environ:
         return
-    if sys.platform == "darwin":
+    if _on_macos():
         return
     if nvidia_hardware_present():
         raise GpuUnreachable(REFUSAL)
+
+
+def _on_macos() -> bool:
+    """Whether this is a Mac, as its own seam: a test that needs another
+    platform answers here instead of patching `sys.platform`, which is the
+    process's and moves every module that reads it (TASK-089.24)."""
+    return sys.platform == "darwin"
 
 
 def transcription_backend(*, cpu_fallback: bool = False) -> str:

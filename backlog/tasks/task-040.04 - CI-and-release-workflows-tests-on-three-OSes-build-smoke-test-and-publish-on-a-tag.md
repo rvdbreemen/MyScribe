@@ -3,11 +3,11 @@ id: TASK-040.04
 title: >-
   CI and release workflows: tests on three OSes, build, smoke-test and publish
   on a tag
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-23 22:07'
+updated_date: '2026-09-23 22:52'
 labels:
   - ci
   - release
