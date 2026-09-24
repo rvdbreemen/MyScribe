@@ -15,7 +15,7 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-007 | Superseded | `scribe/**`, `scribe/[!w]*/**` | Chosen option: the JSON-Lines file with a bounded lock and the observation rule, because a log that lives in the data... |
 | ADR-008 | Accepted | `scribe/templates/_url_panel.html`, `scribe/**` | Chosen: a feed is a row, polled by its own thread on a due-date, and every new episode is one ingesturl job, on top o... |
 | ADR-009 | Superseded | `scribe/[!d]*.py`, `scribe/*/**`, `scribe/**` | Chosen option: SQLite WAL with atomic SQL (ADR-002's decision, unchanged), with "no broker" checked by forbidimport r... |
-| ADR-010 | Accepted | `scribe/**` | Chosen option: A. |
+| ADR-010 | Superseded | `scribe/**` | Chosen option: A. |
 | ADR-011 | Accepted | `packaging/launcher/**` | Chosen option: a per-OS launcher plus uv, chosen by the user on 2026-09-11, because it is the only option that keeps... |
 | ADR-012 | Accepted | `scribe/doctor.py`, `scribe/**` | Chosen option: pyproject.toml + universal uv.lock, because it replaces three hand-maintained files with one generated... |
 | ADR-013 | Accepted | `scribe/**` | Chosen option: SQLite WAL with atomic SQL, one-at-a-time in the claim, because every hard coordination problem is the... |
@@ -25,3 +25,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-017 | Accepted | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b... |
 | ADR-018 | Accepted | - | Chosen option: refuse, with a switch that is off by default, decided by Robert on 2026-09-22 (TASK-092 description). |
 | ADR-019 | Accepted | - | Chosen option: the pointer's second fact, reported through a result file, because it is the only one that reaches bot... |
+| ADR-020 | Accepted | `scribe/**` | Chosen option: A. |

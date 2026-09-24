@@ -1,14 +1,15 @@
 ---
-id: "ADR-010"
-title: "Reasoning is a per-kind hint; an ignored hint is bounded only where the endpoint enforces the cap"
-status: "Superseded"
+id: "ADR-020"
+title: "Reasoning is a per-kind hint, an ignored hint is bounded only where the endpoint enforces the cap, and a copied part that skipped the grouping refuses the cleaning"
+status: "Accepted"
 date: "2026-09-24"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
-supersedes: []
-superseded_by: "ADR-020"
+supersedes:
+  - "ADR-010"
+superseded_by: null
 topics:
   - "llm"
   - "reasoning-models"
@@ -21,6 +22,8 @@ aliases:
   - "reasoning effort none"
   - "finish_reason length"
   - "cap not enforced"
+  - "copied part"
+  - "cleaning copy"
   - "cleanup chunk size"
 components:
   - "scribe.llm.base"
@@ -35,6 +38,8 @@ symbols:
   - "reasoning_record"
   - "CONCAT_CHUNK_TOKENS"
   - "check_cleaning"
+  - "continuing_lines"
+  - "refused_part_ids"
   - "cleaned_parts"
 context_scope: "selective"
 format: "madr"
@@ -42,34 +47,36 @@ format: "madr"
 
 <!-- markdownlint-disable MD025 -->
 
-# ADR-010 Reasoning is a per-kind hint; an ignored hint is bounded only where the endpoint enforces the cap
+# ADR-020 Reasoning is a per-kind hint, an ignored hint is bounded only where the endpoint enforces the cap, and a copied part that skipped the grouping refuses the cleaning
 
 ## Status
 
-Superseded by ADR-020, 2026-09-24.
-accepts it. Revised the same day, still Proposed: step 0 is measured and
-keeps the 3,000-token chunk (Chunks); the cloud cleanup cap stays where it
-is, and this record adopts a reworded AC3 for TASK-029 (Open Questions -
-decided by the agent under a relayed instruction, for Robert to confirm by
-accepting or to reverse; the backlog task's AC3 text is unchanged); and the
-review's corrections are in (Decision Contract, Consequences).
+Accepted, 2026-09-24.
+2026-09-24 ('Werk het bij'). The decision is ADR-010's, unchanged: Robert
+answered its open question on 2026-09-19 - a copied part whose source
+continues the speaker refuses the reading, and the reuse path is fixed in the
+same change - and TASK-088 built exactly that. What ADR-010 could not do, being
+Accepted, is stop describing the rule as open. This record says what the code
+does: the section 'A cleaning that is a copy', the Must list, the Verification
+list and the copy-rule bullet under Consequences are brought up to TASK-088;
+everything else is ADR-010's text.
 
 ## Status History
 
 ```yaml
 status_history:
-  - date: 2026-09-11
+  - date: 2026-09-24
     status: Proposed
-    changed_by: Claude Opus 5 (agent, session 2026-09-11)
+    changed_by: Claude Opus 5.5 (agent, session 2026-09-24)
     reason: Initial proposal
     changed_via: adr-kit
-  - date: 2026-09-19
+  - date: 2026-09-24
     status: Accepted
     changed_by: "User: Robert van den Breemen"
-    reason: "Accepted by Robert on 2026-09-19, after both remaining open questions were put to him with their alternatives and consequences. The decision has been running for some time: reasoning_off travels from TaskSpec to ChatRequest and each provider turns it into its own wire field in scribe/llm/base.py, ollama.py and openai_like.py. The ban on effort low stands as the cautious default with its single-sample basis stated in the record; the refusal of a part that is a copy of its source, with the reuse path fixed in the same change, is TASK-088."
+    reason: "Accepted by Robert on 2026-09-24 in the session, as the successor of ADR-010: the same decision, with the copied-part rule of TASK-088 described as built."
     changed_via: adr-kit lifecycle
   - date: 2026-09-24
-    status: Superseded
+    status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: "Superseded by ADR-020 at Robert's request on 2026-09-24: the decision is unchanged, and ADR-020 describes the copied-part rule of TASK-088 as built instead of open."
     changed_via: adr-kit lifecycle
@@ -291,8 +298,30 @@ the gate with part 0 as its own source text and the recorded counts
 elsewhere, both readings pass with no reason. Part 0 was not a stretch with
 nothing to tidy: 43 of its 45 lines continue the speaker before them
 (counted on a backup copy of the library), and `cleanup.md` keeps only the
-stamp that starts each stretch. Whether one such part should refuse the
-reading is open (Open Questions).
+stamp that starts each stretch.
+
+**A copied part that skipped the grouping** (decided 2026-09-19, built by
+TASK-088). A part that came back as it went in - the same test as above,
+words equal and whitespace aside, because the one copy measured differed from
+its source only by 44 added line breaks - refuses the whole reading when its
+source has at least one line that continues the speaker before it: a stamped
+line whose `SPEAKER_xx` label equals the label of the stamped line before it
+(`continuing_lines`). `cleanup.md` asks for those lines to be grouped, so such a
+part skipped the job. The reason names the part and the count - "part N came
+back as it went in, though C of its L lines continue the speaker before them".
+A part that is honestly unchanged still passes: one line, speakers that
+alternate line by line, and lines without a speaker label, which never count as
+continuing because an undiarized run does not say the speaker stayed.
+
+**A refused reading can be repaired.** `stored_chunk` reused a stored part
+whenever its `segment_ids` matched, so a rerun on the same provider, model and
+prompt version pulled the copy back in and was refused again. Now
+`refused_part_ids` collects the parts named by every final row in the same
+media, run and kind whose verdict says it was not published, and `stored_chunk`
+asks those parts again. That holds for any refused reading, a ratio refusal
+included. A reading published before the rule, such as qwen3.5:4b's media 12,
+has no refusal on record: its first rerun reuses its parts and is refused by
+the part rule, the second asks them again.
 
 ### Confirmation
 
@@ -337,11 +366,15 @@ reading is open (Open Questions).
   whether it is one call or one of many, and the refusal names what the row
   would have held: finish_reason, completion and reasoning tokens, reasoning
   characters, upstream, and the hint in words.
-* A stored part is reused only when its `segment_ids` are the chunk's.
+* A stored part is reused only when its `segment_ids` are the chunk's and no
+  final row that refused its reading names it (`refused_part_ids`).
 * The cleaning gate judges the parts the final row names
   (`chunk_output_ids`), in that order - never the newest row per chunk index.
 * A cleaning whose every part came back as it went in, whitespace aside, is
   stored but not published.
+* A part that came back as it went in, whitespace aside, refuses the reading
+  when its source has a line continuing the speaker before it; one line,
+  alternating speakers and unlabelled lines do not count as continuing.
 
 ### Must Not
 
@@ -376,7 +409,13 @@ reading is open (Open Questions).
   `::test_a_cleanup_chunk_is_cut_to_the_concat_limit_not_the_answer_cap`.
 * `tests/test_llm_cleaning_gate.py::test_a_rerun_publishes_its_own_parts_not_another_models_newer_ones`,
   `::test_a_cleaning_that_came_back_as_it_went_in_is_refused`,
-  `::test_a_cleaning_with_some_parts_unchanged_is_still_published`,
+  `::test_one_copied_part_that_skipped_the_grouping_refuses_the_reading`,
+  `::test_a_copied_one_line_part_still_passes`,
+  `::test_a_copied_part_of_alternating_speakers_still_passes`,
+  `::test_a_copied_part_without_speaker_labels_still_passes`,
+  `::test_a_continuing_line_past_the_first_hour_is_seen`,
+  `::test_a_rerun_asks_again_for_the_parts_of_a_refused_reading`,
+  `::test_a_rerun_still_reuses_the_parts_of_a_published_reading`,
   `::test_a_part_with_its_punctuation_fixed_is_a_change`,
   `::test_a_verbatim_copy_is_stored_but_not_published`.
 * `tests/test_llm_headroom_script.py::test_the_headroom_script_plans_the_chunk_size_it_is_given`
@@ -435,15 +474,15 @@ reading is open (Open Questions).
 * More parts make the per-part 0.55/1.15 cleaning gate judge shorter spans:
   media 12 goes from 4 parts to 7. Mitigation: the acceptance script prints
   the per-part ratios next to the overall one.
-* The copy rule catches only a reading that is a copy throughout, and only
-  a copy that kept every line's stamp and label, so it does not catch the
-  one copy measured: qwen3.5:4b's part 0 of media 12, 1 of 11 parts,
-  published inside a reading at 0.894 and 0.902 (A cleaning that is a
-  copy). A near-copy passes too: its part 3 came back 886 -> 883 words with
-  70 of 70 stamps. So does a copy regrouped the way `cleanup.md` asks. And
-  the rule refuses an honest answer when every line starts its own stretch
-  and the text needs no fixing. Whether a copied part should refuse the
-  reading is open (Open Questions).
+* The copy rules are inferred from word counts and speaker labels, not from a
+  diff. They catch a reading that is a copy throughout and a copied part that
+  skipped the grouping - qwen3.5:4b's part 0 of media 12, 1 of 11 parts, now
+  refuses the reading. A near-copy still passes: its part 3 came back 886 -> 883
+  words with 70 of 70 stamps. So does a copy regrouped the way `cleanup.md`
+  asks, and a copied part of an undiarized run. The whole-reading rule still
+  refuses an honest answer when every line starts its own stretch and the text
+  needs no fixing. A refused reading costs one call per part on its next run,
+  because its parts are asked again rather than reused.
 * Three extra calls on media 12 when the hint is honoured, about +1,180
   estimated prompt tokens (about 6%).
 * `openrouter/auto` has served only deepseek-v4-flash-0731 and gpt-5.6-luna
@@ -561,6 +600,7 @@ reading is open (Open Questions).
 
 ## Related Decisions
 
+* ADR-010 is the record this one succeeds; its decision is unchanged here.
 * ADR-002 / ADR-009 (SQLite in WAL (write-ahead log) mode is the only
   coordination): the
   reasoning numbers go into `llm_output.params_json` under `db.LOCK`, with no

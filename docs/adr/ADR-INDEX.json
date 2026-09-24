@@ -553,8 +553,8 @@
       "title": "Reasoning is a per-kind hint; an ignored hint is bounded only where the endpoint enforces the cap",
       "path": "ADR-010-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap.md",
       "format": "madr",
-      "status": "Accepted",
-      "date": "2026-09-19",
+      "status": "Superseded",
+      "date": "2026-09-24",
       "decision_summary": "Chosen option: A.",
       "topics": [
         "llm",
@@ -589,35 +589,10 @@
       ],
       "context_scope": "selective",
       "decision_contract": {
-        "must": [
-          "Each provider class declares the hint's wire form in reasoningoffbody; a request without the hint carries none of reasoning, reasoningeffort or think.",
-          "A 400 while the hint is on the wire is retried once without it, unless it is a temperature refusal or a context-length refusal; the decision reads what was sent, never the vendor's wording.",
-          "ChatResponse.hintsent records what the answering call carried: None not asked, True sent, False refused and dropped. Unreported counts are None, never 0.",
-          "Every llmoutput row a call produces records hintsent, reasoningtokens, reasoningchars, upstream, hintignored and capnotenforced in paramsjson, judged against the cap that call was asked with.",
-          "A concat kind's answer that ended 'length' is refused before it is stored, whether it is one call or one of many, and the refusal names what the row would have held: finishreason, completion and reasoning tokens, reasoning characters, up...",
-          "A stored part is reused only when its segmentids are the chunk's.",
-          "The cleaning gate judges the parts the final row names (chunkoutputids), in that order - never the newest row per chunk index.",
-          "A cleaning whose every part came back as it went in, whitespace aside, is stored but not published."
-        ],
-        "must_not": [
-          "Branch on the provider's name in a caller to decide the hint.",
-          "Use effort: low or minimal for a kind that must keep [m:ss] stamps and speaker labels.",
-          "Count OpenRouter's message.reasoning trace as reasoning spent: luna spent 107 reasoning tokens with no trace.",
-          "Merge a provider's reasoningoffbody into a body by reference."
-        ],
-        "exceptions": [
-          "speakers and labels stay at the provider default until their own A/B.",
-          "Ollama's hint is never dropped: its daemon refuses only a truthy think."
-        ],
-        "verification": [
-          "tests/testllmproviders.py::testeachcloudprovidersaysnoreasoningitsownway, ::testarefusedhintisretriedoncewithoutit, ::testacontextlength400withthehintoniscontexttoolongafteronecall, ::testatemperaturerefusalthenahintrefusalisthreecalls,...",
-          "tests/testllmollama.py::testthehintisthinkfalseanditsabsencesendsnothink.",
-          "tests/testllmtasks.py::testthehintfollowsthekind, ::testeveryrowrecordswhatwassentandwhatreasoningcost.",
-          "tests/testllmtaskproviders.py::testcleanupreacheseachrealproviderwithitsownnoreasoningfield.",
-          "tests/testllmspeakers.py::testaonecallcleanupcutoffatthecapisrefusedandnothingisstored, ::testacutoffpartnameswhatitspentandwhetherthehintwent, ::testastoredpartcutonotherboundariesisaskedagain, ::testacleanupchunkiscuttotheconcatlimitno...",
-          "tests/testllmcleaninggate.py::testarerunpublishesitsownpartsnotanothermodelsnewerones, ::testacleaningthatcamebackasitwentinisrefused, ::testacleaningwithsomepartsunchangedisstillpublished, ::testapartwithitspunctuationfixedisachange, ::...",
-          "tests/testllmheadroomscript.py::testtheheadroomscriptplansthechunksizeitisgiven (step 0 measures the chunk size it is asked for), ::testthepincheckreadsnoverdictfromablockedoruncountedanswer, ::testacallthatgotnoanswerprintswhatwasaskedn..."
-        ]
+        "must": [],
+        "must_not": [],
+        "exceptions": [],
+        "verification": []
       },
       "scope": {
         "path_globs": [
@@ -630,7 +605,7 @@
         "documents_shipped": false,
         "verified_in": [],
         "supersedes": [],
-        "superseded_by": null
+        "superseded_by": "ADR-020"
       }
     },
     {
@@ -1239,6 +1214,98 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-020",
+      "title": "Reasoning is a per-kind hint, an ignored hint is bounded only where the endpoint enforces the cap, and a copied part that skipped the grouping refuses the cleaning",
+      "path": "ADR-020-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap-and-a-copied-part-that-skipped-the-grouping-refuses-the-cleaning.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-24",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "llm",
+        "output-budget",
+        "provenance",
+        "reasoning-models"
+      ],
+      "aliases": [
+        "cap not enforced",
+        "cleaning copy",
+        "cleanup chunk size",
+        "copied part",
+        "finish_reason length",
+        "reasoning effort none",
+        "reasoning hint",
+        "reasoning_off",
+        "think false"
+      ],
+      "components": [
+        "scribe.llm.base",
+        "scribe.llm.ollama",
+        "scribe.llm.openai_like",
+        "scribe.llm.tasks"
+      ],
+      "symbols": [
+        "ChatRequest.reasoning_off",
+        "ChatResponse.hint_sent",
+        "check_cleaning",
+        "cleaned_parts",
+        "CONCAT_CHUNK_TOKENS",
+        "continuing_lines",
+        "Provider.reasoning_off_body",
+        "reasoning_record",
+        "refused_part_ids",
+        "TaskSpec.reasoning_off"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Each provider class declares the hint's wire form in reasoningoffbody; a request without the hint carries none of reasoning, reasoningeffort or think.",
+          "A 400 while the hint is on the wire is retried once without it, unless it is a temperature refusal or a context-length refusal; the decision reads what was sent, never the vendor's wording.",
+          "ChatResponse.hintsent records what the answering call carried: None not asked, True sent, False refused and dropped. Unreported counts are None, never 0.",
+          "Every llmoutput row a call produces records hintsent, reasoningtokens, reasoningchars, upstream, hintignored and capnotenforced in paramsjson, judged against the cap that call was asked with.",
+          "A concat kind's answer that ended 'length' is refused before it is stored, whether it is one call or one of many, and the refusal names what the row would have held: finishreason, completion and reasoning tokens, reasoning characters, up...",
+          "A stored part is reused only when its segmentids are the chunk's and no final row that refused its reading names it (refusedpartids).",
+          "The cleaning gate judges the parts the final row names (chunkoutputids), in that order - never the newest row per chunk index.",
+          "A cleaning whose every part came back as it went in, whitespace aside, is stored but not published.",
+          "A part that came back as it went in, whitespace aside, refuses the reading when its source has a line continuing the speaker before it; one line, alternating speakers and unlabelled lines do not count as continuing."
+        ],
+        "must_not": [
+          "Branch on the provider's name in a caller to decide the hint.",
+          "Use effort: low or minimal for a kind that must keep [m:ss] stamps and speaker labels.",
+          "Count OpenRouter's message.reasoning trace as reasoning spent: luna spent 107 reasoning tokens with no trace.",
+          "Merge a provider's reasoningoffbody into a body by reference."
+        ],
+        "exceptions": [
+          "speakers and labels stay at the provider default until their own A/B.",
+          "Ollama's hint is never dropped: its daemon refuses only a truthy think."
+        ],
+        "verification": [
+          "tests/testllmproviders.py::testeachcloudprovidersaysnoreasoningitsownway, ::testarefusedhintisretriedoncewithoutit, ::testacontextlength400withthehintoniscontexttoolongafteronecall, ::testatemperaturerefusalthenahintrefusalisthreecalls,...",
+          "tests/testllmollama.py::testthehintisthinkfalseanditsabsencesendsnothink.",
+          "tests/testllmtasks.py::testthehintfollowsthekind, ::testeveryrowrecordswhatwassentandwhatreasoningcost.",
+          "tests/testllmtaskproviders.py::testcleanupreacheseachrealproviderwithitsownnoreasoningfield.",
+          "tests/testllmspeakers.py::testaonecallcleanupcutoffatthecapisrefusedandnothingisstored, ::testacutoffpartnameswhatitspentandwhetherthehintwent, ::testastoredpartcutonotherboundariesisaskedagain, ::testacleanupchunkiscuttotheconcatlimitno...",
+          "tests/testllmcleaninggate.py::testarerunpublishesitsownpartsnotanothermodelsnewerones, ::testacleaningthatcamebackasitwentinisrefused, ::testonecopiedpartthatskippedthegroupingrefusesthereading, ::testacopiedonelinepartstillpasses, ::tes...",
+          "tests/testllmheadroomscript.py::testtheheadroomscriptplansthechunksizeitisgiven (step 0 measures the chunk size it is asked for), ::testthepincheckreadsnoverdictfromablockedoruncountedanswer, ::testacallthatgotnoanswerprintswhatwasaskedn..."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [
+          "ADR-010"
+        ],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -1399,6 +1466,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-010",
+      "target": "ADR-020",
+      "type": "superseded-by",
+      "resolved": true
+    },
+    {
       "source": "ADR-011",
       "target": "ADR-001",
       "type": "related",
@@ -1624,6 +1697,36 @@
       "source": "ADR-019",
       "target": "ADR-015",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-020",
+      "target": "ADR-002",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-020",
+      "target": "ADR-007",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-020",
+      "target": "ADR-009",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-020",
+      "target": "ADR-010",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-020",
+      "target": "ADR-010",
+      "type": "supersedes",
       "resolved": true
     }
   ]

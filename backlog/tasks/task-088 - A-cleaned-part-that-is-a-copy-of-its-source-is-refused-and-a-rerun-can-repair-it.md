@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-19 20:09'
-updated_date: '2026-09-23 20:42'
+updated_date: '2026-09-24 04:50'
 labels:
   - llm
   - cleaning
@@ -84,6 +84,8 @@ Addendum. The evidence folder named above is C:/Users/rvdbr/AppData/Local/Temp/c
 UI look: the transcript page joins the gate's reasons as they are, and nothing in scribe/web or the templates matches on a reason's wording. New test tests/test_web_transcript.py::test_a_part_copied_without_its_grouping_says_so_on_the_page stores the reason check_cleaning itself writes and finds it in the page's status line through TestClient. Proof: green-page-part-rule-reason.txt and green-test_web_transcript.txt (107 passed).
 
 Verified 2026-09-23 by the orchestrator in MyScribe-wt-gate, fenced, one file per process: test_llm_cleaning_gate 31, test_feed_first_episode 17, test_web_feeds 19, test_web_transcript 107, test_doctor 64, test_llm_tasks 159, test_ingest_urls 112, test_stage_prepare 27, all passed; grep MUTANT over scribe tests packaging install.py finds nothing. Recorded for Robert, not changed here: 'byte-identical' was read as identical apart from whitespace, because the one measured copy differed from its source only by 44 added line breaks; a copied part of an undiarized source passes, because unlabelled lines never count as continuing (pinned by a test, one line to flip); every part of any refused reading is asked again on a rerun, ratio refusals included, as the criterion's words say; an old published copy (qwen3.5:4b, media 12) takes two reruns to repair. ADR-010 is Accepted and was not edited, but three passages now describe the old behaviour: 'A cleaning that is a copy', the copy-rule Consequences bullet, and the Must list - updating an Accepted record is Robert's step. Nothing ran against a live model.
+
+2026-09-24: ADR-010 is superseded by ADR-020, accepted by Robert the same day. The decision is unchanged; ADR-020 describes this task's rule as built (the copy section, the Must and Verification lists, the Consequences bullet), where ADR-010 still called it open.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
