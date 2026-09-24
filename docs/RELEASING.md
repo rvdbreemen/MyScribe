@@ -88,6 +88,25 @@ here uses before they start.
 with exactly that message. It is conditional now, the way signing already was.
 `SHA256SUMS` is published either way, and that is the part a user can check.
 
+**The publish job never started (v0.6.0, 2026-09-24).** The version check and
+all three builds with their smoke tests passed; `publish` failed in three
+seconds with no steps and no log, because GitHub did not start it: "recent
+account payments have failed or your spending limit needs to be increased".
+The API still answered with that sentence as the job's annotation
+(`gh api repos/<owner>/<repo>/check-runs/<job id>/annotations`); `gh run view
+--log-failed` only said "log not found". The fix is in Billing & plans, not in
+the workflow. The release was then published by hand from the run's own
+artifacts, which is exactly what the job does and costs no Actions minutes:
+
+```sh
+gh run download <run id> -D dl && mkdir artifacts && find dl -type f -exec cp {} artifacts/ \;
+cd artifacts && sha256sum * > SHA256SUMS      # the job's own step; check each .sha256 first
+gh release create v0.6.0 --verify-tag --title v0.6.0 --notes-file <notes.md> *
+```
+
+Check afterwards that `gh release view` lists every artifact with the digest
+the build printed, and that the tag points at the commit on main.
+
 ## Signing
 
 Both signing steps run only when their secret exists and print a notice when
