@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@gpu-lane'
 created_date: '2026-09-22 10:32'
-updated_date: '2026-09-23 22:01'
+updated_date: '2026-09-24 04:33'
 labels:
   - gpu
   - ux
@@ -105,4 +105,6 @@ If step 2 shows "transcription on cpu" instead, the probe did not see the disabl
 - Every test file that imports a changed module, one pytest process each (68 files; EVIDENCE/suite1/_summary.txt): 2847 passed and 10 skipped in 66 files; test_llm_live has only deselected live tests (exit 5, no tests collected); test_stage_transcribe_mlx 2 failed before the stub and 12 passed after (EVIDENCE/green-final-test_stage_transcribe_mlx.txt). Total 2859 passed, 10 skipped, 0 failed. The TASK-093 doctor change landed while that run was going, so every file that names the doctor was run again afterwards: all green (EVIDENCE/green-final-*.txt).
 
 Verified 2026-09-24 by the orchestrator in MyScribe-wt-gpu, fenced, one file per process: test_cpu_fallback 19, test_accel 8, test_doctor 56 (8 moved to test_accel), test_task093_census 7, test_setup_prove 43, test_stage_transcribe_mlx 12, test_stage_transcribe 69, test_stage_diarize 76, test_runner 13, test_web_settings 54, all passed; grep MUTANT finds nothing. ADR-018 is Proposed and signed as the agent; accepting it, and its open question about the wording of the three options Robert was shown, are his. #8 stays open for his reversible run: disable the display adapter in Device Manager and follow the five steps above.
+
+2026-09-24: ADR-018 accepted by Robert, after he confirmed the three options (commit 49f4c68). Only #8, his run behind a disabled display adapter, is left.
 <!-- SECTION:NOTES:END -->

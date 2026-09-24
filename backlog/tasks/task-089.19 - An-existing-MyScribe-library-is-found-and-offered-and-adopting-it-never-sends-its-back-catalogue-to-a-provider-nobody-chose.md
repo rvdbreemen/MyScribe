@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 21:55'
+updated_date: '2026-09-24 04:33'
 labels:
   - library
   - packaging
@@ -179,6 +179,8 @@ EVIDENCE below means C:\Users\rvdbr\AppData\Local\Temp\claude\D--Users-Robert-Do
 - CRLF: tests/conftest.py and tests/test_launcher_sitting.py were normalised back to CRLF after appending; the new files are LF and autocrlf converts them on commit.
 
 Verified 2026-09-23 by the orchestrator in MyScribe-wt-setup, fenced, one file per process: test_library 15, test_setup_library 22, test_launcher_library 12, test_setup_plan 170, test_launcher_sitting 57, test_launcher 102 (1 skipped), test_web_settings 55, test_setup 15, test_uninstall_text 5, all passed; grep MUTANT finds nothing. For Robert before a release: one run of the adoption on a COPY of his own library (the exact commands are in the build notes above), and ADR-019 is Proposed, his to accept. Deviation to note: the library question comes first in the full list rather than alone; a document that adopts writes nothing else and the door plans again against the adopted library (ADR-019's open question).
+
+2026-09-24: ADR-019 accepted by Robert, who chose 'asked first, in the full list' for the library question (commit 49f4c68).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
