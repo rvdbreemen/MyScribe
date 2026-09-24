@@ -1,6 +1,77 @@
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-24
+
+The installer release: one installer on every platform that looks at what the
+machine already has, asks only what is still open, and ends on a proof of what
+it measured.
+
+### Added
+
+- `python install.py` installs a clone with one command on Windows, macOS and
+  Linux: the uv that `packaging/tools.json` pins, checked by sha256, a frozen
+  sync from `uv.lock` (never the uv on `PATH`, which rewrites the lock), the
+  setup questions, and the proof report. It refuses a sync over a MyScribe that
+  serves this checkout, and says both numbers when the disk is too small. The
+  start scripts send you back to it after a pull that moved the lock
+  (TASK-089.17).
+- When no Ollama is on the machine, setup offers to install one and a model
+  that fits, from one pinned and sha256-checked release, showing the URL, the
+  size and the exact command before it asks. An Ollama that is already there,
+  in any state, is left alone. Windows also checks the installer's signer; on
+  macOS the checked image is opened; on Linux the commands are shown for you to
+  run. CI checks every run that the pin still matches its release (TASK-089.18,
+  ADR-017).
+- An existing MyScribe library - in a clone, the per-user folder, or a folder
+  you name - is found and offered at the first sitting. Looking changes nothing
+  in it; adopting it migrates it in place and sends nothing to a provider
+  nobody chose. A library with a newer schema, or one a running MyScribe
+  serves, is refused (TASK-089.19, ADR-019).
+- Setup asks for a folder to watch and whether MyScribe starts when you log in
+  (default No). Both answer through exactly what Settings does, so the two can
+  never disagree (TASK-089.20, TASK-089.22).
+- `docs/macos-acceptance.md`: every macOS point that needs a person at a Mac,
+  as one list to run in one sitting, with the command and the expected output.
+
 ### Changed
+
+- A machine with an NVIDIA card whose driver cannot reach it no longer
+  transcribes on the CPU by itself, thirty times slower and without a word. The
+  job stops with a sentence naming the driver and `nvidia-smi`, and a Settings
+  switch, off by default, allows the CPU when you want it. A machine without
+  NVIDIA hardware runs on the CPU as before (TASK-092, ADR-018).
+- An AI action, a chat turn and the library's bulk action that cannot be
+  answered - no key, Ollama not running, the model never pulled - now say what
+  is missing and where to fix it, instead of queueing a job that fails
+  (TASK-089.10, TASK-089.26).
+- The installer and the README say what an uninstall leaves behind and whose
+  it is: the library stays, the login item goes, and an Ollama MyScribe
+  installed is yours to remove with its own uninstaller (TASK-089.23).
+- CI installs the way a person does, through `install.py`, on all three
+  operating systems, and neither workflow uses the floating uv install script
+  any more. The Windows release build is about three minutes faster
+  (TASK-089.24).
+- ADR-010 is superseded by ADR-020, which carries the same decision with the
+  copied-part rule described as built. ADR-018 and ADR-019 are Accepted.
+
+### Fixed
+
+- A cleaned part that is a copy of its source is refused when the source has a
+  line continuing the speaker before it, and a rerun asks the parts of a
+  refused reading again instead of reusing them, so it can be repaired
+  (TASK-088).
+- A feed's disk-floor refusal kept only the start of its sentence when the data
+  path was long; it now keeps how much is free, how much is needed and that
+  nothing was downloaded (TASK-091).
+- A doctor that dies in native code no longer leaves an empty terminal: it names
+  the check it was in (TASK-093).
+- The test suite can no longer reach the developer's own library or local
+  Ollama, whatever a test forgets to patch (TASK-090).
+- The first CI runs off Windows found tests that assumed Windows - and one
+  inconsistency in the product: a Windows install plan built on a Mac named Mac
+  paths. All fixed.
+
+### Changed (the first-run work)
 
 - The first-run dialog shows what this machine already has and asks only
   what is open. It was a fixed form: always a token field, even for somebody
@@ -196,7 +267,7 @@
   first start after somebody chose. Jobs the fall-through queued before this
   keep `openrouter` in their parameters and are not recalled.
 
-### Fixed
+### Fixed (the first-run work)
 
 - Asking what setup would ask no longer changes the machine it asks about.
   Setup created the data directory and migrated the database before it answered
@@ -309,7 +380,7 @@
   now stated in the record, and a cleaned part that came back a copy of its
   source is refused, with the reuse path fixed in the same change (TASK-088).
 
-### Documentation
+### Documentation (the first-run work)
 
 - The README lists two things it did not before: every command the app has
   outside the browser (`scribe.setup`, `scribe.models`, `scribe.export`,
@@ -320,7 +391,7 @@
   backing up, how a download is verified on each OS, and why an app that
   binds localhost still needs the two guards in `scribe/guard.py`.
 
-### Added
+### Added (the first-run work)
 
 - `<repo>/.tools/bin` is first on `PATH` for `python -m scribe`,
   `scribe.setup`, `scribe.models` and `scribe.doctor` when the directory

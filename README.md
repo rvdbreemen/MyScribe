@@ -96,7 +96,25 @@ Nothing is signed yet, so each OS will say so the first time:
 
 The first start asks where everything should go, shows the free space on each
 drive and what this install will download, and then fetches the speech engine
-with its progress. Later starts skip it. The model weights are a separate
+with its progress. Later starts skip it.
+
+After the download comes one short sitting. It shows what it found on this
+machine - a Hugging Face token, an OpenRouter or OpenAI key, an Ollama, an
+existing MyScribe library - and asks only what is still open, each question
+with a Skip that says what skipping costs:
+
+- **An existing library.** One found in a clone or the per-user folder, or a
+  folder you name, is shown with its recordings and size. Looking at it
+  changes nothing; using it migrates it in place, and nothing in it is sent to
+  a provider until you choose one.
+- **Who answers questions about a transcript.** A cloud provider, or Ollama on
+  this machine. When there is no Ollama, MyScribe offers to install one and a
+  model that fits, showing the download, its size and the exact command first.
+  An Ollama that is already there is left alone.
+- **A folder to watch** for new recordings, and **whether MyScribe starts
+  when you log in** (default No). Both are the same switches Settings has.
+
+Everything skipped can be answered later in Settings, or with the Setup button. The model weights are a separate
 download the app makes for itself; `Settings` says what is still missing and
 how big it is. The sizes come from `scribe/footprint.json` and
 `scribe/models.json`, which carry what each number measured and when, so this
@@ -111,7 +129,7 @@ shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
 
 ```powershell
 # Windows: compare the one line for the file you downloaded
-(Get-FileHash MyScribe-0.5.1-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash MyScribe-0.6.0-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
 Select-String -Path SHA256SUMS -Pattern windows-x64.exe$
 ```
 
@@ -237,6 +255,13 @@ for them:
 - **The private pin overrules every key.** A file or folder pinned private
   refuses every non-local provider outright, whatever is configured. Ollama
   still answers, because it never leaves the machine.
+
+**A broken NVIDIA driver stops a job rather than slowing it down.** On a
+machine with an NVIDIA card that CUDA cannot reach, a transcription is refused
+with a sentence naming the driver, instead of running thirty times slower on
+the CPU without a word. Settings > This machine has the switch "Transcribe on
+the CPU when the GPU is unavailable", off by default, for when that is what you
+want (ADR-018). A machine without NVIDIA hardware uses the CPU as always.
 
 `SCRIBE_DATA_DIR` decides where everything lands. Inside it:
 
