@@ -1,15 +1,14 @@
 ---
 id: "ADR-018"
 title: "A machine with an NVIDIA card never falls back to the CPU unless the Settings switch is on"
-status: "Proposed"
-date: "2026-09-23"
+status: "Accepted"
+date: "2026-09-24"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
-format: "madr"
 topics:
   - "gpu"
   - "accelerator"
@@ -25,6 +24,7 @@ symbols:
   - "cpu_fallback_allowed"
   - "GpuUnreachable"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -33,7 +33,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-09-23.
+Accepted, 2026-09-24.
 
 ## Status History
 
@@ -44,6 +44,11 @@ status_history:
     changed_by: Claude (agent, session 2026-09-23)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-09-24
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: Accepted by Robert on 2026-09-24, asked for in the session as 'Accepteer beide ADR', after answering its open question in the same session.
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
@@ -158,7 +163,7 @@ really broken driver yet: TASK-092 criterion 8 names the run.
 
 ## Open Questions
 
-- [ ] Robert: do the three options above match the ones you were asked with on 2026-09-22?
+- [x] Robert: do the three options above match the ones you were asked with on 2026-09-22? — **Answered 2026-09-24 by User: Robert van den Breemen:** Yes: Robert confirmed on 2026-09-24 that these are the three options he was asked with on 2026-09-22.
 
 ## Related Decisions
 

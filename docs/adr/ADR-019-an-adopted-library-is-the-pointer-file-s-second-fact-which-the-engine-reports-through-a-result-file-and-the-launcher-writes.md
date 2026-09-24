@@ -1,15 +1,14 @@
 ---
 id: "ADR-019"
 title: "An adopted library is the pointer file's second fact, which the engine reports through a result file and the launcher writes"
-status: "Proposed"
-date: "2026-09-23"
+status: "Accepted"
+date: "2026-09-24"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
-format: "madr"
 topics:
   - "setup"
   - "installer"
@@ -28,6 +27,7 @@ symbols:
   - "take_setup_result"
   - "_library_door"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -36,7 +36,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-09-23.
+Accepted, 2026-09-24.
 
 ## Status History
 
@@ -47,6 +47,11 @@ status_history:
     changed_by: Claude (agent, session 2026-09-23)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-09-24
+    status: Accepted
+    changed_by: "User: Robert van den Breemen"
+    reason: Accepted by Robert on 2026-09-24, asked for in the session as 'Accepteer beide ADR', after answering its open question in the same session.
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
@@ -176,7 +181,7 @@ that only the engine's result, never an answer, moves the library.
 
 ## Open Questions
 
-- [ ] Is "asked first, in the full list" right for the library question, where the design spec had "asked alone"? A first step that stamps leaves the rest unasked at every later start, so a document that adopts writes nothing else and the door plans again against the adopted library. The cost: somebody who adopts answered the other questions once for nothing. Robert decides.
+- [x] Is "asked first, in the full list" right for the library question, where the design spec had "asked alone"? A first step that stamps leaves the rest unasked at every later start, so a document that adopts writes nothing else and the door plans again against the adopted library. The cost: somebody who adopts answered the other questions once for nothing. Robert decides. — **Answered 2026-09-24 by User: Robert van den Breemen:** Asked first, in the full list: Robert chose this on 2026-09-24, accepting that somebody who adopts answers the other questions once more against the adopted library.
 
 ## Related Decisions
 
