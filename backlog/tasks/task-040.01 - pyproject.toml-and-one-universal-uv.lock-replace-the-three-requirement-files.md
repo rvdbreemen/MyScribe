@@ -1,11 +1,11 @@
 ---
 id: TASK-040.01
 title: pyproject.toml and one universal uv.lock replace the three requirement files
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-23 22:07'
+updated_date: '2026-09-26 18:23'
 labels:
   - packaging
   - dependencies
@@ -41,4 +41,12 @@ ADR-012: three hand-maintained requirement files (gpu, ml, macos) had drifted in
 2026-09-11 on the M2 with uv 0.12.13: uv lock resolves 153 packages for the three platforms, uv lock --check OK. A fresh env from uv sync --frozen (uv-managed CPython 3.12.14) has every verified package at the same version; three are gone on macOS because nothing there needs them - the old files were frozen on Windows: colorama (colorlog/tqdm/pytest, win32 only), tzdata (pandas, win32 only), greenlet (sqlalchemy, linux+win32). Doctor on that env: accel mlx/mps, gpu-runtime OK, gpu-smoke 77 words from 30s. Repo .venv converted by uv sync (uninstalled exactly those 3). Suite from it: 1654 passed, 18 skipped. Behaviour change: the yt-dlp hints now say 'uv lock --upgrade-package yt-dlp && uv sync' (urls.UPDATE_COMMAND) and the doctor's fix hints say uv sync; tests/test_ingest_urls.py assertions moved with them. AC 5 (RTX 3080 doctor from uv sync --frozen) still open.
 
 2026-09-24 (orchestrator). #5 is closed by Robert's fresh-clone run of python install.py (TASK-089.17 #1): that makes .venv with the pinned uv and uv sync --frozen; running .venv/Scripts/python -m scribe.doctor afterwards, without --no-gpu, on the RTX 3080 is the evidence this criterion asks for.
+
+Closed on Robert's decision of 2026-09-26 ('Kunnen we taken lekker afsluiten'): the remaining criteria need a person at a machine and will not be run; they stay unticked, and nothing here claims them verified. Open and not run: criterion 5.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+pyproject.toml and one universal uv.lock replace the three requirement files. Not run: the RTX 3080 doctor with GPU checks in a uv sync --frozen environment (criterion 5).
+<!-- SECTION:FINAL_SUMMARY:END -->

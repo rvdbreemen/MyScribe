@@ -3,11 +3,11 @@ id: TASK-089.18
 title: >-
   When Ollama is absent the installer offers to install it and a model that
   fits; when it is there, in any state, it is left alone
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 18:05'
+updated_date: '2026-09-26 18:23'
 labels:
   - llm
   - packaging
@@ -127,4 +127,12 @@ NOT RUN - Robert's, boxes stay unticked
 Validation: sweep 2026-09-23: 84 test files, one per process, fenced - 3282 passed, 0 failed, 10 skipped; test_llm_live has only live tests (exit 5, all deselected); git status hash identical before and after. Evidence: d0ea7837-…/scratchpad/ev/sweep/. Criteria 13 and 16 stay unticked: they are Robert's runs on a machine without Ollama; the task stays In Progress until then.
 
 Signer, 2026-09-23, measured rather than assumed: Get-AuthenticodeSignature on ollama.exe, ollama app.exe and unins000.exe of the Ollama 0.34.2 installed on Robert's machine gives Valid and the subject 'CN=Ollama Inc., O=Ollama Inc., L=Toronto, S=Ontario, C=CA, SERIALNUMBER=2713355, …' for all three. SIGNER_PATTERN accepts it, and it is now a case in test_the_signer_must_be_valid_and_ollama_inc_anchored (80 passed). Still not read: the certificate on the pinned v0.34.3 OllamaSetup.exe itself; the same publisher signing 0.34.2's binaries makes a different signer unlikely, and a different one would fail safe. Robert has no code-signing certificate and needs none: the check reads Ollama's signature, it signs nothing.
+
+Closed on Robert's decision of 2026-09-26 ('Kunnen we taken lekker afsluiten'): the remaining criteria need a person at a machine and will not be run; they stay unticked, and nothing here claims them verified. Open and not run: criteria 13 and 16. The pin part of this task is being replaced by TASK-095.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The installer offers an Ollama only when none is present, shows the artifact, size, sha256 and command first, checks the download and the Windows signer, and binds its marker to version and path; an Ollama that is there is left alone. Proven by the test suite, mutants and CI. Not run: the real install in Windows Sandbox and the Quit experiment (criteria 13, 16). TASK-095 replaces the fixed pin with the newest release checked at install time.
+<!-- SECTION:FINAL_SUMMARY:END -->

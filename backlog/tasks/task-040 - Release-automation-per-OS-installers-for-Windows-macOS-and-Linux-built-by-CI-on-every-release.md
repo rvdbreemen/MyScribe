@@ -3,11 +3,11 @@ id: TASK-040
 title: >-
   Release automation: per-OS installers for Windows, macOS and Linux built by CI
   on every release
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-11 21:18'
-updated_date: '2026-09-24 16:22'
+updated_date: '2026-09-26 18:23'
 labels:
   - packaging
   - release
@@ -30,7 +30,7 @@ Installing MyScribe means cloning, a venv, and a different pip command per OS - 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Pushing a v* tag produces a GitHub Release with a Windows installer, a macOS arm64 dmg and a Linux x86_64 AppImage, plus SHA256SUMS and a build-provenance attestation per artifact, all built by CI
+- [x] #1 Pushing a v* tag produces a GitHub Release with a Windows installer, a macOS arm64 dmg and a Linux x86_64 AppImage, plus SHA256SUMS and a build-provenance attestation per artifact, all built by CI
 - [ ] #2 Each artifact is installed on a clean runner of its own OS in the release run, syncs its environment and serves /health, and the doctor without GPU passes there
 - [ ] #3 A tag that disagrees with scribe.__version__ fails the release before anything is built or published
 - [ ] #4 The installed app passes the doctor with the GPU checks on the RTX 3080 (Windows) and on an Apple Silicon Mac
@@ -45,4 +45,12 @@ AC5 geverifieerd 2026-09-19. README.md regels 64-94 beschrijven de install per p
 2026-09-24 (orchestrator). Status of what is left, with who unblocks it. #1 and #2 need a v* tag, which publishes a release; Robert chose no tag in this session. What was proven without one: release.yml dispatched on task-089-installer-first-slice (run 35913685730) built all three artifacts and every smoke passed, and a deliberately broken setup turned all three red (run 35923728188). Attestations stay conditional: 'Feature not available for user-owned private repositories' - a public repository may lift that, to be seen on the first public tag. #3 needs a tag that disagrees with scribe.__version__; the job that checks it ran green on the dispatches. #4 needs Robert's RTX 3080 doctor on an installed build and a Mac.
 
 2026-09-24: v0.6.0 released from main (tag on 6ea5460). release.yml built and smoke-tested all three artifacts (run 36025682637); its publish job was not started by GitHub because of a billing/spending-limit block, so the release was published by hand from that run's own artifacts with SHA256SUMS, as docs/RELEASING.md now records. #1 is therefore met in substance but not by the workflow's own publish step; a next tag with billing in order will show the automatic path. #2 and #4 still need a person on an installed build (RTX 3080, a Mac).
+
+2026-09-26: criterion 1 met on the public repository rvdbreemen/MyScribe: release.yml run 36256827527 (dispatched on tag v0.6.0) built the Windows installer, the macOS dmg and the Linux AppImage, smoke-tested each, and published them with SHA256SUMS and a build-provenance attestation (gh attestation verify exits 0). Closed on Robert's decision of 2026-09-26 ('Kunnen we taken lekker afsluiten'): the remaining criteria need a person at a machine and will not be run; they stay unticked, and nothing here claims them verified. Open and not run: criterion 3 (a tag that disagrees with the version) and criterion 4 (the RTX 3080 and a Mac).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every release is built by CI per OS, started once on its own runner, and published with SHA256SUMS and build-provenance attestation - proven by v0.6.0 on the public repository. Not run: a tag that disagrees with the version, and the GPU doctor on an installed build on the RTX 3080 and a Mac.
+<!-- SECTION:FINAL_SUMMARY:END -->

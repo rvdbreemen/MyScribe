@@ -3,11 +3,11 @@ id: TASK-089.17
 title: >-
   python install.py installs a clone on Windows, macOS and Linux with one
   command
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 05:53'
+updated_date: '2026-09-26 18:23'
 labels:
   - packaging
   - ux
@@ -114,4 +114,12 @@ Needs a real machine: Robert's machine for Windows and WSL. A real Mac for the m
 Not done here, on purpose: `graphify update .` (graphify-out/ is off-limits under the build rules) and the adr judge (the orchestrator commits; install.py is checked against ADR-015's own Enforcement block by tests/test_install.py).
 
 Validation, by the orchestrator on 2026-09-23: sweep 2026-09-23: 84 test files, one per process, fenced - 3282 passed, 0 failed, 10 skipped; test_llm_live has only live tests (exit 5, all deselected); git status hash identical before and after. Evidence: d0ea7837-…/scratchpad/ev/sweep/. /health's app_dir and data_dir also answered live in TASK-089.26's real run on port 4299. Criterion 1 and criterion 3's live line (the real uv naming both versions on Robert's machine) stay unticked: they need the fresh-clone runs in the build notes.
+
+Closed on Robert's decision of 2026-09-26 ('Kunnen we taken lekker afsluiten'): the remaining criteria need a person at a machine and will not be run; they stay unticked, and nothing here claims them verified. Open and not run: criterion 1 and criterion 3's live line. CI's three runners did run install.py --non-interactive green (run 35921408104 in the archive repo, and on the public repo).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+python install.py installs a clone with the pinned, sha256-checked uv, a frozen sync, the setup questions and the proof report; the start scripts send you back to it after a lock change. Proven by 56 tests, a hazard reproduction and three CI runners installing through it. Not run: a person's fresh clone on Windows and WSL (criterion 1, criterion 3's live line).
+<!-- SECTION:FINAL_SUMMARY:END -->

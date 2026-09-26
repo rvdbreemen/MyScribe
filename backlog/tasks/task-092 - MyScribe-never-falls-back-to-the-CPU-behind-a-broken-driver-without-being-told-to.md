@@ -3,11 +3,11 @@ id: TASK-092
 title: >-
   MyScribe never falls back to the CPU behind a broken driver without being told
   to
-status: In Progress
+status: Done
 assignee:
   - '@gpu-lane'
 created_date: '2026-09-22 10:32'
-updated_date: '2026-09-24 04:33'
+updated_date: '2026-09-26 18:22'
 labels:
   - gpu
   - ux
@@ -107,4 +107,12 @@ If step 2 shows "transcription on cpu" instead, the probe did not see the disabl
 Verified 2026-09-24 by the orchestrator in MyScribe-wt-gpu, fenced, one file per process: test_cpu_fallback 19, test_accel 8, test_doctor 56 (8 moved to test_accel), test_task093_census 7, test_setup_prove 43, test_stage_transcribe_mlx 12, test_stage_transcribe 69, test_stage_diarize 76, test_runner 13, test_web_settings 54, all passed; grep MUTANT finds nothing. ADR-018 is Proposed and signed as the agent; accepting it, and its open question about the wording of the three options Robert was shown, are his. #8 stays open for his reversible run: disable the display adapter in Device Manager and follow the five steps above.
 
 2026-09-24: ADR-018 accepted by Robert, after he confirmed the three options (commit 49f4c68). Only #8, his run behind a disabled display adapter, is left.
+
+2026-09-26: Robert decided not to run criterion 8 - he will not disable his card in Device Manager. It stays unticked and unverified on a real broken driver: the refusal is proven with the hardware probe and torch.cuda.is_available() replaced (tests/test_cpu_fallback.py), never behind an actually broken driver. The task is closed on his decision.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A machine with NVIDIA hardware whose driver cannot reach a device no longer transcribes on the CPU by itself: the job fails with GPU_UNREACHABLE and a sentence naming the driver, nvidia-smi and the Settings switch 'Transcribe on the CPU when the GPU is unavailable' (off by default, missing row = off); the speaker pass follows the same rule; a Mac, a card-less machine and CUDA_VISIBLE_DEVICES still use the CPU. ADR-018 Accepted. Verified red first, ten mutants, the per-file suite and CI on three runners. Criterion 8, a run behind a really broken driver, was not run: Robert decided on 2026-09-26 not to disable his card.
+<!-- SECTION:FINAL_SUMMARY:END -->

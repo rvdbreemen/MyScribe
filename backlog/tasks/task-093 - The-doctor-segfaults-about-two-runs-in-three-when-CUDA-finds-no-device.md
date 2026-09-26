@@ -1,11 +1,11 @@
 ---
 id: TASK-093
 title: The doctor segfaults about two runs in three when CUDA finds no device
-status: In Progress
+status: Done
 assignee:
   - '@gpu-lane'
 created_date: '2026-09-22 11:10'
-updated_date: '2026-09-23 22:01'
+updated_date: '2026-09-26 18:23'
 labels:
   - gpu
   - bug
@@ -111,4 +111,12 @@ The orchestrator's GitHub CI run 35921408104 (branch task-089-installer-first-sl
 Two of those three runs took the CPU path; macOS ran on MLX and says nothing about this crash. The runs show that a card-less machine CAN complete. They do not rule out an intermittent crash there. They ran install.py's proof in process, not the python -m scribe.doctor command, and on Robert's machine with the card hidden the in-process reduced reproduction did not crash in two attempts either, while the full command crashed two runs in three. So a clean in-process run is what one would expect even where the full command crashes. Settling #3 wants repeated runs of the full doctor command on a card-less runner, for example the census script with --only full on a probe branch.
 
 Verified 2026-09-24 by the orchestrator in MyScribe-wt-gpu, fenced, one file per process: test_cpu_fallback 19, test_accel 8, test_doctor 56 (8 moved to test_accel), test_task093_census 7, test_setup_prove 43, test_stage_transcribe_mlx 12, test_stage_transcribe 69, test_stage_diarize 76, test_runner 13, test_web_settings 54, all passed; grep MUTANT finds nothing. #3 is answered as far as one run per platform can answer it: GitHub CI run 35921408104 (2026-09-23), runners with no NVIDIA card, the install.py proof loaded large-v3-turbo through the same load_model path and completed with exit 0 (Windows cu128 torch on cpu/int8, 78 words in 49.3 s; Ubuntu cu128 on cpu/int8, 76 words in 57.7 s; macOS on MLX). A card-less machine can complete; one run cannot rule out an intermittent crash like the hidden card's two in three. #1, #4 and #5 wait on Robert's census run: .venv/Scripts/python scripts/task093_crash_census.py --out task093-census.jsonl (40-50 minutes), then send back the .jsonl and its summary.
+
+Closed on Robert's decision of 2026-09-26 ('Kunnen we taken lekker afsluiten'): the remaining criteria need a person at a machine and will not be run; they stay unticked, and nothing here claims them verified. Open and not run: criteria 1, 4 and 5. The crash itself is not fixed; the census script stays in scripts/ for whoever picks it up.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A doctor that dies in native code names the check it died in, and a census script is ready to characterise the crash. CI runners without an NVIDIA card completed the proof's CPU transcription once per platform. Not done: the census run, the root cause and a fix (criteria 1, 4, 5) - the crash with a hidden card is made visible, not resolved.
+<!-- SECTION:FINAL_SUMMARY:END -->

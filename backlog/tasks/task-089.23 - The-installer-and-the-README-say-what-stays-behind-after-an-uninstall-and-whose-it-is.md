@@ -3,11 +3,11 @@ id: TASK-089.23
 title: >-
   The installer and the README say what stays behind after an uninstall, and
   whose it is
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 22:52'
+updated_date: '2026-09-26 18:23'
 labels:
   - packaging
   - windows
@@ -71,4 +71,12 @@ The task text's 'MyScribe may have installed ... a model of 3.4 to 7.6 GB' was n
 TESTS: tests/test_uninstall_text.py, 5 tests, red first on a copy of the worktree's HEAD with only the new test added (5 failed, red-test_uninstall_text.txt), green after (5 passed). They pin the registry entry against autostart's own constants, ADR-011 in the header, the welcome text's two promises, the README and .iss agreeing on the program folder, and an Uninstalling section per platform naming the pointer file and both login-item files. tests/test_launcher.py (reads WelcomeLabel2): 102 passed, 1 skipped.
 
 #5 NOT RUN - Robert's, on Windows or in a VM: install a build of this branch's installer, switch Settings > Start at login on, check reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v MyScribe (a value), uninstall under Settings > Apps, then reg query again (expected: 'unable to find'), check that %LOCALAPPDATA%\Programs\MyScribe is gone and %LOCALAPPDATA%\MyScribe is still there, and that the other Run values are all still present. The macOS and Linux sections are written from the code and say so; macOS is point 7 of docs/macos-acceptance.md.
+
+Closed on Robert's decision of 2026-09-26 ('Kunnen we taken lekker afsluiten'): the remaining criteria need a person at a machine and will not be run; they stay unticked, and nothing here claims them verified. Open and not run: criterion 5.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The installer's welcome text and the README say what an uninstall leaves behind and whose it is; the uninstaller removes the login item and writes none at install. Proven by tests against autostart's own constants and Inno Setup's documentation. Not run: a real uninstall on Windows (criterion 5).
+<!-- SECTION:FINAL_SUMMARY:END -->

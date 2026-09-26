@@ -3,10 +3,10 @@ id: TASK-089
 title: >-
   One installer on every platform detects what the machine already has, asks
   only what is open, and proves the result
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-20 18:40'
-updated_date: '2026-09-23 22:52'
+updated_date: '2026-09-26 18:23'
 labels:
   - packaging
   - ux
@@ -83,4 +83,12 @@ Criteria 6, 7 and 9, 2026-09-23 (orchestrator).
 - MyScribe's loopback probes behind a proxy: measured on Robert's machine for TASK-089.05; the product's own probes are covered by tests, not by a proxy run.
 - A fresh clone through install.py on Windows and WSL by a person (TASK-089.17 #1, #3): CI ran it on three runners; Robert's own run is still open.
 - A real uninstall on Windows (TASK-089.23 #5), a real login (TASK-089.21 #6), and adoption on a copy of Robert's library (TASK-089.19's recommended run).
+
+Closed on Robert's decision of 2026-09-26 ('Kunnen we taken lekker afsluiten'): the remaining criteria need a person at a machine and will not be run; they stay unticked, and nothing here claims them verified. Open and not run: criteria 1, 2, 3 and 8; the macOS list in docs/macos-acceptance.md is ready for a Mac sitting.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One installer on every platform detects what the machine already has, asks only what is open, and proves the result: built across 26 subtasks, released as v0.6.0. Not run by a person: the real Tk window on Windows (1), Robert's fresh clone (2), 'nothing asked on Robert's machine' (3), and the macOS list (8, 10's sitting). docs/macos-acceptance.md holds the Mac points.
+<!-- SECTION:FINAL_SUMMARY:END -->
