@@ -282,6 +282,12 @@ def create_app(
         try:
             yield
         finally:
+            # Receive from phone (TASK-096): a door left open closes with the
+            # app, which releases its port and withdraws myscribe.local.
+            # Nothing records it as open, so the next start finds it closed.
+            door = getattr(app.state, "phone_door", None)
+            if door is not None:
+                door.close("app stopped")
             if feed_watcher is not None:
                 feed_watcher.stop()
             if watcher is not None:

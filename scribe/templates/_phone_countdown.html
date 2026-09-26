@@ -1,0 +1,12 @@
+{# The part of the open panel that changes: minutes left and what came in.
+   Polls itself once a second; when the door has closed, /phone/countdown
+   answers 286 with the closed panel, retargeted over #phone-panel. #}
+<div id="phone-live" hx-get="/phone/countdown" hx-trigger="every 1s" hx-swap="outerHTML">
+  <p>Closes by itself in <strong>{{ countdown }}</strong>.</p>
+  {% if received %}
+  <p>Received from the phone:</p>
+  <ul class="phone-received">
+    {% for name in received %}<li>{{ name }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>

@@ -8,7 +8,7 @@
       "path": "ADR-001-one-web-process-a-supervisor-thread-and-a-runner-child-per-job.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-09-20",
+      "date": "2026-09-26",
       "decision_summary": "Chosen option: one FastAPI process + supervisor thread + runner child per job, because it keeps the GPU isolation the...",
       "topics": [
         "gpu",
@@ -1351,6 +1351,72 @@
         ],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-022",
+      "title": "A phone may send a recording through a temporary upload-only door with a secret URL",
+      "path": "ADR-022-a-phone-may-send-a-recording-through-a-temporary-upload-only-door-with-a-secret-url.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-26",
+      "decision_summary": "Chosen option: a separate upload-only listener, decided by Robert on 2026-09-26 with the four options in front of him...",
+      "topics": [
+        "ingest",
+        "network",
+        "security"
+      ],
+      "aliases": [
+        "myscribe.local",
+        "phone door",
+        "receive from phone"
+      ],
+      "components": [
+        "scribe.web.phone_door",
+        "scribe.web.phone_ui"
+      ],
+      "symbols": [
+        "Door",
+        "file_upload",
+        "lan_address",
+        "ZeroconfPublisher"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Listen only while open: opened by a form post to the app, so behind scribe.guard, and closed after 15 minutes, on Close, or when the app stops. Nothing persists it open.",
+          "Serve its own ASGI (Asynchronous Server Gateway Interface) app on its own port (4243) and the LAN address of the default route; no route, static file or template of the app.",
+          "Put a new secrets.tokenurlsafe(32) in the path for every opening; answer 404 to any other path before reading a body; compare with hmac.comparedigest.",
+          "Keep the secret out of every log: the app log (ADR-014 still holds: the log observes) and uvicorn's access log, which is off for this listener only.",
+          "Take audio and video only, by the extensions probe.MEDIAEXTENSIONS lists, up to 4 GiB counted as the bytes arrive.",
+          "Hand an accepted file to transcribedialog.fileupload, the helper the laptop's upload uses, with the stored defaults and no folder."
+        ],
+        "must_not": [
+          "Widen guard.ALLOWEDHOSTS or bind the app to anything but 127.0.0.1.",
+          "Add a firewall rule, or run anything elevated.",
+          "Serve anything to the phone but the upload form and a sentence back."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testwebphone.py::testnorouteofthemainappanswersthroughthedoor walks every route of createapp() through the door's port, with and without the secret in front.",
+          "tests/testphonedoor.py::testthesecretappearsinnolog gives uvicorn.access a handler, as the app's server does, and reads the app log.",
+          "tests/testwebphone.py::testarestartfindsthedoorclosedandtheoldportreleased."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -1369,6 +1435,12 @@
     {
       "source": "ADR-001",
       "target": "ADR-015",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-001",
+      "target": "ADR-022",
       "type": "related",
       "resolved": true
     },
@@ -1808,6 +1880,18 @@
       "source": "ADR-021",
       "target": "ADR-017",
       "type": "supersedes",
+      "resolved": true
+    },
+    {
+      "source": "ADR-022",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-022",
+      "target": "ADR-014",
+      "type": "related",
       "resolved": true
     }
   ]

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Receive from phone - MyScribe{% endblock %}
+
+{% block content %}
+{# The panel as a page of its own: what a browser without scripting gets
+   from the library's "Receive from phone" link, and what its plain forms
+   post back to. #}
+<div class="dialog-page">
+  <p class="crumbs"><a href="/">← Back to the library</a></p>
+  <h1>Receive from phone</h1>
+  {% include "_phone_panel.html" %}
+</div>
+{% endblock %}

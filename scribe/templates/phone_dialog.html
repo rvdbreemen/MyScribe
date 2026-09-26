@@ -1,0 +1,13 @@
+{#
+  Receive from phone, as the library's dialog (scribe/web/phone_ui.py).
+  The dialog is marked data-stay-open in library.html: opening the door is
+  a POST from inside it, and the panel it answers with is what the person
+  came for, so the dialog must not close on it.
+#}
+<div class="phone">
+  <header class="dialog-head">
+    <h2>Receive from phone</h2>
+    <button type="button" data-close-dialog aria-label="Close">×</button>
+  </header>
+  {% include "_phone_panel.html" %}
+</div>

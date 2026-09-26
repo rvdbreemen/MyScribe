@@ -505,6 +505,15 @@ wheels = [
 ]
 
 [[package]]
+name = "ifaddr"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/ac/fb4c578f4a3256561548cd825646680edcadb9440f3f68add95ade1eb791/ifaddr-0.2.0.tar.gz", hash = "sha256:cc0cbfcaabf765d44595825fb96a99bb12c79716b73b44330ea38ee2b0c4aed4", size = 10485, upload-time = "2022-06-15T21:40:27.561Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/1f/19ebc343cc71a7ffa78f17018535adc5cbdd87afb31d7c34874680148b32/ifaddr-0.2.0-py3-none-any.whl", hash = "sha256:085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748", size = 12314, upload-time = "2022-06-15T21:40:25.756Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -815,6 +824,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "pytorch-lightning" },
     { name = "rapidfuzz" },
+    { name = "segno" },
     { name = "starlette" },
     { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'win32'" },
@@ -823,6 +833,7 @@ dependencies = [
     { name = "uvicorn" },
     { name = "watchdog" },
     { name = "yt-dlp" },
+    { name = "zeroconf" },
 ]
 
 [package.dev-dependencies]
@@ -853,6 +864,7 @@ requires-dist = [
     { name = "python-multipart", specifier = "==0.0.32" },
     { name = "pytorch-lightning", specifier = "==2.6.6" },
     { name = "rapidfuzz", specifier = "==3.14.6" },
+    { name = "segno", specifier = "==1.6.6" },
     { name = "starlette", specifier = "==1.6.0" },
     { name = "torch", marker = "sys_platform != 'win32'", specifier = "==2.10.0" },
     { name = "torch", marker = "sys_platform == 'win32'", specifier = "==2.10.0", index = "https://download.pytorch.org/whl/cu128" },
@@ -861,6 +873,7 @@ requires-dist = [
     { name = "uvicorn", specifier = "==0.52.4" },
     { name = "watchdog", specifier = "==6.0.0" },
     { name = "yt-dlp", specifier = "==2026.8.19" },
+    { name = "zeroconf", specifier = "==0.151.3" },
 ]
 
 [package.metadata.requires-dev]
@@ -1646,6 +1659,15 @@ wheels = [
 ]
 
 [[package]]
+name = "segno"
+version = "1.6.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/2e/b396f750c53f570055bf5a9fc1ace09bed2dff013c73b7afec5702a581ba/segno-1.6.6.tar.gz", hash = "sha256:e60933afc4b52137d323a4434c8340e0ce1e58cec71439e46680d4db188f11b3", size = 1628586, upload-time = "2025-03-12T22:12:53.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/02/12c73fd423eb9577b97fc1924966b929eff7074ae6b2e15dd3d30cb9e4ae/segno-1.6.6-py3-none-any.whl", hash = "sha256:28c7d081ed0cf935e0411293a465efd4d500704072cdb039778a2ab8736190c7", size = 76503, upload-time = "2025-03-12T22:12:48.106Z" },
+]
+
+[[package]]
 name = "setuptools"
 version = "84.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2031,4 +2053,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1e/e0/832fa4ca334b766a06933a196066edc3dba37cdb6f14cd98d59bcc69a4b4/yt_dlp-2026.8.19.tar.gz", hash = "sha256:9e213e48cea35c66b378e4447903f118f6392a5fa380a2b6d7070ec86f4e0af1", size = 3052025, upload-time = "2026-08-19T23:48:59.291Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/69/b2/8cd1613f56eed7ceb64fbd4df3f1c01246bfb098e6f398228bafda22b80b/yt_dlp-2026.8.19-py3-none-any.whl", hash = "sha256:1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf", size = 3185533, upload-time = "2026-08-19T23:48:56.925Z" },
+]
+
+[[package]]
+name = "zeroconf"
+version = "0.151.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ifaddr" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2b/7f/bb22975bbbc04765920b766e433410422794568053bff0ab5b3f0bf0197c/zeroconf-0.151.3.tar.gz", hash = "sha256:ce6c548e665759b6150cef4db9ab9d7bdd89857e90c513abd6b7340bdd7dbd6a", size = 223165, upload-time = "2026-08-30T03:37:03.973Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/6e/1176db8a6e543d15f68bc5cbb4e15d6379884699435dc9872dfd29eabc2f/zeroconf-0.151.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:dbec6e928e75629063bd29775611c390bbd3737e9a5b6546545bcf6cebbc85d0", size = 1204524, upload-time = "2026-08-30T03:55:50.636Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/0e/e9371da3ef71ac66bfe3b3429b2ce5c880afb1471a27d15e1fb266fbc0f7/zeroconf-0.151.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bbd2b73902a44426080190d653fa35638a93b6c6725c2be76888b4b614bc0b48", size = 1424509, upload-time = "2026-08-30T03:55:56.073Z" },
+    { url = "https://files.pythonhosted.org/packages/33/12/dc8da1b4fd168eabf6bc3af77b5b4480063386e8763f76eb55be5933a999/zeroconf-0.151.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:e573682524d71e8e44b6cdbadbeb9c472a8c3af21de7eead794661b250e04fa1", size = 1440967, upload-time = "2026-08-30T03:56:02.272Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/89/8336319bf48950316142e6a620eeb3fbbdaef8ce0d2186202ad5c8997cde/zeroconf-0.151.3-cp312-cp312-win_amd64.whl", hash = "sha256:fb1880444668e2a384e925490f1d969ae702bda4472c112a18255446f98ad86b", size = 1074482, upload-time = "2026-08-30T03:56:06.381Z" },
 ]

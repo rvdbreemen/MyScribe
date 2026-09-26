@@ -27,3 +27,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-019 | Accepted | - | Chosen option: the pointer's second fact, reported through a result file, because it is the only one that reaches bot... |
 | ADR-020 | Accepted | `scribe/**` | Chosen option: A. |
 | ADR-021 | Accepted | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: newest release, checked at install time, because Robert chose it and it keeps what ADR-017 protects -... |
+| ADR-022 | Proposed | `scribe/**` | Chosen option: a separate upload-only listener, decided by Robert on 2026-09-26 with the four options in front of him... |

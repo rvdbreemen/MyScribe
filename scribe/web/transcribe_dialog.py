@@ -262,14 +262,36 @@ async def upload(request: Request) -> Response:
     params = options.to_params()
 
     for part in uploads:
-        row = await run_in_threadpool(
-            media.ingest_stream, conn, part.file, part.filename, folder_id=folder_id
+        await run_in_threadpool(
+            file_upload, conn, part.file, part.filename, params=params, folder_id=folder_id
         )
-        applog.log("ingest.upload", filename=part.filename, media=row["id"],
-                   bytes=row.get("size_bytes"), deduped=bool(row.get("deduped")))
-        jobs.enqueue(conn, JOB_TYPE, media_id=row["id"], params=params)
     save_defaults(conn, options)
     return _queued(request, conn, len(uploads))
+
+
+def file_upload(
+    conn: sqlite3.Connection,
+    stream,
+    filename: str,
+    *,
+    params: dict,
+    folder_id: int | None = None,
+    via: str = "upload",
+) -> dict:
+    """One uploaded file in, one queued transcribe job out.
+
+    The body of the laptop's upload loop, and the whole of what the phone
+    door (`phone_ui`, TASK-096) does with a file it accepted, so the two
+    cannot drift: same store, same dedupe, same job. Ingest and enqueue run
+    together, in the caller's worker thread, so a connection that dies
+    between them cannot leave a recording without its job. ``via`` names the
+    door in the app log (`ingest.upload`, `ingest.phone`).
+    """
+    row = media.ingest_stream(conn, stream, filename, folder_id=folder_id)
+    applog.log(f"ingest.{via}", filename=filename, media=row["id"],
+               bytes=row.get("size_bytes"), deduped=bool(row.get("deduped")))
+    jobs.enqueue(conn, JOB_TYPE, media_id=row["id"], params=params)
+    return row
 
 
 @router.post("/transcribe/path", include_in_schema=False)

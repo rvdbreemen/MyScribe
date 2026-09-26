@@ -1,0 +1,54 @@
+{#
+  The one page a phone sees through the door (scribe/web/phone_door.py).
+
+  Deliberately alone: it does not extend base.html, because base.html links
+  /static/app.css and htmx, and the door serves no /static - nothing but this
+  page. Plain HTML that Safari on an iPhone shows as it is: no script, no
+  stylesheet link, nothing from the internet. The style is inline and small.
+
+  Context:
+      field      the multipart field name the door reads
+      received   the file name that was just taken in, or None
+      message    a refusal as a sentence, or None
+#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Send to MyScribe</title>
+<style>
+  body { font: 17px/1.45 -apple-system, system-ui, sans-serif; margin: 0; padding: 24px 16px; color: #1d1d1f; background: #fafafa; }
+  main { max-width: 32rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  p { margin: 12px 0; }
+  .received { background: #e7f5ea; border-radius: 10px; padding: 12px; }
+  .refused { background: #fdecea; border-radius: 10px; padding: 12px; }
+  input[type=file] { display: block; margin: 16px 0; font-size: 1rem; }
+  button { font-size: 1.05rem; padding: 12px 20px; border-radius: 10px; border: 0; background: #0a64d8; color: #fff; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1c1c1e; color: #f2f2f7; }
+    .received { background: #1f3b26; }
+    .refused { background: #4a1f1c; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Send a recording to MyScribe</h1>
+  {% if received %}
+  <p class="received" role="status">Received {{ received }}; MyScribe is transcribing it on the laptop.</p>
+  {% endif %}
+  {% if message %}
+  <p class="refused" role="alert">{{ message }}</p>
+  {% endif %}
+  <form method="post" enctype="multipart/form-data">
+    <label for="recording">Choose an audio or video file</label>
+    <input id="recording" type="file" name="{{ field }}" accept="audio/*,video/*" required>
+    <button type="submit">Send</button>
+  </form>
+  <p>This page only sends. It cannot see anything on the laptop, and it stops working when the laptop closes it.</p>
+</main>
+</body>
+</html>

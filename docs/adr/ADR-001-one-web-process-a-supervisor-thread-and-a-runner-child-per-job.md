@@ -11,6 +11,7 @@ supersedes: []
 superseded_by: null
 related:
   - "ADR-015"
+  - "ADR-022"
 topics:
   - "process-architecture"
   - "job-orchestration"
@@ -57,6 +58,11 @@ status_history:
     status: Accepted
     changed_by: Claude (agent, session 2026-09-20)
     reason: Related to ADR-015
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-26
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-26)
+    reason: Related to ADR-022
     changed_via: adr-kit lifecycle
 ```
 

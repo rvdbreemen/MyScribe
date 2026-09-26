@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Added
+
+- **Receive from phone.** A button in the library opens a door for 15
+  minutes through which a phone on the same Wi-Fi sends a recording to the
+  laptop: scan the QR code, pick a file, and it is queued like a
+  drag-and-drop, with your usual settings. The phone sees an upload page and
+  nothing of the library. The door is a separate listener on port 4243
+  behind a one-time secret URL, audio and video only up to 4 GB, published
+  as myscribe.local while it is open, and it closes by itself, on Close, or
+  when MyScribe stops. MyScribe itself still answers this machine only
+  (TASK-096, ADR-022, Proposed). New dependencies: segno and zeroconf.
+
 ### Changed
 
 - The Ollama install offer follows Ollama's newest release instead of a pinned
