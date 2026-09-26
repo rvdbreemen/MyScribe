@@ -893,7 +893,7 @@
       "path": "ADR-015-first-run-setup-is-one-app-side-engine-behind-a-json-contract-and-every-front-end-only-renders-it.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-09-21",
+      "date": "2026-09-26",
       "decision_summary": "Chosen option: one app-side engine behind a versioned JSON contract: only there does a question exist once, does dete...",
       "topics": [
         "installer",
@@ -1032,8 +1032,8 @@
       "title": "MyScribe installs third-party software only when it is absent, shown and agreed to, and leaves an Ollama that is there alone",
       "path": "ADR-017-myscribe-installs-third-party-software-only-when-it-is-absent-shown-and-agreed-to-and-leaves-an-ollama-that-is-there-alone.md",
       "format": "madr",
-      "status": "Accepted",
-      "date": "2026-09-21",
+      "status": "Superseded",
+      "date": "2026-09-26",
       "decision_summary": "Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b...",
       "topics": [
         "ollama",
@@ -1053,32 +1053,10 @@
       ],
       "context_scope": "selective",
       "decision_contract": {
-        "must": [
-          "Offer an install only when the software is absent by MyScribe's own test, in which any doubt, an unreadable state included, reads as present. For Ollama (TASK-089.06): none on the search path or in the known locations, no OLLAMA variable...",
-          "Before the question, show the artifact - its URL (Uniform Resource Locator), size and sha256 - the exact command line and where it installs. The default is No, and a skip is a No.",
-          "Pin the artifact and verify its sha256, and on Windows its Authenticode signer, before anything runs; run exactly what was shown. Ollama's script accepts only a subject carrying O=Ollama Inc. (install.ps1:87); the pinned installer's cert...",
-          "Where the install needs root, show the vendor's commands as download, read, then run, and let the person run them: a root script that can install drivers is not run behind a yes or no.",
-          "Write the marker only after the installer has finished successfully, so that a failed or cancelled download leaves none. Bind it to the version and the path of what was installed - the default path alone is the same for everybody - and d...",
-          "Ask where a new Ollama keeps its models only when the default volume is too small (G8). Its default is Yes, because a No ends the offer. On Windows set OLLAMAMODELS for the user's account before the installer starts; elsewhere show the e...",
-          "Keep the pin under scribe/, which the payload ships (packaging/buildpayload.py:38). Its owner is a step in docs/RELEASING.md that bumps it and hashes the download, and a CI (continuous integration) check that the pinned URL resolves and...",
-          "Say in the installer's welcome text (packaging/windows/myscribe.iss:51) and the readme that an Ollama and a model MyScribe installed survive an uninstall and belong to the user, and how to remove them (M8).",
-          "Keep the setup child's handle and stop that one process on Quit, not its tree; while a third-party installer runs, refuse Quit and say why (M10)."
-        ],
-        "must_not": [
-          "Install over, upgrade, start, stop, pull into or reconfigure an Ollama that is present, whatever its state - except the pull under Exceptions.",
-          "Offer the installer while any Ollama binary exists, marker or not.",
-          "Start an Ollama, the one MyScribe has just installed included.",
-          "Pipe a remote script into a shell, run a script as root on the user's behalf, leave the presence test to a vendor's installer, or fall back to an unpinned download.",
-          "Set OLLAMAMODELS, or any other setting of Ollama's, outside an install MyScribe makes in that sitting.",
-          "Say that Quit is clean before TASK-089.18 has measured it."
-        ],
-        "exceptions": [
-          "The pull into MyScribe's own install (G6). While the marker stands, the unfinished pull of the one model that was shown and agreed to before the install may be offered again: in a sitting somebody opened with --setup, never by a start, a...",
-          "macOS is guided, and unverified. The verified .dmg is opened, the person drags the app across, and MyScribe waits with \"Check again\". Nobody has run that or the presence test's install locations: the Mac's criteria run in one bundled sit..."
-        ],
-        "verification": [
-          "The tests named under Confirmation, once they exist, and adr-judge --dry-run-enforcement ADR-017 as run under Enforcement."
-        ]
+        "must": [],
+        "must_not": [],
+        "exceptions": [],
+        "verification": []
       },
       "scope": {
         "path_globs": [
@@ -1091,7 +1069,7 @@
         "documents_shipped": false,
         "verified_in": [],
         "supersedes": [],
-        "superseded_by": null
+        "superseded_by": "ADR-021"
       }
     },
     {
@@ -1303,6 +1281,73 @@
         "verified_in": [],
         "supersedes": [
           "ADR-010"
+        ],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-021",
+      "title": "The Ollama offer installs Ollama's newest release, checked against two published digests at install time, instead of a pinned one",
+      "path": "ADR-021-the-ollama-offer-installs-ollama-s-newest-release-checked-against-two-published-digests-at-install-time-instead-of-a-pinned-one.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-09-26",
+      "decision_summary": "Chosen option: newest release, checked at install time, because Robert chose it and it keeps what ADR-017 protects -...",
+      "topics": [
+        "ollama",
+        "release integrity",
+        "third-party software"
+      ],
+      "aliases": [
+        "Ollama newest release",
+        "releases/latest",
+        "sha256sum.txt",
+        "unpinned Ollama"
+      ],
+      "components": [
+        "scribe.ollama_setup",
+        "scribe/ollama_offer.json"
+      ],
+      "symbols": [
+        "install_plan",
+        "latest_release",
+        "release_client"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Build the offer only when Ollama is absent, the provider is Ollama or undecided, and the install question will be put. Only then ask repos/ollama/ollama/releases/latest, which skips drafts and prereleases, and the release's sha256sum.txt...",
+          "Take the URL, size and sha256 of this platform's asset from that answer and show them before the question, with the command line, the folder, no administrator and self-updates (ADR-017's Must, unchanged).",
+          "Refuse unless the API digest and the sha256sum.txt line agree, and unless the downloaded file equals both. On Windows also verify the signer O=Ollama Inc..",
+          "End every failure in one sentence with ollama.com/download and Check again, naming a configured proxy: GitHub unreachable or rate-limited, a 404, a missing asset, digest or sha256sum.txt, two digests that disagree. Nothing is written.",
+          "Bind the marker to the version of the release that was fetched and to the path, as ADR-017 says.",
+          "Send a GITHUBTOKEN from the environment to api.github.com only, and never print, return or store it. Work without one."
+        ],
+        "must_not": [
+          "Download an Ollama installer that was not shown, or whose digest came from one source only.",
+          "Ask GitHub from a plan that makes no offer: a present state, a stored cloud provider, or a start whose sitting already put the question.",
+          "Download from a vendor URL that publishes no digest (the ollama.com/download installer links).",
+          "Everything ADR-017's Must Not lists, which stands."
+        ],
+        "exceptions": [
+          "None beyond ADR-017's two, which stand: the pull into MyScribe's own install, and the guided macOS path."
+        ],
+        "verification": [
+          "The tests under Confirmation, and adr-judge --dry-run-enforcement ADR-021."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "{scribe/**,packaging/launcher/**,install.py}"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [
+          "ADR-017"
         ],
         "superseded_by": null
       }
@@ -1646,6 +1691,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-015",
+      "target": "ADR-021",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-016",
       "target": "ADR-015",
       "type": "related",
@@ -1673,6 +1724,18 @@
       "source": "ADR-017",
       "target": "ADR-016",
       "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-017",
+      "target": "ADR-021",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-017",
+      "target": "ADR-021",
+      "type": "superseded-by",
       "resolved": true
     },
     {
@@ -1726,6 +1789,24 @@
     {
       "source": "ADR-020",
       "target": "ADR-010",
+      "type": "supersedes",
+      "resolved": true
+    },
+    {
+      "source": "ADR-021",
+      "target": "ADR-015",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-021",
+      "target": "ADR-017",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-021",
+      "target": "ADR-017",
       "type": "supersedes",
       "resolved": true
     }

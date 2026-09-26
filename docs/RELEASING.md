@@ -13,14 +13,6 @@ a thing the next release can hit again.
 uv lock
 
 # 2. The CHANGELOG entry, newest first, dated
-# 2b. The Ollama pin (scribe/ollama_release.json, ADR-017): is it still the
-#     release we mean to offer? If Ollama released since, bump `tag`, the
-#     per-platform url/bytes/sha256 and `read`, and the three numbers in
-#     scribe/footprint.json's "ollama" block (a test holds them equal). Then
-#     download both installers, hash them, and compare with the API digest
-#     and the release's sha256sum.txt - the check below reads the metadata
-#     only and never downloads an installer:
-.venv/Scripts/python -m scribe.ollama_setup --check-pin
 # 3. Commit, push, let ci.yml go green on all three operating systems
 # 4. Merge to main - a release should point at code that is on main
 # 5. Tag and push
@@ -39,20 +31,16 @@ their smoke tests have passed.
 | `build` (×3) | The artifact is built on its own OS **and started**: `build_release.py --smoke` runs the frozen launcher against a fresh home - first sync, `/health`, a page, quit. "The build produced a file" is not the thing a release needs to be true. |
 | `publish` | SHA256SUMS, the attestation where GitHub offers one, and the GitHub Release. Tag runs only; a `workflow_dispatch` run uploads the same artifacts and publishes nothing. |
 
-## The Ollama pin
+## Ollama is not a release step
 
-`scribe/ollama_release.json` pins the one Ollama release MyScribe offers to
-install when a machine has none (ADR-017). It has an owner: this step, and the
-`--check-pin` step in `ci.yml`, which turns red the day the pinned URL stops
-resolving or its size or digest no longer match the release's metadata. Red
-there means the release step above, not a fix to the check.
-
-What the check reads, so that nobody has to download 1.57 GB per CI run: the
-GitHub API's `size` and `digest` fields for the tag (`releases/tags/<tag>`,
-never the newest release), the release's own `sha256sum.txt` as a second
-source, and one HEAD per artifact URL, whose `Content-Length` must be the
-pinned byte count. The release step is where the artifacts are actually
-downloaded and hashed by hand - GitHub's digest is a single source until then.
+A release of MyScribe no longer carries an Ollama version. Until TASK-095 it
+pinned one in a file under `scribe/`, and a step here bumped it; Robert
+decided on 2026-09-26 to follow Ollama's newest release instead (ADR-021,
+Proposed). What guarantees integrity now happens on the person's machine,
+when the offer is made: the URL, size and sha256 come from GitHub's
+`releases/latest`, the downloaded file must match both that digest and the
+release's own `sha256sum.txt`, and on Windows its signer must be Ollama Inc.
+Anything else ends on ollama.com/download and Check again. Nothing to bump.
 
 ## A rehearsal without a tag
 

@@ -1101,7 +1101,10 @@ def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | N
                           "that importing a recording is never refused for want of room."
                           if floor else "."))
     if size["ollama_gb"]:
-        lines.append(f"Up to {size['ollama_gb']:.1f} GB more if you later say yes to Ollama - its "
+        # "About", not "up to": the offer installs Ollama's newest release,
+        # whose size is only known when it is fetched (TASK-095), so this is
+        # an estimate from one past release and its note says so.
+        lines.append(f"About {size['ollama_gb']:.1f} GB more if you later say yes to Ollama - its "
                      f"installer and the {size['ollama_model']} model ({size['ollama_note']}).")
     lines.append("")
     lines.append("Free space now:")

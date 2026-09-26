@@ -110,7 +110,9 @@ with a Skip that says what skipping costs:
 - **Who answers questions about a transcript.** A cloud provider, or Ollama on
   this machine. When there is no Ollama, MyScribe offers to install one and a
   model that fits, showing the download, its size and the exact command first.
-  An Ollama that is already there is left alone.
+  It offers Ollama's newest release, asked of GitHub at that moment, and the
+  download must match both digests the release publishes. An Ollama that is
+  already there is left alone.
 - **A folder to watch** for new recordings, and **whether MyScribe starts
   when you log in** (default No). Both are the same switches Settings has.
 
@@ -402,8 +404,9 @@ first-run setup as one engine behind a JSON contract that every front-end
 only renders (ADR-015); and third-party software installed only when it is
 absent, shown and agreed to, leaving an Ollama that is there alone (ADR-017).
 
-Nothing is Proposed. The installer's three records were accepted on
-2026-09-21; their design is in
+One record is Proposed: ADR-021, the Ollama offer following Ollama's newest
+release instead of a pin (TASK-095); it waits for Robert. The installer's
+three records were accepted on 2026-09-21; their design is in
 `docs/superpowers/specs/2026-09-20-installer-design.md`, what the short
 keys in it mean in `2026-09-20-installer-decisions.md`, and the work
 under TASK-089, which is under way.

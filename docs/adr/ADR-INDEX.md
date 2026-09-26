@@ -22,7 +22,8 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-014 | Accepted | `scribe/**` | Chosen option: one pattern over scribe/, with the one reader marked. |
 | ADR-015 | Accepted | `{packaging/launcher/**,install.py}`, `scribe/setup.py`, `install.py` | Chosen option: one app-side engine behind a versioned JSON contract: only there does a question exist once, does dete... |
 | ADR-016 | Accepted | `scribe/**` | Chosen option: a missing row selects no provider, decided by Robert on 2026-09-20 (R1 in docs/superpowers/specs/2026-... |
-| ADR-017 | Accepted | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b... |
+| ADR-017 | Superseded | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: install only when absent, shown and agreed to, from a pinned and verified artifact, with the marker, b... |
 | ADR-018 | Accepted | - | Chosen option: refuse, with a switch that is off by default, decided by Robert on 2026-09-22 (TASK-092 description). |
 | ADR-019 | Accepted | - | Chosen option: the pointer's second fact, reported through a result file, because it is the only one that reaches bot... |
 | ADR-020 | Accepted | `scribe/**` | Chosen option: A. |
+| ADR-021 | Accepted | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: newest release, checked at install time, because Robert chose it and it keeps what ADR-017 protects -... |

@@ -1703,7 +1703,7 @@ def test_no_install_question_and_nothing_run_or_downloaded_in_any_present_state(
     assert _rows(library) == {}
 
 
-def test_the_offer_is_built_when_ollama_is_absent_and_no_provider_row_says_otherwise(library, no_weights, fenced_home, nothing_runs):
+def test_the_offer_is_built_when_ollama_is_absent_and_no_provider_row_says_otherwise(library, no_weights, fenced_home, nothing_runs, canned_release):
     """The conftest stub answers `absent`. The question, its default No, the
     model question under it, and what a skip costs."""
     document = setup.plan(library)
@@ -1716,7 +1716,8 @@ def test_the_offer_is_built_when_ollama_is_absent_and_no_provider_row_says_other
     model = question(document, "ollama_new_model")
     assert model is not None and model["shown_if"] == {"question": "ollama_install", "equals": "yes"}
     assert model["default"] == "qwen3.5:4b"
-    assert document["ollama"]["offer"]["url"] == ollama_setup.release()["artifacts"][sys.platform if sys.platform in ("win32", "darwin") else "linux"]["url"]
+    asset = canned_release["assets"][document["ollama"]["offer"]["name"]]
+    assert document["ollama"]["offer"]["url"] == asset["url"], "the fetched release's, not a pin's (TASK-095)"
 
 
 def test_the_offer_stays_out_when_a_cloud_provider_is_stored_and_in_when_ollama_is(library, no_weights, fenced_home, nothing_runs):
@@ -2693,3 +2694,156 @@ def test_a_sitting_with_nobody_there_makes_no_os_write(library, no_weights, monk
     assert set(login_entry.calls) <= {"read"}, "a plan reads; nothing here writes"
     assert login_entry.value is None
     assert not setup.stamp_path().exists()
+
+
+# --- TASK-095: GitHub is asked only when an offer is really built --------------------
+#
+# The offer now asks GitHub for Ollama's newest release. These tests put the real
+# reader back (`latest_release_unstubbed`) and point its client at a transport
+# whose every request raises: a path that asks nothing passes, and the one path
+# that must ask - absent, provider Ollama or undecided, the question still to be
+# put - is shown to reach it, so the quiet paths are not quiet by accident.
+
+
+class GitHubThatRaises:
+    def __init__(self):
+        self.asked: list[str] = []
+
+    def __call__(self, request):
+        self.asked.append(str(request.url))
+        raise Refused(f"GitHub was asked: {request.url}")
+
+
+def github_raises(monkeypatch) -> GitHubThatRaises:
+    server = GitHubThatRaises()
+    monkeypatch.setattr(ollama_setup, "release_client",
+                        lambda: httpx2.Client(transport=httpx2.MockTransport(server)), raising=False)
+    return server
+
+
+def github_unreachable(monkeypatch) -> list[str]:
+    asked: list[str] = []
+
+    def refuse(request):
+        asked.append(str(request.url))
+        raise httpx2.ConnectError("no route to api.github.com")
+
+    monkeypatch.setattr(ollama_setup, "release_client",
+                        lambda: httpx2.Client(transport=httpx2.MockTransport(refuse)), raising=False)
+    return asked
+
+
+@pytest.mark.parametrize("kind", PRESENT_STATES)
+def test_a_plan_in_a_present_state_asks_github_nothing(
+        library, no_weights, fenced_home, latest_release_unstubbed, monkeypatch, kind):
+    server = github_raises(monkeypatch)
+    machine(monkeypatch, kind, binary="C:/somewhere/ollama.exe" if kind != ollama_setup.UNKNOWN else "")
+
+    for document in (setup.plan(library), setup.plan(library, unasked_only=True)):
+        assert document["ollama"]["offer"] is None
+    assert server.asked == []
+
+
+def test_a_stored_cloud_provider_asks_github_nothing(library, no_weights, fenced_home, latest_release_unstubbed, monkeypatch):
+    server = github_raises(monkeypatch)
+    ai_ui.setting_put(library, ai_ui.PROVIDER_SETTING, "openrouter")
+
+    document = setup.plan(library)
+
+    assert document["ollama"]["state"] == ollama_setup.ABSENT
+    assert document["ollama"]["offer"] is None and server.asked == []
+
+
+def test_the_one_path_that_builds_the_offer_does_reach_github(
+        library, no_weights, fenced_home, latest_release_unstubbed, monkeypatch):
+    """The control for the quiet paths: absent, no provider row, by hand."""
+    server = github_raises(monkeypatch)
+
+    with pytest.raises(Refused):
+        setup.plan(library)
+    assert server.asked == ["https://api.github.com/repos/ollama/ollama/releases/latest"]
+
+
+def test_a_start_after_the_offer_was_put_asks_github_nothing(
+        library, no_weights, fenced_home, nothing_runs, latest_release_unstubbed, monkeypatch):
+    """A start plans with `--unasked-only`. Once `ollama_install` was put - a
+    No here - that plan drops the question, so it builds no offer either.
+    Red before TASK-095: the offer was built and carried in the document
+    for a question nobody would be asked."""
+    assert applied(monkeypatch, {"ollama_install": "no"}) == 0
+    assert stamp_document()["questions"]["ollama_install"] == "answered"
+    server = github_raises(monkeypatch)
+
+    at_a_start = setup.plan(library, unasked_only=True)
+
+    assert question(at_a_start, "ollama_install") is None
+    assert at_a_start["ollama"]["offer"] is None
+    assert server.asked == []
+    with pytest.raises(Refused):
+        setup.plan(library)  # --setup asks everything, so it does build the offer
+
+
+def test_an_apply_without_a_yes_asks_github_nothing(library, no_weights, fenced_home, latest_release_unstubbed, monkeypatch):
+    server = github_raises(monkeypatch)
+
+    assert applied(monkeypatch, {"ollama_install": "no"}) == 0
+    assert applied(monkeypatch, {}) == 0
+
+    assert server.asked == []
+
+
+def test_an_unreachable_github_is_one_sentence_with_the_vendor_page_and_check_again_and_no_question(
+        library, no_weights, fenced_home, latest_release_unstubbed, monkeypatch, capsys):
+    asked = github_unreachable(monkeypatch)
+    for name in credentials.PROXY_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setattr(credentials, "system_proxies", lambda: {})
+
+    document = setup.plan(library)
+
+    assert asked, "the offer was attempted"
+    note = document["ollama"]["note"]
+    assert "https://ollama.com/download" in note and "Check again" in note
+    assert ". " not in note and not note.endswith("."), "one sentence, the way describe() words a note"
+    assert document["ollama"]["check_again"] is True
+    assert document["ollama"]["offer"] is None
+    assert not [q for q in ids(document) if q.startswith("ollama_")]
+    assert note in setup.render(document), "the terminal sitting prints it"
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.invalid:3128")
+    assert "a proxy is configured at" in setup.plan(library)["ollama"]["note"]
+
+
+def test_a_yes_while_github_is_unreachable_writes_nothing_and_offers_the_page(
+        library, no_weights, fenced_home, latest_release_unstubbed, monkeypatch, capsys):
+    github_unreachable(monkeypatch)
+    # Every other way out, too: in the first red run, on the code with the
+    # pin, this test had only Popen fenced and really downloaded the pinned
+    # 1.57 GB installer from github.com - twice. Nothing may leave from here.
+    monkeypatch.setattr(subprocess, "Popen", _raiser("subprocess.Popen"))
+    monkeypatch.setattr(subprocess, "run", _raiser("subprocess.run"))
+    monkeypatch.setattr(ollama_setup, "download_client", _raiser("ollama_setup.download_client"))
+    before = _rows(library)
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b"}) == 0
+
+    assert _rows(library) == before
+    assert ollama_setup.read_marker() is None
+    assert "https://ollama.com/download" in capsys.readouterr().out
+    assert stamp_document()["questions"]["ollama_install"] == "open", "offered again at the next sitting"
+
+
+def test_apply_installs_and_names_the_release_it_fetched(
+        library, no_weights, fenced_home, canned_release, monkeypatch, tmp_path, capsys):
+    """Plan and apply are two processes, so apply fetches again; what it
+    installs is the release it names, with its URL and both digests."""
+    calls = fake_install(monkeypatch, tmp_path, ok=False)
+
+    assert applied(monkeypatch, {"ollama_install": "yes", "ollama_new_model": "qwen3.5:4b"}) == 0
+
+    plan = calls[0]["plan"]
+    asset = canned_release["assets"][plan["name"]]
+    assert (plan["tag"], plan["url"], plan["sha256"]) == (canned_release["tag"], asset["url"], asset["digest"])
+    out = capsys.readouterr().out
+    assert canned_release["tag"] in out and asset["url"] in out and asset["digest"] in out
