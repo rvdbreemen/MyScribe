@@ -1,9 +1,10 @@
 ---
 id: TASK-094
 title: Ask Robert whether to move the Ollama pin from v0.34.3 to v0.34.4
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-24 15:52'
+updated_date: '2026-09-26 17:50'
 labels:
   - ollama
   - release
@@ -20,6 +21,18 @@ Ollama released v0.34.4 on 2026-09-23. MyScribe 0.6.0 ships with the pin in scri
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Robert has been asked again and his answer is recorded in this task
-- [ ] #2 If he chose to bump: both installers were downloaded and hashed, the two sources agree, check-pin is green, and the per-file suite and CI are green
+- [x] #1 Robert has been asked again and his answer is recorded in this task
+- [x] #2 If he chose to bump: both installers were downloaded and hashed, the two sources agree, check-pin is green, and the per-file suite and CI are green
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-26: asked again. Robert's answer: stop pinning the Ollama offer altogether; he chose 'newest release, still checked at install time'. That work is TASK-095, and this question no longer exists.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by Robert's decision of 2026-09-26 to stop pinning the Ollama offer (TASK-095); no pin bump was made.
+<!-- SECTION:FINAL_SUMMARY:END -->
