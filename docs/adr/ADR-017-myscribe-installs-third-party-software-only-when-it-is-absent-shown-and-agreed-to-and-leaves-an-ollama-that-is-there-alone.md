@@ -1,18 +1,19 @@
 ---
 id: "ADR-017"
 title: "MyScribe installs third-party software only when it is absent, shown and agreed to, and leaves an Ollama that is there alone"
-status: "Accepted"
-date: "2026-09-21"
+status: "Superseded"
+date: "2026-09-26"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
-superseded_by: null
+superseded_by: "ADR-021"
 related:
   - "ADR-011"
   - "ADR-015"
   - "ADR-016"
+  - "ADR-021"
 topics:
   - "third-party software"
   - "ollama"
@@ -35,7 +36,7 @@ format: "madr"
 
 ## Status
 
-Accepted, 2026-09-21.
+Superseded by ADR-021, 2026-09-26.
 
 ## Status History
 
@@ -65,6 +66,16 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: "Accepted by Robert on 2026-09-21, asked for in the session as 'accept adr-015 en adr-017'. Its one open question is recorded as explicitly deferred and not as measured: settling it needs a Windows machine with no Ollama, and this one has Ollama running. The decision does not rest on it - the Must already keeps the setup child's handle and stops that one process rather than its tree, and refuses Quit while a third-party installer runs, which is the safe rule whichever way the measurement falls. TASK-089.18 owns the run. One repair to note: when that deferral was recorded, two words of it were eaten by a shell substitution, and the sentence was restored by hand to what had been written. Accepting turns this record's Enforcement on for every commit from here."
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-26
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-26)
+    reason: Related to ADR-021
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-26
+    status: Superseded
+    changed_by: "User: Robert van den Breemen"
+    reason: "Superseded by ADR-021 at Robert's decision of 2026-09-26: no pinned Ollama release any more; everything else of this record is carried over unchanged."
     changed_via: adr-kit lifecycle
 ```
 

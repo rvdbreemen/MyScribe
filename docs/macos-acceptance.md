@@ -101,10 +101,14 @@ TASK-089.18 criterion 16, the dmg path. Needs a Mac **without** Ollama.
     cd ~/MyScribe-mac
     .venv/bin/python -m scribe.setup
 
-Keep "Ollama, on this machine" and answer yes to the install. Expected, before
-the question: the dmg's URL on github.com/ollama/ollama/releases/download/v0.34.3,
-197,972,871 bytes and sha256 `7bde8d83cc7c2ac54e3dc51f618f4357e3b976f29f01f3efee896a301576b44f`,
-and `/Applications/Ollama.app`. After yes: Finder opens the image and the
+Keep "Ollama, on this machine" and answer yes to the install. Since TASK-095
+the offer follows Ollama's newest release, so there is no fixed figure to
+expect. Expected, before the question: the dmg's URL on
+github.com/ollama/ollama/releases/download/<tag>, where the tag is the one
+https://github.com/ollama/ollama/releases/latest shows that day, and the byte
+count and sha256 that page lists for `Ollama.dmg`; the same sha256 is on the
+`Ollama.dmg` line of that release's `sha256sum.txt`. Also
+`/Applications/Ollama.app`. Write down the tag you saw. After yes: Finder opens the image and the
 sitting waits with "Check again". Drag Ollama to Applications, start it, press
 Check again: it finds Ollama. `gemma4:12b` is never offered on a Mac. No
 marker file appears in the data directory (`ls "$SCRIBE_DATA_DIR"` or

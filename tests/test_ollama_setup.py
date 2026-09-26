@@ -626,10 +626,13 @@ FAKE_SHA = hashlib.sha256(FAKE_ARTIFACT).hexdigest()
 def a_plan(tmp_path, platform="win32", *, body=FAKE_ARTIFACT) -> dict:
     """The shipped plan, with the artifact figures swapped for the fake's so
     that a small body can pass the checks. Everything else - the URL, the
-    argv, the folder - is the real pin's."""
+    argv, the folder - is the plan's own, built from the conftest's canned
+    release (TASK-095; until then, from the pin)."""
     plan = ollama_setup.install_plan(platform, environ_for(tmp_path), into=tmp_path / "downloads")
     plan["bytes"] = len(body)
     plan["sha256"] = hashlib.sha256(body).hexdigest()
+    # TASK-095: the second source, the release's own sha256sum.txt entry.
+    plan["sha256sum"] = hashlib.sha256(body).hexdigest()
     return plan
 
 
@@ -697,37 +700,27 @@ def variable_recorder(monkeypatch) -> list[tuple[str, str]]:
     return calls
 
 
-# --- the pin (#4) -----------------------------------------------------------------
+# --- what the offer shows, and where it comes from (#4; TASK-095) ------------------
 
 
-def test_the_pin_names_a_url_size_and_sha256_per_platform():
-    """scribe/ollama_release.json: the three platforms, each with the four
-    figures a person is shown before the question, and none of the forms
-    ADR-017 forbids anywhere in the file."""
-    pin = ollama_setup.release()
-
-    assert pin["tag"].startswith("v")
-    for platform in ("win32", "darwin", "linux"):
-        artifact = pin["artifacts"][platform]
-        assert artifact["url"].startswith(f"https://github.com/ollama/ollama/releases/download/{pin['tag']}/")
-        assert artifact["url"].endswith(artifact["name"])
-        assert isinstance(artifact["bytes"], int) and artifact["bytes"] > 0
-        assert len(artifact["sha256"]) == 64 and int(artifact["sha256"], 16)
-    text = ollama_setup.RELEASE_PATH.read_text(encoding="utf-8")
-    assert "releases/latest" not in text
-    assert not any(f"ollama.com/download/{x}" in text for x in ("Ollama", "ollama")), "an unpinned vendor URL"
+def test_the_offer_file_names_no_forbidden_form():
+    """scribe/ollama_offer.json (the pin's file until TASK-095): none of the
+    forms ADR-017 forbids anywhere in it, and no vendor download URL."""
+    text = ollama_setup.OFFER_PATH.read_text(encoding="utf-8")
+    assert not any(f"ollama.com/download/{x}" in text for x in ("Ollama", "ollama")), "an unverified vendor URL"
     assert "| sh" not in text and "| iex" not in text
 
 
-def test_the_shown_figures_are_the_pin_s(tmp_path):
-    """What `install_plan` shows is read out of the pin and never typed twice."""
-    pin = ollama_setup.release()
-
+def test_the_shown_figures_are_the_fetched_release_s(tmp_path, canned_release):
+    """What `install_plan` shows is read out of the release it was handed -
+    here the conftest's canned one - and never typed twice. Before TASK-095
+    this test compared the plan with the pin."""
     for platform in ("win32", "darwin", "linux"):
         plan = ollama_setup.install_plan(platform, environ_for(tmp_path), into=tmp_path / "dl")
-        artifact = pin["artifacts"][platform]
-        assert (plan["url"], plan["bytes"], plan["sha256"], plan["tag"]) == (
-            artifact["url"], artifact["bytes"], artifact["sha256"], pin["tag"])
+        asset = canned_release["assets"][plan["name"]]
+        assert (plan["url"], plan["bytes"], plan["sha256"], plan["sha256sum"], plan["tag"]) == (
+            asset["url"], asset["bytes"], asset["digest"], canned_release["sums"][plan["name"]],
+            canned_release["tag"])
         assert plan["vendor_page"] == "https://ollama.com/download"
 
 
@@ -767,21 +760,6 @@ def test_the_mac_plan_opens_the_image_and_the_linux_plan_runs_nothing(tmp_path):
     assert linux["shown"][3].startswith("sh ")
     assert not any("|" in line for line in linux["shown"])
     assert linux["signer"] == ""
-
-
-def test_the_launcher_s_footprint_figures_equal_the_pin():
-    """Drift guard. The launcher's location question still reads
-    `scribe/footprint.json` (it may import nothing from the app, ADR-011), so
-    the installer and model bytes there must be the pin's - or the question
-    would show a number for a release nobody fetches."""
-    paper = json.loads((Path(ollama_setup.__file__).with_name("footprint.json")).read_text(encoding="utf-8"))
-    pin = ollama_setup.release()
-
-    assert paper["ollama"]["model"] == ollama_setup.DEFAULT_MODEL
-    assert paper["ollama"]["model_bytes"] == pin["models"][ollama_setup.DEFAULT_MODEL]["bytes"]
-    assert paper["ollama"]["installer_bytes"]["win32"] == pin["artifacts"]["win32"]["bytes"]
-    assert paper["ollama"]["installer_bytes"]["darwin"] == pin["artifacts"]["darwin"]["bytes"]
-    assert pin["tag"] in paper["ollama"]["source"]
 
 
 # --- the download (#4, #17) -------------------------------------------------------
@@ -1511,111 +1489,379 @@ def test_the_memory_read_is_none_without_a_card(monkeypatch):
     assert accel.memory() is None
 
 
-# --- the pin's owner (#15) ---------------------------------------------------------
+# =====================================================================================
+# TASK-095: the offer follows Ollama's newest release, checked at install time.
+#
+# Robert decided on 2026-09-26 that MyScribe no longer pins the Ollama release it
+# offers. The offer asks GitHub's releases/latest - which by definition skips
+# drafts and prereleases - and the download must match both the API's digest and
+# the release's own sha256sum.txt. Nothing here reaches GitHub: `GitHub` below is
+# an `httpx2.MockTransport` behind `ollama_setup.release_client`.
+# =====================================================================================
 
 
-class ReleaseApi:
-    """GitHub's answer about one tag, built from the pin, with knobs to
-    change one thing at a time."""
+LATEST_URL = "https://api.github.com/repos/ollama/ollama/releases/latest"
+NEWER_TAG = "v0.35.0"
+"""Newer than the v0.34.3 the pin held: the release the red runs were made with."""
 
-    def __init__(self, pin, *, digest_of=None, size_of=None, head_status=200, api_status=200):
-        self.pin = pin
-        self.digest_of = digest_of or {}
-        self.size_of = size_of or {}
-        self.head_status = head_status
+
+def newer_release(**digests) -> dict:
+    """The assets of `NEWER_TAG`, each a name -> (bytes, sha256). The Windows
+    one is the fake artifact, so an install can be run against it."""
+    assets = {
+        "OllamaSetup.exe": (len(FAKE_ARTIFACT), FAKE_SHA),
+        "Ollama.dmg": (201_000_003, "d" * 64),
+        "install.sh": (16_104, "e" * 64),
+    }
+    assets.update(digests)
+    return assets
+
+
+class GitHub:
+    """releases/latest and the release's sha256sum.txt, with one knob per
+    failure the task names. Records every request with its Authorization
+    header, so a test can say which requests carried the token."""
+
+    def __init__(self, assets=None, *, tag=NEWER_TAG, api_status=200, api_headers=None,
+                 no_digest=(), missing=(), no_sums_asset=False, sums_status=200,
+                 sums_lines=None, sums_raise=False, api_raise=False):
+        self.assets = newer_release() if assets is None else assets
+        self.tag = tag
         self.api_status = api_status
-        self.asked: list[tuple[str, str]] = []
+        self.api_headers = api_headers or {}
+        self.no_digest = set(no_digest)
+        self.missing = set(missing)
+        self.no_sums_asset = no_sums_asset
+        self.sums_status = sums_status
+        self.sums_lines = sums_lines
+        self.sums_raise = sums_raise
+        self.api_raise = api_raise
+        self.asked: list[tuple[str, str, str]] = []
+
+    def url_of(self, name: str) -> str:
+        return f"https://github.com/ollama/ollama/releases/download/{self.tag}/{name}"
 
     def __call__(self, request):
-        self.asked.append((request.method, str(request.url)))
         url = str(request.url)
-        tag = self.pin["tag"]
-        artifacts = self.pin["artifacts"].values()
-        if url.endswith(f"/releases/tags/{tag}"):
-            assets = [{"name": a["name"], "size": self.size_of.get(a["name"], a["bytes"]),
-                       "digest": "sha256:" + self.digest_of.get(a["name"], a["sha256"]),
-                       "browser_download_url": a["url"]} for a in artifacts]
-            assets.append({"name": "sha256sum.txt", "size": 1472, "digest": "sha256:" + "a" * 64,
-                           "browser_download_url": f"https://github.com/ollama/ollama/releases/download/{tag}/sha256sum.txt"})
-            return httpx2.Response(self.api_status, json={"tag_name": tag, "assets": assets})
-        if url.endswith("/sha256sum.txt"):
-            lines = "".join(f"{self.digest_of.get(a['name'], a['sha256'])}  ./{a['name']}\n" for a in artifacts)
-            return httpx2.Response(200, text=lines)
-        if request.method == "HEAD":
-            for a in artifacts:
-                if url == a["url"]:
-                    return httpx2.Response(self.head_status, headers={"Content-Length": str(self.size_of.get(a["name"], a["bytes"]))})
+        self.asked.append((request.method, url, request.headers.get("Authorization", "")))
+        if url == LATEST_URL:
+            if self.api_raise:
+                raise httpx2.ConnectError("no route to api.github.com")
+            if self.api_status != 200:
+                return httpx2.Response(self.api_status, json={"message": "no"}, headers=self.api_headers)
+            listed = []
+            for name, (size, digest) in self.assets.items():
+                if name in self.missing:
+                    continue
+                entry = {"name": name, "size": size, "browser_download_url": self.url_of(name)}
+                if name not in self.no_digest:
+                    entry["digest"] = "sha256:" + digest
+                listed.append(entry)
+            if not self.no_sums_asset:
+                listed.append({"name": "sha256sum.txt", "size": 1472, "digest": "sha256:" + "a" * 64,
+                               "browser_download_url": self.url_of("sha256sum.txt")})
+            return httpx2.Response(200, json={
+                "tag_name": self.tag, "published_at": "2026-09-25T10:00:00Z",
+                "draft": False, "prerelease": False, "assets": listed})
+        if url == self.url_of("sha256sum.txt"):
+            if self.sums_raise:
+                raise httpx2.ConnectError("objects.githubusercontent.com did not answer")
+            if self.sums_status != 200:
+                return httpx2.Response(self.sums_status, text="gone")
+            lines = self.sums_lines
+            if lines is None:
+                lines = [f"{digest}  ./{name}" for name, (_, digest) in self.assets.items()]
+            return httpx2.Response(200, text="\n".join(lines) + "\n")
         return httpx2.Response(404)
 
 
-def pin_client(api):
-    return httpx2.Client(transport=httpx2.MockTransport(api), follow_redirects=True)
+def serve_github(monkeypatch, server: GitHub) -> GitHub:
+    """`raising=False`: before TASK-095 the seam did not exist, and the red run
+    had to fail on what the offer showed, not on a missing attribute."""
+    monkeypatch.setattr(
+        ollama_setup, "release_client",
+        lambda: httpx2.Client(transport=httpx2.MockTransport(server), follow_redirects=True),
+        raising=False,
+    )
+    return server
 
 
-def test_check_pin_passes_on_metadata_that_agrees_and_asks_for_no_installer():
-    pin = ollama_setup.release()
-    api = ReleaseApi(pin)
-
-    problems = ollama_setup.check_pin(pin, client=pin_client(api))
-
-    assert problems == []
-    assert [m for m, _ in api.asked if m == "GET"] == ["GET", "GET"], "the tag's metadata and sha256sum.txt, nothing else"
-    assert all(u.endswith(f"/releases/tags/{pin['tag']}") or u.endswith("sha256sum.txt") for m, u in api.asked if m == "GET")
-    assert not any("releases/latest" in u for _, u in api.asked)
-    assert [m for m, _ in api.asked if m == "HEAD"] == ["HEAD"] * 3
+ASSET_OF = {"win32": "OllamaSetup.exe", "darwin": "Ollama.dmg", "linux": "install.sh"}
 
 
-def test_check_pin_turns_red_on_a_changed_digest_size_or_missing_url():
-    pin = ollama_setup.release()
-    sha = pin["artifacts"]["win32"]["sha256"]
-    wrong = sha[:-1] + ("0" if sha[-1] != "0" else "1")
-
-    assert any("digest" in p for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, digest_of={"OllamaSetup.exe": wrong}))))
-    assert any("bytes" in p for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, size_of={"Ollama.dmg": 1}))))
-    assert any("HEAD" in p for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, head_status=404))))
-    assert any("api" in p.lower() for p in ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, api_status=404))))
+@pytest.fixture
+def no_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
 
-def test_check_pin_names_both_digests_in_full():
-    """The CI log is what a person reads when the pin goes red (criterion 15);
-    a digest changed in its last hex digit must not print as two equal prefixes."""
-    pin = ollama_setup.release()
-    sha = pin["artifacts"]["win32"]["sha256"]
-    wrong = sha[:-1] + ("0" if sha[-1] != "0" else "1")
-
-    problems = ollama_setup.check_pin(pin, client=pin_client(ReleaseApi(pin, digest_of={"OllamaSetup.exe": wrong})))
-    api_line = next(p for p in problems if "API's digest" in p)
-
-    assert wrong in api_line and sha in api_line
+# --- criterion 1: the offer shows the newest release -----------------------------------
 
 
-def test_check_pin_uses_the_token_it_is_given_and_never_prints_it(capsys):
-    pin = ollama_setup.release()
-    api = ReleaseApi(pin)
-    seen: list[str] = []
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_the_offer_shows_the_newest_release_s_url_size_and_sha256(
+        tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed, platform):
+    """Red before TASK-095: the plan showed v0.34.3's figures out of the pin
+    whatever GitHub said."""
+    server = serve_github(monkeypatch, GitHub())
+    size, digest = server.assets[ASSET_OF[platform]]
 
-    def watching(request):
-        seen.append(request.headers.get("Authorization", ""))
-        return api(request)
+    plan = ollama_setup.install_plan(platform, environ_for(tmp_path), into=tmp_path / "dl")
 
-    problems = ollama_setup.check_pin(pin, client=httpx2.Client(transport=httpx2.MockTransport(watching)), token="ghp_not_a_real_token")
-
-    assert problems == []
-    assert seen[0] == "Bearer ghp_not_a_real_token"
-    assert "ghp_not_a_real_token" not in capsys.readouterr().out
+    assert (plan["tag"], plan["url"], plan["bytes"], plan["sha256"]) == (
+        NEWER_TAG, server.url_of(ASSET_OF[platform]), size, digest)
+    assert plan.get("sha256sum") == digest, "the second source is carried beside the API's digest"
 
 
-def test_the_command_line_check_exits_one_on_a_mutated_pin(tmp_path, monkeypatch, capsys):
-    """`python -m scribe.ollama_setup --check-pin --release <file>`, the CI step,
-    on a copy whose one hex digit was changed."""
-    pin = ollama_setup.release()
-    api = ReleaseApi(pin)
-    monkeypatch.setattr(ollama_setup, "pin_client", lambda: pin_client(api))
-    text = ollama_setup.RELEASE_PATH.read_text(encoding="utf-8")
-    sha = pin["artifacts"]["darwin"]["sha256"]
-    mutated = tmp_path / "ollama_release.json"
-    mutated.write_text(text.replace(sha, sha[:-1] + ("0" if sha[-1] != "0" else "1")), encoding="utf-8")
+def test_the_reader_asks_releases_latest_and_sha256sum_and_nothing_else(
+        tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed):
+    """Two GETs, no installer, no HEAD: the offer is shown before anything big
+    is fetched."""
+    server = serve_github(monkeypatch, GitHub())
 
-    assert ollama_setup.main(["--check-pin"]) == 0
-    assert ollama_setup.main(["--check-pin", "--release", str(mutated)]) == 1
-    assert "Ollama.dmg" in capsys.readouterr().out
+    ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+
+    assert [(m, u) for m, u, _ in server.asked] == [("GET", LATEST_URL), ("GET", server.url_of("sha256sum.txt"))]
+
+
+def test_the_windows_offer_still_shows_the_command_the_folder_no_admin_and_self_update(
+        tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed):
+    """TASK-089.18 criterion 3 keeps holding with a fetched release."""
+    serve_github(monkeypatch, GitHub())
+
+    plan = ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+
+    assert plan["command"][1:] == ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"]
+    assert plan["shown"] == [subprocess.list2cmdline(plan["command"])]
+    assert plan["install_dir"] == str(tmp_path / "AppData" / "Local" / "Programs" / "Ollama")
+    assert plan["needs_admin"] is False and plan["self_updates"] is True
+    assert plan["signer"] == "O=Ollama Inc."
+    assert plan["tag"] == NEWER_TAG
+
+
+def test_the_linux_commands_check_the_fetched_sum(tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed):
+    server = serve_github(monkeypatch, GitHub())
+
+    linux = ollama_setup.install_plan("linux", environ_for(tmp_path), into=tmp_path / "dl")
+
+    assert server.url_of("install.sh") in linux["shown"][0]
+    assert server.assets["install.sh"][1] in linux["shown"][1]
+    assert not any("|" in line for line in linux["shown"])
+
+
+# --- criteria 3 and 4: every way the release cannot be trusted or reached --------------
+
+
+REFUSALS = {
+    # why: (the fake GitHub's knobs, the words the sentence must use for it)
+    "the two digests disagree": (dict(sums_lines=[f"{'f' * 64}  ./OllamaSetup.exe"]), "two different sha256"),
+    "the asset carries no digest": (dict(no_digest={"OllamaSetup.exe"}), "gives no sha256"),
+    "the release has no sha256sum.txt": (dict(no_sums_asset=True), "has no sha256sum.txt"),
+    "sha256sum.txt answers 404": (dict(sums_status=404), "sha256sum.txt of Ollama's release v0.35.0 answered HTTP 404"),
+    "sha256sum.txt cannot be reached": (dict(sums_raise=True), "could not be fetched"),
+    "sha256sum.txt has no line for the asset": (dict(sums_lines=[f"{'e' * 64}  ./install.sh"]), "has no line for OllamaSetup.exe"),
+    "the asset is not in the release": (dict(missing={"OllamaSetup.exe"}), "has no OllamaSetup.exe"),
+    "releases/latest answers 404": (dict(api_status=404), "GitHub answered HTTP 404"),
+    "GitHub cannot be reached": (dict(api_raise=True), "GitHub could not be asked"),
+    "rate-limited with 403": (dict(api_status=403, api_headers={"X-RateLimit-Remaining": "0"}), "rate limit"),
+    "rate-limited with 429": (dict(api_status=429), "rate limit"),
+}
+
+
+@pytest.mark.parametrize("why", list(REFUSALS))
+def test_every_refusal_ends_on_the_vendor_page_and_check_again(
+        tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed, why):
+    """One sentence, the vendor page, Check again - and no plan, so nothing
+    downstream can download or write. Each case names its own reason: a
+    missing digest refused as "two digests disagree" would pass a test that
+    only asked whether something was refused (mutant 02 of TASK-095 did)."""
+    knobs, reason = REFUSALS[why]
+    serve_github(monkeypatch, GitHub(**knobs))
+
+    with pytest.raises(ollama_setup.InstallError) as refused:
+        ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+
+    sentence = str(refused.value)
+    assert "https://ollama.com/download" in sentence and "Check again" in sentence
+    assert reason in sentence, sentence
+    assert "\n" not in sentence
+
+
+def test_a_rate_limit_is_named_as_one(tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed):
+    for knobs, _ in (REFUSALS["rate-limited with 403"], REFUSALS["rate-limited with 429"]):
+        serve_github(monkeypatch, GitHub(**knobs))
+        with pytest.raises(ollama_setup.InstallError) as refused:
+            ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+        assert "rate" in str(refused.value).lower()
+
+
+def test_an_unreachable_github_names_a_configured_proxy(tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed):
+    """The clause the other downloads add (credentials.proxy_note)."""
+    serve_github(monkeypatch, GitHub(api_raise=True))
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.invalid:3128")
+
+    with pytest.raises(ollama_setup.InstallError) as refused:
+        ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+
+    assert credentials.proxy_note() and credentials.proxy_note() in str(refused.value)
+
+
+# --- the token: used for the API, never printed or stored ------------------------------
+
+
+def test_a_github_token_goes_to_the_api_only_and_is_never_shown(tmp_path, monkeypatch, fenced, latest_release_unstubbed):
+    token = "ghp_not_a_real_token_095"
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+    server = serve_github(monkeypatch, GitHub())
+
+    plan = ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+
+    auth = {url: header for _, url, header in server.asked}
+    assert auth[LATEST_URL] == f"Bearer {token}"
+    assert auth[server.url_of("sha256sum.txt")] == "", "the token is for api.github.com, not for the download host"
+    assert token not in json.dumps(plan)
+
+    serve_github(monkeypatch, GitHub(api_status=500))
+    with pytest.raises(ollama_setup.InstallError) as refused:
+        ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+    assert token not in str(refused.value)
+
+
+def test_without_a_token_the_offer_is_still_built(tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed):
+    server = serve_github(monkeypatch, GitHub())
+
+    plan = ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "dl")
+
+    assert plan["tag"] == NEWER_TAG
+    assert server.asked and all(header == "" for _, _, header in server.asked)
+
+
+# --- criterion 3: the file must match both sources -------------------------------------
+
+
+def test_a_file_that_matches_the_api_but_not_sha256sum_is_refused(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    signer_says(monkeypatch, True)
+    started = fake_popen(monkeypatch, on_wait=lambda: install_a_binary(tmp_path))
+    plan = a_plan(tmp_path)
+    plan["sha256sum"] = "0" * 64
+
+    outcome = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert outcome.ok is False and started == [] and ollama_setup.read_marker() is None
+    assert "https://ollama.com/download" in outcome.sentence and "Check again" in outcome.sentence
+
+
+def test_a_file_that_matches_sha256sum_but_not_the_api_is_refused(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    signer_says(monkeypatch, True)
+    started = fake_popen(monkeypatch, on_wait=lambda: install_a_binary(tmp_path))
+    plan = a_plan(tmp_path)
+    plan["sha256"] = "0" * 64
+
+    outcome = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert outcome.ok is False and started == [] and ollama_setup.read_marker() is None
+    assert "https://ollama.com/download" in outcome.sentence
+
+
+def test_a_plan_without_the_second_source_is_refused(tmp_path, monkeypatch, fenced):
+    """A plan that lost its sha256sum.txt figure - a hand-made one, a front-end
+    that dropped the field - is doubt, and doubt downloads nothing."""
+    server = serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    started = fake_popen(monkeypatch)
+    plan = a_plan(tmp_path)
+    del plan["sha256sum"]
+
+    outcome = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert outcome.ok is False and started == [] and server.requests == []
+
+
+def test_a_download_refusal_no_longer_speaks_of_a_pin(tmp_path, monkeypatch):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+
+    with pytest.raises(ollama_setup.InstallError) as refused:
+        ollama_setup.download("https://example.invalid/OllamaSetup.exe", tmp_path / "dl", "OllamaSetup.exe",
+                              expected_bytes=len(FAKE_ARTIFACT), expected_sha256="0" * 64)
+
+    assert "pin" not in str(refused.value).lower()
+
+
+def test_the_windows_signer_is_still_checked_on_a_fetched_release(tmp_path, monkeypatch, fenced):
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    checked = signer_says(monkeypatch, False, "signed by CN=Somebody Else")
+    started = fake_popen(monkeypatch)
+
+    outcome = ollama_setup.install(a_plan(tmp_path), into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert checked and started == [] and outcome.ok is False
+    assert "signature was refused" in outcome.sentence
+
+
+# --- the marker binds the fetched version ------------------------------------------------
+
+
+def test_the_marker_records_the_version_of_the_release_that_was_fetched(
+        tmp_path, monkeypatch, fenced, no_token, latest_release_unstubbed):
+    serve_github(monkeypatch, GitHub())
+    serve_artifact(monkeypatch, ArtifactServer(FAKE_ARTIFACT))
+    signer_says(monkeypatch, True)
+    fake_popen(monkeypatch, on_wait=lambda: install_a_binary(tmp_path))
+    plan = ollama_setup.install_plan("win32", environ_for(tmp_path), into=tmp_path / "downloads")
+
+    outcome = ollama_setup.install(plan, into=tmp_path / "downloads", environ=environ_for(tmp_path))
+
+    assert outcome.installed is True
+    marker = ollama_setup.read_marker()
+    assert (marker["tag"], marker["version"]) == (NEWER_TAG, NEWER_TAG.lstrip("v"))
+    assert marker["binary"] == str(install_a_binary(tmp_path))
+
+
+# --- criteria 5 and 6: no pin left as a source of truth ----------------------------------
+
+
+REPO = Path(ollama_setup.__file__).resolve().parents[1]
+
+
+def test_the_pin_file_is_gone_and_what_stays_is_not_a_pin():
+    """scribe/ollama_offer.json keeps the vendor page, the model sizes and the
+    per-platform facts that are not a release (asset name, flags, signer,
+    folder). No tag, no URL, no byte count, no digest of an installer."""
+    assert not (REPO / "scribe" / "ollama_release.json").exists()
+    kept = REPO / "scribe" / "ollama_offer.json"
+    assert kept.exists()
+    data = json.loads(kept.read_text(encoding="utf-8"))
+    assert "tag" not in data
+    for platform in ("win32", "darwin", "linux"):
+        facts = data["artifacts"][platform]
+        assert facts["name"] == ASSET_OF[platform]
+        assert not {"url", "bytes", "sha256"} & set(facts), f"{platform} still pins a release figure"
+    assert "releases/download" not in kept.read_text(encoding="utf-8")
+    assert data["vendor_page"] == "https://ollama.com/download"
+    assert set(data["models"]) == set(ollama_setup.MODEL_BYTES)
+
+
+def test_the_launcher_s_ollama_figure_is_labelled_an_estimate_and_its_model_is_the_offer_s():
+    """Replaces the test that held footprint.json equal to the pin. The
+    launcher may import nothing from the app (ADR-011) and cannot ask GitHub
+    before the first window, so its installer sizes are an estimate from one
+    past release and say so; the offer shows the fetched size. The model size
+    is still the one the offer itself uses."""
+    paper = json.loads((REPO / "scribe" / "footprint.json").read_text(encoding="utf-8"))["ollama"]
+
+    assert "estimate" in paper["measured"].lower()
+    assert "pin" not in paper["source"].lower()
+    assert paper["model"] == ollama_setup.DEFAULT_MODEL
+    assert paper["model_bytes"] == ollama_setup.MODEL_BYTES[ollama_setup.DEFAULT_MODEL]
+    for platform, size in paper["installer_bytes"].items():
+        assert size is None or (isinstance(size, int) and size > 0), platform
+
+
+def test_ci_and_the_release_steps_no_longer_check_a_pin():
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    releasing = (REPO / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+
+    assert "check-pin" not in ci and "ollama_release" not in ci
+    assert "check-pin" not in releasing and "ollama_release.json" not in releasing
+    assert "2b." not in releasing
+    assert not hasattr(ollama_setup, "check_pin")

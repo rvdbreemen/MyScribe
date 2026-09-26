@@ -507,6 +507,7 @@ def _ollama(
     marker: dict | None = None,
     standing: bool = False,
     offer: dict | None = None,
+    refused: str = "",
 ) -> dict:
     """The Ollama state, as data. `variables` are names and places, never a
     value: `credentials.Source` is built that way.
@@ -516,13 +517,20 @@ def _ollama(
     whether a Check again applies, and the marker's standing - `lapsed` is a
     file that no longer counts, which `apply` removes because a plan writes
     nothing. `offer` is the install plan, and it is null in every state but
-    absent (TASK-089.18).
+    absent (TASK-089.18). `refused` is the one sentence an offer that could
+    not be built ends on - GitHub unreachable, rate-limited, or a release whose
+    two digests disagree (TASK-095) - and it goes into the note every
+    front-end already prints, with a Check again, rather than into a new key.
     """
-    check_again = state.state in (
+    check_again = bool(refused) or state.state in (
         ollama_setup.INSTALLED_NOT_RUNNING,
         ollama_setup.RUNNING_NO_CHAT_MODEL,
         ollama_setup.UNKNOWN,
     )
+    note = ollama_setup.describe(state)
+    if refused:
+        # One sentence, like every other note `describe()` returns.
+        note = f"{note}, and MyScribe could not offer to install it: {refused}"
     return {
         "state": state.state,
         "present": state.present,
@@ -530,7 +538,7 @@ def _ollama(
         "version": state.version,
         "chat_models": list(state.chat_models),
         "variables": [str(source) for source in state.variables],
-        "note": ollama_setup.describe(state),
+        "note": note,
         "check_again": check_again,
         "pull_command": (
             f"ollama pull {ollama_setup.DEFAULT_MODEL}"
@@ -546,19 +554,27 @@ def _ollama(
     }
 
 
-def _offer(state: ollama_setup.State) -> dict | None:
-    """The install plan with the model choices and the room, or None.
+def _offer(state: ollama_setup.State) -> tuple[dict | None, str]:
+    """The install plan with the model choices and the room, or None - and
+    the sentence it was refused with, or "".
 
     Built only in state absent, and only then does `accel.memory()` import
     torch - a plan on a machine that has an Ollama stays the four-second plan
-    it was (ADR-001, and the risk the task names). The room is measured at
+    it was (ADR-001, and the risk the task names). Only then, too, is GitHub
+    asked for Ollama's newest release (TASK-095): the one network request a
+    plan makes, and `plan` calls this only when the question will be put. A
+    release that cannot be reached or trusted is no offer and one sentence;
+    nothing is written, because a plan writes nothing. The room is measured at
     Ollama's default folder for the default model, which is the Enter answer;
     `apply` measures again for the model that was chosen, and again before the
     pull (criterion 10).
     """
     if state.state != ollama_setup.ABSENT:
-        return None
-    offer = ollama_setup.install_plan()
+        return None, ""
+    try:
+        offer = ollama_setup.install_plan()
+    except ollama_setup.InstallError as exc:
+        return None, str(exc)
     memory = accel.memory()
     offer["memory_bytes"] = memory
     offer["threshold_bytes"] = ollama_setup.GEMMA_THRESHOLD_BYTES
@@ -571,7 +587,7 @@ def _offer(state: ollama_setup.State) -> dict | None:
     with_us = ollama_setup.models_dir_with_myscribe()
     offer["with_myscribe"] = str(with_us)
     offer["room_with_myscribe"] = ollama_setup.room(with_us, needed)
-    return offer
+    return offer, ""
 
 
 NOT_MLX = models.NOT_MLX
@@ -1114,7 +1130,11 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False,
     Nothing here writes, downloads or checks a credential against its service:
     a plan is what a front-end draws before anybody has typed, so it reads the
     settings rows, the environment, `.env`, the registry, the login file, the
-    catalogue and Ollama's own two reads (TASK-089.06), and stops there.
+    catalogue and Ollama's own two reads (TASK-089.06), and stops there - with
+    one exception since TASK-095: when Ollama is absent, no provider row says
+    otherwise and the install question will be put, it asks GitHub which
+    Ollama release is newest (two small GETs, never an installer). A start
+    whose sitting already put that question asks nothing.
 
     `unasked_only` drops the questions a saved sitting already put - what a
     start asks for, against the `--setup` that asks everything. Answered and
@@ -1129,7 +1149,13 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False,
     marker = ollama_setup.read_marker()
     standing = ollama_setup.valid_marker(state, marker)
     stored_provider = _row(conn, ai_ui.PROVIDER_SETTING)
-    install_offer = _offer(state) if stored_provider in ("", ai_ui.llm.PROVIDERS["ollama"].name) else None
+    # Put before anything is built: a start (`unasked_only`) drops a question
+    # a sitting already put, and an offer for a question nobody will be asked
+    # would be a request to GitHub for nothing (TASK-095).
+    was_put = {id for id, state_of in states().items() if state_of in PUT} if unasked_only else set()
+    install_offer, refused = None, ""
+    if stored_provider in ("", ai_ui.llm.PROVIDERS["ollama"].name) and "ollama_install" not in was_put:
+        install_offer, refused = _offer(state)
     # The tier decides which Whisper repository is offered, so the offer is
     # made for the one this library is set to rather than for the default
     # (TASK-089.16): choosing the largest model and then downloading the turbo
@@ -1147,7 +1173,6 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False,
     # written into the library it picks.
     open_questions = _library_questions(conn, named or []) + open_questions
     if unasked_only:
-        was_put = {id for id, state_of in states().items() if state_of in PUT}
         open_questions = [q for q in open_questions if q.id not in was_put]
     found = found_table(conn)
     # TASK-089.22: the login entry as the OS holds it, so a re-run shows the
@@ -1158,7 +1183,7 @@ def plan(conn: sqlite3.Connection | None, *, unasked_only: bool = False,
     return {
         "contract": CONTRACT,
         "found": found,
-        "ollama": _ollama(state, marker=marker, standing=standing, offer=install_offer),
+        "ollama": _ollama(state, marker=marker, standing=standing, offer=install_offer, refused=refused),
         "downloads": offer,
         "questions": [asdict(question) for question in open_questions],
     }
@@ -2499,7 +2524,16 @@ def _install_ollama(
     (row 8a, G8); on macOS and Linux the variable stays a sentence with the
     command, so `models_dir` reaches `install` on Windows only.
     """
-    plan = ollama_setup.install_plan()
+    # The plan and this apply are two processes, so the release is asked for
+    # again here (TASK-095): what is installed is what this names below, with
+    # its own two digests, and a release published in between is the one
+    # installed - ADR-021 (Proposed) records that window.
+    try:
+        plan = ollama_setup.install_plan()
+    except ollama_setup.InstallError as exc:
+        report["notes"].append(f"{exc}. Nothing was downloaded and nothing was installed.")
+        report["reopen"].append("ollama_install")
+        return
     model = answers.ollama_new_model or ollama_setup.DEFAULT_MODEL
     needed = ollama_setup.MODEL_BYTES[model]
     models_dir: Path | None = None
@@ -2520,7 +2554,8 @@ def _install_ollama(
         else:
             report["notes"].append(ollama_setup.models_dir_sentence(plan["platform"], with_us))
 
-    say(f"downloading {plan['name']} {plan['tag']} ({plan['bytes']:,} bytes)")
+    say(f"downloading {plan['name']} of Ollama {plan['tag']} from {plan['url']} "
+        f"({plan['bytes']:,} bytes, sha256 {plan['sha256']}, the same in the release's sha256sum.txt)")
     outcome = ollama_setup.install(
         plan, models_dir=models_dir, model=model, on_progress=on_progress, on_line=say, on_event=on_event,
     )

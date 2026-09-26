@@ -187,6 +187,69 @@ def ollama_state_unstubbed(monkeypatch, _no_ollama_from_this_machine):
     return _no_ollama_from_this_machine
 
 
+# --- TASK-095: no test asks GitHub which Ollama release is newest ------------------
+
+CANNED_OLLAMA_TAG = "v0.99.1"
+"""The release every test is answered with. Deliberately not v0.34.3, the pin
+TASK-095 removed: a figure that still came from the old pin would show up as
+the wrong tag instead of passing by coincidence."""
+
+
+def canned_ollama_release() -> dict:
+    """What `ollama_setup.latest_release` returns, for a release that does not
+    exist: all three platforms' assets, because the macOS and Linux runners
+    build their own platform's offer, each with its API digest and the same
+    digest in sha256sum.txt."""
+    base = f"https://github.com/ollama/ollama/releases/download/{CANNED_OLLAMA_TAG}"
+    assets = {
+        "OllamaSetup.exe": (1_600_000_001, "1" * 64),
+        "Ollama.dmg": (200_000_002, "2" * 64),
+        "install.sh": (16_003, "3" * 64),
+    }
+    return {
+        "tag": CANNED_OLLAMA_TAG,
+        "published": "2026-09-25T12:00:00Z",
+        "assets": {
+            name: {"url": f"{base}/{name}", "bytes": size, "digest": digest}
+            for name, (size, digest) in assets.items()
+        },
+        "sums": {name: digest for name, (_, digest) in assets.items()},
+    }
+
+
+@pytest.fixture(autouse=True)
+def _no_github_from_a_test(monkeypatch):
+    """Every `setup.plan()` on a machine the stub above calls absent now builds
+    the install offer, and the offer asks GitHub for Ollama's newest release
+    (TASK-095). No test may reach api.github.com, so the reader is replaced by
+    the canned release everywhere; the real one is handed back for the tests
+    that are about it (`latest_release_unstubbed`).
+
+    `raising=False` so that this file also loads against code from before the
+    reader existed, which is how the red runs of TASK-095 were made.
+    """
+    from scribe import ollama_setup
+
+    shipped = getattr(ollama_setup, "latest_release", None)
+    monkeypatch.setattr(ollama_setup, "latest_release", lambda **kwargs: canned_ollama_release(), raising=False)
+    return shipped
+
+
+@pytest.fixture
+def latest_release_unstubbed(monkeypatch, _no_github_from_a_test):
+    """`ollama_setup.latest_release` as it ships; its HTTP goes through
+    `ollama_setup.release_client`, which the test then points at a fake."""
+    from scribe import ollama_setup
+
+    monkeypatch.setattr(ollama_setup, "latest_release", _no_github_from_a_test, raising=False)
+    return _no_github_from_a_test
+
+
+@pytest.fixture
+def canned_release() -> dict:
+    return canned_ollama_release()
+
+
 @pytest.fixture
 def library_db_unstubbed(monkeypatch):
     """`credentials.library_db` as it ships, for the tests that are about it.

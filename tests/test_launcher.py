@@ -2143,3 +2143,19 @@ def test_stop_while_installing_reaches_neither_the_child_nor_the_app(layout):
     assert launch.quit_refused() == ""
     launch.stop()
     assert child.terminated is True and stopped == ["app"]
+
+
+def test_the_ollama_figure_in_the_location_question_is_an_estimate_not_a_ceiling(layout, tmp_path, monkeypatch):
+    """TASK-095: the offer follows Ollama's newest release, so the launcher's
+    installer size is an estimate from one past release and the next one may
+    be bigger. "Up to" promised a ceiling nobody can know; the sentence says
+    "about" and carries footprint.json's own label."""
+    _shipped_install_numbers(layout)
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda path: _usage(500.0))
+
+    text = launcher.location_question(layout, tmp_path / "MyScribe.location", volumes=[Path("C:/")],
+                                      platform="win32", machine="AMD64")
+
+    line = next(l for l in text.splitlines() if "say yes to Ollama" in l)
+    assert line.startswith("About 4.0 GB more"), line
+    assert "Up to" not in text

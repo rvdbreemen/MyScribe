@@ -16,6 +16,7 @@ related:
   - "ADR-013"
   - "ADR-016"
   - "ADR-017"
+  - "ADR-021"
 topics:
   - "setup"
   - "installer"
@@ -90,6 +91,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: "Accepted by Robert on 2026-09-21, asked for in the session as 'accept adr-015 en adr-017'. Its one open question was measured rather than waved through before this: both of MyScribe's own probes do fail behind a proxy variable, and the Ollama one reports a running daemon as not running. That measurement changes nothing in the decision - setup is one engine behind a JSON (JavaScript Object Notation) contract and every front-end only renders it - and it gives TASK-089.05 a red-first test to write. Accepting turns this record's three Enforcement rules on for every commit from here, including the one that asks the line refusing --hf-token to say 'refuse' on itself."
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-26
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-26)
+    reason: Related to ADR-021
     changed_via: adr-kit lifecycle
 ```
 

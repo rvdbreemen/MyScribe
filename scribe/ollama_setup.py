@@ -43,7 +43,6 @@ manner).
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -309,23 +308,27 @@ def describe(found: State) -> str:
 # --- the install offer (TASK-089.18) ------------------------------------------------
 #
 # Everything from here down installs, and ADR-017 is its rule: only when
-# `state()` reads absent, only what was shown first, only from the pinned and
-# verified artifact, and never a start, a stop or a pull into an Ollama that
-# was already there. `scribe.setup` decides *whether* any of it runs, from the
-# state and the answers; this half knows *how*. Every seam - `subprocess.Popen`,
-# `download_client`, `verify_signer`, `set_user_variable` - is a module
-# attribute looked up at call time, so a test that plants a raiser proves the
-# absence of a download or a process for a whole sitting.
+# `state()` reads absent, only what was shown first, only a verified artifact,
+# and never a start, a stop or a pull into an Ollama that was already there.
+# Which artifact is ADR-021's (Proposed, TASK-095): Ollama's newest release,
+# asked of GitHub when the offer is built and checked against two sources when
+# it lands - no longer a pin. `scribe.setup` decides *whether* any of it runs,
+# from the state and the answers; this half knows *how*. Every seam -
+# `subprocess.Popen`, `release_client`, `download_client`, `verify_signer`,
+# `set_user_variable` - is a module attribute looked up at call time, so a test
+# that plants a raiser proves the absence of a request or a process for a whole
+# sitting.
 
 
-RELEASE_PATH = Path(__file__).with_name("ollama_release.json")
-"""The pin. Under `scribe/` because that is what the payload ships
-(`packaging/build_payload.py`, APP_PATHS); its owner is the release step in
-`docs/RELEASING.md` and the `--check-pin` step in CI (ADR-017, M7)."""
+OFFER_PATH = Path(__file__).with_name("ollama_offer.json")
+"""What the offer knows that is not a release: the asset's name, the flags,
+the signer, the folder, the model sizes and the vendor page. Under `scribe/`
+because that is what the payload ships (`packaging/build_payload.py`,
+APP_PATHS). Until TASK-095 this was `ollama_release.json`, the pin."""
 
 VENDOR_PAGE = "https://ollama.com/download"
-"""Where every failure of the pinned download ends: named in a sentence, and
-never fetched by MyScribe. There is no second URL (ADR-017, Must Not)."""
+"""Where every failure of the release check or the download ends: named in a
+sentence, and never fetched by MyScribe (ADR-017, Must Not)."""
 
 MARKER = "ollama_setup.json"
 """Written beside the stamp, in the data directory, only after an installer
@@ -369,10 +372,12 @@ DOWNLOADS = "downloads"
 MODELS_FOLDER = "ollama-models"
 
 SIGNER_PATTERN = re.compile(r"(^|, )O=Ollama Inc\.(,|$)")
-"""install.ps1:84-87 of the pinned release, re-read on 2026-09-23: the subject
+"""install.ps1:84-87 of release v0.34.3, re-read on 2026-09-23: the subject
 must carry `O=Ollama Inc.` between commas, "to prevent 'O=Not Ollama Inc.'
-from matching". The certificate on the pinned installer itself has not been
-read by anybody here; if it reads differently the check fails safe."""
+from matching". Read once on a real installer, v0.34.3's, on 2026-09-26 with
+`verify_signer`: Valid, `CN=Ollama Inc., O=Ollama Inc., L=Toronto, ...`.
+Whatever release is fetched later, a subject that reads differently fails
+safe and ends on the vendor page."""
 
 SIGNER_SUBJECT = "O=Ollama Inc."
 
@@ -405,26 +410,168 @@ class Outcome:
     variable: str = ""
 
 
-def release(path: Path | None = None) -> dict:
-    return json.loads((RELEASE_PATH if path is None else Path(path)).read_text(encoding="utf-8"))
+def offer_facts(path: Path | None = None) -> dict:
+    """`ollama_offer.json`: read from disk only, never from the network - this
+    runs at import, for `MODEL_BYTES`."""
+    return json.loads((OFFER_PATH if path is None else Path(path)).read_text(encoding="utf-8"))
 
 
-MODEL_BYTES: dict[str, int] = {name: int(spec["bytes"]) for name, spec in release()["models"].items()}
+MODEL_BYTES: dict[str, int] = {name: int(spec["bytes"]) for name, spec in offer_facts()["models"].items()}
 """The two models the offer knows, with the byte counts the reference
 machine's Ollama reports for them (read only, 2026-09-20 and 2026-09-23)."""
 
 
 def _platform_key(platform: str) -> str:
-    """How the pin spells a platform; anything that is not Windows or macOS is
-    Linux, which is what `install_locations` already assumes."""
+    """How the offer spells a platform; anything that is not Windows or macOS
+    is Linux, which is what `install_locations` already assumes."""
     return platform if platform in ("win32", "darwin") else "linux"
 
 
 def _ended(what: str) -> str:
-    """The sentence every failed download or check ends on: what happened,
-    the vendor's page, Check again, and the proxy clause the two earlier
-    downloads already add (criterion 17)."""
+    """The sentence every failed release check, download or check ends on:
+    what happened, the vendor's page, Check again, and the proxy clause the two
+    earlier downloads already add (criterion 17)."""
     return f"{what}; get it from {VENDOR_PAGE}, then Check again{credentials.proxy_note()}"
+
+
+# --- the newest release (TASK-095, ADR-021 Proposed) --------------------------------
+
+
+LATEST_API = "https://api.github.com/repos/ollama/ollama/releases/latest"
+"""GitHub's newest release of Ollama. By GitHub's definition this endpoint
+skips drafts and prereleases, so the offer never lands on a release Ollama
+itself has not published as the current one. Asked only when an offer is
+built (`scribe.setup._offer`): state absent, provider Ollama or undecided, and
+the question still to be put."""
+
+SUMS_ASSET = "sha256sum.txt"
+"""The release's own list of digests: the second source every artifact is
+checked against, beside the API's `digest` field."""
+
+USER_AGENT = "MyScribe-ollama-offer"
+
+RELEASE_TIMEOUT = httpx2.Timeout(10.0, connect=5.0)
+"""Short on purpose: this runs inside `--plan`, which the launcher waits for
+before its first window. A slow GitHub becomes a sentence and a Check again,
+not a window that never opens."""
+
+
+def release_client() -> httpx2.Client:
+    """The client the release metadata comes over. `trust_env` stays on for
+    the reason `download_client` gives: a remote host, and a corporate proxy."""
+    return httpx2.Client(timeout=RELEASE_TIMEOUT, follow_redirects=True)
+
+
+def _sums_of(text: str) -> dict[str, str]:
+    """`sha256sum.txt` as name -> digest. Its lines read `<digest>  ./<name>`.
+    Moved here from the pin check TASK-095 removed, not written again."""
+    sums: dict[str, str] = {}
+    for line in text.splitlines():
+        digest, _, name = line.strip().partition("  ")
+        if digest and name:
+            sums[name.strip().removeprefix("./")] = digest.strip()
+    return sums
+
+
+def _refused_by_github(status: int, headers: Mapping[str, str]) -> str:
+    """A non-200 from the API, in words. 429, or 403 with no requests left, is
+    GitHub's rate limit - an unauthenticated machine gets 60 an hour."""
+    if status == 429 or (status == 403 and str(headers.get("X-RateLimit-Remaining", "")) == "0"):
+        return (f"GitHub is limiting how often this machine may ask (HTTP {status}, a rate limit), "
+                "so it would not say which Ollama release is newest")
+    return f"GitHub answered HTTP {status} when asked which Ollama release is newest"
+
+
+def latest_release(*, client: httpx2.Client | None = None, token: str | None = None) -> dict:
+    """Ollama's newest release: its tag, every asset's URL, size and API
+    digest, and the digests in its `sha256sum.txt` (None when it has none).
+
+    Two GETs and never an installer: `releases/latest`, and the release's
+    small `sha256sum.txt`. A `GITHUB_TOKEN` in the environment (or `token`) is
+    sent to api.github.com only, as a bearer against the rate limit; it is
+    never printed, returned or stored, and unauthenticated works. Anything that
+    is not a readable answer raises `InstallError` with one sentence ending on
+    the vendor page. Whether this platform's asset can be trusted is
+    `install_plan`'s to decide, from what this returns.
+    """
+    token = (os.environ.get("GITHUB_TOKEN") or None) if token is None else token
+    api_headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": USER_AGENT,
+    }
+    if token:
+        api_headers["Authorization"] = f"Bearer {token}"
+    own = client is None
+    client = release_client() if client is None else client
+    try:
+        try:
+            answer = client.get(LATEST_API, headers=api_headers)
+        except httpx2.HTTPError as exc:
+            raise InstallError(_ended(
+                f"GitHub could not be asked which Ollama release is newest ({exc.__class__.__name__})")) from None
+        if answer.status_code != 200:
+            raise InstallError(_ended(_refused_by_github(answer.status_code, answer.headers)))
+        try:
+            body = answer.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or not body.get("tag_name"):
+            raise InstallError(_ended("GitHub's answer about Ollama's newest release could not be read"))
+        tag = str(body["tag_name"])
+        assets = {
+            str(asset.get("name")): {
+                "url": str(asset.get("browser_download_url") or ""),
+                "bytes": asset.get("size"),
+                "digest": str(asset.get("digest") or "").removeprefix("sha256:"),
+            }
+            for asset in body.get("assets") or []
+            if isinstance(asset, dict)
+        }
+        sums: dict[str, str] | None = None
+        listed = assets.pop(SUMS_ASSET, None)
+        if listed is not None:
+            try:
+                got = client.get(listed["url"], headers={"User-Agent": USER_AGENT})
+            except httpx2.HTTPError as exc:
+                raise InstallError(_ended(
+                    f"the {SUMS_ASSET} of Ollama's release {tag} could not be fetched "
+                    f"({exc.__class__.__name__})")) from None
+            if got.status_code != 200:
+                raise InstallError(_ended(
+                    f"the {SUMS_ASSET} of Ollama's release {tag} answered HTTP {got.status_code}"))
+            sums = _sums_of(got.text)
+    finally:
+        if own:
+            client.close()
+    return {"tag": tag, "published": str(body.get("published_at") or ""), "assets": assets, "sums": sums}
+
+
+def _trusted_asset(found: dict, name: str) -> dict:
+    """This platform's asset out of a fetched release, or `InstallError`.
+
+    It must be in the release, carry a digest in the API's answer, and have
+    the same digest in the release's `sha256sum.txt`. Two sources that do not
+    agree - or one that is missing - is doubt, and doubt is the vendor page.
+    """
+    tag = found["tag"]
+    asset = (found.get("assets") or {}).get(name)
+    if asset is None or not asset.get("url"):
+        raise InstallError(_ended(f"Ollama's release {tag} has no {name}"))
+    if not isinstance(asset.get("bytes"), int) or asset["bytes"] <= 0:
+        raise InstallError(_ended(f"GitHub's API gives no size for {name} of Ollama's release {tag}"))
+    if not asset.get("digest"):
+        raise InstallError(_ended(f"GitHub's API gives no sha256 for {name} of Ollama's release {tag}"))
+    sums = found.get("sums")
+    if sums is None:
+        raise InstallError(_ended(f"Ollama's release {tag} has no {SUMS_ASSET} to check {name} against"))
+    if name not in sums:
+        raise InstallError(_ended(f"the {SUMS_ASSET} of Ollama's release {tag} has no line for {name}"))
+    if sums[name] != asset["digest"]:
+        raise InstallError(_ended(
+            f"{name} of Ollama's release {tag} has two different sha256 figures: {asset['digest']} "
+            f"from GitHub's API and {sums[name]} in {SUMS_ASSET}"))
+    return {"url": asset["url"], "bytes": int(asset["bytes"]), "sha256": asset["digest"], "sha256sum": sums[name]}
 
 
 def install_plan(
@@ -437,16 +584,25 @@ def install_plan(
     """Data to *show* before the question: the artifact's URL, size and sha256,
     the exact argv, where it installs, and what the person is owed in words.
 
+    The artifact is this platform's asset of Ollama's newest release, asked of
+    GitHub here (`latest_release`) unless `found` hands one over; a release
+    that cannot be reached or trusted raises `InstallError`, and then there is
+    no plan to show. `sha256` is the API's digest and `sha256sum` the line in
+    the release's `sha256sum.txt`: equal by construction, and both carried so
+    that `install` checks the file against each.
+
     `command` is the argv `install` hands `subprocess.Popen`, list for list;
     `shown` is the same command as a person reads it, or on Linux the commands
     they run themselves. Nothing runs that is not in one of the two.
     """
     platform = sys.platform if platform is None else platform
     environ = os.environ if environ is None else environ
-    pin = release() if found is None else found
+    facts = offer_facts()
     into = (paths.DATA_DIR / DOWNLOADS) if into is None else Path(into)
     key = _platform_key(platform)
-    artifact = pin["artifacts"][key]
+    known = facts["artifacts"][key]
+    fetched = latest_release() if found is None else found
+    artifact = {**known, **_trusted_asset(fetched, known["name"])}
     landed = str(into / artifact["name"])
 
     if key == "win32":
@@ -471,14 +627,15 @@ def install_plan(
         ]
     return {
         "platform": key,
-        "tag": pin["tag"],
-        "read": pin["read"],
+        "tag": fetched["tag"],
+        "published": fetched.get("published", ""),
         "name": artifact["name"],
         "url": artifact["url"],
         "bytes": int(artifact["bytes"]),
         "sha256": artifact["sha256"],
+        "sha256sum": artifact["sha256sum"],
         "artifact": landed,
-        "vendor_page": pin["vendor_page"],
+        "vendor_page": facts["vendor_page"],
         "install_dir": install_dir,
         "signer": artifact.get("signer_subject", ""),
         # docs.ollama.com/windows, read 2026-09-23: "installs in your account
@@ -721,15 +878,15 @@ def download(
     expected_sha256: str,
     on_progress: Callable[[str, int, int], None] | None = None,
 ) -> Path:
-    """Fetch the pinned artifact to `into/name`, streaming, with resume.
+    """Fetch the artifact the plan showed to `into/name`, streaming, with resume.
 
     It goes to `name.part` in chunks and is hashed as it arrives, so nothing
     the size of the installer is ever in memory. A part that is already there
     is hashed first and asked for from where it stopped (`Range`), so an
     interrupted download is finished with the same button (G6); a server that
     answers 200 to that starts the file over rather than appending. It lands
-    under `name` only when the byte count and the sha256 both match the pin;
-    a 404, another status or a mismatch raises `InstallError` with the vendor
+    under `name` only when the byte count and the sha256 both match the ones
+    shown; a 404, another status or a mismatch raises `InstallError` with the vendor
     page, and a mismatch removes the part, because resuming it would only
     reproduce the mismatch. A file that already landed is checked, not fetched.
     """
@@ -754,10 +911,10 @@ def download(
         if count != expected_bytes:
             part.unlink(missing_ok=True)
             raise InstallError(_ended(
-                f"{name} arrived as {count:,} bytes where the pin says {expected_bytes:,}"))
+                f"{name} arrived as {count:,} bytes where the release says {expected_bytes:,}"))
         if found != expected_sha256:
             part.unlink(missing_ok=True)
-            raise InstallError(_ended(f"{name} arrived with sha256 {found}, not the pinned {expected_sha256}"))
+            raise InstallError(_ended(f"{name} arrived with sha256 {found}, not the {expected_sha256} that was shown"))
         os.replace(part, final)
         return final
 
@@ -769,7 +926,7 @@ def download(
         with download_client() as client:
             with client.stream("GET", url, headers=headers) as response:
                 if response.status_code == 404:
-                    raise InstallError(_ended(f"{url} answered 404: the pinned release is gone"))
+                    raise InstallError(_ended(f"{url} answered 404: that release is gone"))
                 if response.status_code == 206 and have:
                     mode = "ab"
                 elif response.status_code == 200:
@@ -946,6 +1103,17 @@ def install(
     if not plan["runs_here"]:
         return Outcome(ok=False, installed=False, sentence=_commands_sentence(plan))
 
+    # Two sources for one digest (TASK-095): the file must equal the API's
+    # digest, which `download` checks, and the release's sha256sum.txt line,
+    # which is checked here against the first before a byte is fetched - a
+    # file cannot equal two different figures, and a plan without the second
+    # is doubt.
+    listed = str(plan.get("sha256sum") or "")
+    if not listed or listed != plan["sha256"]:
+        return Outcome(ok=False, installed=False, sentence=_ended(
+            f"{plan['name']} of Ollama's release {plan['tag']} has no single sha256 that both GitHub's API "
+            f"and {SUMS_ASSET} give (API {plan['sha256']}, {SUMS_ASSET} {listed or 'none'})"))
+
     try:
         landed = download(
             plan["url"], folder, plan["name"],
@@ -995,9 +1163,9 @@ def install(
 
     marker = {
         "tag": plan["tag"],
-        # The pinned tag, not the daemon's answer: this is what MyScribe
-        # installed by construction, and it is known before the daemon has
-        # answered anything (criterion 8).
+        # The fetched release's tag, not the daemon's answer: this is what
+        # MyScribe installed by construction, and it is known before the
+        # daemon has answered anything (criterion 8; TASK-095).
         "version": str(plan["tag"]).lstrip("v"),
         "binary": binary,
         "model": model or DEFAULT_MODEL,
@@ -1098,111 +1266,3 @@ def pull(
         ) from None
     if not succeeded:
         raise PullError(f"the pull of {tag} ended without Ollama's final success line")
-
-
-# --- the pin's owner (M7, criterion 15) -------------------------------------------
-
-
-RELEASE_API = "https://api.github.com/repos/ollama/ollama/releases/tags/{tag}"
-"""The tag's own metadata, never the newest release: a pin is checked against
-what it pins."""
-
-
-def pin_client() -> httpx2.Client:
-    return httpx2.Client(timeout=30.0, follow_redirects=True)
-
-
-def check_pin(found: dict | None = None, *, client: httpx2.Client | None = None, token: str | None = None) -> list[str]:
-    """Does the pin still describe its release? The problems, or [].
-
-    Without downloading an installer: one GET of the tag's metadata, whose
-    `size` and `digest` fields are compared per asset; one GET of the release's
-    small `sha256sum.txt`, a second source for the digest; and one HEAD per
-    artifact URL, which must answer 200 with the pinned byte count - httpx
-    keeps HEAD a HEAD across GitHub's redirect, where urllib would have turned
-    it into a GET of 1.57 GB. `token` is sent as a bearer and never printed.
-    """
-    pin = release() if found is None else found
-    tag = pin["tag"]
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "MyScribe-ollama-pin-check",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    own = client is None
-    client = pin_client() if client is None else client
-    problems: list[str] = []
-    try:
-        answer = client.get(RELEASE_API.format(tag=tag), headers=headers)
-        if answer.status_code != 200:
-            return [f"the GitHub API answered HTTP {answer.status_code} for tag {tag}"]
-        assets = {
-            str(asset.get("name")): asset
-            for asset in (answer.json() or {}).get("assets", [])
-            if isinstance(asset, dict)
-        }
-        sums: dict[str, str] = {}
-        listed = assets.get("sha256sum.txt")
-        if listed is None:
-            problems.append(f"{tag} has no sha256sum.txt among its assets")
-        else:
-            text = client.get(str(listed.get("browser_download_url")), headers={"User-Agent": headers["User-Agent"]}).text
-            for line in text.splitlines():
-                digest, _, name = line.strip().partition("  ")
-                if digest and name:
-                    sums[name.strip().removeprefix("./")] = digest.strip()
-        for artifact in pin["artifacts"].values():
-            name = artifact["name"]
-            asset = assets.get(name)
-            if asset is None:
-                problems.append(f"{name}: not an asset of {tag}")
-                continue
-            if asset.get("size") != artifact["bytes"]:
-                problems.append(f"{name}: the API says {asset.get('size')} bytes, the pin {artifact['bytes']:,} bytes")
-            digest = str(asset.get("digest") or "").removeprefix("sha256:")
-            if digest != artifact["sha256"]:
-                problems.append(f"{name}: the API's digest {digest} is not the pin's {artifact['sha256']}")
-            if sums and sums.get(name) != artifact["sha256"]:
-                problems.append(f"{name}: sha256sum.txt's digest {sums.get(name)} is not the pin's {artifact['sha256']}")
-            if asset.get("browser_download_url") != artifact["url"]:
-                problems.append(f"{name}: the API's URL is not the pinned one")
-            head = client.head(artifact["url"], headers={"User-Agent": headers["User-Agent"]}, follow_redirects=True)
-            if head.status_code != 200:
-                problems.append(f"{name}: HEAD {artifact['url']} answered HTTP {head.status_code}")
-            else:
-                length = head.headers.get("Content-Length")
-                if length and int(length) != artifact["bytes"]:
-                    problems.append(f"{name}: HEAD says {int(length):,} bytes, the pin {artifact['bytes']:,} bytes")
-    except httpx2.HTTPError as exc:
-        problems.append(f"the GitHub API could not be asked about {tag}: {exc.__class__.__name__}")
-    finally:
-        if own:
-            client.close()
-    return problems
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="scribe.ollama_setup", description="The Ollama pin, checked against its release.")
-    parser.add_argument("--check-pin", action="store_true", help="compare scribe/ollama_release.json with the release's metadata; exit 1 on any difference")
-    parser.add_argument("--release", type=Path, default=None, help="another pin file to check (a probe), instead of the shipped one")
-    args = parser.parse_args(argv)
-    if not args.check_pin:
-        parser.print_help()
-        return 2
-    pin = release(args.release)
-    with pin_client() as client:
-        problems = check_pin(pin, client=client, token=os.environ.get("GITHUB_TOKEN") or None)
-    if problems:
-        print(f"the Ollama pin {pin['tag']} does not match its release:")
-        for problem in problems:
-            print(f"  {problem}")
-        return 1
-    names = ", ".join(artifact["name"] for artifact in pin["artifacts"].values())
-    print(f"the Ollama pin {pin['tag']} matches its release: size, digest and URL agree for {names}; sha256sum.txt agrees")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

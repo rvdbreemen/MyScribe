@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+### Changed
+
+- The Ollama install offer follows Ollama's newest release instead of a pinned
+  one. When the offer is made, MyScribe asks GitHub for the newest release and
+  shows its URL, size and sha256 before the question. The download must match
+  both GitHub's digest and the release's own sha256sum.txt, and on Windows the
+  Ollama Inc. signer. When GitHub cannot be reached, is rate-limiting, or the
+  two digests disagree, the sitting says so in one sentence and offers
+  ollama.com/download and Check again. A start whose sitting already put the
+  question asks GitHub nothing. The pin, its CI check and its release step are
+  gone. The launcher's Ollama figure is now labelled an estimate (TASK-095,
+  ADR-021 Proposed).
+
 ## [0.6.0] - 2026-09-24
 
 The installer release: one installer on every platform that looks at what the

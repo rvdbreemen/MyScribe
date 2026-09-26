@@ -33,8 +33,8 @@
       "darwin": 197972871,
       "linux": null
     },
-    "measured": "read from Ollama's own release, not measured here",
+    "measured": "an estimate from Ollama's v0.34.3 installers",
     "date": "2026-09-23",
-    "source": "Copies of scribe/ollama_release.json, the pin of release v0.34.3 that TASK-089.18 installs from: the installer sizes are that release's OllamaSetup.exe and Ollama.dmg as the GitHub API and the release's sha256sum.txt report them (read 2026-09-23), and the model size is what the reference machine's Ollama reports for qwen3.5:4b on /api/tags (read 2026-09-20 and 2026-09-23). Linux installs through Ollama's script, which downloads a tarball of its own choosing, and no figure for it was read. The launcher reads this file and not the pin because it may import nothing from the app (ADR-011); tests/test_ollama_setup.py holds the two files equal, so bumping the pin means bumping these three numbers too."
+    "source": "An estimate, not the size of what will be downloaded. Since TASK-095 the offer installs Ollama's newest release, asked of GitHub when the offer is built, and shows that release's own size before its question; this file cannot know it, because the launcher that reads it may import nothing from the app (ADR-011) and asks nothing of the network before its first window. The installer sizes are release v0.34.3's OllamaSetup.exe and Ollama.dmg as the GitHub API and the release's sha256sum.txt reported them on 2026-09-23 - a later release may be larger or smaller. The model size is what the reference machine's Ollama reports for qwen3.5:4b on /api/tags (read 2026-09-20 and 2026-09-23), the same figure scribe/ollama_offer.json gives the offer, and tests/test_ollama_setup.py holds those two equal. Linux installs through Ollama's script, which downloads a tarball of its own choosing, and no figure for it was read."
   }
 }
