@@ -3,11 +3,11 @@ id: TASK-095
 title: >-
   The Ollama offer follows Ollama's newest release, checked at install time
   instead of pinned
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 17:49'
-updated_date: '2026-09-26 20:28'
+updated_date: '2026-09-26 20:44'
 labels:
   - ollama
   - installer
@@ -32,7 +32,7 @@ Robert decided on 2026-09-26: MyScribe no longer pins the Ollama release it offe
 - [x] #5 The model figures and the launcher's location question no longer read an Ollama installer size from a pin: scribe/footprint.json's ollama block either comes from the release metadata at offer time or is marked an estimate, and the test that held pin and footprint equal is replaced, not deleted silently
 - [x] #6 scribe/ollama_release.json is removed or reduced to what is not a pin (the vendor page, model sizes); ci.yml's check-pin step and RELEASING.md's step 2b are gone; the notes say what replaced each
 - [x] #7 ADR-021 is drafted as Proposed, superseding ADR-017 in its pinned-artifact clause only, signed as the agent; acceptance is Robert's
-- [ ] #8 The per-file suite is green and CI is green on all three runners
+- [x] #8 The per-file suite is green and CI is green on all three runners
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -104,4 +104,12 @@ ADR-017 is Accepted and its third Enforcement tripwire forbids `ollama/ollama/re
 - The mutants were run a third time after that note change: 13 of 13 killed (EVIDENCE/mut-summary.txt).
 
 Verified 2026-09-26 by the orchestrator in MyScribe-wt-095, fenced, one file per process: test_ollama_setup 104, test_setup_plan 181, test_launcher 103 (1 skipped), test_launcher_sitting 57, test_install 56, test_setup 15, test_setup_prove 43, test_doctor 56, test_no_secret_anywhere 3, all passed; grep MUTANT finds nothing. ADR-021 accepted by Robert and ADR-017 superseded by it the same day; adr-judge on the staged diff: 0 violations. Recorded: the build agent's first version of one test really downloaded the pinned 1.57 GB installer from github.com twice before it was fenced; nothing ran and the files are deleted.
+
+CI green on all three runners on the merge into main (run 36269658405, public repository).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The Ollama offer takes Ollama's newest release, fetched only when an offer is built, and installs it only when the file matches both the GitHub API digest and the release's sha256sum.txt (plus the signer on Windows); every refusal is a sentence and the vendor page. The pin, its CI check and its release step are gone. ADR-021 accepted, superseding ADR-017. Verified red first, 13 mutants, the affected test files and CI on three runners.
+<!-- SECTION:FINAL_SUMMARY:END -->
