@@ -42,7 +42,7 @@ shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
 
 ```powershell
 # Windows: compare the one line for the file you downloaded
-(Get-FileHash MyScribe-0.7.1-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash MyScribe-0.7.2-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
 Select-String -Path SHA256SUMS -Pattern windows-x64.exe$
 ```
 
@@ -50,7 +50,7 @@ Every file also has a build-provenance attestation, which proves it was built
 by this repository's release workflow:
 
 ```sh
-gh attestation verify MyScribe-0.7.1-windows-x64.exe --repo rvdbreemen/MyScribe
+gh attestation verify MyScribe-0.7.2-windows-x64.exe --repo rvdbreemen/MyScribe
 ```
 
 ## The first start

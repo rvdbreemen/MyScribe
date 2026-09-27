@@ -406,7 +406,14 @@ TASKS: dict[str, TaskSpec] = {
         # generated, so carrying room for a model that thinks costs a model
         # that does not exactly nothing - while the failure it prevents costs
         # the whole call and leaves the speakers unnamed.
-        max_output_tokens=8000,
+        #
+        # Doubled again on 2026-09-27 (TASK-099, with Robert): a 2h28m
+        # recording with five clusters spent all 8,000 reasoning at BaseTen,
+        # twice (jobs 418 and 419), and came back empty. A call that still
+        # loses everything to thinking is asked once more with the reasoning
+        # hint (`openai_like._ask_again_with_the_hint`). A small local window
+        # clamps this cap (`fit_output_tokens`).
+        max_output_tokens=16000,
     ),
     "labels": TaskSpec(
         kind="labels",

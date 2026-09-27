@@ -1885,3 +1885,13 @@ def test_a_provider_test_that_names_no_provider_dies_in_the_runner_with_a_senten
     row = _job_row(conn, job_id)
     assert row["status"] == "failed"
     assert "needs a provider" in (row["error_detail"] or "")
+
+
+def test_the_speakers_pass_may_answer_in_16000_tokens_against_a_cloud_window():
+    """TASK-099, decided with Robert on 2026-09-27: 8,000 was not enough for
+    a 2h28m, five-speaker recording - jobs 418 and 419 spent all 8,000 tokens
+    reasoning at BaseTen and came back empty. A cap, not a spend: a cloud
+    provider bills what was generated. The local window still clamps it
+    (`test_every_kind_fits_the_smallest_local_window`)."""
+    spec = tasks.TASKS["speakers"]
+    assert tasks.fit_output_tokens(spec, context_tokens=tasks.CLOUD_CONTEXT_TOKENS) == 16_000

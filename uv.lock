@@ -801,7 +801,7 @@ wheels = [
 
 [[package]]
 name = "myscribe"
-version = "0.7.1"
+version = "0.7.2"
 source = { virtual = "." }
 dependencies = [
     { name = "anyio" },
