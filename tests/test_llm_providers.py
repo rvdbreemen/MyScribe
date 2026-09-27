@@ -590,6 +590,96 @@ def test_a_contentless_length_answer_says_what_it_spent():
     assert "Wafer" in message, message
 
 
+# --- an answer lost entirely to reasoning (TASK-099) ------------------------------
+#
+# Jobs 418 and 419, 2026-09-27: the speakers pass on a 2h28m recording came
+# back twice with no text - finish_reason 'length', 8,000 of 8,000 tokens
+# spent reasoning at BaseTen, no hint asked. The rule: such a call is asked
+# exactly once more with the hint, and never a third time.
+
+
+def lost_to_reasoning(reasoning=8000, upstream="BaseTen", finish="length"):
+    return completion(None, completion_tokens=8000, finish=finish,
+                      details={"reasoning_tokens": reasoning}, upstream=upstream)
+
+
+@pytest.mark.parametrize("cls", [openai_like.OpenRouterProvider, openai_like.OpenAIProvider])
+def test_an_answer_lost_to_reasoning_is_asked_once_more_with_the_hint(cls):
+    rec = Recorder(lost_to_reasoning(), completion("SPEAKER_00 is Robert"))
+
+    answer = provider(cls, rec).complete(REQUEST)
+
+    assert answer.text == "SPEAKER_00 is Robert"
+    assert rec.calls == 2
+    assert [k for k in REASONING_KEYS if k in rec.body(0)] == [], "the first request is as before"
+    assert [k for k in REASONING_KEYS if k in rec.body(1)] != [], "the second carries the hint"
+    assert answer.hint_sent is True, "the row says the answer was bought with the hint"
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        completion(None, finish="stop", details={"reasoning_tokens": 500}),
+        completion(None, finish="length", details=None),
+        completion(None, finish="length", details={"reasoning_tokens": 0}),
+    ],
+    ids=["ended-stop", "no-reasoning-reported", "zero-reasoning"],
+)
+def test_an_empty_answer_that_reasoning_did_not_eat_is_not_asked_again(first):
+    rec = Recorder(first, completion("never reached"))
+
+    with pytest.raises(base.BadResponse):
+        provider(openai_like.OpenRouterProvider, rec).complete(REQUEST)
+
+    assert rec.calls == 1
+
+
+def test_a_call_that_already_carried_the_hint_is_not_asked_again():
+    rec = Recorder(lost_to_reasoning(), completion("never reached"))
+
+    with pytest.raises(base.BadResponse):
+        provider(openai_like.OpenRouterProvider, rec).complete(hinted())
+
+    assert rec.calls == 1
+
+
+def test_an_answer_with_text_is_never_asked_again():
+    rec = Recorder(completion("Paris", finish="length", details={"reasoning_tokens": 7000}),
+                   completion("never reached"))
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(REQUEST)
+
+    assert answer.text == "Paris" and rec.calls == 1
+
+
+def test_a_retry_that_is_empty_too_names_both_attempts_and_stops():
+    rec = Recorder(lost_to_reasoning(reasoning=8000), lost_to_reasoning(reasoning=7777, upstream="Wafer"))
+
+    with pytest.raises(base.BadResponse) as caught:
+        provider(openai_like.OpenRouterProvider, rec).complete(REQUEST)
+
+    message = str(caught.value)
+    assert rec.calls == 2
+    assert "8000" in message and "BaseTen" in message, "the first attempt"
+    assert "7777" in message and "Wafer" in message, "the second attempt"
+    assert "reasoning hint" in message
+
+
+def test_a_retry_whose_hint_is_refused_stops_without_a_third_call():
+    """Without the hint the call is the first one again: another 8,000
+    tokens for the same nothing. So a refused hint ends it here."""
+    rec = Recorder(lost_to_reasoning(),
+                   error(400, "Reasoning is mandatory for this endpoint and cannot be disabled."),
+                   completion("never reached"))
+
+    with pytest.raises(base.BadResponse) as caught:
+        provider(openai_like.OpenRouterProvider, rec).complete(REQUEST)
+
+    assert rec.calls == 2
+    assert "refused" in str(caught.value)
+    assert "8000" in str(caught.value)
+
+
 def test_a_refused_connection_is_unreachable_naming_the_endpoint_and_is_retried():
     def refuse(request):
         raise httpx2.ConnectError("connection refused", request=request)

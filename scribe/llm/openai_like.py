@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import copy
 import sqlite3
+from dataclasses import replace
 from typing import Any, Callable, Mapping
 
 import openai
@@ -241,16 +242,27 @@ class OpenAILikeProvider(base.Provider):
             raise base.AuthError(f"{self.name}: {why}")
         key = resolved.value or ""
 
+        completion, body = self._call(key, req)
+        if not req.reasoning_off and _lost_to_reasoning(completion):
+            return self._ask_again_with_the_hint(key, req, completion)
+        hint_sent = self._carries_hint(body) if req.reasoning_off else None
+        return self._answer(completion, req, hint_sent=hint_sent)
+
+    def _call(self, key: str, req: ChatRequest, *, may_drop_hint: bool = True) -> tuple[Any, dict]:
+        """One request and the refusals worth one more call, and the body that
+        was answered. `may_drop_hint=False` is the retry below: dropping the
+        hint there would repeat the call that already came back empty."""
         body = self._body(req)
         dropped: set[str] = set()
         while True:
             try:
-                completion = self._create(key, body, req)
-                break
+                return self._create(key, body, req), body
             except openai.BadRequestError as exc:
                 knob = self._refused_knob(exc, body, dropped)
                 if knob is None:
                     raise self._map(exc, key, model=req.model) from None
+                if knob == "hint" and not may_drop_hint:
+                    raise _HintRefused() from None
                 # One more call without the knob. Each is dropped at most once,
                 # so this is at most three calls and every extra one follows a
                 # refused, unbilled 400 (its latency is not measured).
@@ -261,8 +273,30 @@ class OpenAILikeProvider(base.Provider):
                     for field in self.reasoning_off_body:
                         body.pop(field, None)
 
-        hint_sent = self._carries_hint(body) if req.reasoning_off else None
-        return self._answer(completion, req, hint_sent=hint_sent)
+    def _ask_again_with_the_hint(self, key: str, req: ChatRequest, first: Any) -> ChatResponse:
+        """A call that asked no hint came back with no text, cut off at its cap
+        with reasoning tokens reported: everything went into thinking (TASK-099;
+        jobs 418 and 419, 8,000 of 8,000 tokens at BaseTen on a 2h28m
+        speakers pass). Asked exactly once more with the hint - the answer
+        instead of nothing, and `hint_sent` True on its row so it is plain the
+        hint bought it. Never a third time: a refused hint would bring back the
+        first call, and an empty second answer means the hint did not help."""
+        spent = _spend(first)
+        retry = replace(req, reasoning_off=True)
+        try:
+            completion, _body = self._call(key, retry, may_drop_hint=False)
+        except _HintRefused:
+            raise base.BadResponse(
+                f"{self.name} answered with no message content ({spent}, no reasoning hint "
+                "asked); asked again with the reasoning hint, which was refused, so it was not "
+                "asked a third time"
+            ) from None
+        if _message_text(completion) is None and not getattr(completion, "error", None):
+            raise base.BadResponse(
+                f"{self.name} answered with no message content twice: first {spent} with no "
+                f"reasoning hint asked, then {_spend(completion)} with the reasoning hint sent"
+            )
+        return self._answer(completion, retry, hint_sent=True)
 
     def _refused_knob(
         self, exc: openai.BadRequestError, body: Mapping[str, Any], dropped: set[str]
@@ -445,6 +479,51 @@ def _refuses_context(exc: openai.OpenAIError) -> bool:
         getattr(exc, "code", None) == "context_length_exceeded"
         or "context length" in lowered
         or "too long" in lowered
+    )
+
+
+class _HintRefused(Exception):
+    """The retry's hint was refused with a 400; `complete` ends the call there."""
+
+
+def _message_text(completion: Any) -> str | None:
+    choices = getattr(completion, "choices", None) or []
+    if not choices:
+        return None
+    return getattr(getattr(choices[0], "message", None), "content", None)
+
+
+def _reasoning_tokens(completion: Any) -> int | None:
+    usage = getattr(completion, "usage", None)
+    return getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None)
+
+
+def _lost_to_reasoning(completion: Any) -> bool:
+    """No text, cut off at the cap, and reasoning tokens reported: the whole
+    answer went into thinking. Not an error envelope, not an empty `choices`
+    (both are other failures), and not a model that reported no reasoning -
+    that one ran out of room for something else, which the hint cannot fix."""
+    if getattr(completion, "error", None):
+        return False
+    choices = getattr(completion, "choices", None) or []
+    if not choices or _message_text(completion) is not None:
+        return False
+    if getattr(choices[0], "finish_reason", None) != "length":
+        return False
+    return bool(_reasoning_tokens(completion))
+
+
+def _spend(completion: Any) -> str:
+    """What a call spent, in the words `_answer` uses: a failed call writes no
+    row, so the message is its only receipt."""
+    choices = getattr(completion, "choices", None) or []
+    finish = getattr(choices[0], "finish_reason", None) if choices else None
+    usage = getattr(completion, "usage", None)
+    return (
+        f"(finish_reason={finish!r}, "
+        f"completion_tokens={getattr(usage, 'completion_tokens', None)}, "
+        f"reasoning_tokens={_reasoning_tokens(completion)}, "
+        f"upstream={getattr(completion, 'provider', None)!r})"
     )
 
 

@@ -28,3 +28,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-020 | Accepted | `scribe/**` | Chosen option: A. |
 | ADR-021 | Accepted | `{scribe/**,packaging/launcher/**,install.py}` | Chosen option: newest release, checked at install time, because Robert chose it and it keeps what ADR-017 protects -... |
 | ADR-022 | Proposed | `scribe/**` | Chosen option: a separate upload-only listener, decided by Robert on 2026-09-26 with the four options in front of him... |
+| ADR-023 | Accepted | - | Chosen option: A, together with a higher cap for speakers (16,000 output tokens, from 8,000), decided by Robert on 20... |

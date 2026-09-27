@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-27
+
+### Fixed
+
+- **Naming speakers on a long recording no longer comes back empty.** A
+  cloud model reached through `openrouter/auto` could spend its whole answer
+  budget thinking and return nothing, so the speakers stayed unnamed. Such an
+  answer is now asked once more with the request not to reason first, and
+  the speakers pass may answer in up to 16,000 tokens instead of 8,000. The
+  first request is unchanged, and a failure now says what both attempts
+  spent (TASK-099, ADR-023).
+
 ### Changed
 
 - The documentation is reorganised. The README is a short introduction with

@@ -10,6 +10,8 @@ verified_in: []
 supersedes:
   - "ADR-010"
 superseded_by: null
+related:
+  - "ADR-023"
 topics:
   - "llm"
   - "reasoning-models"
@@ -79,6 +81,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen"
     reason: "Superseded by ADR-020 at Robert's request on 2026-09-24: the decision is unchanged, and ADR-020 describes the copied-part rule of TASK-088 as built instead of open."
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-27
+    status: Accepted
+    changed_by: Claude (agent, session 2026-09-27)
+    reason: Related to ADR-023
     changed_via: adr-kit lifecycle
 ```
 
