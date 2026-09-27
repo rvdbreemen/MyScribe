@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-26 20:11'
-updated_date: '2026-09-27 07:28'
+updated_date: '2026-09-27 07:32'
 labels:
   - web
   - ingest
@@ -31,7 +31,7 @@ Robert wants to move a recording from his iPhone to the laptop without any cloud
 - [x] #3 The door closes by itself after 15 minutes and on request; after closing the port refuses connections. A test with a controllable clock proves the timeout without sleeping
 - [x] #4 Without the exact secret in the path every request is a 404 and writes nothing; the secret is long and random (secrets module), new per opening, never logged; one test per refusal
 - [x] #5 Only audio and video files are accepted, with a size limit; anything else is refused with a sentence; an accepted file goes through the same ingest path as an upload on the laptop and is transcribed like one
-- [ ] #6 The laptop shows the QR code, the URL, the IP fallback and a countdown, and a close button; the phone page is plain HTML that works in Safari on an iPhone without JavaScript frameworks or anything from the internet
+- [x] #6 The laptop shows the QR code, the URL, the IP fallback and a countdown, and a close button; the phone page is plain HTML that works in Safari on an iPhone without JavaScript frameworks or anything from the internet
 - [x] #7 myscribe.local is published over mDNS while the door is open and withdrawn when it closes; if publishing fails the IP URL still works and the page says so
 - [x] #8 Whatever Windows Firewall needs for a phone to connect is stated from a measurement on this machine, not assumed; MyScribe never adds a firewall rule that outlives the door without saying so
 - [ ] #9 Red first for every behaviour, mutants on a copy, the per-file suite green, and a real run: a phone (or a second device on the LAN) sends a file, it becomes a recording, and the door closes on time. The phone half is Robert's
@@ -70,4 +70,7 @@ Robert wants to move a recording from his iPhone to the laptop without any cloud
 - Suite: per-file run on the rebased branch before AC10-12, 94 files green, 3531 passed, 0 failed (test_llm_live: 7 deselected, exit 5). After AC10-12: tests/test_phone_door.py 61 passed (three runs), tests/test_web_phone.py 33 passed. The whole suite after AC10-12 runs in CI, not here: the machine had 3.2 of 28 GB free.
 - Mutants on a copy. Round 1 (before AC10-12), 23 mutants: 22 killed; content-length-not-checked survived, and a test that sends only headers with Content-Length over the limit and wants 413 within 5 s now kills it. Round 2: content-length-not-checked, door-stays-open-after-file, refused-file-closes-too, close-does-not-wait, reload-on-every-panel killed; no-hx-refresh, running-said-as-queued, timed-out-door-reloads, accept-filter-back not run (the harness stopped the run for low memory).
 - Not done: the phone half of AC9 and Safari for AC6/AC10 (Robert's iPhone). ADR-022 stays Proposed until Robert accepts it.
+
+2026-09-27, Robert's iPhone run (read from MyScribe-wt-096/data/logs/app.log; code of commit f115637 with the accept filter removed, before the progress bar): phone.open 23:34:47 on 192.168.1.234:4243 with mDNS; ingest.phone 23:35:33 "Audio Terrein sessie ..m4a", 252,638,391 bytes; closed on the laptop 23:35:55; job 1 transcribed, runner.exited status done after 1146 s. So Safari on an iPhone sends a real recording through the door and it is transcribed like a laptop upload (AC6; the phone half of AC9). The progress bar (AC10) has not been seen in Safari yet.
+One line in that log came from a pytest process (pid 23224, no proc, 23:53:39, phone.close reason received, 0 files): the close race fixed in 5a19140 let a test's closing thread log after the test had restored paths.LOGS_DIR, whose default is the checkout's data dir. Five phone-test runs after the fix wrote nothing there. Tests that do not fence LOGS_DIR themselves still default to the checkout's data dir; that is wider than this task.
 <!-- SECTION:NOTES:END -->
