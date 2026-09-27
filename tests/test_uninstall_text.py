@@ -1,6 +1,6 @@
 """What stays behind after an uninstall, and whose it is (TASK-089.23).
 
-The Windows installer and the README are text, and text drifts: the README
+The Windows installer and the installation guide are text, and text drifts: the README
 said the program installs into the folder that is really the library's, and
 the installer's header cited a decision record by a number it no longer has.
 These tests read the two files and hold them to the code they describe.
@@ -15,7 +15,9 @@ from scribe import autostart
 
 REPO = Path(__file__).resolve().parents[1]
 ISS = REPO / "packaging" / "windows" / "myscribe.iss"
-README = REPO / "README.md"
+# The install and uninstall text moved from README.md to the installation
+# guide on 2026-09-27; the README links to it.
+README = REPO / "docs" / "installation.md"
 
 
 def _iss() -> str:
@@ -83,7 +85,9 @@ def test_the_readme_and_the_installer_agree_on_where_the_program_goes():
 def test_the_readme_has_an_uninstalling_section_per_platform_and_documents_tools():
     readme = README.read_text(encoding="utf-8")
     section = readme[readme.index("## Uninstalling"):]
-    section = section[: section.index("\n## ", 1)]
+    # The last section of the guide: it runs to the end of the file.
+    if "\n## " in section[1:]:
+        section = section[: section.index("\n## ", 1)]
 
     for heading in ("**Windows**", "**macOS**", "**Linux**", "**A clone**"):
         assert heading in section, heading

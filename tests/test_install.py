@@ -1151,8 +1151,9 @@ def test_install_py_is_not_in_the_payload():
 
 
 def test_the_readme_s_from_a_clone_section_is_install_py_and_the_start():
-    text = (REPO / "README.md").read_text(encoding="utf-8")
-    section = text.split("### From a clone", 1)[1].split("\n### ", 1)[0]
+    # Moved from README.md to the installation guide on 2026-09-27.
+    text = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
+    section = text.split("## From a clone", 1)[1].split("\n## ", 1)[0]
     assert "python install.py" in section
     assert "uv sync" not in section
     assert "--data-dir" in section and "git clean -fdx" in section

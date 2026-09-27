@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Changed
+
+- The documentation is reorganised. The README is a short introduction with
+  a quick start; installing, configuration, receiving from a phone,
+  troubleshooting and development each have their own guide under `docs/`,
+  with an index in `docs/README.md`. Outdated statements are corrected: the
+  default library folder, the build-provenance attestation that every
+  download now has, and the setup that asks one thing per step.
+
 ## [0.7.1] - 2026-09-27
 
 ### Changed
