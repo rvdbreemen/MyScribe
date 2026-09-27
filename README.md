@@ -1,12 +1,18 @@
 # MyScribe
 
-**Private transcription on your own computer.** MyScribe turns recordings into
-searchable transcripts with speakers, corrections, exports and an AI panel -
-without sending your audio anywhere. It runs in your browser at
-`http://127.0.0.1:4242` and keeps everything in one library on your disk.
-Nothing leaves the machine unless you choose a cloud AI provider yourself.
+**MyScribe is a local-first transcription program with privacy by design.**
 
-Runs on Windows, macOS (Apple Silicon) and Linux.
+- **Transcription and speaker detection always run locally**, on your own
+  computer. Your audio never leaves it.
+- **Post-processing is optional, and your choice.** Label your recordings, run
+  an analysis - a summary, action points, a cleaned-up reading - or chat with
+  a transcript, using local models through
+  [Ollama](https://ollama.com). Or, if you prefer, use OpenRouter or OpenAI
+  as a backend in the public cloud.
+
+MyScribe runs in your browser at `http://127.0.0.1:4242` and keeps everything
+in one library on your disk. It runs on Windows, macOS (Apple Silicon) and
+Linux.
 
 ---
 
