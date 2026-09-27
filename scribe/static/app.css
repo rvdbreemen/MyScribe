@@ -1521,3 +1521,10 @@ button.not-saved, button.not-saved:hover:enabled, .primary.not-saved {
   color: var(--accent-ink);
   transition: background-color .2s ease, border-color .2s ease;
 }
+
+/* ---- Receive from phone (TASK-096) -------------------------------------------- */
+.phone-panel { padding: .7rem 1rem 1rem; max-width: 34rem; }
+.phone-qr { display: flex; justify-content: center; margin: .6rem 0; }
+.phone-qr svg { background: #fff; padding: 8px; border-radius: 6px; max-width: 100%; height: auto; }
+.phone-url code { word-break: break-all; }
+.phone-received { margin: .2rem 0 .6rem; padding-left: 1.2rem; }

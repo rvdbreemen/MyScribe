@@ -131,7 +131,7 @@ shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
 
 ```powershell
 # Windows: compare the one line for the file you downloaded
-(Get-FileHash MyScribe-0.6.0-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash MyScribe-0.7.0-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
 Select-String -Path SHA256SUMS -Pattern windows-x64.exe$
 ```
 
@@ -356,6 +356,17 @@ and no token. Read that module before changing how routes are reached.
 
 Do not put the app behind a reverse proxy and call it multi-user. It was
 never designed for that, and nothing in it checks who is asking.
+
+One exception, and it is small (ADR-022). **Receive from phone**, in the
+library's toolbar, opens a second listener on port 4243 of this laptop's
+Wi-Fi address for 15 minutes and shows a QR code. The phone gets an upload
+page behind a one-time secret in the URL and nothing else: no route of the
+app, nothing to read. An audio or video file it sends becomes a recording
+and is transcribed with your usual settings. The door closes once that file
+is in, after 15 minutes, on Close, or when MyScribe stops. Anyone on the same Wi-Fi who sees the code
+before then can send a file, and the upload is plain HTTP. If Windows
+Firewall asks whether Python may use the network, allow it for the kind of
+network your Wi-Fi is set to; MyScribe adds no rule itself.
 
 ## Tests
 

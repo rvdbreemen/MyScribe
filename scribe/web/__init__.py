@@ -203,6 +203,7 @@ def mount(app: FastAPI) -> None:
         jobs_ui,
         library,
         logs_ui,
+        phone_ui,
         settings,
         transcribe_dialog,
         transcript,
@@ -219,3 +220,6 @@ def mount(app: FastAPI) -> None:
     app.include_router(ai_ui.router)
     app.include_router(settings.router)
     app.include_router(logs_ui.router)
+    # Receive from phone (TASK-096): the routes, and the door itself, closed.
+    app.include_router(phone_ui.router)
+    phone_ui.install(app)

@@ -49,6 +49,9 @@
       <a class="button mic" href="/record" hx-get="/record"
          hx-target="#record-dialog" hx-swap="innerHTML"
          title="Record from the microphone" aria-label="Record from the microphone">⬤ Record</a>
+      {# A third way a recording arrives: from a phone on the same Wi-Fi,
+         through a door that closes by itself (TASK-096, ADR-022). #}
+      <a class="button" href="/phone" hx-get="/phone" hx-target="#phone-dialog" hx-swap="innerHTML">Receive from phone</a>
       <form class="filter" method="get" action="/" role="search">
         {% if state.view %}<input type="hidden" name="view" value="{{ state.view }}">{% endif %}
         {% if state.folder is not none %}<input type="hidden" name="folder" value="{{ state.folder }}">{% endif %}
@@ -104,4 +107,5 @@
 <dialog id="transcribe-dialog" class="dialog" aria-label="Transcribe"></dialog>
 <dialog id="record-dialog" class="dialog" aria-label="Record"></dialog>
 <dialog id="export-dialog" class="dialog export-dialog" aria-label="Export" data-stay-open></dialog>
+<dialog id="phone-dialog" class="dialog" aria-label="Receive from phone" data-stay-open></dialog>
 {% endblock %}

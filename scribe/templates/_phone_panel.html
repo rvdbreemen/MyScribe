@@ -1,0 +1,49 @@
+{#
+  Receive from phone: the door's state on the laptop (scribe/web/phone_ui.py).
+
+  Context:
+      opening        phone_door.Opening, or None while the door is closed
+      qr             the QR code of opening.ip_url as inline SVG (segno)
+      countdown      "m:ss" left, while open
+      received       names of the files that came through this opening
+      error          why the door did not open, or None
+      firewall_note  one sentence about Windows Firewall, on Windows only
+      minutes        how long an opening lasts
+
+  The QR code carries the IP-address URL: it is scanned, not typed, and a
+  number needs nothing from mDNS. The myscribe.local URL is there to type.
+  Every form works without scripting too (a plain POST answers the page).
+#}
+<section id="phone-panel" class="phone-panel">
+  {% if error %}<p class="flash bad" role="alert">{{ error }}</p>{% endif %}
+  {% if opening %}
+  <p>Scan this with the phone’s camera, or open one of the addresses below in its browser. The phone can send an audio or video file; it cannot see anything in MyScribe.</p>
+  <div class="phone-qr">{{ qr }}</div>
+  <p class="phone-url">Address: <code>{{ opening.mdns_url }}</code></p>
+  <p class="phone-url">If the phone cannot find that name: <code>{{ opening.ip_url }}</code></p>
+  {% if opening.mdns_error %}
+  <p class="flash warn">myscribe.local could not be published on this network ({{ opening.mdns_error }}). The address with the numbers still works, and it is the one in the QR code.</p>
+  {% endif %}
+  <p class="hint">This laptop is <code>{{ opening.address }}</code> on the network the default route uses. Anyone on this network who sees this code or address before the door closes can send a file; nobody can read anything.</p>
+  {% with countdown=countdown, received=received %}{% include "_phone_countdown.html" %}{% endwith %}
+  <form method="post" action="/phone/close" hx-post="/phone/close" hx-target="#phone-panel" hx-swap="outerHTML">
+    <button type="submit">Close the door now</button>
+  </form>
+  {% else %}
+  {% if arrived %}
+  {# The door closed on a file (one recording per opening). The countdown
+     that saw it close asks for a library reload after three seconds; any
+     later look at this panel only reports. #}
+  <div class="flash ok" role="status">
+    {% for item in arrived %}<p>✓ Received {{ item.name }} from the phone. {{ item.job }}</p>{% endfor %}
+  </div>
+  {% if reload %}<div hx-get="/phone/done" hx-trigger="load delay:3s" hx-swap="none"></div>{% endif %}
+  {% endif %}
+  <p>Open a door for {{ minutes }} minutes through which a phone on the same Wi-Fi can send a recording to this laptop. It becomes a recording in the library and is transcribed with your usual settings.</p>
+  <p class="hint">The phone gets an upload page and nothing else: it cannot see the library. The door closes by itself after {{ minutes }} minutes, or when you close it.</p>
+  <form method="post" action="/phone/open" hx-post="/phone/open" hx-target="#phone-panel" hx-swap="outerHTML">
+    <button type="submit" class="primary">Open for {{ minutes }} minutes</button>
+  </form>
+  {% endif %}
+  {% if firewall_note %}<p class="hint">{{ firewall_note }}</p>{% endif %}
+</section>
