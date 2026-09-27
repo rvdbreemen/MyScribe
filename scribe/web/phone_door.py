@@ -87,7 +87,7 @@ ROUTE_PROBE = ("192.0.2.1", 9)
 # How long a Close waits for an upload still in flight before cutting it off.
 GRACE_SECONDS = 2.0
 
-Accept = Callable[[BinaryIO, str], None]
+Accept = Callable[[BinaryIO, str], object]
 
 
 def open_seconds(environ: Mapping[str, str] = os.environ) -> float:
@@ -303,6 +303,11 @@ class Door:
         self._closed = threading.Event()
         self._closed.set()
         self.received: list[str] = []
+        # What ``accept`` answered for each file, in order (the laptop's side
+        # keeps the media id there, to name the recording's job).
+        self.results: list[object] = []
+        # Why the door last closed: "received", "timeout", "app stopped", ...
+        self.closed_reason: str | None = None
 
     # --- state -----------------------------------------------------------------
 
@@ -377,6 +382,8 @@ class Door:
             self._opening = opening
             self._listener = listener
             self.received = []
+            self.results = []
+            self.closed_reason = None
             self._closed.clear()
             stop = threading.Event()
             self._stop_watch = stop
@@ -393,15 +400,25 @@ class Door:
         ``only``: close only if that opening is still the live one - the
         watchdog of an opening that was already closed by hand and reopened
         must not close the new one.
+
+        Returns when the door is closed, also when another thread was already
+        closing it (the door closes itself after a file): the listener is
+        stopped and ``phone.close`` logged by then.
         """
         with self._lock:
             opening = self._opening
-            if opening is None or (only is not None and opening is not only):
+            if only is not None and opening is not only:
                 return
-            self._opening = None
-            listener, self._listener = self._listener, None
-            stop, self._stop_watch = self._stop_watch, None
-            received = len(self.received)
+            if opening is not None:
+                self._opening = None
+                self.closed_reason = reason
+                listener, self._listener = self._listener, None
+                stop, self._stop_watch = self._stop_watch, None
+                received = len(self.received)
+        if opening is None:
+            # Closed already, or being closed by another thread right now.
+            self._closed.wait(20)
+            return
         if stop is not None:
             stop.set()
         try:
@@ -413,8 +430,9 @@ class Door:
                     self._publisher.withdraw()
             except Exception as exc:
                 applog.log("phone.mdns_withdraw_failed", level="warn", error=str(exc))
-            self._closed.set()
+            # Logged first: whoever waits on _closed may read the log next.
             applog.log("phone.close", reason=reason, received=received)
+            self._closed.set()
 
     def close_if_due(self) -> bool:
         """Close the door if its time is up; True when it is closed now.
@@ -439,9 +457,19 @@ class Door:
     # --- what an accepted file becomes ---------------------------------------------
 
     def _take(self, stream: BinaryIO, name: str) -> None:
-        self._accept(stream, name)
+        result = self._accept(stream, name)
         self.received.append(name)
+        self.results.append(result)
         applog.log("phone.received", filename=name)
+
+    def _close_after_answer(self, opening: Opening) -> None:
+        """One recording per opening (Robert, 2026-09-26): once the phone has
+        its answer, the door closes. On a thread of its own, because closing
+        joins the listener's thread, which is the one that just answered."""
+        threading.Thread(
+            target=self.close, args=("received",), kwargs={"only": opening},
+            name="scribe-phone-door-close", daemon=True,
+        ).start()
 
 
 def _answer(status: int, message: str | None = None, received: str | None = None) -> HTMLResponse:
@@ -466,16 +494,21 @@ class _DoorApp:
         if not self._door.admits(self._secret, scope.get("path", "")):
             await HTMLResponse("Not Found", status_code=404)(scope, receive, send)
             return
+        opening = self._door.opening
+        taken = False
         method = scope["method"].upper()
         if method in ("GET", "HEAD"):
             response = _answer(200)
         elif method == "POST":
-            response = await self._upload(scope, receive)
+            response, taken = await self._upload(scope, receive)
         else:
             response = HTMLResponse("Method Not Allowed", status_code=405, headers={"Allow": "GET, POST"})
         await response(scope, receive, send)
+        if taken and opening is not None:
+            self._door._close_after_answer(opening)
 
-    async def _upload(self, scope: Scope, receive: Receive) -> HTMLResponse:
+    async def _upload(self, scope: Scope, receive: Receive) -> tuple[HTMLResponse, bool]:
+        """The answer for the phone, and whether a file was taken."""
         limit = self._door.max_bytes
         too_large = _answer(
             413, f"That file is larger than {limit // 1024**3} GB, which is the most this door takes."
@@ -486,7 +519,7 @@ class _DoorApp:
         except ValueError:
             declared = 0
         if declared > limit:
-            return too_large
+            return too_large, False
 
         seen = 0
 
@@ -504,19 +537,19 @@ class _DoorApp:
             async with request.form(max_files=1, max_fields=10) as form:
                 part = form.get(FILE_FIELD)
                 if not isinstance(part, UploadFile) or not part.filename:
-                    return _answer(400, "Choose a recording first, then press Send.")
+                    return _answer(400, "Choose a recording first, then press Send."), False
                 name = _basename(part.filename) or "recording"
                 if PurePosixPath(name).suffix.lower() not in probe.MEDIA_EXTENSIONS:
                     return _answer(
                         415,
                         f"{name} is not an audio or video file, so it was not sent."
                         " Choose a recording or a video.",
-                    )
+                    ), False
                 await run_in_threadpool(self._door._take, part.file, name)
-                return _answer(200, received=name)
+                return _answer(200, received=name), True
         except _TooLarge:
-            return too_large
+            return too_large, False
         except MultiPartException:
-            return _answer(400, "The upload arrived damaged. Try sending it again.")
+            return _answer(400, "The upload arrived damaged. Try sending it again."), False
         except ClientDisconnect:
-            return _answer(400, "The upload stopped before the whole file arrived.")
+            return _answer(400, "The upload stopped before the whole file arrived."), False

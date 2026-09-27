@@ -1383,7 +1383,7 @@
       "context_scope": "selective",
       "decision_contract": {
         "must": [
-          "Listen only while open: opened by a form post to the app, so behind scribe.guard, and closed after 15 minutes, on Close, or when the app stops. Nothing persists it open.",
+          "Listen only while open: opened by a form post to the app, so behind scribe.guard, and closed once the answer to an accepted file has been sent (one recording per opening, Robert 2026-09-26), after 15 minutes, on Close, or when the app st...",
           "Serve its own ASGI (Asynchronous Server Gateway Interface) app on its own port (4243) and the LAN address of the default route; no route, static file or template of the app.",
           "Put a new secrets.tokenurlsafe(32) in the path for every opening; answer 404 to any other path before reading a body; compare with hmac.comparedigest.",
           "Keep the secret out of every log: the app log (ADR-014 still holds: the log observes) and uvicorn's access log, which is off for this listener only.",

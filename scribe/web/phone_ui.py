@@ -10,6 +10,13 @@ this machine's own browser, on this app's own pages, can open or close it.
     POST /phone/open       open it, or show the opening that is already there
     POST /phone/close      close it
     GET  /phone/countdown  the minutes left, polled by the panel once a second
+    GET  /phone/done       reloads the library (HX-Refresh), 3 s after a file came in
+
+One recording per opening (Robert, 2026-09-26): the door closes itself once
+the phone has its answer. The countdown then shows what came in and whether
+its transcription runs or waits, for three seconds, and asks /phone/done to
+reload the library, where the recording now is. A door that timed out or was
+closed by hand does not reload anything.
 
 The control sits in the library's toolbar beside Transcribe and Record,
 because it is a third way a recording arrives - not a setting.
@@ -32,6 +39,7 @@ The name is on the panel for typing.
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 
 import segno
@@ -39,6 +47,7 @@ from fastapi import APIRouter, Request
 from markupsafe import Markup
 from starlette.responses import Response
 
+from scribe import db
 from scribe.web import phone_door, render, transcribe_dialog
 from scribe.web.library import _is_htmx
 
@@ -65,10 +74,11 @@ FIREWALL_NOTE = (
 def accept_for(app):
     """The door's ``accept``: a file becomes a recording with a queued job."""
 
-    def accept(stream, name: str) -> None:
+    def accept(stream, name: str) -> int:
         conn = app.state.conn
         params = transcribe_dialog.read_defaults(conn).to_params()
-        transcribe_dialog.file_upload(conn, stream, name, params=params, folder_id=None, via="phone")
+        row = transcribe_dialog.file_upload(conn, stream, name, params=params, folder_id=None, via="phone")
+        return row["id"]  # the door keeps it; the panel names its job
 
     return accept
 
@@ -107,9 +117,44 @@ def _qr(url: str) -> Markup:
     return Markup(segno.make(url, error="m").svg_inline(scale=4))
 
 
-def _panel_context(door: phone_door.Door, error: str | None = None) -> dict:
+JOB_SENTENCES = {
+    "running": "Transcription has started.",
+    "queued": "Transcription is queued; it starts when the jobs before it are done.",
+    "done": "Transcription is done.",
+}
+
+
+def _job_sentence(conn: sqlite3.Connection, media_id) -> str:
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT status FROM job WHERE media_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
+            (media_id, transcribe_dialog.JOB_TYPE),
+        ).fetchone()
+    if row is None:
+        return "No transcription job was found for it; the Jobs page may say why."
+    return JOB_SENTENCES.get(row["status"], f"Transcription: {row['status']}.")
+
+
+def _arrived(door: phone_door.Door, conn: sqlite3.Connection) -> list[dict]:
+    """What came in through the opening that closed on it, with its job."""
+    if door.opening is not None or door.closed_reason != "received":
+        return []
+    return [
+        {"name": name, "job": _job_sentence(conn, media_id)}
+        for name, media_id in zip(door.received, door.results)
+    ]
+
+
+def _panel_context(
+    door: phone_door.Door, conn: sqlite3.Connection, error: str | None = None, *, reload: bool = False
+) -> dict:
     opening = door.opening
+    arrived = _arrived(door, conn)
     return {
+        "arrived": arrived,
+        # Only the countdown that saw the door close on a file reloads the
+        # library; a later look at the panel must not, or it would loop.
+        "reload": reload and bool(arrived),
         "opening": opening,
         "qr": _qr(opening.ip_url) if opening else None,
         "countdown": _clock(door.remaining()) if opening else None,
@@ -121,7 +166,7 @@ def _panel_context(door: phone_door.Door, error: str | None = None) -> dict:
 
 
 def _panel(request: Request, error: str | None = None, status: int = 200) -> Response:
-    ctx = _panel_context(_door(request), error)
+    ctx = _panel_context(_door(request), request.app.state.conn, error)
     if _is_htmx(request):
         response = render(request, "_phone_panel.html", **ctx)
     else:
@@ -132,7 +177,7 @@ def _panel(request: Request, error: str | None = None, status: int = 200) -> Res
 
 @router.get("/phone", include_in_schema=False)
 def phone(request: Request) -> Response:
-    ctx = _panel_context(_door(request))
+    ctx = _panel_context(_door(request), request.app.state.conn)
     if _is_htmx(request):
         return render(request, "phone_dialog.html", **ctx)
     return render(request, "phone.html", **ctx)
@@ -161,8 +206,16 @@ def countdown(request: Request) -> Response:
             request, "_phone_countdown.html",
             countdown=_clock(door.remaining()), received=list(door.received),
         )
-    response = render(request, "_phone_panel.html", **_panel_context(door))
+    ctx = _panel_context(door, request.app.state.conn, reload=True)
+    response = render(request, "_phone_panel.html", **ctx)
     response.status_code = STOP_POLLING
     response.headers["HX-Retarget"] = "#phone-panel"
     response.headers["HX-Reswap"] = "outerHTML"
     return response
+
+
+@router.get("/phone/done", include_in_schema=False)
+def done(request: Request) -> Response:
+    """Three seconds after a file came in: reload the library, which now
+    lists it. htmx follows HX-Refresh as a full reload, so the dialog goes."""
+    return Response(status_code=200, headers={"HX-Refresh": "true"})

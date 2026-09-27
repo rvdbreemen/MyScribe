@@ -411,8 +411,69 @@ def test_a_file_through_the_door_becomes_a_recording_with_a_job_on_the_stored_de
     assert settings[transcribe_dialog.SETTING_TIER] == "max"
     assert settings[transcribe_dialog.SETTING_LANGUAGE] == "nl"
 
+    # The door closed behind the file (one recording per opening); the panel
+    # still says what came in.
+    assert door_of(client).wait_closed(10)
     panel = client.get("/phone", headers=HX)
     assert "Meeting.m4a" in panel.text
+
+
+def _received_and_closed(client, name="Meeting.m4a"):
+    client.post("/phone/open", headers=HX)
+    opening = door_of(client).opening
+    assert send(opening.ip_url, name, b"phone audio bytes").status_code == 200
+    assert door_of(client).wait_closed(10)
+    return opening
+
+
+def test_a_door_closed_on_a_received_file_says_so_and_reloads_the_library_after_3_seconds(client):
+    _received_and_closed(client)
+    tick = client.get("/phone/countdown", headers=HX)
+    assert tick.status_code == phone_ui.STOP_POLLING
+    assert tick.headers["HX-Retarget"] == "#phone-panel"
+    text = tick.text
+    assert "Received Meeting.m4a" in text
+    # No supervisor runs in this test, so the job is still waiting its turn.
+    assert "Transcription is queued" in text
+    # Three seconds on screen, then one request that reloads the library.
+    assert 'hx-get="/phone/done"' in text
+    assert 'hx-trigger="load delay:3s"' in text
+    done = client.get("/phone/done", headers=HX)
+    assert done.status_code == 200
+    assert done.headers.get("HX-Refresh") == "true"
+
+
+def test_a_running_transcription_is_named_as_started(client):
+    _received_and_closed(client)
+    conn = client.app.state.conn
+    with db.LOCK:
+        conn.execute("UPDATE job SET status = 'running'")
+        conn.commit()
+    tick = client.get("/phone/countdown", headers=HX)
+    assert "Transcription has started" in tick.text
+
+
+def test_a_door_that_timed_out_does_not_reload_the_library(client, clock):
+    client.post("/phone/open", headers=HX)
+    clock.advance(15 * 60)
+    tick = client.get("/phone/countdown", headers=HX)
+    assert tick.status_code == phone_ui.STOP_POLLING
+    assert "/phone/done" not in tick.text
+
+
+def test_opening_the_panel_later_does_not_reload_the_library(client):
+    # The reload belongs to the moment the file arrived, not to every later
+    # look at the panel: that would reload the library in a loop.
+    _received_and_closed(client)
+    panel = client.get("/phone", headers=HX)
+    assert "Meeting.m4a" in panel.text
+    assert "/phone/done" not in panel.text
+
+
+def test_the_library_after_the_reload_shows_the_recording(client):
+    _received_and_closed(client)
+    page = client.get("/")
+    assert "Meeting.m4a" in page.text
 
 
 def test_a_refused_file_leaves_no_row_and_nothing_in_the_store(client):
@@ -450,6 +511,7 @@ def test_the_secret_is_not_in_the_app_log(client):
     client.post("/phone/open", headers=HX)
     opening = door_of(client).opening
     send(opening.ip_url, "memo.m4a", b"x")
+    assert door_of(client).wait_closed(10)  # the file closes the door behind it
     client.get("/phone/countdown", headers=HX)
     client.post("/phone/close", headers=HX)
     text = applog.path().read_text(encoding="utf-8")

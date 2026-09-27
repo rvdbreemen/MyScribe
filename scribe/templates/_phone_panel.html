@@ -30,6 +30,15 @@
     <button type="submit">Close the door now</button>
   </form>
   {% else %}
+  {% if arrived %}
+  {# The door closed on a file (one recording per opening). The countdown
+     that saw it close asks for a library reload after three seconds; any
+     later look at this panel only reports. #}
+  <div class="flash ok" role="status">
+    {% for item in arrived %}<p>✓ Received {{ item.name }} from the phone. {{ item.job }}</p>{% endfor %}
+  </div>
+  {% if reload %}<div hx-get="/phone/done" hx-trigger="load delay:3s" hx-swap="none"></div>{% endif %}
+  {% endif %}
   <p>Open a door for {{ minutes }} minutes through which a phone on the same Wi-Fi can send a recording to this laptop. It becomes a recording in the library and is transcribed with your usual settings.</p>
   <p class="hint">The phone gets an upload page and nothing else: it cannot see the library. The door closes by itself after {{ minutes }} minutes, or when you close it.</p>
   <form method="post" action="/phone/open" hx-post="/phone/open" hx-target="#phone-panel" hx-swap="outerHTML">

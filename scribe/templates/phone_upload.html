@@ -3,8 +3,16 @@
 
   Deliberately alone: it does not extend base.html, because base.html links
   /static/app.css and htmx, and the door serves no /static - nothing but this
-  page. Plain HTML that Safari on an iPhone shows as it is: no script, no
-  stylesheet link, nothing from the internet. The style is inline and small.
+  page. Plain HTML that Safari on an iPhone shows as it is: no stylesheet
+  link, nothing from the internet. The style is inline and small.
+
+  One small inline script (Robert, 2026-09-26): it sends the form with
+  XMLHttpRequest so the progress bar can follow the upload's bytes, shows the
+  laptop's answer for LINGER_MS, and then ends on a done screen. Safari does
+  not let a page close a tab it did not open itself, so the script tries
+  window.close() and otherwise says the tab can be closed. The door has
+  closed by then (one recording per opening). Without scripting the form
+  posts as it is and the answer arrives as a page.
 
   Context:
       field      the multipart field name the door reads
@@ -26,6 +34,8 @@
   .received { background: #e7f5ea; border-radius: 10px; padding: 12px; }
   .refused { background: #fdecea; border-radius: 10px; padding: 12px; }
   input[type=file] { display: block; margin: 16px 0; font-size: 1rem; }
+  progress { width: 100%; height: 14px; }
+  .progress { margin: 16px 0; }
   button { font-size: 1.05rem; padding: 12px 20px; border-radius: 10px; border: 0; background: #0a64d8; color: #fff; }
   @media (prefers-color-scheme: dark) {
     body { background: #1c1c1e; color: #f2f2f7; }
@@ -43,12 +53,97 @@
   {% if message %}
   <p class="refused" role="alert">{{ message }}</p>
   {% endif %}
+  <p id="answer" role="status" hidden></p>
+  <div class="progress" id="progress" hidden>
+    <progress id="bar" max="100" value="0"></progress>
+    <span id="percent">0%</span>
+  </div>
   <form method="post" enctype="multipart/form-data">
     <label for="recording">Choose an audio or video file</label>
-    <input id="recording" type="file" name="{{ field }}" accept="audio/*,video/*" required>
+    {# No accept="audio/*,video/*": Safari on an iPhone greyed out a real
+       audio file under it (2026-09-26). The door checks the extension and
+       refuses anything else with a sentence. #}
+    <input id="recording" type="file" name="{{ field }}" required>
     <button type="submit">Send</button>
   </form>
-  <p>This page only sends. It cannot see anything on the laptop, and it stops working when the laptop closes it.</p>
+  <p id="about">This page only sends. It cannot see anything on the laptop, and it stops working when the laptop closes it.</p>
 </main>
+<script>
+(function () {
+  var LINGER_MS = 3000;
+  var form = document.querySelector("form");
+  if (!form || !window.XMLHttpRequest || !window.FormData || !window.DOMParser) return;
+  var input = form.querySelector("input[type=file]");
+  var progress = document.getElementById("progress");
+  var bar = document.getElementById("bar");
+  var percent = document.getElementById("percent");
+  var answer = document.getElementById("answer");
+
+  function show(value) {
+    bar.value = value;
+    percent.textContent = value + "%";
+  }
+  function say(text, kind) {
+    answer.textContent = text;
+    answer.className = kind || "";
+    answer.hidden = false;
+  }
+  function again() {
+    progress.hidden = true;
+    form.hidden = false;
+  }
+  function done() {
+    try { window.close(); } catch (e) {}
+    var main = document.querySelector("main");
+    main.innerHTML = "";
+    var h = document.createElement("h1");
+    h.textContent = "Done";
+    var p = document.createElement("p");
+    p.textContent = "The recording is on the laptop. You can close this tab.";
+    main.appendChild(h);
+    main.appendChild(p);
+  }
+
+  form.addEventListener("submit", function (event) {
+    if (!input.files || !input.files.length) return;
+    event.preventDefault();
+    var old = document.querySelectorAll(".received, .refused");
+    for (var i = 0; i < old.length; i++) old[i].hidden = true;
+    answer.hidden = true;
+    form.hidden = true;
+    progress.hidden = false;
+    show(0);
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", location.pathname);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) show(Math.min(100, Math.floor(e.loaded * 100 / e.total)));
+    };
+    xhr.upload.onload = function () {
+      show(100);
+      say("Sent. The laptop is filing it…");
+    };
+    xhr.onload = function () {
+      var page = new DOMParser().parseFromString(xhr.responseText, "text/html");
+      var reply = page.querySelector(".received, .refused");
+      if (xhr.status === 200 && reply && reply.className === "received") {
+        show(100);
+        say(reply.textContent, "received");
+        setTimeout(done, LINGER_MS);
+      } else {
+        say(reply ? reply.textContent
+                  : "The laptop did not take the file (HTTP " + xhr.status + "). The door may have closed.",
+            "refused");
+        again();
+      }
+    };
+    xhr.onerror = function () {
+      say("The upload did not reach the laptop. The door may have closed; open it again there.", "refused");
+      again();
+    };
+    xhr.send(new FormData(form));
+  });
+})();
+</script>
 </body>
 </html>

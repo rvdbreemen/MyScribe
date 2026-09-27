@@ -112,8 +112,9 @@ phone half, an iPhone scanning the code, is Robert's to confirm.
 ### Must
 
 * Listen only while open: opened by a form post to the app, so behind
-  `scribe.guard`, and closed after 15 minutes, on Close, or when the app
-  stops. Nothing persists it open.
+  `scribe.guard`, and closed once the answer to an accepted file has been
+  sent (one recording per opening, Robert 2026-09-26), after 15 minutes, on
+  Close, or when the app stops. Nothing persists it open.
 * Serve its own ASGI (Asynchronous Server Gateway Interface) app on its own port (4243) and the LAN address of
   the default route; no route, static file or template of the app.
 * Put a new `secrets.token_urlsafe(32)` in the path for every opening; answer
@@ -154,8 +155,9 @@ phone half, an iPhone scanning the code, is Robert's to confirm.
 
 ### Negative
 
-* A person on the same network who sees the code within 15 minutes can fill
-  the queue; the size limit and the timeout bound it, nothing prevents it.
+* A person on the same network who sees the code before the door closes can
+  send one file in place of the phone; the size limit, the timeout and the
+  one-file close bound it, nothing prevents it.
 * Plain HTTP on the LAN: no certificate is possible for a `.local` name or an
   address without a warning Safari would put in front of every upload.
 * Windows Firewall decides whether the phone gets through; MyScribe can only

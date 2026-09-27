@@ -14,6 +14,7 @@ the library - is tests/test_web_phone.py.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import socket
@@ -121,6 +122,13 @@ def refused(address: str, port: int) -> bool:
         return True
 
 
+def read_log(logs) -> list[dict]:
+    path = logs / applog.FILE_NAME
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
 def upload(url: str, name: str, data: bytes, content_type: str = "audio/mp4") -> httpx.Response:
     with http() as client:
         return client.post(url, files={phone_door.FILE_FIELD: (name, data, content_type)})
@@ -159,12 +167,22 @@ def test_the_secret_path_answers_a_plain_upload_form(door):
     assert 'method="post"' in html
     assert 'type="file"' in html
     assert f'name="{phone_door.FILE_FIELD}"' in html
-    assert 'accept="audio/*,video/*"' in html
+    # No accept filter: Safari on an iPhone greyed out Robert's audio file
+    # under accept="audio/*,video/*" (2026-09-26), so the picker offers every
+    # file and the door's own extension check refuses with a sentence.
+    assert "accept=" not in html
     assert 'type="submit"' in html
-    # Nothing from the internet and no script: it has to work in Safari with
-    # nothing but the laptop to talk to.
-    assert "<script" not in html.lower()
+    # Nothing from the internet: it has to work in Safari with nothing but
+    # the laptop to talk to. One small inline script draws the progress bar
+    # (Robert, 2026-09-26); no script is loaded from anywhere, and without it
+    # the form above still posts as it is.
+    assert "<progress" in html
+    assert html.lower().count("<script") == 1
+    assert "<script src" not in html.lower() and " src=" not in html.lower()
     assert "http://" not in html and "https://" not in html
+    # The script posts back to the page's own path and counts upload bytes.
+    assert "xhr.upload" in html
+    assert "location.pathname" in html
     assert "<link" not in html.lower()
 
 
@@ -274,6 +292,77 @@ def test_an_audio_file_is_handed_on_and_the_phone_is_told(door, received):
     assert door.received == ["Voice memo 12.m4a"]
 
 
+def test_an_accepted_file_closes_the_door_after_the_answer(door, publisher, logs):
+    # Robert, 2026-09-26: one recording per opening. The phone gets its
+    # answer first; then the port is released and the name withdrawn.
+    opening = door.open()
+    answer = upload(opening.ip_url, "Voice memo 12.m4a", b"audio")
+    assert answer.status_code == 200
+    assert "Received Voice memo 12.m4a" in answer.text
+    assert door.wait_closed(10)
+    assert door.is_open() is False
+    assert door.closed_reason == "received"
+    assert refused("127.0.0.1", opening.port)
+    assert publisher.withdrawn == 1
+    assert door.received == ["Voice memo 12.m4a"]
+    closes = [e for e in read_log(logs) if e["event"] == "phone.close"]
+    assert [(e["reason"], e["received"]) for e in closes] == [("received", 1)]
+
+
+def test_close_returns_only_when_a_close_already_under_way_has_finished(received, clock, publisher, logs):
+    # Found by this file's own run: the door closing itself after a file was
+    # still stopping its listener when the fixture's close() came back at
+    # once, and its phone.close landed in the next test's log.
+    started, release = threading.Event(), threading.Event()
+
+    class SlowListener(phone_door.UvicornListener):
+        def stop(self, timeout: float = 15.0) -> None:
+            started.set()
+            release.wait(10)
+            super().stop(timeout)
+
+    d = make_door(received, clock, publisher, listener_factory=SlowListener)
+    opening = d.open()
+    first = threading.Thread(target=d.close, args=("received",))
+    first.start()
+    assert started.wait(10)
+    second_done = threading.Event()
+    threading.Thread(target=lambda: (d.close(), second_done.set())).start()
+    assert second_done.wait(0.5) is False  # still waiting for the first
+    release.set()
+    assert second_done.wait(10)
+    first.join(10)
+    assert refused("127.0.0.1", opening.port)
+    assert [e["reason"] for e in read_log(logs) if e["event"] == "phone.close"] == ["received"]
+
+
+def test_what_the_accept_callback_returns_is_kept_for_the_laptop(received, clock, publisher, logs):
+    # The laptop's panel names the recording's job; the door does not know
+    # what a job is, it keeps whatever the callback answered.
+    def accept(stream, name):
+        stream.read()
+        return 42
+
+    d = make_door(accept, clock, publisher)
+    try:
+        opening = d.open()
+        assert upload(opening.ip_url, "a.m4a", b"x").status_code == 200
+        assert d.wait_closed(10)
+        assert d.results == [42]
+    finally:
+        d.close()
+
+
+def test_a_refused_file_leaves_the_door_open_for_another_try(door, received):
+    opening = door.open()
+    assert upload(opening.ip_url, "notes.txt", b"hello", "text/plain").status_code == 415
+    assert door.wait_closed(0.5) is False
+    assert door.is_open() is True
+    answer = upload(opening.ip_url, "memo.m4a", b"audio")
+    assert answer.status_code == 200
+    assert door.wait_closed(10)
+
+
 def test_a_video_file_is_taken_too(door, received):
     opening = door.open()
     answer = upload(opening.ip_url, "IMG_0042.MOV", b"video", "video/quicktime")
@@ -305,6 +394,29 @@ def test_a_file_over_the_limit_is_refused_by_its_length(received, clock, publish
         answer = upload(opening.ip_url, "long.m4a", b"x" * 5000)
         assert answer.status_code == 413
         assert "larger than" in answer.text
+        assert received.files == []
+    finally:
+        d.close()
+
+
+def test_a_declared_length_over_the_limit_is_refused_before_the_body_is_read(received, clock, publisher, logs):
+    """The header alone is enough: a phone about to send 5 GB hears no before
+    it sends a byte. Only headers go out here; a door that waited for the
+    body would never answer, and the read below would time out."""
+    d = make_door(received, clock, publisher, max_bytes=1000)
+    try:
+        opening = d.open()
+        request = (
+            f"POST {opening.path} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{opening.port}\r\n"
+            "Content-Type: multipart/form-data; boundary=x\r\n"
+            "Content-Length: 5000\r\n"
+            "\r\n"
+        ).encode("ascii")
+        with socket.create_connection(("127.0.0.1", opening.port), timeout=5) as sock:
+            sock.sendall(request)
+            head = sock.recv(4096).decode("latin-1")
+        assert head.startswith("HTTP/1.1 413")
         assert received.files == []
     finally:
         d.close()
@@ -592,8 +704,10 @@ def test_the_secret_appears_in_no_log(received, clock, publisher, logs, caplog, 
         with http() as client:
             client.get(opening.ip_url)
             client.get(f"http://127.0.0.1:{opening.port}/wrong/")
-        upload(opening.ip_url, "memo.m4a", b"a")
+        # The refusal first: an accepted file closes the door behind it.
         upload(opening.ip_url, "notes.txt", b"a")
+        upload(opening.ip_url, "memo.m4a", b"a")
+        d.wait_closed(10)
         d.close()
     finally:
         access.removeHandler(handler)
