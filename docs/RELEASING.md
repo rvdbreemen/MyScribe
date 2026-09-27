@@ -18,10 +18,33 @@ uv lock
 # 5. Tag and push
 git tag -a v0.5.0 -m "MyScribe 0.5.0 ..."
 git push origin v0.5.0
+
+# 6. When the Release exists: write its notes and replace the generated body
+gh release edit v0.5.0 --notes-file notes.md
 ```
 
 The tag starts `release.yml`. Nothing is published until all three builds and
 their smoke tests have passed.
+
+## The release notes
+
+`publish` creates the Release with `generate_release_notes: true`, and that
+body is only GitHub's "Full Changelog" link (v0.7.0 went out with nothing
+else until the notes were written afterwards). Step 6 is not optional. Write
+the notes by hand, in English, for someone installing MyScribe, on the shape
+of v0.6.0 and v0.7.0:
+
+* One opening sentence: what this release is.
+* **Install**: the artifact per platform with this version in its name, what
+  each OS says about an unsigned download, what a clone runs when `uv.lock`
+  moved, and how to verify (`SHA256SUMS`, `gh attestation verify`).
+* **What is new**: from the CHANGELOG section, as a user sees it.
+* **Known limits**: what a user can run into.
+
+Leave out how the release was tested and on whose machine: runs, measurements,
+CI details and the author's own sittings belong in the task notes and the
+CHANGELOG's references, not in the notes a user reads. Claim nothing about an
+upgrade or an OS that was not checked.
 
 ## What the workflow does
 
