@@ -2258,9 +2258,9 @@ def link_label(parent, url: str, **kwargs):
 
 
 SITTING_INTRO = (
-    "What MyScribe already found on this machine is below, and then the questions that are "
-    "still open. Every question has a Skip that writes nothing, and everything here can be "
-    "changed later in Settings."
+    "What MyScribe already found on this machine is below. The next steps ask what is still "
+    "open, one at a time; each has a Skip that writes nothing, and everything can be changed "
+    "later in Settings."
 )
 NOTHING_IS_OPEN = "Nothing is open: everything MyScribe asks about is answered or already here."
 
@@ -2295,28 +2295,35 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
     it again (TASK-089.11).
     """
     import tkinter as tk
+    from tkinter import messagebox
 
     win = tk.Toplevel(root)
     win.title(f"Set up {APP_NAME}")
     win.transient(root)
     win.grab_set()
+    win.minsize(560, 360)
     answers: dict = {}
     saved: list[bool] = []
     questions = [question for question in (plan.get("questions") or []) if question.get("id")]
 
-    tk.Label(win, text=SITTING_INTRO, wraplength=520, justify="left", anchor="w").grid(
-        row=0, column=0, sticky="we", padx=12, pady=(12, 8))
+    # One step per screen (TASK-098). Every step is a frame in `pages`, and
+    # exactly one of them is gridded at a time. Until 2026-09-27 all of this
+    # was one form, taller than a 1080p screen, with "Save and start" below
+    # its bottom edge: the only way out was the close box, which is "ask me
+    # next time", and a library somebody had just named was never taken over.
+    pages = tk.Frame(win)
+    pages.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 0))
 
+    intro = tk.Frame(pages, name="intro")
+    tk.Label(intro, text=SITTING_INTRO, wraplength=520, justify="left", anchor="w").pack(
+        fill="x", pady=(0, 8))
     found = found_lines(plan)
     if found:
-        tk.Label(win, text="Found on this machine", anchor="w", justify="left").grid(
-            row=1, column=0, sticky="w", padx=12)
-        tk.Label(win, text="\n".join(found), anchor="w", justify="left", wraplength=520,
-                 fg="#555").grid(row=2, column=0, sticky="we", padx=24, pady=(0, 8))
-
+        tk.Label(intro, text="Found on this machine", anchor="w", justify="left").pack(fill="x")
+        tk.Label(intro, text="\n".join(found), anchor="w", justify="left", wraplength=520,
+                 fg="#555").pack(fill="x", padx=12, pady=(0, 8))
     if not questions:
-        tk.Label(win, text=NOTHING_IS_OPEN, wraplength=520, justify="left", anchor="w").grid(
-            row=3, column=0, sticky="we", padx=12, pady=(0, 8))
+        tk.Label(intro, text=NOTHING_IS_OPEN, wraplength=520, justify="left", anchor="w").pack(fill="x")
 
     # Tk draws every button of a group with its "mixed" indicator while the
     # group's variable holds that button's -tristatevalue, and that option
@@ -2356,42 +2363,29 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
     def given() -> dict:
         return {question["id"]: answer_of(question) for question, _block in blocks}
 
-    def refresh() -> None:
-        """``shown_if``, and no other condition (ADR-015's Must Not)."""
-        now = given()
-        for question, block in blocks:
-            if shown(question, now):
-                block.grid()
-            else:
-                block.grid_remove()
+    def touched(name: str) -> None:
+        """Answering a question takes back a Skip pressed on it earlier."""
+        skips[name].set(False)
 
-    for index, question in enumerate(questions):
+    for question in questions:
         name = question["id"]
         kind = question.get("kind") or "choice"
-        block = tk.Frame(win)
-        block.grid(row=4 + index, column=0, sticky="we", padx=12, pady=(8, 0))
+        block = tk.Frame(pages, name=f"q_{name}")
         blocks.append((question, block))
         skips[name] = tk.BooleanVar(value=False)
 
         if kind == "yes-no":
             values[name] = tk.BooleanVar(value=question.get("default") == "yes")
-            # `command=refresh` here as on the radios: `shown()` is generic over
-            # question ids, and today the engine puts `shown_if` on a choice
-            # only - a wiring that covered less would make the next engine
-            # change a question that never appears.
             tk.Checkbutton(block, variable=values[name], text=question.get("text", ""),
                            wraplength=500, justify="left", anchor="w",
-                           command=refresh).pack(fill="x")
+                           command=lambda name=name: touched(name)).pack(fill="x")
         else:
-            tk.Label(block, text=question.get("text", ""), wraplength=500, justify="left",
-                     anchor="w").pack(fill="x")
+            tk.Label(block, text=question.get("text", ""), wraplength=520, justify="left",
+                     anchor="w").pack(fill="x", pady=(0, 6))
 
         if kind == "secret":
             entries[name] = tk.Entry(block, width=44, show="•")
-            # An Entry has no `command`; a key released is the same event for
-            # `refresh`, and it is the only way a secret could ever be the
-            # subject of a `shown_if`.
-            entries[name].bind("<KeyRelease>", lambda _event: refresh())
+            entries[name].bind("<KeyRelease>", lambda _event, name=name: touched(name))
             entries[name].pack(fill="x")
             if name == CONDITIONS_FOR:
                 tk.Label(block, text="Accept the model's conditions with the same account at",
@@ -2399,65 +2393,148 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
                 link_label(block, CONDITIONS_URL).pack(fill="x")
         elif kind == "text":
             # A folder, typed or browsed (TASK-089.19; TASK-089.20's watch
-            # folder is the same kind). Until this the kind fell through to
-            # the radio branch and drew a group with no buttons.
+            # folder is the same kind).
             entries[name] = tk.Entry(block, width=44)
             if question.get("current"):
                 entries[name].insert(0, str(question["current"]))
-            entries[name].bind("<KeyRelease>", lambda _event: refresh())
+            entries[name].bind("<KeyRelease>", lambda _event, name=name: touched(name))
             entries[name].pack(fill="x")
 
-            def browse(entry=entries[name]) -> None:
+            def browse(entry=entries[name], name=name) -> None:
                 from tkinter import filedialog
 
                 picked = filedialog.askdirectory(parent=win, mustexist=True)
                 if picked:
                     entry.delete(0, "end")
                     entry.insert(0, picked)
-                    refresh()
+                    touched(name)
 
             tk.Button(block, text="Browse...", command=browse).pack(anchor="w")
         elif kind != "yes-no":
             values[name] = tk.StringVar(value=opening_value(question))
-            group = tk.Frame(block)
-            group.pack(fill="x")
             for choice in question.get("choices") or []:
-                tk.Radiobutton(group, text=str(choice.get("label") or choice.get("value")),
+                tk.Radiobutton(block, text=str(choice.get("label") or choice.get("value")),
                                variable=values[name], value=str(choice.get("value")),
-                               tristatevalue=not_an_answer, command=refresh).pack(side="left")
-            notes = [f"{choice.get('value')}: {choice['note']}"
+                               tristatevalue=not_an_answer, anchor="w", justify="left",
+                               command=lambda name=name: touched(name)).pack(fill="x")
+            notes = [f"{choice.get('label') or choice.get('value')}: {choice['note']}"
                      for choice in question.get("choices") or [] if choice.get("note")]
             if notes:
-                tk.Label(block, text="\n".join(notes), wraplength=500, justify="left",
-                         anchor="w", fg="#555").pack(fill="x")
+                tk.Label(block, text="\n".join(notes), wraplength=520, justify="left",
+                         anchor="w", fg="#555").pack(fill="x", pady=(6, 0))
 
-        tk.Checkbutton(block, variable=skips[name], text="Skip this question",
-                       anchor="w", command=refresh).pack(fill="x")
-        tk.Label(block, text=f"Skipping: {question.get('if_skipped', '')} "
+        # What Skip costs, and where the question is answered later: the
+        # engine's own sentences, smaller and under the question, where the
+        # Skip button below them is the thing they explain.
+        tk.Label(block, text=f"If you skip: {question.get('if_skipped', '')}\n"
                              f"Later: {question.get('answer_later', '')}",
-                 wraplength=500, justify="left", anchor="w", fg="#555").pack(fill="x")
+                 wraplength=520, justify="left", anchor="w", fg="#666",
+                 font=("TkDefaultFont", 8)).pack(fill="x", pady=(10, 0))
+
+    summary = tk.Frame(pages, name="summary")
+    tk.Label(summary, text="Ready. This is what will be saved:", anchor="w",
+             justify="left").pack(fill="x", pady=(0, 6))
+    summary_lines = tk.Label(summary, text="", anchor="w", justify="left", wraplength=520)
+    summary_lines.pack(fill="x")
+    tk.Label(summary, text="Back changes an answer. Everything can be changed later in Settings "
+                           "or with the Setup button.",
+             anchor="w", justify="left", wraplength=520, fg="#555").pack(fill="x", pady=(8, 0))
+
+    def shown_answer(question: dict, value) -> str:
+        """One line of the summary. A secret is never shown back."""
+        if skips[question["id"]].get():
+            return "skipped"
+        if value is None:
+            return "not answered (saved as skipped)"
+        if question.get("kind") == "secret":
+            return "given"
+        for choice in question.get("choices") or []:
+            if str(choice.get("value")) == str(value):
+                return str(choice.get("label") or value)
+        return str(value)
+
+    def sequence() -> list:
+        """The steps as they stand now: `shown_if` decides which questions
+        are among them (ADR-015's Must Not: no other condition)."""
+        now = given()
+        return (["intro"] + [question["id"] for question, _block in blocks if shown(question, now)]
+                + ["summary"])
+
+    frames = {"intro": intro, "summary": summary, **{q["id"]: block for q, block in blocks}}
+    current: list[str] = ["intro"]
+
+    nav = tk.Frame(win)
+    nav.grid(row=1, column=0, sticky="we", padx=12, pady=12)
+    later_button = tk.Button(nav, text="Ask me next time", command=win.destroy)
+    save_button = tk.Button(nav, text="Save and start", command=lambda: save(), default="active")
+    next_button = tk.Button(nav, text="Next", command=lambda: step(+1), default="active")
+    skip_button = tk.Button(nav, text="Skip", command=lambda: skip())
+    back_button = tk.Button(nav, text="Back", command=lambda: step(-1))
+
+    def show(page: str) -> None:
+        current[0] = page
+        for key, frame in frames.items():
+            if key == page:
+                frame.grid(row=0, column=0, sticky="nsew")
+            else:
+                frame.grid_remove()
+        if page == "summary":
+            now = given()
+            summary_lines.configure(text="\n".join(
+                f"• {question.get('text', '')}  →  {shown_answer(question, now[question['id']])}"
+                for question, _block in blocks if shown(question, now)) or NOTHING_IS_OPEN)
+        # "Ask me next time", and not "Skip for now": nothing is applied, the
+        # app writes no stamp, and the sitting therefore returns at the next
+        # start. The other skip belongs to a single question and is the
+        # engine's, where it is recorded as skipped and never asked by a start
+        # again (TASK-089.11).
+        later_button.pack(side="left")
+        for button in (save_button, next_button, skip_button, back_button):
+            button.pack_forget()
+        if page == "summary":
+            save_button.pack(side="right")
+        else:
+            next_button.pack(side="right")
+        if page not in ("intro", "summary"):
+            skip_button.pack(side="right", padx=8)
+        if page != "intro":
+            back_button.pack(side="right", padx=(0, 8) if page == "summary" else 0)
+
+    def step(direction: int) -> None:
+        order = sequence()
+        here = order.index(current[0]) if current[0] in order else 0
+        show(order[max(0, min(len(order) - 1, here + direction))])
+
+    def skip() -> None:
+        if current[0] in skips:
+            skips[current[0]].set(True)
+        step(+1)
 
     def save() -> None:
-        """Everything that was on screen, and nothing that was not: a question
-        ``shown_if`` hid was never put, and an id the document does not carry
-        is one the engine never mentions in the stamp."""
+        """Everything that was a step, and nothing that was not: a question
+        ``shown_if`` left out was never put, and an id the document does not
+        carry is one the engine never mentions in the stamp."""
         now = given()
         answers.update({question["id"]: now[question["id"]]
                         for question, _block in blocks if shown(question, now)})
         saved.append(True)
         win.destroy()
 
-    row = tk.Frame(win)
-    row.grid(row=4 + len(questions), column=0, sticky="we", padx=12, pady=12)
-    tk.Button(row, text="Save and start", command=save, default="active").pack(side="right")
-    # "Ask me next time", and not "Skip for now": nothing is applied, the app
-    # writes no stamp, and the sitting therefore returns at the next start.
-    # The other skip belongs to a single question and is the engine's, where
-    # it is recorded as skipped and never asked by a start again (TASK-089.11).
-    tk.Button(row, text="Ask me next time", command=win.destroy).pack(side="right", padx=8)
+    def close() -> None:
+        """The close box asks first: closing is "ask me next time", and on
+        2026-09-27 it silently dropped a library that had just been named."""
+        if messagebox.askyesno(
+            f"Close {APP_NAME} setup?",
+            "Nothing you chose here is saved, and MyScribe asks these questions again at the "
+            "next start. Close anyway?",
+            parent=win,
+        ):
+            win.destroy()
 
+    win.protocol("WM_DELETE_WINDOW", close)
     win.columnconfigure(0, weight=1)
-    refresh()
+    win.rowconfigure(0, weight=1)
+    show("intro")
     root.wait_window(win)
     # Not `answers or None`: a sitting in which every question was skipped is
     # an empty dict and is still a sitting, and turning it into None would
