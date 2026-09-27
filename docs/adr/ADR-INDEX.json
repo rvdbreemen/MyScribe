@@ -1357,8 +1357,8 @@
       "title": "A phone may send a recording through a temporary upload-only door with a secret URL",
       "path": "ADR-022-a-phone-may-send-a-recording-through-a-temporary-upload-only-door-with-a-secret-url.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-09-26",
+      "status": "Accepted",
+      "date": "2026-09-27",
       "decision_summary": "Chosen option: a separate upload-only listener, decided by Robert on 2026-09-26 with the four options in front of him...",
       "topics": [
         "ingest",
@@ -1393,7 +1393,7 @@
         "must_not": [
           "Widen guard.ALLOWEDHOSTS or bind the app to anything but 127.0.0.1.",
           "Add a firewall rule, or run anything elevated.",
-          "Serve anything to the phone but the upload form and a sentence back."
+          "Serve anything to the phone but the upload page and a sentence back. The page may carry one inline script - the progress bar and the done screen (TASK-096, 0.7.0) - and loads nothing from anywhere else."
         ],
         "exceptions": [
           "None."

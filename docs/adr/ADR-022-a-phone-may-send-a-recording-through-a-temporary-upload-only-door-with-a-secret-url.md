@@ -1,8 +1,8 @@
 ---
 id: "ADR-022"
 title: "A phone may send a recording through a temporary upload-only door with a secret URL"
-status: "Proposed"
-date: "2026-09-26"
+status: "Accepted"
+date: "2026-09-27"
 binding: false
 gate: null
 documents_shipped: false
@@ -37,7 +37,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-09-26.
+Accepted, 2026-09-27.
 
 ## Status History
 
@@ -52,6 +52,11 @@ status_history:
     status: Proposed
     changed_by: Claude (agent, session 2026-09-26)
     reason: Related to ADR-001
+    changed_via: adr-kit lifecycle
+  - date: 2026-09-27
+    status: Accepted
+    changed_by: "User: Robert van den Breemen (via Claude, session 2026-09-27)"
+    reason: Robert accepted it on 2026-09-27 after review, with the phone page's one inline script made explicit in Must Not
     changed_via: adr-kit lifecycle
 ```
 
@@ -131,7 +136,9 @@ phone half, an iPhone scanning the code, is Robert's to confirm.
 
 * Widen `guard.ALLOWED_HOSTS` or bind the app to anything but `127.0.0.1`.
 * Add a firewall rule, or run anything elevated.
-* Serve anything to the phone but the upload form and a sentence back.
+* Serve anything to the phone but the upload page and a sentence back. The
+  page may carry one inline script - the progress bar and the done screen
+  (TASK-096, 0.7.0) - and loads nothing from anywhere else.
 
 ### Exceptions
 
