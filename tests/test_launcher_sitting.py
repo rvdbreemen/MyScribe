@@ -146,6 +146,38 @@ class _Sitting:
         self.widgets: list = []
         self.bars: list = []
         self.window = None
+        self.plan_ids: list[str] = []  # the plan's question ids, in its order
+        self.on_close = None  # what the window's close box runs (WM_DELETE_WINDOW)
+        self.close_confirmed = True  # what the person answers when closing asks first
+        self.asked_to_close: list[str] = []
+
+    # --- one step per screen (TASK-098) ---------------------------------------
+
+    def press(self, text: str) -> None:
+        self.buttons[text]()
+
+    def page(self) -> str:
+        """The step on screen: "intro", "summary", or a question id."""
+        on = [w.kwargs["name"] for w in self.widgets
+              if w.visible and str(w.kwargs.get("name", "")).startswith(("intro", "summary", "q_"))]
+        assert len(on) == 1, f"exactly one step on screen, not {on}"
+        return on[0][2:] if on[0].startswith("q_") else on[0]
+
+    def goto(self, question_id: str) -> None:
+        """Press Next from where the window is until that question is on
+        screen - the way a person reaches it."""
+        for _ in range(len(self.plan_ids) + 2):
+            if self.page() == question_id:
+                return
+            self.press("Next")
+        raise AssertionError(f"{question_id!r} never came on screen; stopped on {self.page()!r}")
+
+    def visible_button(self, text: str) -> bool:
+        return any(w.visible for w in self.widgets
+                   if w.kwargs.get("text") == text and w.kwargs.get("command") is not None)
+
+    def close_box(self) -> None:
+        self.on_close()
 
     def pick(self, value: str) -> None:
         """Click the radio button carrying this value, as Tk would: the group's
@@ -162,9 +194,10 @@ class _Sitting:
         self.entries[which].typed = text
 
     def skip(self, which: int) -> None:
-        """Tick the Skip of question `which`, in the order the plan listed
-        them."""
-        self.skips[which].set(True)
+        """Go to question `which`, in the order the plan listed them, and
+        press Skip there."""
+        self.goto(self.plan_ids[which])
+        self.press("Skip")
 
     def block_holding(self, needle: str):
         """The question block a sentence belongs to: the frame directly under
@@ -213,7 +246,13 @@ def _fake_tkinter(sitting: _Sitting):
         def pack(self, **kwargs):
             self.visible = True
 
+        def pack_forget(self):
+            self.visible = False
+
         def columnconfigure(self, *args, **kwargs):
+            pass
+
+        def rowconfigure(self, *args, **kwargs):
             pass
 
         def bind(self, event, callback):
@@ -236,8 +275,15 @@ def _fake_tkinter(sitting: _Sitting):
         def grab_set(self):
             pass
 
-        def destroy(self):
+        def protocol(self, name, callback):
+            if name == "WM_DELETE_WINDOW":
+                sitting.on_close = callback
+
+        def minsize(self, *args):
             pass
+
+        def destroy(self):
+            sitting.destroyed = True
 
     class Label(Widget):
         def __init__(self, master=None, **kwargs):
@@ -279,10 +325,15 @@ def _fake_tkinter(sitting: _Sitting):
             super().__init__(master, **kwargs)
             sitting.buttons[kwargs["text"]] = kwargs["command"]
 
+    def askyesno(title, message, **kwargs):
+        sitting.asked_to_close.append(message)
+        return sitting.close_confirmed
+
     return types.SimpleNamespace(
         Toplevel=Toplevel, Label=Label, Entry=Entry, Frame=Widget, Button=Button,
         Radiobutton=Radiobutton, Checkbutton=Checkbutton,
         StringVar=Variable, BooleanVar=Variable,
+        messagebox=types.SimpleNamespace(askyesno=askyesno),
     )
 
 
@@ -294,6 +345,7 @@ def hold(monkeypatch, layout, plan, *, touch=None, press="Save and start"):
     default.
     """
     sitting = _Sitting()
+    sitting.plan_ids = [q["id"] for q in plan.get("questions") or [] if q.get("id")]
     monkeypatch.setitem(sys.modules, "tkinter", _fake_tkinter(sitting))
 
     class Root:
@@ -367,30 +419,34 @@ def test_every_question_carries_its_own_skip_and_what_skipping_costs(layout, mon
 
     _answers, sitting = hold(monkeypatch, layout, plan, press=None)
 
-    assert len(sitting.skips) == 3, "one Skip per question, and not one for the whole sitting"
+    assert "Skip" in sitting.buttons, "every step can be skipped"
     for question in plan["questions"]:
         assert any(question["if_skipped"] in text for text in sitting.labels)
         assert any(question["answer_later"] in text for text in sitting.labels)
 
 
 def test_shown_if_is_the_one_condition_the_launcher_interprets(layout, monkeypatch):
-    """The key for a cloud provider appears under the provider that needs it,
-    and only while that is the answer (ADR-015's Must Not: no other condition)."""
+    """The key for a cloud provider is a step of its own right after the
+    provider that needs it, and only while that is the answer (ADR-015's Must
+    Not: no other condition)."""
     key = a_secret(id="llm_key_openrouter", shown_if={"question": "llm_provider", "equals": "openrouter"})
     plan = a_plan(a_choice(), key)
-    seen: list[bool] = []
+    after_provider: list[str] = []
 
     def touch(sitting):
-        seen.append(sitting.block_holding(key["if_skipped"]).visible)
+        sitting.goto("llm_provider")
         sitting.pick("openrouter")
-        seen.append(sitting.block_holding(key["if_skipped"]).visible)
+        sitting.press("Next")
+        after_provider.append(sitting.page())
         sitting.type(SENTINEL)
+        sitting.press("Back")
         sitting.pick("ollama")
-        seen.append(sitting.block_holding(key["if_skipped"]).visible)
+        sitting.press("Next")
+        after_provider.append(sitting.page())
 
     answers, _sitting = hold(monkeypatch, layout, plan, touch=touch)
 
-    assert seen == [False, True, False], "hidden, revealed by its provider, hidden again"
+    assert after_provider == ["llm_key_openrouter", "summary"], "revealed by its provider, gone again"
     assert answers == {"llm_provider": "ollama"}, "a question nobody was shown is not in the document"
 
 
@@ -445,8 +501,8 @@ def test_save_with_every_question_skipped_is_still_a_sitting(layout, monkeypatch
     which everything was skipped into "ask me next time", so no child ran, the
     engine wrote no stamp and the gate opened again at every start."""
     def touch(sitting):
-        for variable in sitting.skips:
-            variable.set(True)
+        sitting.skip(0)
+        sitting.skip(1)
 
     answers, _sitting = hold(monkeypatch, layout, a_plan(a_secret(), a_choice()), touch=touch)
 
@@ -457,12 +513,191 @@ def test_ask_me_next_time_hands_over_nothing_at_all(layout, monkeypatch):
     answers, sitting = hold(monkeypatch, layout, a_plan(a_choice()), press="Ask me next time")
 
     assert answers is None
-    assert set(sitting.buttons) == {"Save and start", "Ask me next time"}
+    assert set(sitting.buttons) == {"Back", "Skip", "Next", "Save and start", "Ask me next time"}
 
 
 def test_a_closed_window_is_ask_me_next_time(layout, monkeypatch):
     answers, _sitting = hold(monkeypatch, layout, a_plan(a_choice()), press=None)
 
+    assert answers is None
+
+
+# --- TASK-098: one step per screen ---------------------------------------------------
+#
+# Robert, 2026-09-27, on the 0.7.0 installer: the sitting was one form with
+# every question on it, taller than a 1080p screen, and "Save and start" sat
+# below its bottom edge - so closing it, which is "ask me next time", was the
+# only way out, and a library he had named was never taken over.
+
+
+def _library_plan():
+    return a_plan(
+        a_choice(id="library", choices=(("new", "Start a new library"), ("named", "I already have one"))),
+        dict(a_secret(), id="library_folder", kind="text", text="Which folder holds it?",
+             shown_if={"question": "library", "equals": "named"}),
+        a_choice(),
+        a_yes_no(),
+        found=[A_FOUND_TOKEN],
+    )
+
+
+def test_the_sitting_opens_on_a_welcome_step_and_shows_one_step_at_a_time(layout, monkeypatch):
+    pages: list[str] = []
+
+    def touch(sitting):
+        pages.append(sitting.page())
+        sitting.press("Next")
+        pages.append(sitting.page())
+
+    _answers, sitting = hold(monkeypatch, layout, _library_plan(), touch=touch, press=None)
+
+    assert pages == ["intro", "library"]
+    assert any("Hugging Face token: HF_TOKEN in .env" in text for text in sitting.labels)
+
+
+def test_next_walks_the_steps_in_the_plan_s_order_and_back_walks_them_back(layout, monkeypatch):
+    walk: list[str] = []
+
+    def touch(sitting):
+        for _ in range(4):
+            sitting.press("Next")
+            walk.append(sitting.page())
+        for _ in range(4):
+            sitting.press("Back")
+            walk.append(sitting.page())
+
+    hold(monkeypatch, layout, _library_plan(), touch=touch, press=None)
+
+    # The folder step is not among them: nobody said "I already have one".
+    assert walk == ["library", "llm_provider", "fetch_models", "summary",
+                    "fetch_models", "llm_provider", "library", "intro"]
+
+
+def test_back_keeps_what_was_chosen(layout, monkeypatch):
+    def touch(sitting):
+        sitting.goto("llm_provider")
+        sitting.pick("openrouter")
+        sitting.press("Next")
+        sitting.press("Back")
+        sitting.press("Back")
+        sitting.goto("summary")
+
+    answers, _sitting = hold(monkeypatch, layout, _library_plan(), touch=touch)
+
+    assert answers["llm_provider"] == "openrouter"
+
+
+def test_skip_records_the_skip_and_moves_on(layout, monkeypatch):
+    after: list[str] = []
+
+    def touch(sitting):
+        sitting.goto("library")
+        sitting.press("Skip")
+        after.append(sitting.page())
+
+    answers, _sitting = hold(monkeypatch, layout, _library_plan(), touch=touch)
+
+    assert after == ["llm_provider"]
+    assert answers["library"] is None
+
+
+def test_skip_after_an_answer_drops_the_answer(layout, monkeypatch):
+    """Skip is a decision, not "leave as is": an answer picked and then
+    skipped is not saved, and the summary says skipped."""
+    def touch(sitting):
+        sitting.goto("llm_provider")
+        sitting.pick("openrouter")
+        sitting.press("Skip")
+        sitting.goto("summary")
+
+    answers, sitting = hold(monkeypatch, layout, _library_plan(), touch=touch)
+
+    assert answers["llm_provider"] is None
+    assert any("→  skipped" in str(w.kwargs.get("text", "")) for w in sitting.widgets)
+
+
+def test_answering_a_skipped_question_takes_the_skip_back(layout, monkeypatch):
+    def touch(sitting):
+        sitting.goto("llm_provider")
+        sitting.press("Skip")
+        sitting.press("Back")
+        sitting.pick("ollama")
+
+    answers, _sitting = hold(monkeypatch, layout, _library_plan(), touch=touch)
+
+    assert answers["llm_provider"] == "ollama"
+
+
+def test_a_follow_up_step_comes_right_after_the_answer_that_needs_it(layout, monkeypatch):
+    after: list[str] = []
+
+    def touch(sitting):
+        sitting.goto("library")
+        sitting.pick("named")
+        sitting.press("Next")
+        after.append(sitting.page())
+        sitting.type(r"D:\Data\MyScribe")
+
+    answers, _sitting = hold(monkeypatch, layout, _library_plan(), touch=touch)
+
+    assert after == ["library_folder"]
+    assert answers["library_folder"] == r"D:\Data\MyScribe"
+
+
+def test_only_the_last_step_sums_up_and_saves(layout, monkeypatch):
+    seen: list[tuple] = []
+
+    def touch(sitting):
+        seen.append(("intro", sitting.visible_button("Save and start"), sitting.visible_button("Next"),
+                     sitting.visible_button("Back")))
+        sitting.goto("library")
+        sitting.pick("named")
+        sitting.press("Next")
+        sitting.type(SENTINEL)
+        sitting.goto("summary")
+        seen.append(("summary", sitting.visible_button("Save and start"), sitting.visible_button("Next"),
+                     sitting.visible_button("Back")))
+
+    answers, sitting = hold(monkeypatch, layout, _library_plan(), touch=touch)
+
+    assert seen == [("intro", False, True, False), ("summary", True, False, True)]
+    summary = "\n".join(str(w.kwargs.get("text", "")) for w in sitting.widgets
+                        if w.visible
+                        and str(getattr(w.master, "kwargs", {}).get("name", "")) == "summary")
+    assert "I already have one" in summary
+    assert SENTINEL in summary, "a folder typed is shown back as typed"
+    assert answers["library"] == "named"
+
+
+def test_a_secret_is_never_shown_back_on_the_summary(layout, monkeypatch):
+    def touch(sitting):
+        sitting.goto("hf_token")
+        sitting.type(SENTINEL)
+        sitting.goto("summary")
+
+    _answers, sitting = hold(monkeypatch, layout, a_plan(a_secret()), touch=touch)
+
+    assert not any(SENTINEL in str(w.kwargs.get("text", "")) for w in sitting.widgets)
+
+
+def test_closing_the_window_asks_first_and_stays_open_on_no(layout, monkeypatch):
+    """The trap of 2026-09-27: the close box was "ask me next time" without a
+    word, so a library somebody had just named was silently not taken over."""
+    outcome: list = []
+
+    def touch(sitting):
+        sitting.close_confirmed = False
+        sitting.close_box()
+        outcome.append(getattr(sitting, "destroyed", False))
+        sitting.close_confirmed = True
+        sitting.close_box()
+        outcome.append(getattr(sitting, "destroyed", False))
+
+    answers, sitting = hold(monkeypatch, layout, _library_plan(), touch=touch, press=None)
+
+    assert outcome == [False, True]
+    assert len(sitting.asked_to_close) == 2
+    assert "nothing" in sitting.asked_to_close[0].lower()
     assert answers is None
 
 

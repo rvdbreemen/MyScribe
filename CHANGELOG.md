@@ -1,5 +1,24 @@
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-27
+
+### Changed
+
+- **The first-start setup asks one thing per step.** A welcome step shows
+  what MyScribe found on this machine; then each open question has its own
+  step with Back, Skip and Next, and a follow-up (the folder of an existing
+  library, the key of a cloud provider) comes right after the answer that
+  needs it. The last step sums up the answers, a secret shown only as
+  "given", and Save and start applies them. Skip is a button that moves on;
+  answering the question again takes the skip back (TASK-098).
+
+### Fixed
+
+- The setup window could be taller than the screen, with Save and start
+  below its bottom edge, so it could only be closed - and closing it meant
+  "ask me next time", which silently dropped a library that had just been
+  chosen. Every step now fits, and closing the window asks first (TASK-098).
+
 ## [0.7.0] - 2026-09-27
 
 A phone can send a recording to the laptop without any cloud in between, and
