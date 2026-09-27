@@ -131,7 +131,7 @@ shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
 
 ```powershell
 # Windows: compare the one line for the file you downloaded
-(Get-FileHash MyScribe-0.6.0-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash MyScribe-0.7.0-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
 Select-String -Path SHA256SUMS -Pattern windows-x64.exe$
 ```
 

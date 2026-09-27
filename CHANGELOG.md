@@ -1,16 +1,27 @@
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-27
+
+A phone can send a recording to the laptop without any cloud in between, and
+the Ollama offer follows Ollama's newest release.
+
 ### Added
 
-- **Receive from phone.** A button in the library opens a door for 15
-  minutes through which a phone on the same Wi-Fi sends a recording to the
-  laptop: scan the QR code, pick a file, and it is queued like a
-  drag-and-drop, with your usual settings. The phone sees an upload page and
-  nothing of the library. The door is a separate listener on port 4243
-  behind a one-time secret URL, audio and video only up to 4 GB, published
-  as myscribe.local while it is open, and it closes by itself, on Close, or
-  when MyScribe stops. MyScribe itself still answers this machine only
-  (TASK-096, ADR-022, Proposed). New dependencies: segno and zeroconf.
+- **Receive from phone.** A button in the library opens a door through which
+  a phone on the same Wi-Fi sends one recording to the laptop: scan the QR
+  code, pick a file, press Send. The phone shows a progress bar from 0 to
+  100%, then the laptop's answer for three seconds, then a done screen
+  (Safari does not let a page close its own tab, so it says the tab can be
+  closed). The door closes itself once the file is in; a refused file leaves
+  it open for another try. On the laptop the panel names the file and
+  whether its transcription has started or is queued, and three seconds
+  later the library reloads with the recording in it. The phone sees an
+  upload page and nothing of the library. The door is a separate listener on
+  port 4243 behind a one-time secret URL, audio and video only up to 4 GB,
+  published as myscribe.local while it is open, and it also closes after 15
+  minutes, on Close, or when MyScribe stops. MyScribe itself still answers
+  this machine only (TASK-096, ADR-022, Proposed). New dependencies: segno
+  and zeroconf.
 
 ### Changed
 
@@ -23,7 +34,7 @@
   ollama.com/download and Check again. A start whose sitting already put the
   question asks GitHub nothing. The pin, its CI check and its release step are
   gone. The launcher's Ollama figure is now labelled an estimate (TASK-095,
-  ADR-021 Proposed).
+  ADR-021).
 
 ## [0.6.0] - 2026-09-24
 
