@@ -55,6 +55,7 @@ from starlette.responses import RedirectResponse, Response
 
 from scribe import db, jobs, llm, media as media_store, render
 from scribe.llm import base, chat_tool, privacy, selftest, tasks
+from scribe.llm import ollama as ollama_mod
 from scribe.llm.privacy import PrivacyRefused
 from scribe.stages import llm_stage
 from scribe.web import library, render as render_page, transcript
@@ -93,6 +94,9 @@ a second control named `model_<p>`: `_fields` keeps the last value, so an empty
 box sharing the dropdown's name would drop the row the dropdown just chose."""
 
 PRIVATE_DEFAULT_FIELD = "private_default"
+OLLAMA_HOST_FIELD = "ollama_host"
+"""Where Ollama answers (TASK-100): this machine by default, or a machine in the
+local network. Validated by `scribe.llm.ollama`, stored in `ollama.SETTING_HOST`."""
 """The settings form's name for the private-mode default. Spelled the same as
 the setting row this time, because `media.PRIVATE_DEFAULT_SETTING` is the
 authority on both and a second name would only be a second thing to keep in
@@ -227,7 +231,9 @@ def model_groups(ids: Iterable[str]) -> list[tuple[str, list[str]]] | None:
 PROVIDER_LABELS: dict[str, str] = {
     "openai": "OpenAI",
     "openrouter": "OpenRouter",
-    "ollama": "Ollama (this machine)",
+    # "local": this machine or, since TASK-100, a machine in the local network.
+    # Where exactly is on the settings page, beside the address field.
+    "ollama": "Ollama (local)",
 }
 """Display names. A provider with no entry shows its registry name, which is
 better than a KeyError and honest about what it is."""
@@ -1352,13 +1358,29 @@ def provider_rows(conn: sqlite3.Connection) -> list[dict]:
 
 def settings_context(conn: sqlite3.Connection, *, flash: str | None = None) -> dict:
     """What `_settings_llm.html` renders from."""
+    host = ollama_host(conn)
     return {
         "llm_providers": provider_rows(conn),
         "llm_provider": default_provider(conn),
         "llm_private_default": private_default(conn),
         "llm_effective": effective_llm(conn),
         "llm_flash": flash,
+        "llm_ollama_host": host,
+        "llm_ollama_default_host": ollama_mod.DEFAULT_HOST,
+        "llm_ollama_elsewhere": host != ollama_mod.DEFAULT_HOST,
     }
+
+
+def ollama_host(conn: sqlite3.Connection) -> str:
+    """The address Ollama is asked at: the saved row, or this machine (TASK-100).
+
+    Read as the provider reads it, so the page shows what the calls use."""
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT value FROM setting WHERE key=?", (ollama_mod.SETTING_HOST,)
+        ).fetchone()
+    saved = "" if row is None else str(row["value"] or "").strip()
+    return saved or ollama_mod.DEFAULT_HOST
 
 
 def effective_llm(conn: sqlite3.Connection) -> dict:

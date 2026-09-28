@@ -26,7 +26,8 @@ Three rules worth knowing:
 - **Prefer `.env` over a machine-wide environment variable.** Every account on
   the computer can read an environment variable; only you can read your file.
 - **A recording pinned *private* never goes to a cloud provider**, whatever
-  keys are set. Ollama still answers, because it never leaves the machine.
+  keys are set. Ollama still answers, because it runs on this computer or in
+  your local network ([Ollama on another computer](#ollama-on-another-computer)).
 
 ### Hugging Face token
 
@@ -41,6 +42,29 @@ account:
 Without a token a transcription still completes: the transcript has no
 speakers, and says why and how to fix it. A pipeline you already have needs
 no token at all - put it in `models/pyannote` inside the library.
+
+## Ollama on another computer
+
+Ollama normally runs on this computer. It can also run on another machine in
+your local network - a PC with a bigger GPU, a NAS, a home server:
+
+1. On that machine, let Ollama listen on the network: set the environment
+   variable `OLLAMA_HOST=0.0.0.0` and restart Ollama. Allow port 11434 in its
+   firewall for your local network.
+2. In MyScribe, open **Settings → AI providers** and type the machine's
+   address in **Ollama address**: an IP address such as `192.168.1.50`, or a
+   local name such as `gpu-box.local`. The port defaults to 11434.
+3. Press **Save**, then **Fetch list** and **Test now** in the Ollama row.
+
+Only this computer and your local network are accepted: private addresses
+(`10.x`, `172.16-31.x`, `192.168.x`), link-local and Tailscale addresses, and
+local names (`nas`, `*.local`, `*.lan`, `*.internal`, `*.home.arpa`). An
+address on the internet is refused - use OpenRouter or OpenAI for a model
+there. Leave the field empty to use Ollama on this computer again.
+
+A recording pinned *private* may be sent to an Ollama on your local network.
+Its text then travels over the network in plain HTTP, so use this on a network
+you trust.
 
 ## Where files live
 

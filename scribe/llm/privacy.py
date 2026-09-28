@@ -1,9 +1,15 @@
-"""Private mode: the pin that makes "this never leaves the machine" a control.
+"""Private mode: the pin that makes "this never leaves your local network" a control.
 
 The promise is simple enough to state in one line - *a media pinned private,
 or living anywhere inside a folder pinned private, is never sent to a provider
 that is not local* - and everything in this module exists to make that promise
 hold by construction rather than by anyone remembering it.
+
+"Local" is a provider class's `is_local`, and since ADR-024 (TASK-100,
+2026-09-28) it means this machine or the local network: Ollama may run on a
+machine in the house, and `scribe.llm.ollama._local_network_only` refuses any
+address further away, so the promise is kept by the host check and not by
+this module alone.
 
 Three design decisions, each of which is the reason a test exists:
 

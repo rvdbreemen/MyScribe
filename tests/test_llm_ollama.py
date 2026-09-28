@@ -16,7 +16,18 @@ import json
 import httpx2
 import pytest
 
+from scribe import db
 from scribe.llm import base, ollama
+
+
+@pytest.fixture
+def conn(tmp_path):
+    """A migrated library of the test's own, for the settings the provider reads."""
+    connection = db.connect(tmp_path / "s.db")
+    db.migrate(connection)
+    yield connection
+    connection.close()
+
 
 # --- fake transport ---------------------------------------------------------------
 
@@ -755,26 +766,104 @@ def test_a_custom_host_is_used_for_requests_and_named_in_failures():
 @pytest.mark.parametrize(
     "host",
     [
-        "http://10.0.0.5:11434",
+        "http://8.8.8.8:11434",
+        "http://1.1.1.1",
         "http://ollama.example.com:11434",
-        "https://ollama.internal",
+        "https://ollama.cloud-provider.io",
     ],
 )
-def test_a_host_that_is_not_this_machine_cannot_be_constructed(host):
+def test_a_host_outside_the_local_network_cannot_be_constructed(host):
     """`is_local = True` is a *class* attribute, and it is the single bit
     `privacy.assert_allowed` reads to decide whether a pinned recording's words
-    may be sent. `host` was a per-instance constructor argument, so the two
-    could disagree: one settings row naming a remote box would send a private
-    transcript off this machine while the pin still read True.
-
-    Deriving `is_local` from the host cannot fix it - the pin resolves the
-    provider *class* and never sees an instance - so the only sound repair is
-    to make the disagreement impossible to construct.
+    may be sent. Since TASK-100 (Robert, 2026-09-28) it means "this machine or
+    the local network": an Ollama on a GPU box in the house is trusted like the
+    one on the laptop. A public address or an internet name is not - that is a
+    cloud provider, and letting it through here would send a private
+    transcript to the internet while the pin still read True.
     """
     with pytest.raises(ValueError) as exc:
         ollama.OllamaProvider(None, host=host)
 
-    assert host in str(exc.value)
+    assert host.split("//", 1)[1].split(":")[0].split("/")[0] in str(exc.value)
+    assert "local network" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "http://10.0.0.5:11434",
+        "http://192.168.1.50:11434",
+        "http://172.20.0.3:11434",
+        "http://169.254.10.20:11434",
+        "http://100.101.102.103:11434",  # Tailscale's 100.64.0.0/10
+        "http://[fd00::5]:11434",
+        "http://nas:11434",
+        "http://gpu-box.local:11434",
+        "http://ollama.lan:11434",
+        "https://ollama.internal:11434",
+        "http://box.home.arpa:11434",
+    ],
+)
+def test_a_host_on_the_local_network_is_accepted(host):
+    assert ollama.OllamaProvider(None, host=host).host == host
+
+
+@pytest.mark.parametrize(
+    "typed, stored",
+    [
+        ("192.168.1.50", "http://192.168.1.50:11434"),
+        ("192.168.1.50:8080", "http://192.168.1.50:8080"),
+        ("  http://nas/  ", "http://nas:11434"),
+        ("http://gpu-box.local:11434/", "http://gpu-box.local:11434"),
+        ("https://ollama.lan", "https://ollama.lan:11434"),
+        ("localhost", "http://localhost:11434"),
+        ("[fd00::5]:11434", "http://[fd00::5]:11434"),
+    ],
+)
+def test_a_typed_address_is_stored_normalised(typed, stored):
+    assert ollama.normalise_host(typed) == stored
+
+
+@pytest.mark.parametrize("typed", ["", "   ", "ftp://nas:11434", "http://nas:11434/api", "http://nas:notaport"])
+def test_an_address_that_is_not_an_ollama_url_is_refused(typed):
+    with pytest.raises(ValueError):
+        ollama.normalise_host(typed)
+
+
+def test_a_saved_address_is_what_the_provider_uses(conn):
+    """Every Ollama call builds the provider with the connection
+    (`llm.provider`), so the row is read there and nowhere else."""
+    with db.LOCK:
+        conn.execute("INSERT INTO setting(key, value) VALUES (?, ?)",
+                     (ollama.SETTING_HOST, "http://192.168.1.50:11434"))
+        conn.commit()
+
+    assert ollama.OllamaProvider(conn).host == "http://192.168.1.50:11434"
+
+
+def test_an_explicit_host_wins_over_the_saved_one(conn):
+    with db.LOCK:
+        conn.execute("INSERT INTO setting(key, value) VALUES (?, ?)",
+                     (ollama.SETTING_HOST, "http://192.168.1.50:11434"))
+        conn.commit()
+
+    assert ollama.OllamaProvider(conn, host="http://127.0.0.1:11500").host == "http://127.0.0.1:11500"
+
+
+def test_no_saved_address_is_this_machine(conn):
+    assert ollama.OllamaProvider(conn).host == ollama.DEFAULT_HOST
+
+
+def test_a_saved_public_address_is_refused_rather_than_used(conn):
+    """A row can be edited outside the app. A public address in it must not
+    become where a private transcript goes."""
+    with db.LOCK:
+        conn.execute("INSERT INTO setting(key, value) VALUES (?, ?)",
+                     (ollama.SETTING_HOST, "http://8.8.8.8:11434"))
+        conn.commit()
+
+    with pytest.raises(ValueError):
+        ollama.OllamaProvider(conn)
 
 
 @pytest.mark.parametrize(

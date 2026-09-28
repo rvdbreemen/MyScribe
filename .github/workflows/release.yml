@@ -193,7 +193,24 @@ jobs:
         if: github.event.repository.private
         run: echo "::notice::build provenance is not available for user-owned private repositories; SHA256SUMS is published with the artifacts"
 
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          sparse-checkout: packaging/release_kind.py
+          sparse-checkout-cone-mode: false
+
+      - name: Pre-release or release
+        # A beta (v0.8.0b1) is published as a pre-release that does not become
+        # Latest, so the README's download link keeps the stable one (TASK-100).
+        id: kind
+        run: |
+          prerelease=$(python3 source/packaging/release_kind.py "${{ needs.version.outputs.version }}")
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "${{ needs.version.outputs.version }} is a pre-release: $prerelease"
+
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
           generate_release_notes: true
+          prerelease: ${{ steps.kind.outputs.prerelease }}
+          make_latest: ${{ steps.kind.outputs.prerelease == 'true' && 'false' || 'true' }}

@@ -1475,6 +1475,66 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-024",
+      "title": "A recording pinned private may go to an Ollama on the local network",
+      "path": "ADR-024-a-recording-pinned-private-may-go-to-an-ollama-on-the-local-network.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-09-28",
+      "decision_summary": "Chosen option: A, decided by Robert on 2026-09-28 with A and B in front of him (\"trust my network\"), together with an...",
+      "topics": [
+        "llm",
+        "ollama",
+        "privacy"
+      ],
+      "aliases": [
+        "local network privacy",
+        "ollama address",
+        "ollama on the network"
+      ],
+      "components": [
+        "scribe.llm.ollama"
+      ],
+      "symbols": [
+        "_local_network_only",
+        "normalise_host",
+        "SETTING_HOST"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Accept only loopback, private, link-local and 100.64.0.0/10 addresses, and local names: single-label, .local, .lan, .internal, .home.arpa.",
+          "Refuse any other address with a sentence, and save nothing when the settings form carries one.",
+          "Read the saved address (llmollamahost) in OllamaProvider.init, so every Ollama call uses it; an empty field means this computer.",
+          "Say \"never leaves your local network\" wherever the product describes where a private recording may go."
+        ],
+        "must_not": [
+          "Accept a public IP address or an internet domain name for Ollama.",
+          "Fall back silently to this computer when a saved address is refused.",
+          "Change the Ollama install offer, which stays about this computer (ollamasetup.state)."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testahostoutsidethelocalnetworkcannotbeconstructed",
+          "tests/testllmollama.py::testahostonthelocalnetworkisaccepted",
+          "tests/testwebai.py::testanollamaaddressontheinternetisrefusedandnotsaved"
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
