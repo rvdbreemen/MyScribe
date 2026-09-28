@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+## [0.8.0b1] - 2026-09-28
+
+A beta: published as a pre-release, so the download link keeps pointing at
+0.7.2.
+
+### Added
+
+- **Ollama on another computer in your local network.** Settings → AI
+  providers has an **Ollama address**: leave it empty for this computer, or
+  type the address of a machine in your local network (`192.168.1.50`,
+  `gpu-box.local`) whose Ollama listens on the network. Every Ollama call -
+  questions, analysis, labels, naming speakers, the test and the model list -
+  uses it. Only this computer and the local network are accepted; an address
+  on the internet is refused. A recording pinned private may be sent to that
+  Ollama, so its text then stays within your local network rather than on this
+  computer (TASK-100, ADR-024 Proposed).
+
+### Changed
+
+- A tag with a pre-release version (such as `v0.8.0b1`) is published as a
+  GitHub pre-release that does not become Latest.
+
 ## [0.7.2] - 2026-09-27
 
 ### Fixed

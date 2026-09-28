@@ -78,6 +78,7 @@ from scribe import accel, autostart, credentials, db, doctor, fsbrowse, glossary
 from scribe.exports.options import PRESETS
 from scribe.ingest import watching
 from scribe.llm import base as llm_base
+from scribe.llm import ollama
 from scribe.options import TranscribeOptions, parse_options
 from scribe.stages import correct, transcribe
 from scribe.web import ai_ui, exports_ui, library, render, transcribe_dialog
@@ -1035,6 +1036,21 @@ async def save_llm_defaults(request: Request) -> Response:
     conn = request.app.state.conn
     fields = transcribe_dialog._fields(await request.form())
 
+    # Ollama's address (TASK-100), checked before anything is written: an
+    # address outside the local network refuses the whole Save, so the page
+    # never ends up half saved around a refusal.
+    host_row: str | None = None
+    if ai_ui.OLLAMA_HOST_FIELD in fields:
+        typed = (fields.get(ai_ui.OLLAMA_HOST_FIELD) or "").strip()
+        if typed:
+            try:
+                host_row = ollama.normalise_host(typed)
+                ollama.OllamaProvider(None, host=host_row)  # the local-network check
+            except ValueError as exc:
+                return _llm_answer(request, conn, flash=str(exc))
+        else:
+            host_row = ""
+
     wanted = (fields.get("provider") or "").strip()
     if wanted:
         if wanted not in ai_ui.llm.PROVIDERS:
@@ -1063,6 +1079,13 @@ async def save_llm_defaults(request: Request) -> Response:
         ai_ui.set_private_default(
             conn, library._truthy(fields[ai_ui.PRIVATE_DEFAULT_FIELD])
         )
+
+    # Empty is "this computer": the row goes, and the provider's default is
+    # this machine again (no row, not a row holding the default).
+    if host_row == "":
+        ai_ui.setting_drop(conn, ollama.SETTING_HOST)
+    elif host_row:
+        ai_ui.setting_put(conn, ollama.SETTING_HOST, host_row)
 
     return _llm_answer(request, conn, flash=ai_ui.FLASH_LLM_SAVED)
 

@@ -26,6 +26,11 @@ gh release edit v0.5.0 --notes-file notes.md
 The tag starts `release.yml`. Nothing is published until all three builds and
 their smoke tests have passed.
 
+**A beta** gets a PEP 440 pre-release version, such as `0.8.0b1`, and the tag
+`v0.8.0b1`. `packaging/release_kind.py` tells the publish step, which then
+marks the Release a pre-release that does not become Latest: the README's
+download link and the repository's website field keep the stable release.
+
 ## The release notes
 
 `publish` creates the Release with `generate_release_notes: true`, and that

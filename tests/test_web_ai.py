@@ -995,6 +995,59 @@ def test_saving_the_llm_defaults_stores_the_provider_and_its_model(client, conn,
     assert ai_ui.default_model(conn, "openai") == "gpt-4o-mini"
 
 
+# --- Ollama on the local network (TASK-100) ----------------------------------------------
+
+
+def _saved_host(conn):
+    with db.LOCK:
+        row = conn.execute("SELECT value FROM setting WHERE key=?", (ollama.SETTING_HOST,)).fetchone()
+    return None if row is None else row["value"]
+
+
+def test_the_settings_page_offers_an_ollama_address_with_this_machine_as_default(client, no_ollama):
+    body = client.get("/settings").text
+
+    assert 'name="ollama_host"' in body
+    assert ollama.DEFAULT_HOST in body
+
+
+def test_an_ollama_address_on_the_local_network_is_saved_normalised(client, conn, no_ollama):
+    resp = client.post("/settings/llm", data={"ollama_host": "192.168.1.50"}, headers=HX)
+
+    assert resp.status_code == 200
+    assert _saved_host(conn) == "http://192.168.1.50:11434"
+    assert "http://192.168.1.50:11434" in client.get("/settings").text
+
+
+def test_an_ollama_address_on_the_internet_is_refused_and_not_saved(client, conn, no_ollama):
+    client.post("/settings/llm", data={"ollama_host": "192.168.1.50"}, headers=HX)
+
+    resp = client.post("/settings/llm", data={"ollama_host": "ollama.example.com"}, headers=HX)
+
+    assert resp.status_code == 200
+    assert "local network" in resp.text
+    assert _saved_host(conn) == "http://192.168.1.50:11434", "the refused address changed nothing"
+
+
+def test_an_empty_ollama_address_is_this_machine_again(client, conn, no_ollama):
+    client.post("/settings/llm", data={"ollama_host": "192.168.1.50"}, headers=HX)
+
+    client.post("/settings/llm", data={"ollama_host": "  "}, headers=HX)
+
+    assert _saved_host(conn) is None
+    assert ollama.OllamaProvider(conn).host == ollama.DEFAULT_HOST
+
+
+def test_the_saved_address_is_what_every_ollama_call_uses(client, conn, no_ollama):
+    """`llm.provider` builds every provider the jobs, the panel and the
+    self-test use; it hands over the connection, and the row does the rest."""
+    from scribe import llm
+
+    client.post("/settings/llm", data={"ollama_host": "gpu-box.local:11500"}, headers=HX)
+
+    assert llm.PROVIDERS["ollama"](conn).host == "http://gpu-box.local:11500"
+
+
 def test_the_saved_default_provider_is_the_one_the_panel_opens_with(client, conn, media, no_ollama):
     client.post("/settings/llm", data={"provider": "ollama", "model_ollama": "qwen3.5:4b"}, headers=HX)
 

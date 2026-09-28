@@ -1,6 +1,6 @@
 [project]
 name = "myscribe"
-version = "0.7.2"
+version = "0.8.0b1"
 description = "Local-first transcription with privacy by design: transcription and speaker detection run on your computer; labels, analysis and chat through Ollama, or optionally OpenRouter or OpenAI."
 requires-python = "==3.12.*"
 # The direct dependencies, each pinned; uv.lock pins everything they pull in,

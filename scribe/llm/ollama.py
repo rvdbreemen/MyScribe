@@ -73,10 +73,14 @@ http://127.0.0.1:11434, `qwen3.5:4b` / `qwen3.5:9b` / `gemma4:12b` pulled):
 There is no key: nothing here resolves one, nothing logs one, and `available()`
 never mentions one.
 
-And there is no remote host. `is_local = True` is a class attribute the pin
-reads; `host` was a per-instance argument, so the two could disagree and a
-settings row naming another machine would have carried a pinned recording to
-it. `_this_machine_only` makes that unconstructable.
+The host is this machine or the local network (TASK-100, Robert 2026-09-28).
+`is_local = True` is a class attribute the privacy pin reads; `host` is a
+per-instance value, read from the `llm_ollama_host` setting. Since TASK-100
+the pin's promise is "never leaves your local network": an Ollama on a GPU box
+in the house is trusted like the one on the laptop. `_local_network_only`
+makes anything further away unconstructable - a public address or an internet
+name is a cloud provider, and a settings row naming one must not carry a
+pinned recording there while the pin still reads True.
 """
 
 from __future__ import annotations
@@ -93,7 +97,23 @@ import httpx2
 from scribe.llm import base
 from scribe.llm.base import ChatRequest, ChatResponse
 
-DEFAULT_HOST = "http://127.0.0.1:11434"
+DEFAULT_PORT = 11434
+DEFAULT_HOST = f"http://127.0.0.1:{DEFAULT_PORT}"
+
+SETTING_HOST = "llm_ollama_host"
+"""Where Ollama answers, when it is not this machine's default: a normalised
+URL (`normalise_host`) on this machine or the local network. No row is the
+default host."""
+
+LOCAL_NAME_SUFFIXES = (".local", ".lan", ".internal", ".home.arpa")
+"""Names that only resolve inside a local network: mDNS (`.local`), the
+de-facto router suffix (`.lan`), and the two reserved for private use
+(`.internal`, `.home.arpa`, RFC 8375). A single-label name (`nas`) is local
+too - it cannot name anything on the internet."""
+
+_SHARED_SPACE = ipaddress.ip_network("100.64.0.0/10")
+"""RFC 6598 shared address space, where Tailscale puts its devices. Not
+`is_private` in `ipaddress`, but never routed on the internet."""
 
 DEFAULT_TIMEOUT = 300.0
 """Seconds for one completion at the shipped window, and the floor under any
@@ -192,10 +212,12 @@ def default_client_factory(*, base_url: str, timeout: float):
     between this process and this machine, and a running daemon reading as
     absent is what an offer to install one would be gated on (ADR-017).
 
-    Unconditional because `__init__` pins the host through `_this_machine_only`:
-    there is no instance of this client that talks anywhere else. The flag also
-    switches off `.netrc` and the SSL_CERT_* variables, which is no loss over
-    plain HTTP to 127.0.0.1. The cloud providers keep trusting the environment
+    Unconditional because `__init__` pins the host through `_local_network_only`:
+    there is no instance of this client that talks further than the local
+    network (TASK-100), and a proxy belongs between this machine and the
+    internet, not between it and a box down the hall. The flag also switches
+    off `.netrc` and the SSL_CERT_* variables, which is no loss over plain HTTP
+    on the local network. The cloud providers keep trusting the environment
     - somebody behind a corporate proxy needs it for OpenAI and OpenRouter -
     and `tests/test_proxy.py` pins that the hub download still goes through one.
     """
@@ -209,39 +231,78 @@ constructor - and a hosts file that lies about `localhost` is a compromise of a
 different order than the mistake this check exists to catch."""
 
 
-def _this_machine_only(host: str) -> str:
-    """`host`, or a `ValueError` if it is somewhere else.
+def normalise_host(typed: str) -> str:
+    """An address as somebody types it, as the URL it is stored as.
+
+    `192.168.1.50`, `192.168.1.50:8080`, `nas`, `http://gpu-box.local/` and
+    `https://ollama.lan` all come back as `scheme://host:port`, with http and
+    Ollama's own port 11434 filled in when they were left out. Only the root of
+    a server is an Ollama address: a path, another scheme or a port that is not
+    a number is refused, in a sentence for the settings page.
+    """
+    text = (typed or "").strip()
+    if not text:
+        raise ValueError("Type an address for Ollama, or leave the field empty for this computer.")
+    if "://" not in text:
+        text = "http://" + text
+    parts = urlsplit(text)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"{typed.strip()!r} is not an http address; Ollama answers on http://host:11434.")
+    if parts.path.strip("/") or parts.query or parts.fragment:
+        raise ValueError(f"{typed.strip()!r} names a path; give only the address, such as http://nas:11434.")
+    try:
+        port = parts.port or DEFAULT_PORT
+    except ValueError:
+        raise ValueError(f"{typed.strip()!r} has a port that is not a number.") from None
+    hostname = parts.hostname or ""
+    if not hostname:
+        raise ValueError(f"{typed.strip()!r} names no computer.")
+    shown = f"[{hostname}]" if ":" in hostname else hostname
+    return f"{parts.scheme}://{shown}:{port}"
+
+
+def _on_the_local_network(hostname: str) -> bool:
+    """Whether `hostname` can only mean this machine or the local network."""
+    name = hostname.strip().lower().rstrip(".")
+    if not name:
+        return False
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        # A name. `localhost` is this machine by definition; a single label
+        # (`nas`) and the local suffixes cannot name anything on the internet.
+        return name == LOOPBACK_NAME or "." not in name or name.endswith(LOCAL_NAME_SUFFIXES)
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or (address.version == 4 and address in _SHARED_SPACE)
+    ) and not address.is_multicast and not address.is_unspecified
+
+
+def _local_network_only(host: str) -> str:
+    """`host`, or a `ValueError` if it is outside this machine and the local network.
 
     `is_local = True` is a **class** attribute, and it is the single bit
     `privacy.assert_allowed` reads to decide whether a pinned recording's words
-    may leave this machine. `host` is a per-instance constructor argument. So
-    the two can disagree, and the disagreement is exactly the failure the pin
-    exists to prevent: one settings row naming a remote box would post a
-    private transcript to it while the pin still answered "local, allow".
+    may be sent. `host` is per instance (a settings row, since TASK-100). The two
+    may disagree only as far as the promise the pin makes: since TASK-100
+    (Robert, 2026-09-28) that is "never leaves your local network", so a host
+    on the local network is allowed and anything further is unconstructable.
 
-    Deriving `is_local` from the resolved host would not help. The pin resolves
-    the provider *class* through `llm.provider_class` and never sees an
-    instance, so a per-instance flag is a flag nothing reads - a worse bug,
-    because it would look like a fix. Making the disagreement impossible to
-    construct is the only version that holds.
-
-    Nothing wires a `host` today (traced: `llm_stage`, `chat_tool.answer` and
-    `selftest.probe` all call with no provider kwargs, and no settings row
-    writes one). This is the guard for the day something does.
+    Deriving `is_local` from the host would not help: the pin resolves the
+    provider *class* and never sees an instance. Refusing the host is the only
+    version that holds.
     """
-    hostname = urlsplit(host).hostname
-    if hostname == LOOPBACK_NAME:
+    hostname = urlsplit(host).hostname or ""
+    if _on_the_local_network(hostname):
         return host
-    try:
-        if ipaddress.ip_address(hostname or "").is_loopback:
-            return host
-    except ValueError:
-        pass
     raise ValueError(
-        f"OllamaProvider host {host!r} is not this machine, and this provider is registered as "
-        f"local: privacy.assert_allowed reads OllamaProvider.is_local and would let a recording "
-        f"pinned private be sent there. Use {DEFAULT_HOST} (or another loopback address); a "
-        f"remote model is a cloud provider and needs a Provider of its own."
+        f"The Ollama address {hostname!r} is not on this computer or the local network. "
+        f"MyScribe sends recordings pinned private to Ollama, so Ollama may only run here or on "
+        f"a machine in your local network (a private address such as 192.168.x.x, or a local "
+        f"name such as nas or gpu-box.local). A model on the internet is a cloud provider: "
+        f"use OpenRouter or OpenAI for that."
     )
 
 
@@ -282,7 +343,7 @@ class OllamaProvider(base.Provider):
         self,
         conn: sqlite3.Connection | None = None,
         *,
-        host: str = DEFAULT_HOST,
+        host: str | None = None,
         model: str | None = None,
         num_ctx: int | None = None,
         client_factory: Callable[..., Any] | None = None,
@@ -307,7 +368,11 @@ class OllamaProvider(base.Provider):
         reason.
         """
         self.conn = conn
-        self.host = _this_machine_only(host).rstrip("/")
+        # An explicit host wins (a test, a caller with a reason); otherwise the
+        # settings row (TASK-100), otherwise this machine. Checked either way.
+        self.host = _local_network_only(
+            (host or self._saved_host() or DEFAULT_HOST).rstrip("/")
+        )
         self.model = model or self._saved_model() or self.default_model
         self.num_ctx = DEFAULT_NUM_CTX if num_ctx is None else num_ctx
         self._num_ctx_is_mine = num_ctx is None
@@ -372,6 +437,26 @@ class OllamaProvider(base.Provider):
             except Exception:  # noqa: BLE001 - a setting that is not a number is not a ceiling
                 pass
         return MAX_NUM_CTX
+
+    def _saved_host(self) -> str:
+        """The address this installation saved for Ollama, or "" (TASK-100).
+
+        Read the way `_saved_model` reads its row: once, and a row that cannot
+        be read is no saved address. A row that can be read but names a place
+        outside the local network is not ignored - `_local_network_only`
+        refuses it in `__init__`, because falling back quietly would hide that
+        somebody pointed Ollama at the internet.
+        """
+        if self.conn is None:
+            return ""
+        try:
+            with db.LOCK:
+                row = self.conn.execute(
+                    "SELECT value FROM setting WHERE key=?", (SETTING_HOST,)
+                ).fetchone()
+            return "" if row is None else str(row["value"] or "").strip()
+        except Exception:  # noqa: BLE001 - a row we cannot read is no saved address
+            return ""
 
     def _saved_model(self) -> str:
         """The model this installation has chosen, or "".

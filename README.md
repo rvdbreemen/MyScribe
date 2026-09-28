@@ -7,8 +7,9 @@
 - **Post-processing is optional, and your choice.** Label your recordings, run
   an analysis - a summary, action points, a cleaned-up reading - or chat with
   a transcript, using local models through
-  [Ollama](https://ollama.com). Or, if you prefer, use OpenRouter or OpenAI
-  as a backend in the public cloud.
+  [Ollama](https://ollama.com) - on this computer or on another machine in
+  your local network. Or, if you prefer, use OpenRouter or OpenAI as a
+  backend in the public cloud.
 
 MyScribe runs in your browser at `http://127.0.0.1:4242` and keeps everything
 in one library on your disk. It runs on Windows, macOS (Apple Silicon) and
@@ -103,7 +104,8 @@ MyScribe listens only on `127.0.0.1` and refuses requests from any other name,
 so other computers - and web pages you happen to visit - cannot reach your
 library. Audio is transcribed on your machine. Text goes to a cloud AI
 provider only when you choose one, and never for a recording pinned
-*private*. *Receive from phone* is the one exception: a temporary, upload-only
+*private*: that text stays on this computer or, when Ollama runs on another
+machine in your local network, within that network. *Receive from phone* is the one exception: a temporary, upload-only
 door that closes by itself - see [its page](docs/receive-from-phone.md).
 
 ## Documentation

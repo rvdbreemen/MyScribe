@@ -13,6 +13,8 @@
       llm_provider   the default provider a new request opens with
       llm_private_default  whether a newly added recording starts pinned
       llm_flash      a line for the page's status region, or none
+      llm_ollama_host  where Ollama is asked (TASK-100); llm_ollama_default_host
+                     this machine's; llm_ollama_elsewhere whether they differ
       oob            whether this is a fragment response carrying the flash
                      out of band
 
@@ -32,8 +34,8 @@
   <p class="hint">
     Where a question about a transcript is answered. A key saved here is stored as
     plain text in <code>myscribe.db</code> - the same trade as the <code>.env</code> file
-    beside the app, not a vault. Ollama runs on this machine, so a recording pinned
-    private can only use it.
+    beside the app, not a vault. Ollama runs on this machine or on a machine in your local
+    network, so a recording pinned private can only use it.
   </p>
 
   {# What the three controls below actually add up to (TASK-040.06). The page
@@ -55,7 +57,7 @@
     <strong>In effect now:</strong> questions are answered by {{ llm_effective.label }}
     {%- if llm_effective.model %} using <code>{{ llm_effective.model }}</code>{% endif %}
     {%- if llm_effective.window %}, planned against a {{ "{:,}".format(llm_effective.window) }}-token window{% endif %}.
-    {% if llm_effective.local %}Nothing leaves this machine.{% else %}This sends transcript text off this machine.{% endif %}
+    {% if llm_effective.local and llm_ollama_elsewhere %}Nothing leaves your local network: Ollama answers at <code>{{ llm_ollama_host }}</code>.{% elif llm_effective.local %}Nothing leaves this machine.{% else %}This sends transcript text off this machine.{% endif %}
     <span class="muted">A single question can still override it below.</span>
   </p>
   {% endif %}
@@ -106,6 +108,22 @@
     </div>
     {% endfor %}
 
+    {# Where Ollama answers (TASK-100). Empty is this computer. Only this
+       machine or the local network is accepted, because a recording pinned
+       private may go to Ollama; the check is in scribe.llm.ollama. #}
+    <label class="field">Ollama address
+      <input type="text" name="ollama_host" autocomplete="off" spellcheck="false"
+             value="{% if llm_ollama_elsewhere %}{{ llm_ollama_host }}{% endif %}"
+             placeholder="{{ llm_ollama_default_host }} (this computer)">
+    </label>
+    <p class="hint">
+      Leave empty to use Ollama on this computer. To use Ollama on another machine in your
+      local network, type its address: an IP such as <code>192.168.1.50</code> or a local name
+      such as <code>gpu-box.local</code>; the port defaults to 11434. That machine's Ollama must
+      listen on the network (<code>OLLAMA_HOST=0.0.0.0</code>). An address on the internet is
+      refused: use OpenRouter or OpenAI for a model there.
+    </p>
+
     {# The hidden 0 ahead of the checkbox is this app's convention for every
        checkbox (see transcribe_dialog._fields): a box that is not ticked is
        not posted at all, so without it "off" and "do not change this" arrive
@@ -116,7 +134,7 @@
       New recordings start private
     </label>
     <p class="hint">
-      A private recording's text can only go to a provider on this machine. This is
+      A private recording's text can only go to Ollama, on this machine or in your local network. This is
       what a newly added recording starts as; recordings already in the library keep
       the setting they have.
     </p>
@@ -135,7 +153,7 @@
         {% for p in llm_providers %}
         <tr data-provider="{{ p.name }}">
           <td>{{ p.label }}</td>
-          <td>{% if p.local %}<span class="badge">local</span> this machine{% else %}<span class="badge warn">leaves your machine</span>{% endif %}</td>
+          <td>{% if p.local and llm_ollama_elsewhere %}<span class="badge">local network</span> <span class="mono">{{ llm_ollama_host }}</span>{% elif p.local %}<span class="badge">local</span> this machine{% else %}<span class="badge warn">leaves your machine</span>{% endif %}</td>
           <td>{% if p.ready %}<span class="badge ok">ready</span>{% else %}<span class="badge">not ready</span>{% endif %} <span class="why">{{ p.why }}</span></td>
           <td>
             {% if p.needs_key %}

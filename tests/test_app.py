@@ -295,4 +295,6 @@ def test_the_version_is_the_same_number_in_both_places():
     root = pathlib.Path(__file__).resolve().parents[1]
     declared = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     assert declared["project"]["version"] == scribe.__version__
-    assert re.fullmatch(r"\d+\.\d+\.\d+", scribe.__version__), scribe.__version__
+    # X.Y.Z, or X.Y.Z with a PEP 440 pre-release for a beta (0.8.0b1, TASK-100):
+    # packaging/release_kind.py publishes that as a GitHub pre-release.
+    assert re.fullmatch(r"\d+\.\d+\.\d+((a|b|rc)\d+)?", scribe.__version__), scribe.__version__
