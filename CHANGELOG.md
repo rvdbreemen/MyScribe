@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-28
+
+The stable release of 0.8.0b1, with the same code: Ollama may run on another
+computer in your local network. The changes are listed under 0.8.0b1 below.
+
 ## [0.8.0b1] - 2026-09-28
 
 A beta: published as a pre-release, so the download link keeps pointing at
