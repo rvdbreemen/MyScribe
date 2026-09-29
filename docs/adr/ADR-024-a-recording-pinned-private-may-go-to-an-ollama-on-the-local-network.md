@@ -1,15 +1,14 @@
 ---
 id: "ADR-024"
 title: "A recording pinned private may go to an Ollama on the local network"
-status: "Proposed"
-date: "2026-09-28"
+status: "Accepted"
+date: "2026-09-29"
 binding: false
 gate: null
 documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
-format: "madr"
 topics:
   - "privacy"
   - "llm"
@@ -25,6 +24,7 @@ symbols:
   - "normalise_host"
   - "SETTING_HOST"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -33,7 +33,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-09-28.
+Accepted, 2026-09-29.
 
 ## Status History
 
@@ -44,6 +44,11 @@ status_history:
     changed_by: Claude (agent, session 2026-09-28)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-09-29
+    status: Accepted
+    changed_by: Robert van den Breemen (via Claude, session 2026-09-29)
+    reason: "Robert accepted in the session: Accept ADR 024"
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
@@ -141,7 +146,7 @@ Ollama (TASK-100).
 
 ## Open Questions
 
-- [ ] Does Robert accept this record, and with it that a private recording may cross the local network over HTTP?
+- [x] Does Robert accept this record, and with it that a private recording may cross the local network over HTTP? — **Answered 2026-09-29 by Claude (agent, session 2026-09-29) for Robert van den Breemen:** Yes: Robert accepted it on 2026-09-29, after 0.8.0 shipped the feature.
 
 ## Related Decisions
 

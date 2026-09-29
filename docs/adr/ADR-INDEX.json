@@ -1481,8 +1481,8 @@
       "title": "A recording pinned private may go to an Ollama on the local network",
       "path": "ADR-024-a-recording-pinned-private-may-go-to-an-ollama-on-the-local-network.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-09-28",
+      "status": "Accepted",
+      "date": "2026-09-29",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-09-28 with A and B in front of him (\"trust my network\"), together with an...",
       "topics": [
         "llm",

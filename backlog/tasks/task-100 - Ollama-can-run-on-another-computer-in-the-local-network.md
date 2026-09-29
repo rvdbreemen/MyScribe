@@ -1,11 +1,11 @@
 ---
 id: TASK-100
 title: Ollama can run on another computer in the local network
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-28 08:23'
-updated_date: '2026-09-28 20:18'
+updated_date: '2026-09-29 03:48'
 labels:
   - llm
   - settings
@@ -40,4 +40,12 @@ Built 2026-09-28. scribe/llm/ollama.py: SETTING_HOST llm_ollama_host read in Oll
 Released 2026-09-28: merged to main (0576431), tag v0.8.0b1; release run 36449935588 built linux-x64, macos-arm64, windows-x64 and published. GitHub reports prerelease=true, draft=false; releases/latest stays v0.7.2. SHA256SUMS equals GitHub's asset digests. CI on the branch green on three OSes (run 36398663222: 3597 passed on Ubuntu and macOS, 2249 + 1352 on Windows). ADR-024 stays Proposed until Robert accepts it. Not done: a real second machine running Ollama (Robert cannot test it; the relay on this laptop's LAN address stood in).
 
 Stable 0.8.0 released 2026-09-28 from main 4090de0 (same code as 0.8.0b1): CI 36475514662 green on three OSes, release run 36477046820 all jobs success, Latest is v0.8.0, 7 assets match SHA256SUMS. Installed on Robert's laptop over the beta: /health reports 0.8.0 with library D:/Data/MyScribe/data.
+
+ADR-024 accepted by Robert on 2026-09-29 (adr accept --confirm); open question answered, adr-lint --strict docs/adr clean, index regenerated.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Ollama may run on another computer in the local network. Settings > AI providers has an Ollama address; only this machine and local-network addresses are accepted, and a private recording may go there (ADR-024, accepted 2026-09-29). Verified with red-first tests, 13/13 mutants killed, CI green on three OSes, and a real run through this laptop's LAN address. Shipped as pre-release 0.8.0b1, then as stable 0.8.0 (Latest), installed on Robert's laptop.
+<!-- SECTION:FINAL_SUMMARY:END -->
