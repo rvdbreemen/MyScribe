@@ -1341,6 +1341,8 @@ class _Window(_Sitting):
         self.bar = None
         self.protocols: dict = {}
         self.destroyed = False
+        self.root = None
+        self.after_threads: set[str] = set()  # who called `after`; only the Tk thread may
 
 
 def _fake_window_tkinter(window: _Window):
@@ -1348,12 +1350,13 @@ def _fake_window_tkinter(window: _Window):
 
     class Root(base.Toplevel):
         def geometry(self, spec):
-            pass
+            window.root = self
 
         def protocol(self, name, callback):
             window.protocols[name] = callback
 
         def after(self, delay, callback=None):
+            window.after_threads.add(threading.current_thread().name)
             if callback is not None:
                 window.scheduled.append(callback)
 
@@ -1470,6 +1473,66 @@ def test_a_progress_event_moves_the_bar_and_never_the_log(layout, monkeypatch):
     assert window.bar is not None and window.bar.value == 100
     assert window.appended == ["saved: nothing"], "a hundred bar updates are not a hundred lines"
     assert window.status.get() == "Downloading openai/whisper - 100%"
+
+
+def _window_with(layout, monkeypatch, sequence):
+    """`run_window` with `first_run` replaced by `sequence`, on a home that
+    has its logs folder, so what the window writes there can be read."""
+    window = _Window()
+    fake = _fake_window_tkinter(window)
+    monkeypatch.setitem(sys.modules, "tkinter", fake)
+    monkeypatch.setitem(sys.modules, "tkinter.ttk", fake.ttk)
+    monkeypatch.setitem(sys.modules, "tkinter.scrolledtext", fake.scrolledtext)
+    monkeypatch.setattr(launcher, "open_sitting", lambda *a, **k: None)
+    monkeypatch.setattr(launcher, "first_run", sequence)
+    layout.logs_dir.mkdir(parents=True)
+    launcher.run_window(layout, _free_port(), False)
+    return window
+
+
+def test_the_questions_reach_the_dialog_without_the_worker_touching_tk(layout, monkeypatch):
+    """TASK-101. The launcher frozen with Python 3.12 carries Tcl 9 on macOS,
+    and 3.12's _tkinter reads Tcl 9 as unthreaded, so a Tk call from the
+    worker is not handed to the Tk thread: `after` lands in the worker's own
+    Tcl timers, nothing ever runs it, and the questions never open. The rule
+    that makes the window independent of that judgement: no worker calls Tk.
+    """
+    monkeypatch.setattr(launcher, "ask_setup", lambda root, layout, plan: {"answers": "given"})
+    got = []
+
+    def asks(launch, ask, report, *args, **kwargs):
+        got.append(ask({"questions": []}))
+        return True
+
+    window = _window_with(layout, monkeypatch, asks)
+
+    assert got == [{"answers": "given"}]
+    assert window.after_threads == {threading.main_thread().name}, (
+        f"Tk was called from {sorted(window.after_threads)}")
+
+
+def test_a_worker_that_dies_leaves_its_traceback_in_the_launcher_log(layout, monkeypatch):
+    """A windowed build has no stderr: without this a dead worker is a window
+    that waits for ever and a log that ends at the last line before it."""
+    def dies(*args, **kwargs):
+        raise RuntimeError("the sequence fell over")
+
+    window = _window_with(layout, monkeypatch, dies)
+
+    written = (layout.logs_dir / launcher.INSTALL_LOG).read_text(encoding="utf-8")
+    assert "Traceback" in written and "RuntimeError: the sequence fell over" in written
+    assert any("launcher.log" in line for line in window.appended), "the window says where to look"
+
+
+def test_a_tk_callback_that_raises_leaves_its_traceback_in_the_launcher_log(layout, monkeypatch):
+    window = _window_with(layout, monkeypatch, lambda *a, **k: True)
+    try:
+        raise ValueError("a callback fell over")
+    except ValueError as error:
+        window.root.report_callback_exception(type(error), error, error.__traceback__)
+
+    written = (layout.logs_dir / launcher.INSTALL_LOG).read_text(encoding="utf-8")
+    assert "ValueError: a callback fell over" in written
 
 
 # --- the engine stand-in ----------------------------------------------------------

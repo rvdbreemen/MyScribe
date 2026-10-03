@@ -38,6 +38,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -2643,7 +2644,36 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         log.see("end")
         log.configure(state="disabled")
 
+    def leave_a_trace(where: str, trace: str) -> None:
+        """A windowed build has no stderr, so an exception nobody catches is
+        written to launcher.log, and the window says where it went
+        (TASK-101: Jim's walk found a hang that left no line anywhere)."""
+        launch.log.write(launch.log.redact(trace.rstrip("\n")))
+        launch.report("error", f"MyScribe hit an error ({where}); see {layout.logs_dir / INSTALL_LOG}")
+
+    root.report_callback_exception = lambda kind, value, tb: leave_a_trace(
+        "in the window", "".join(traceback.format_exception(kind, value, tb)))
+
+    # What a worker needs done on the Tk thread, as (work, where to answer).
+    # A plain queue and not `root.after`: TASK-101. Python 3.12's _tkinter
+    # takes Tcl 9 - which the macOS build carries - for unthreaded, and then
+    # a Tk call from a worker is not handed to the Tk thread but runs in the
+    # worker, where `after` puts its timer in a list nobody services. With no
+    # Tk call left on any worker, how _tkinter judges Tcl does not matter.
+    requests: "queue.Queue[tuple[Callable, queue.Queue]]" = queue.Queue()
+
     def pump() -> None:
+        while True:
+            try:
+                work, answer = requests.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                result = work()
+            except Exception:
+                leave_a_trace("in the setup window", traceback.format_exc())
+                result = None
+            answer.put(result)
         try:
             while True:
                 state, text = events.get_nowait()
@@ -2679,35 +2709,18 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         """Run `work` on the Tk thread and wait for what it gives back.
 
         Tk is not thread-safe, and the sequence runs on a worker so the sync
-        does not freeze the window; so the worker asks for the dialog and
-        blocks on a queue until it closes.
+        does not freeze the window; so the worker puts the dialog on
+        `requests`, which `pump` runs on the Tk thread, and blocks until it
+        closes. The worker itself calls nothing in Tk (TASK-101).
 
         There is no timeout on that wait, because a person may sit at the
-        questions for minutes. What there is instead is an answer on every
-        path: a Quit between the schedule and the dispatch leaves the worker
-        waiting, and that costs nothing - it is a daemon thread and the
-        process ends with the mainloop.
+        questions for minutes. `pump` answers on every path, an exception
+        included; a Quit before it gets there leaves the worker waiting, and
+        that costs nothing - it is a daemon thread and the process ends with
+        the mainloop.
         """
         answered: "queue.Queue" = queue.Queue()
-
-        def run() -> None:
-            """On the Tk thread, and it always answers. An exception raised in
-            here would otherwise go to Tk's own handler - stderr, which a
-            windowed build has not got - and the worker would wait for ever
-            with the app never started."""
-            try:
-                result = work()
-            except Exception:
-                result = None
-            answered.put(result)
-
-        try:
-            root.after(0, run)
-        except (tk.TclError, RuntimeError):
-            # Quit during the sync: no window to ask in. Tk says so as a
-            # TclError from a destroyed widget, and _tkinter as a RuntimeError
-            # when the mainloop this thread would hand the call to is gone.
-            return None
+        requests.put((work, answered))
         return answered.get()
 
     def ask(plan: dict) -> dict | None:
@@ -2724,6 +2737,8 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
                 return  # one sitting at a time: two dialogs would fight over grab_set
             try:
                 work()
+            except Exception:
+                leave_a_trace(f"in {name}", traceback.format_exc())
             finally:
                 sitting.release()
 
