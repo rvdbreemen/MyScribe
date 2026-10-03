@@ -1,0 +1,63 @@
+### volume
+total 8
+drwxr-xr-x  5 <tester>  staff  160 Sep 28 22:13 .
+drwxr-xr-x@ 4 <tester>  staff  128 Oct  3 12:28 ..
+lrwxr-xr-x  1 <tester>  staff   13 Sep 28 22:13 Applications -> /Applications
+drwxr-xr-x  3 <tester>  staff   96 Sep 28 22:13 MyScribe.app
+-rw-r--r--  1 <tester>  staff  341 Sep 28 22:13 Open me first.txt
+### Open me first.txt
+MyScribe is not signed with an Apple certificate yet.
+
+Drag MyScribe to Applications, then start it once with a right-click
+> Open, or open System Settings > Privacy & Security and press
+"Open Anyway" after the first attempt.
+
+The first start downloads the speech engine (about 1 GB on a Mac) and
+shows its progress. Later starts skip that.
+### Info.plist
+{
+  "CFBundleDisplayName" => "MyScribe"
+  "CFBundleExecutable" => "MyScribe"
+  "CFBundleIconFile" => "icon-windowed.icns"
+  "CFBundleIdentifier" => "io.github.rvdbreemen.myscribe"
+  "CFBundleInfoDictionaryVersion" => "6.0"
+  "CFBundleName" => "MyScribe"
+  "CFBundlePackageType" => "APPL"
+  "CFBundleShortVersionString" => "0.0.0"
+  "NSHighResolutionCapable" => true
+}
+### codesign
+Identifier=io.github.rvdbreemen.myscribe
+Format=app bundle with Mach-O thin (arm64)
+Signature=adhoc
+TeamIdentifier=not set
+### spctl
+/Users/<tester>/Claude/projects/myscribe-review-2026-10-03/mnt/MyScribe-0.8.0/MyScribe.app: rejected
+### arch
+/Users/<tester>/Claude/projects/myscribe-review-2026-10-03/mnt/MyScribe-0.8.0/MyScribe.app/Contents/MacOS/MyScribe: Mach-O 64-bit executable arm64
+106M	/Users/<tester>/Claude/projects/myscribe-review-2026-10-03/mnt/MyScribe-0.8.0/MyScribe.app
+### payload
+total 40
+drwxr-xr-x   6 <tester>  staff    192 Sep 28 22:13 .
+drwxr-xr-x  12 <tester>  staff    384 Sep 28 22:13 ..
+-rw-r--r--   1 <tester>  staff  17777 Sep 28 22:13 MANIFEST.json
+drwxr-xr-x   7 <tester>  staff    224 Sep 28 22:13 app
+lrwxr-xr-x   1 <tester>  staff     28 Sep 28 22:13 bin -> ../../Frameworks/payload/bin
+drwxr-xr-x   4 <tester>  staff    128 Sep 28 22:13 licenses
+total 344
+drwxr-xr-x   7 <tester>  staff     224 Sep 28 22:13 .
+drwxr-xr-x   6 <tester>  staff     192 Sep 28 22:13 ..
+-rw-r--r--   1 <tester>  staff    1390 Sep 28 22:13 .env.example
+-rw-r--r--   1 <tester>  staff    3624 Sep 28 22:13 pyproject.toml
+drwxr-xr-x  41 <tester>  staff    1312 Sep 28 22:13 scribe
+drwxr-xr-x   3 <tester>  staff      96 Sep 28 22:13 tests
+-rw-r--r--   1 <tester>  staff  165118 Sep 28 22:13 uv.lock
+### MANIFEST head
+['platform', 'version', 'models', 'commit', 'uv', 'ffmpeg', 'files']
+{
+ "platform": "macos-arm64",
+ "version": "0.8.0",
+ "commit": "4090de093012c85af1ab6c2bcea44dcc828ce06b",
+ "uv": "0.12.13",
+ "ffmpeg": "8.1.2"
+}

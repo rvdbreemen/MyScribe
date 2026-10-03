@@ -1,0 +1,33 @@
+### Visible Application Windows  
+
+#### 1. **MyScribe 0.8.0**  
+- **Title**: `MyScribe 0.8.0`  
+- **Status line** (exact text):  
+  `Installing the speech engine. The first start downloads the speech engine and its models and shows its progress; how much that is has not been measured on this platform. Later starts skip this.`  
+- **Package list** (exact text, line-by-line):  
+  `+ torch-audiomentations==0.12.0`  
+  `+ torch-pitch-shift==1.2.5`  
+  `+ torchcodec==2.10.0`  
+  `+ torchmetrics==1.9.0`  
+  `+ tqdm==4.70.0`  
+  `+ truststore==0.10.4`  
+  `+ typing-extensions==4.16.0`  
+  `+ typing-inspection==0.4.4`  
+  `+ urllib3==2.7.0`  
+  `+ uvicorn==0.52.4`  
+  `+ watchdog==6.0.0`  
+  `+ yarl==1.24.5`  
+  `+ yt-dlp==2026.8.19`  
+  `+ zeroconf==0.151.3`  
+- **Button labels** (exact text):  
+  `Open MyScribe`  
+  `Open data folder`  
+  `Setup`  
+  `Quit`  
+
+- **Count**: **One** MyScribe window is visible.
+
+(Other windows on the tester's desktop removed: not MyScribe.)
+
+### Summary  
+- **MyScribe windows**: **1** (only the `MyScribe 0.8.0` window is visible).  

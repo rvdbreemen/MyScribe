@@ -1,0 +1,5 @@
+### gh version
+gh version 2.88.1 (2026-03-12)
+https://github.com/cli/cli/releases/tag/v2.88.1
+### release v0.8.0
+{"assets":[{"name":"MyScribe-0.8.0-linux-x64.AppImage","size":121268728},{"name":"MyScribe-0.8.0-linux-x64.AppImage.sha256","size":100},{"name":"MyScribe-0.8.0-macos-arm64.dmg","size":57164700},{"name":"MyScribe-0.8.0-macos-arm64.dmg.sha256","size":97},{"name":"MyScribe-0.8.0-windows-x64.exe","size":93601423},{"name":"MyScribe-0.8.0-windows-x64.exe.sha256","size":98},{"name":"SHA256SUMS","size":609}],"prerelease":false,"published":"2026-09-28T20:15:02Z","tag":"v0.8.0"}

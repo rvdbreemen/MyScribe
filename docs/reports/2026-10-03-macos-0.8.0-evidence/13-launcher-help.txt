@@ -1,0 +1,27 @@
+### launcher --help (from the shipped bundle)
+usage: myscribe [-h] [--port PORT] [--headless] [--no-browser] [--at-login]
+                [--home HOME] [--payload PAYLOAD] [--sync-only] [--doctor ...]
+                [--setup] [--smoke] [--version]
+
+Start MyScribe.
+
+options:
+  -h, --help         show this help message and exit
+  --port PORT
+  --headless         no window; progress on the console
+  --no-browser
+  --at-login         started by the login entry: no first-run questions,
+                     nobody is at the screen
+  --home HOME        the per-user folder (default:
+                     /Users/<tester>/Library/Application Support/MyScribe)
+  --payload PAYLOAD  the shipped app/ and bin/ (default: inside the launcher)
+  --sync-only        install or update the environment, then exit
+  --doctor ...       run python -m scribe.doctor [ARGS] in the environment
+  --setup            ask the first-run questions again (they are also in
+                     Settings)
+  --smoke            start the app, check /health and /, stop it (CI)
+  --version
+rc=0
+### launcher --version
+0.8.0
+rc=0

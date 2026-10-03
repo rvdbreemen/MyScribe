@@ -1,0 +1,23 @@
+### bundle version vs app version
+0.0.0
+0.8.0
+### codesign verify --deep --strict
+--prepared:/Applications/MyScribe.app/Contents/Frameworks/payload/bin/ffmpeg
+--validated:/Applications/MyScribe.app/Contents/Frameworks/payload/bin/ffmpeg
+--prepared:/Applications/MyScribe.app/Contents/Frameworks/payload/bin/ffprobe
+--validated:/Applications/MyScribe.app/Contents/Frameworks/payload/bin/ffprobe
+--prepared:/Applications/MyScribe.app/Contents/Frameworks/payload/bin/uv
+--validated:/Applications/MyScribe.app/Contents/Frameworks/payload/bin/uv
+/Applications/MyScribe.app: valid on disk
+/Applications/MyScribe.app: satisfies its Designated Requirement
+rc=0
+### archs of nested binaries
+arm64
+/Applications/MyScribe.app/Contents/Frameworks/python3.12: directory
+### gatekeeper on the installed copy
+/Applications/MyScribe.app: rejected
+### quarantine on installed copy
+xattr: /Applications/MyScribe.app: No such xattr: com.apple.quarantine
+### where the 1.6 GB model lives
+1.5G	/Users/<tester>/.cache/huggingface/hub/models--mlx-community--whisper-large-v3-turbo
+  0B	/Users/<tester>/Claude/projects/myscribe-review-2026-10-03/home/data/models
