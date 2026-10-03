@@ -1,0 +1,91 @@
+### env layout
+total 32
+drwxr-xr-x@ 10 <tester>  staff   320 Oct  3 12:32 .
+drwxr-xr-x@  9 <tester>  staff   288 Oct  3 12:31 ..
+-rw-r--r--@  1 <tester>  staff     1 Oct  3 12:31 .gitignore
+-rw-rw-rw-@  1 <tester>  staff     0 Oct  3 12:31 .lock
+-rw-r--r--@  1 <tester>  staff   127 Oct  3 12:32 .myscribe-sync.json
+-rw-r--r--@  1 <tester>  staff    43 Oct  3 12:31 CACHEDIR.TAG
+drwxr-xr-x@ 60 <tester>  staff  1920 Oct  3 12:32 bin
+drwxr-xr-x@  3 <tester>  staff    96 Oct  3 12:31 lib
+-rw-r--r--@  1 <tester>  staff   229 Oct  3 12:31 pyvenv.cfg
+drwxr-xr-x@  7 <tester>  staff   224 Oct  3 12:32 share
+### env/bin first entries
+activate
+activate.bat
+activate.csh
+activate.fish
+activate.nu
+activate.ps1
+activate.xsh
+activate_this.py
+alembic
+ct2-fairseq-converter
+ct2-marian-converter
+ct2-openai-gpt2-converter
+ct2-opennmt-py-converter
+ct2-opennmt-tf-converter
+ct2-opus-mt-converter
+ct2-transformers-converter
+deactivate.bat
+f2py
+fabric
+fastapi
+### stamp files
+-rw-r--r--@ 1 <tester>  staff  127 Oct  3 12:32 /Users/<tester>/Claude/projects/myscribe-review-2026-10-03/home/env/.myscribe-sync.json
+{"lock_sha256": "1dba0761c669ac6ba0f48be7c0cde55068a908357c3e206885b370ea9a4df7cc", "version": "0.8.0", "ts": 1791023525.92911}### pyvenv.cfg
+home = /Users/<tester>/Claude/projects/myscribe-review-2026-10-03/home/python/cpython-3.12-macos-aarch64-none/bin
+implementation = CPython
+uv = 0.12.13
+version_info = 3.12
+include-system-site-packages = false
+prompt = myscribe
+### bin/
+total 153096
+drwxr-xr-x@ 6 <tester>  staff       192 Oct  3 12:31 .
+drwxr-xr-x@ 9 <tester>  staff       288 Oct  3 12:31 ..
+-rw-r--r--@ 1 <tester>  staff       231 Oct  3 12:31 .tools.json
+-rwxr-xr-x@ 1 <tester>  staff  21170624 Oct  3 12:31 ffmpeg
+-rwxr-xr-x@ 1 <tester>  staff  20963520 Oct  3 12:31 ffprobe
+-rwxr-xr-x@ 1 <tester>  staff  36238976 Oct  3 12:31 uv
+### python/
+total 8
+drwxr-xr-x@ 7 <tester>  staff  224 Oct  3 12:31 .
+drwxr-xr-x@ 9 <tester>  staff  288 Oct  3 12:31 ..
+-rw-r--r--@ 1 <tester>  staff    1 Oct  3 12:31 .gitignore
+-rw-rw-rw-@ 1 <tester>  staff    0 Oct  3 12:31 .lock
+drwxr-xr-x@ 2 <tester>  staff   64 Oct  3 12:31 .temp
+lrwxr-xr-x@ 1 <tester>  staff  107 Oct  3 12:31 cpython-3.12-macos-aarch64-none -> /Users/<tester>/Claude/projects/myscribe-review-2026-10-03/home/python/cpython-3.12.14-macos-aarch64-none
+drwxr-xr-x@ 7 <tester>  staff  224 Oct  3 12:31 cpython-3.12.14-macos-aarch64-none
+### .env
+# Copy to .env and fill in. .env is gitignored; this template is not.
+# Every value here is optional: the app transcribes without any of them.
+
+# Hugging Face — only needed for speaker diarization, and needed for it either
+# way round. The shipped pipeline is gated, and so is the segmentation
+# checkpoint the speaker-diarization-3.1 fallback is assembled from:
+# pyannote/segmentation-3.0 answered HTTP 401 to an unauthenticated request on
+# 2026-09-22. So without a token, or without the conditions accepted at
+# https://hf.co/pyannote/speaker-diarization-community-1, a job keeps its whole
+# transcript and says on the run that the speakers were skipped and how to fix
+# it. Nothing else about transcription changes.
+HF_TOKEN=
+HUGGINGFACE_TOKEN=
+
+# LLM providers — only needed for summaries, chapters and chat.
+# A file or folder pinned "private" refuses every non-local provider outright,
+# whatever is set here.
+OPENAI_API_KEY=
+
+# OpenRouter: one key, ~423 models including OpenAI, Anthropic and Google.
+# Both names are read, OPENROUTER_TOKEN first, and a key set under Settings
+# in the app wins over both. A machine-wide environment variable is readable
+# by every account on the machine; this file is not, so prefer it.
+OPENROUTER_TOKEN=
+OPENROUTER_API_KEY=
+
+# Where media, the database, logs and model weights live.
+# Defaults to ./data next to this file.
+# SCRIBE_DATA_DIR=
+### evidence 20 file size
+-rw-r--r--@ 1 <tester>  staff  0 Oct  3 12:31 /Users/<tester>/Claude/projects/myscribe-review-2026-10-03/evidence/20-sync.log

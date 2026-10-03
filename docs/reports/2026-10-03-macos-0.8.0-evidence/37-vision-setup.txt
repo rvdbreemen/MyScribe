@@ -1,0 +1,6 @@
+MyScribe 0.8.0
+Preparing...
+Open MyScribe
+Open data folder
+Setup
+Quit

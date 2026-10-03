@@ -1,0 +1,8 @@
+MyScribe 0.8.0  
+MyScribe is running at http://127.0.0.1:4242/  
+Starting MyScribe...  
+MyScribe is running at http://127.0.0.1:4242/  
+Open MyScribe  
+Open data folder  
+Setup  
+Quit

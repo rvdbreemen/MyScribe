@@ -1,0 +1,19 @@
+### SHA256SUMS
+30beabed30bd0a082015e71d3f278646fc4100d0202a34eb7d9fe0c8ccf16ae8  MyScribe-0.8.0-linux-x64.AppImage
+cdb80fcb4074d61b5a71491754b8de531db7aa2bc03a8e26ad10bef7c9e00212  MyScribe-0.8.0-linux-x64.AppImage.sha256
+4dba274c92b5409e9da524279a86b486101a4cf3c6a9a11714b18a9ec65240ac  MyScribe-0.8.0-macos-arm64.dmg
+ac346960d2099e033f61a146e30a4eccba4fa74c2c02e95c66366f36fc04f8ff  MyScribe-0.8.0-macos-arm64.dmg.sha256
+7af7c6c934051acc7df808055071da4469b3a9144b09c38a545443cb9d76eaab  MyScribe-0.8.0-windows-x64.exe
+137d65baa17f242b0d6444dfceaf719050b411425e5cea4e93f946d444c0282b  MyScribe-0.8.0-windows-x64.exe.sha256
+### shasum -c (ignore-missing)
+MyScribe-0.8.0-macos-arm64.dmg: OK
+### attestation (default output), rc captured
+rc=0
+[stdout]
+[stderr]
+### attestation subject + workflow
+SAN: https://github.com/rvdbreemen/MyScribe/.github/workflows/release.yml@refs/tags/v0.8.0
+workflowSHA: 4090de093012c85af1ab6c2bcea44dcc828ce06b
+trigger: push
+subject: [{'name': 'MyScribe-0.8.0-macos-arm64.dmg', 'digest': {'sha256': '4dba274c92b5409e9da524279a86b486101a4cf3c6a9a11714b18a9ec65240ac'}}]
+commit: [{'digest': {'gitCommit': '4090de093012c85af1ab6c2bcea44dcc828ce06b'}, 'uri': 'git+https://github.com/rvdbreemen/MyScribe@refs/tags/v0.8.0'}]

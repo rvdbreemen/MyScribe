@@ -1,0 +1,5 @@
+windows: 1
+WINDOW name: MyScribe 0.8.0
+WINDOW desc: standard window
+WINDOW pos: 3474 size: 560388
+
