@@ -1,5 +1,24 @@
 ## [Unreleased]
 
+## [0.8.1b1] - 2026-10-03
+
+A beta: published as a pre-release, so the download link keeps pointing at
+0.8.0.
+
+### Fixed
+
+- **On a Mac, the first start asks its questions again.** The window
+  installed the speech engine and then waited for ever: the questions never
+  opened and MyScribe never started. The launcher's Python treated the Tcl/Tk
+  it ships on macOS (Tcl 9) as single-threaded, so the request to open the
+  questions never reached the window. The window now opens the questions
+  itself instead of being asked from another thread. Linux carries the same
+  Tcl and gets the same change; Windows was not affected (TASK-101, found by
+  an outside walk of 0.8.0 on macOS 26.0).
+- **An error in the launcher's window leaves a trace.** The installed app has
+  no console, so an error there used to vanish; it is now written to
+  `logs/launcher.log` in the MyScribe folder, and the window says so.
+
 ## [0.8.0] - 2026-09-28
 
 The stable release of 0.8.0b1, with the same code: Ollama may run on another
