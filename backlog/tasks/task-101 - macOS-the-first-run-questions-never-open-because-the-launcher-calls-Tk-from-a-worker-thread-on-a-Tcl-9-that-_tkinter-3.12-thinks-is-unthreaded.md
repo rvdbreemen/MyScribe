@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 19:37'
-updated_date: '2026-10-03 20:38'
+updated_date: '2026-10-03 21:21'
 labels:
   - installer
   - macos
@@ -61,4 +61,6 @@ Red (3 new tests, before the fix): worker_touching_tk 'Tk was called from [MainT
 AC3 is met by catching in in_a_worker (both worker threads) and root.report_callback_exception, not by a process-wide threading.excepthook: the two places cover every thread the window starts, and nothing global is left changed after a test.
 Suite, one file per test file (the halves stalled on socketpair at 420 s each): 3573 passed, 9 skipped, 3 failed in test_models.py, test_web_phone.py timed out at 240 s. Alone and with nothing else running: test_models.py 49 passed; test_web_phone.py stalled once more, then passed 33 on the docs branch (no fix) and 33 on this branch. Neither file touches the launcher.
 Open: AC5's macOS half. A windowed first start on a fresh home on macOS needs a frozen build with this fix and a Mac (Jim).
+
+Released as stable 0.8.1 (Robert chose stable over 0.8.1b1: 0.8.0 does not work on a Mac at all, a beta would keep the download link there). PR #2 merged as 9a3abb4; ci.yml green on windows/ubuntu/macos (run 37153134731); tag v0.8.1 -> 9a3abb4; release.yml run 37154228681: version, three builds with smoke, publish all success; Release v0.8.1 is Latest, not a pre-release, 7 assets. Windows exe checked here: sha256sum -c SHA256SUMS OK, gh attestation verify -> refs/tags/v0.8.1. Still open: AC5 macOS, a person walking 0.8.1's first start on a Mac (Jim).
 <!-- SECTION:NOTES:END -->
