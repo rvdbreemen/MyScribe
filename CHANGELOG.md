@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-03
+
+### Security
+
+- **urllib3 2.8.0.** The HTTP library under the model downloads, the AI
+  providers and the link downloads moves from 2.7.0 to 2.8.0, which fixes
+  three advisories: an HTTPS proxy's TLS settings that could be ignored
+  (GHSA-8988-9cw3-xx77, high), an unbounded chunk-size line read into memory
+  (GHSA-vxq7-64xx-v4gw, high) and an endless loop on chunked deflate data
+  (GHSA-gh4c-6fx4-qh6g, moderate). Nothing else changes.
+
 ## [0.8.1] - 2026-10-03
 
 ### Fixed
