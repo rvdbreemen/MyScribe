@@ -1,9 +1,6 @@
 ## [Unreleased]
 
-## [0.8.1b1] - 2026-10-03
-
-A beta: published as a pre-release, so the download link keeps pointing at
-0.8.0.
+## [0.8.1] - 2026-10-03
 
 ### Fixed
 
@@ -14,7 +11,8 @@ A beta: published as a pre-release, so the download link keeps pointing at
   questions never reached the window. The window now opens the questions
   itself instead of being asked from another thread. Linux carries the same
   Tcl and gets the same change; Windows was not affected (TASK-101, found by
-  an outside walk of 0.8.0 on macOS 26.0).
+  an outside walk of 0.8.0 on macOS 26.0). The cause is fixed and tested on
+  Windows; nobody has yet walked this release on a Mac.
 - **An error in the launcher's window leaves a trace.** The installed app has
   no console, so an error there used to vanish; it is now written to
   `logs/launcher.log` in the MyScribe folder, and the window says so.
