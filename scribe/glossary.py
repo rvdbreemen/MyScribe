@@ -123,6 +123,7 @@ MAX_WINDOW_WORDS = 3
 
 RULE_FUZZY = "fuzzy"
 RULE_PHONETIC = "phonetic"
+RULE_BUILT_IN = "built-in"
 RULE_MANUAL = "manual"
 """A correction a person typed over a word in the transcript view. Same
 table, same join, same restore path as the glossary's rows - and the one
@@ -522,6 +523,79 @@ def _windows(rows: Sequence[dict], max_window: int) -> list[tuple[int, int, str]
             if core:
                 out.append((start, length, core))
     return out
+
+
+APP_NAME = "MyScribe"
+BUILT_IN_SPELLINGS: dict[tuple[str, ...], str] = {
+    ("MiScribe",): APP_NAME,
+    ("Myscribe",): APP_NAME,
+    ("Miscribe",): APP_NAME,
+    ("Mi", "Scribe"): APP_NAME,
+    ("My", "Scribe"): APP_NAME,
+}
+"""The spellings Whisper gives the app's own name, matched exactly.
+
+TASK-102.04: the outside macOS walk of 0.8.0 got "MiScribe" back with an empty
+glossary. Robert chose a correction and no hotword, so a recording that never
+says the name is not steered towards it. Exact and case-sensitive rather than
+a `Term` through the fuzzy rules: measured here, `corrections_for` with
+"MyScribe" also turns a plain "scribe" or "Scribe" into the name and makes
+"My Scribe" into "My MyScribe" - fine for a name somebody chose to add, not
+for one nobody did. Lowercase two-word forms ("my scribe") are left alone:
+in a sentence they are far more often two words than the name.
+"""
+
+
+def built_in_corrections(words: Sequence[dict]) -> list[Correction]:
+    """The app's own name where Whisper spelled it one of the known ways.
+
+    A pure function over word rows, like `corrections_for`, with the same
+    output: the first word of a match says the name (its own padding and
+    punctuation kept), the rest go empty. A word a person edited is skipped.
+    """
+    rows = [dict(word) for word in words]
+    longest = max(len(key) for key in BUILT_IN_SPELLINGS)
+    out: list[Correction] = []
+    i = 0
+    while i < len(rows):
+        for size in range(longest, 0, -1):
+            span = rows[i:i + size]
+            if len(span) < size or any(w.get("text_edited_by_user") for w in span):
+                continue
+            key = tuple(_core(str(w.get("text") or "")) for w in span)
+            canonical = BUILT_IN_SPELLINGS.get(key)
+            if canonical is None:
+                continue
+            replacement = _replacement(span, canonical)
+            out.extend(
+                Correction(word_idx=int(w["idx"]), original=str(w.get("text") or ""),
+                           corrected=replacement if offset == 0 else "",
+                           rule=RULE_BUILT_IN, confidence=1.0)
+                for offset, w in enumerate(span)
+            )
+            i += size
+            break
+        else:
+            i += 1
+    return out
+
+
+def with_built_ins(corrections: Sequence[Correction], words: Sequence[dict]) -> list[Correction]:
+    """The glossary's corrections, plus the built-in name where none of them
+    already touches a word of the match: what somebody chose outranks it."""
+    taken = {fix.word_idx for fix in corrections}
+    extra: list[Correction] = []
+    built = built_in_corrections(words)
+    j = 0
+    while j < len(built):
+        # One match is its first word plus the empty ones after it.
+        group = [built[j]]
+        while j + len(group) < len(built) and built[j + len(group)].corrected == "":
+            group.append(built[j + len(group)])
+        if not any(fix.word_idx in taken for fix in group):
+            extra.extend(group)
+        j += len(group)
+    return sorted([*corrections, *extra], key=lambda fix: fix.word_idx)
 
 
 def _core(text: str) -> str:

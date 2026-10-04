@@ -116,7 +116,8 @@ artifacts, which is exactly what the job does and costs no Actions minutes:
 
 ```sh
 gh run download <run id> -D dl && mkdir artifacts && find dl -type f -exec cp {} artifacts/ \;
-cd artifacts && sha256sum * > SHA256SUMS      # the job's own step; check each .sha256 first
+cd artifacts                                  # check each .sha256 first, then the job's own step:
+ls | grep -v -e '\.sha256$' -e '^SHA256SUMS$' | xargs sha256sum > SHA256SUMS
 gh release create v0.6.0 --verify-tag --title v0.6.0 --notes-file <notes.md> *
 ```
 

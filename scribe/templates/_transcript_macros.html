@@ -46,7 +46,7 @@
 {% macro sentences(p) -%}
 <p class="sentences">
   {% for s in p.sentences %}
-  <span class="sent"><a class="ts" href="#t={{ s.start }}" data-start="{{ s.start }}">{{ s.start|clock }}</a>{% for w in s.words %}<span class="w band-{{ w.probability|band }}" data-i="{{ w.idx }}" data-s="{{ w.start }}" data-e="{{ w.end }}"{% if w.corrected_from %}{% set who = 'Edited' if w.corrected_rule == 'manual' else 'Glossary' %} data-was="{{ w.corrected_from }}" title="{{ who }}: was &quot;{{ w.corrected_from|trim }}&quot;" aria-description="{{ who }}: was &quot;{{ w.corrected_from|trim }}&quot;"{% endif %}>{{ w.text }}</span>{% endfor %}</span>
+  <span class="sent"><a class="ts" href="#t={{ s.start }}" data-start="{{ s.start }}">{{ s.start|clock }}</a>{% for w in s.words %}<span class="w band-{{ w.probability|band }}" data-i="{{ w.idx }}" data-s="{{ w.start }}" data-e="{{ w.end }}"{% if w.corrected_from %}{% set who = 'Edited' if w.corrected_rule == 'manual' else ('App name' if w.corrected_rule == 'built-in' else 'Glossary') %} data-was="{{ w.corrected_from }}" title="{{ who }}: was &quot;{{ w.corrected_from|trim }}&quot;" aria-description="{{ who }}: was &quot;{{ w.corrected_from|trim }}&quot;"{% endif %}>{{ w.text }}</span>{% endfor %}</span>
   {% endfor %}
 </p>
 {%- endmacro %}

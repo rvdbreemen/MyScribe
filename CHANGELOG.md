@@ -1,5 +1,35 @@
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-04
+
+The smaller findings of an outside walk of 0.8.0 on a Mac
+(`docs/reports/2026-10-03-macos-0.8.0-acceptance.md`, TASK-102).
+
+### Fixed
+
+- **The Mac app shows its own version.** Finder's Get Info said 0.0.0; the
+  app now carries its real version, and the build checks its signature.
+- **Stopping the launcher stops MyScribe.** Ending the launcher with `kill`
+  or `pkill` (SIGTERM) left the app serving in the background; it now stops
+  the app the way Quit does. A forced kill (SIGKILL) or a crash still cannot.
+- **"MyScribe" is spelled right in a transcript.** Whisper wrote the app's
+  own name as "MiScribe" and similar. The correction pass now fixes those
+  exact spellings, below anything in your own glossary, without steering
+  Whisper towards the name; the transcript marks it "App name" on hover.
+- **`--sync-only` says what it did**, ending on one sentence, and records it
+  in `logs/launcher.log`.
+- **`SHA256SUMS` lists only the downloads**, so `shasum -c SHA256SUMS` works
+  without `--ignore-missing` when you have all three.
+
+### Documentation
+
+- The dmg's *Open me first* note gives the sizes a Mac measured: about 2.7 GB
+  for the speech engine and 1.5 GB for the models, not "about 1 GB".
+- The install guide's verification examples no longer name 0.7.2, and say
+  that `gh attestation verify` prints nothing when a file verifies.
+- The install guide says where the speech models live: in the library, or in
+  the Hugging Face cache when the engine fetched them itself.
+
 ## [0.8.2] - 2026-10-03
 
 ### Security

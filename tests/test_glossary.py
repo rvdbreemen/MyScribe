@@ -802,6 +802,21 @@ def test_what_a_corrected_word_used_to_say_reaches_more_than_a_mouse(client):
     assert 'title="Glossary: was &quot;Vermulen&quot;"' in page
 
 
+def test_the_built_in_name_says_so_on_hover_and_not_glossary(client):
+    """TASK-102.04: the app's own name is not in anybody's glossary, so the
+    transcript must not say it came from there."""
+    conn = client.app.state.conn
+    media_id = seed.seed_media(conn, title="Gesprek")
+    run_id = seed.seed_run(conn, media_id, words=words_from("Een opname voor MiScribe."))
+    glossary.store(conn, run_id, glossary.built_in_corrections(glossary.words_of(conn, run_id)))
+
+    page = client.get(f"/media/{media_id}").text
+
+    assert 'title="App name: was &quot;MiScribe.&quot;"' in page
+    assert "Glossary: was" not in page
+
+
+
 def test_a_corrected_word_is_marked_in_the_stylesheet_and_not_only_on_hover(client):
     """The other half of the same finding: a correction nobody can see until
     they hover is a correction most readers never learn about. The rule is
@@ -1091,3 +1106,51 @@ def _words(texts):
         {"idx": i, "start": i * 0.5, "end": i * 0.5 + 0.4, "text": t, "probability": 0.9, "speaker": "SPEAKER_00"}
         for i, t in enumerate(texts)
     ]
+
+
+# --- TASK-102.04: the app's own name, without steering Whisper ----------------------
+
+
+def _fixes(sentence):
+    return [(c.word_idx, c.original, c.corrected) for c in glossary.built_in_corrections(words_from(sentence))]
+
+
+def test_the_app_s_name_as_whisper_spells_it_is_corrected():
+    """The outside macOS walk of 0.8.0: 'MyScribe' came back as 'MiScribe'
+    with an empty glossary."""
+    assert _fixes("Dit is een proefopname voor MiScribe.") == [(5, " MiScribe.", " MyScribe.")]
+    assert _fixes("Open Myscribe en") == [(1, " Myscribe", " MyScribe")]
+    assert _fixes("met Mi Scribe, zei hij") == [(1, " Mi", " MyScribe,"), (2, " Scribe,", "")]
+    assert _fixes("in My Scribe") == [(1, " My", " MyScribe"), (2, " Scribe", "")]
+
+
+def test_words_that_only_look_like_the_name_are_left_alone():
+    for sentence in ("the scribe wrote", "a Scribe of old", "describe it", "my scribe wrote it",
+                     "MyScribe is fine", "prescribe and subscribe"):
+        assert _fixes(sentence) == [], sentence
+
+
+def test_the_built_in_name_never_steers_the_decoder(conn):
+    assert "MyScribe" not in glossary.compose_hotwords(conn, {})
+
+
+def test_the_stage_corrects_the_name_with_an_empty_glossary(conn):
+    media_id, run_id = seeded(conn, "Een opname voor MiScribe.")
+    job_id = jobs.enqueue(conn, "transcribe", media_id=media_id)
+
+    correct.run(stage_context(conn, job_id, run_id=run_id))
+
+    assert render.join_text(transcript_ui.run_words(conn, run_id)) == "Een opname voor MyScribe."
+    (row,) = glossary.stored(conn, run_id)
+    assert row["rule"] == glossary.RULE_BUILT_IN
+
+
+def test_a_user_s_own_term_outranks_the_built_in_name(conn):
+    media_id, run_id = seeded(conn, "Een opname voor MiScribe.")
+    glossary.add(conn, "MiScribe Pro", variants=["MiScribe"])
+    job_id = jobs.enqueue(conn, "transcribe", media_id=media_id)
+
+    correct.run(stage_context(conn, job_id, run_id=run_id))
+
+    (row,) = glossary.stored(conn, run_id)
+    assert row["rule"] != glossary.RULE_BUILT_IN

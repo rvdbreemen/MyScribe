@@ -1663,3 +1663,26 @@ def test_a_text_question_its_condition_hides_is_not_handed_over(layout, monkeypa
                   a_folder(shown_if={"question": "library", "equals": "named"}))
     answers, _sitting = hold(monkeypatch, layout, plan, touch=lambda sitting: sitting.pick("new"))
     assert answers == {"library": "new"}
+
+
+def test_a_sigterm_quits_the_window_the_way_quit_does(layout, monkeypatch):
+    """TASK-102.03: the window's app outlived a `pkill` just as the console's
+    did. A SIGTERM now runs the window's own Quit."""
+    import signal
+
+    def busy(*args, **kwargs):
+        time.sleep(1.5)  # keeps the fake mainloop pumping while the signal lands
+        return True
+
+    stopped = []
+    monkeypatch.setattr(launcher.Launch, "stop", lambda self: stopped.append(True))
+    unhandled = []
+    previous = signal.signal(signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    try:
+        threading.Timer(0.4, signal.raise_signal, args=(signal.SIGTERM,)).start()
+        window = _window_with(layout, monkeypatch, busy)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+    assert unhandled == [], "the window left SIGTERM to whoever handled it before"
+    assert stopped and window.destroyed

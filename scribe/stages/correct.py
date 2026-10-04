@@ -46,7 +46,8 @@ def run(ctx: "RunnerContext") -> None:
     terms = glossary.terms(ctx.conn)
     words = glossary.words_of(ctx.conn, run_id)
 
-    corrections = glossary.corrections_for(words, terms)
+    # The app's own name rides along, below the user's glossary (TASK-102.04).
+    corrections = glossary.with_built_ins(glossary.corrections_for(words, terms), words)
     ctx.report(0.9)
     written = glossary.store(ctx.conn, run_id, corrections)
 

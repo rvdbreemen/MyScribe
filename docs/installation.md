@@ -42,7 +42,7 @@ shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
 
 ```powershell
 # Windows: compare the one line for the file you downloaded
-(Get-FileHash MyScribe-0.7.2-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash MyScribe-<version>-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
 Select-String -Path SHA256SUMS -Pattern windows-x64.exe$
 ```
 
@@ -50,8 +50,13 @@ Every file also has a build-provenance attestation, which proves it was built
 by this repository's release workflow:
 
 ```sh
-gh attestation verify MyScribe-0.7.2-windows-x64.exe --repo rvdbreemen/MyScribe
+gh attestation verify MyScribe-<version>-windows-x64.exe --repo rvdbreemen/MyScribe
 ```
+
+`<version>` is the release you downloaded, such as `0.8.2`. When the file
+verifies, this command prints **nothing** and exits with 0; a file it cannot
+verify ends in an error. Add `--format json` to see what it checked: the
+workflow, the tag and the commit the file was built from.
 
 ## The first start
 
@@ -72,6 +77,15 @@ in its `data` folder:
 On macOS the default home is `~/Library/Application Support/MyScribe`, on
 Linux `~/.local/share/MyScribe`. Your choice is remembered in a small file
 beside the default home, `MyScribe.location`.
+
+The speech models (about 1.6 GB) are the one large thing that can live
+outside the home. The models setup downloads go to `data\models`. A model
+that was not downloaded there - when setup's download was skipped, for
+instance - is fetched by the speech engine itself on first use, into the
+Hugging Face cache: `~/.cache/huggingface/hub`, or wherever `HF_HUB_CACHE` or
+`HF_HOME` points. MyScribe uses either copy and does not download a model
+twice. To keep everything on the home's drive, let setup download the models,
+or point `HF_HOME` at a folder on that drive.
 
 **2. The download.** MyScribe downloads the speech engine (a few GB) and shows
 its progress. Later starts skip this.

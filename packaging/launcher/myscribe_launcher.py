@@ -22,6 +22,7 @@ A second start while the app answers ``/health`` only opens the browser.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -1321,6 +1322,8 @@ class AppProcess:
 
 INSTALL_LOG = "launcher.log"
 SMOKE_LOG = "launcher-smoke.log"
+SYNCED = "The speech engine is installed and up to date."
+UP_TO_DATE = "The speech engine was already up to date; nothing was downloaded."
 REDACTED = "***"
 
 
@@ -2174,13 +2177,43 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
     if launch.serving or launch.app is None:  # another instance is serving
         return 0
     try:
-        while launch.app.alive():
-            time.sleep(0.5)
+        with stop_on_sigterm():
+            while launch.app.alive():
+                time.sleep(0.5)
     except KeyboardInterrupt:
         pass
     finally:
         launch.stop()
     return 0
+
+
+@contextlib.contextmanager
+def stop_on_sigterm(then: Callable[[], None] | None = None):
+    """SIGTERM ends the launcher the way Ctrl+C or Quit does: through
+    `launch.stop()`, which takes the app's process group with it.
+
+    The app runs in a session of its own so that Quit reaches its runners;
+    the price was that `pkill MyScribe` - SIGTERM, whose default ends Python
+    on the spot - left it serving (TASK-102.03, the outside macOS walk of
+    0.8.0). Without ``then`` the signal becomes a KeyboardInterrupt, which the
+    headless loop already handles; the window passes its own Quit. SIGKILL
+    and a crash cannot be caught here and still leave the app running. The
+    handler that was there is put back on the way out.
+    """
+    def handler(_signum, _frame):
+        if then is None:
+            raise KeyboardInterrupt
+        then()
+
+    try:
+        previous = signal.signal(signal.SIGTERM, handler)
+    except ValueError:  # not the main thread: nothing to install
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def ask_location(message: str) -> str | None:
@@ -2776,7 +2809,8 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
 
     root.after(50, begin)
     root.after(200, pump)
-    root.mainloop()
+    with stop_on_sigterm(then=quit_app):  # TASK-102.03: a pkill is a Quit
+        root.mainloop()
     return 0
 
 
@@ -2908,9 +2942,24 @@ def main(argv: Iterable[str] | None = None) -> int:
         prepare_home(layout)
         install_tools(layout)
         _release_frozen_dll_directory()
+        say = lambda line: print(line, flush=True)  # noqa: E731
+        if args.sync_only:
+            # TASK-102.08: this door is what CI and a scripted install run,
+            # and it used to leave no line in the home and, when nothing was
+            # due, none on the console either.
+            record = InstallLog(layout.logs_dir / INSTALL_LOG)
+
+            def say(line: str) -> None:
+                print(line, flush=True)
+                record.write(line)
+
         if needs_sync(layout):
-            if not sync(layout, lambda line: print(line, flush=True)):
+            if not sync(layout, say):
                 return 1
+            if args.sync_only:
+                say(SYNCED)
+        elif args.sync_only:
+            say(UP_TO_DATE)
         if args.doctor is not None:
             command = [str(layout.env_python), "-m", "scribe.doctor", *args.doctor]
             return subprocess.call(command, cwd=str(layout.app_dir), env=app_environment(layout))
