@@ -29,3 +29,48 @@ def test_the_dmg_note_gives_the_sizes_a_mac_measured():
 def test_the_dmg_note_keeps_its_signing_instructions():
     note = build_release.DMG_NOTE
     assert "Open Anyway" in note and "Applications" in note
+
+
+# --- TASK-102.01: the version Finder shows ----------------------------------------
+
+import plistlib  # noqa: E402
+
+
+def _bundle(tmp_path: Path) -> Path:
+    """A MyScribe.app as PyInstaller leaves it: version 0.0.0."""
+    app = tmp_path / "MyScribe.app"
+    (app / "Contents").mkdir(parents=True)
+    with open(app / "Contents" / "Info.plist", "wb") as handle:
+        plistlib.dump({"CFBundleIdentifier": build_release.BUNDLE_ID,
+                       "CFBundleShortVersionString": "0.0.0", "CFBundleName": "MyScribe"}, handle)
+    return app
+
+
+def test_the_bundle_carries_the_app_version(tmp_path):
+    app = _bundle(tmp_path)
+
+    build_release.stamp_bundle_version(app, "9.8.7", sign=lambda path: None)
+
+    info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleShortVersionString"] == "9.8.7"
+    assert info["CFBundleVersion"] == "9.8.7"
+    assert info["CFBundleIdentifier"] == build_release.BUNDLE_ID, "the other keys stay"
+
+
+def test_the_stamped_bundle_is_signed_again(tmp_path):
+    """Editing Info.plist breaks the ad-hoc signature PyInstaller made, and a
+    bundle whose signature does not verify is refused outright on Apple
+    Silicon - so the stamp is always followed by a fresh signature."""
+    app = _bundle(tmp_path)
+    signed = []
+
+    build_release.stamp_bundle_version(app, "9.8.7", sign=signed.append)
+
+    assert signed == [app]
+
+
+def test_the_ad_hoc_signature_is_deep_forced_and_verified():
+    commands = []
+    build_release.sign_ad_hoc(Path("MyScribe.app"), run=commands.append)
+    assert commands == [["codesign", "--force", "--deep", "--sign", "-", Path("MyScribe.app")],
+                        ["codesign", "--verify", "--deep", "--strict", Path("MyScribe.app")]]

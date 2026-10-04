@@ -22,12 +22,14 @@ import hashlib
 import json
 import os
 import platform
+import plistlib
 import shutil
 import struct
 import subprocess
 import sys
 import zlib
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_payload  # noqa: E402  - the same directory, by design
@@ -88,7 +90,36 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
         args += ["--icon", "NONE"]
     args.append(REPO / "packaging" / "launcher" / "myscribe_launcher.py")
     run(args)
+    if target == "macos-arm64":
+        stamp_bundle_version(out / "MyScribe.app", version())
     return out
+
+
+def sign_ad_hoc(app: Path, run: Callable = run) -> None:
+    """Sign, then verify the way the outside walk did: a signature that does
+    not verify fails the build here instead of a Mac later."""
+    run(["codesign", "--force", "--deep", "--sign", "-", app])
+    run(["codesign", "--verify", "--deep", "--strict", app])
+
+
+def stamp_bundle_version(app: Path, value: str, sign: Callable[[Path], None] = sign_ad_hoc) -> None:
+    """Give the bundle the app's version, which PyInstaller leaves at 0.0.0.
+
+    Finder's Get Info and System Settings read CFBundleShortVersionString, and
+    0.6.0 and 0.8.0 both shipped saying 0.0.0 there (TASK-102.01, from the
+    outside macOS walk of 0.8.0). Rewriting Info.plist
+    invalidates the ad-hoc signature PyInstaller made, and Apple Silicon
+    refuses a bundle whose signature does not verify, so it is signed again
+    here; the release's Sign step replaces that with a real one when a
+    certificate exists.
+    """
+    plist = app / "Contents" / "Info.plist"
+    info = plistlib.loads(plist.read_bytes())
+    info["CFBundleShortVersionString"] = value
+    info["CFBundleVersion"] = value
+    plist.write_bytes(plistlib.dumps(info))
+    print(f"bundle: CFBundleShortVersionString {value}")
+    sign(app)
 
 
 # --- the native artifacts ---------------------------------------------------------
