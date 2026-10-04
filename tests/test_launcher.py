@@ -2159,3 +2159,33 @@ def test_the_ollama_figure_in_the_location_question_is_an_estimate_not_a_ceiling
     line = next(l for l in text.splitlines() if "say yes to Ollama" in l)
     assert line.startswith("About 4.0 GB more"), line
     assert "Up to" not in text
+
+
+# --- TASK-102.08: the sync-only door says what it did -----------------------------
+
+
+def test_a_sync_only_run_says_it_synced_and_logs_it(layout, tmp_path, monkeypatch, capsys):
+    """The outside macOS walk of 0.8.0: `--sync-only` printed only uv's own
+    line, or nothing at all, and wrote no launcher.log - so a CI run of the
+    shipped app left no record in the home."""
+    _headless_machine(layout, tmp_path, monkeypatch, free_gb=400)
+
+    code = launcher.main(["--sync-only", "--payload", str(layout.payload)])
+
+    home = launcher.Layout(tmp_path / "default", layout.payload)
+    assert code == 0
+    assert launcher.SYNCED in capsys.readouterr().out
+    assert launcher.SYNCED in (home.logs_dir / launcher.INSTALL_LOG).read_text(encoding="utf-8")
+
+
+def test_a_sync_only_run_on_an_up_to_date_home_says_so(layout, tmp_path, monkeypatch, capsys):
+    _headless_machine(layout, tmp_path, monkeypatch, free_gb=400)
+    monkeypatch.setattr(launcher, "needs_sync", lambda _layout: False)
+    monkeypatch.setattr(launcher, "install_tools", lambda _layout: None)
+
+    code = launcher.main(["--sync-only", "--payload", str(layout.payload)])
+
+    home = launcher.Layout(tmp_path / "default", layout.payload)
+    assert code == 0
+    assert launcher.UP_TO_DATE in capsys.readouterr().out
+    assert launcher.UP_TO_DATE in (home.logs_dir / launcher.INSTALL_LOG).read_text(encoding="utf-8")

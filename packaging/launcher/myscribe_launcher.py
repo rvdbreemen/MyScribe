@@ -1321,6 +1321,8 @@ class AppProcess:
 
 INSTALL_LOG = "launcher.log"
 SMOKE_LOG = "launcher-smoke.log"
+SYNCED = "The speech engine is installed and up to date."
+UP_TO_DATE = "The speech engine was already up to date; nothing was downloaded."
 REDACTED = "***"
 
 
@@ -2908,9 +2910,24 @@ def main(argv: Iterable[str] | None = None) -> int:
         prepare_home(layout)
         install_tools(layout)
         _release_frozen_dll_directory()
+        say = lambda line: print(line, flush=True)  # noqa: E731
+        if args.sync_only:
+            # TASK-102.08: this door is what CI and a scripted install run,
+            # and it used to leave no line in the home and, when nothing was
+            # due, none on the console either.
+            record = InstallLog(layout.logs_dir / INSTALL_LOG)
+
+            def say(line: str) -> None:
+                print(line, flush=True)
+                record.write(line)
+
         if needs_sync(layout):
-            if not sync(layout, lambda line: print(line, flush=True)):
+            if not sync(layout, say):
                 return 1
+            if args.sync_only:
+                say(SYNCED)
+        elif args.sync_only:
+            say(UP_TO_DATE)
         if args.doctor is not None:
             command = [str(layout.env_python), "-m", "scribe.doctor", *args.doctor]
             return subprocess.call(command, cwd=str(layout.app_dir), env=app_environment(layout))
