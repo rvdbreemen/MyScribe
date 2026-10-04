@@ -94,6 +94,21 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
 # --- the native artifacts ---------------------------------------------------------
 
 
+DMG_NOTE = (
+    "MyScribe is not signed with an Apple certificate yet.\n\n"
+    "Drag MyScribe to Applications, then start it once with a right-click\n"
+    "> Open, or open System Settings > Privacy & Security and press\n"
+    "\"Open Anyway\" after the first attempt.\n\n"
+    "The first start downloads the speech engine and shows its progress:\n"
+    "about 2.7 GB on disk. The speech models, about 1.5 GB, follow during\n"
+    "setup or with the first transcription. Both measured on an Apple Silicon\n"
+    "Mac on 2026-10-03. Later starts skip the download.\n"
+)
+"""The dmg's "Open me first" note. The sizes are an outside walk's measurement
+of 0.8.0 (docs/reports/2026-10-03-macos-0.8.0-acceptance.md, section 2); the
+"about 1 GB" this replaced was never measured (TASK-102.02)."""
+
+
 def dmg(frozen: Path, out: Path) -> Path:
     app = frozen / "MyScribe.app"
     staging = BUILD / "dmg"
@@ -102,15 +117,7 @@ def dmg(frozen: Path, out: Path) -> Path:
     staging.mkdir(parents=True)
     run(["cp", "-R", app, staging / "MyScribe.app"])
     (staging / "Applications").symlink_to("/Applications")
-    (staging / "Open me first.txt").write_text(
-        "MyScribe is not signed with an Apple certificate yet.\n\n"
-        "Drag MyScribe to Applications, then start it once with a right-click\n"
-        "> Open, or open System Settings > Privacy & Security and press\n"
-        "\"Open Anyway\" after the first attempt.\n\n"
-        "The first start downloads the speech engine (about 1 GB on a Mac) and\n"
-        "shows its progress. Later starts skip that.\n",
-        encoding="utf-8",
-    )
+    (staging / "Open me first.txt").write_text(DMG_NOTE, encoding="utf-8")
     run(["hdiutil", "create", "-volname", f"MyScribe {version()}", "-srcfolder", staging,
          "-ov", "-format", "UDZO", "-quiet", out])
     return out
