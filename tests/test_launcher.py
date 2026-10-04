@@ -2189,3 +2189,93 @@ def test_a_sync_only_run_on_an_up_to_date_home_says_so(layout, tmp_path, monkeyp
     assert code == 0
     assert launcher.UP_TO_DATE in capsys.readouterr().out
     assert launcher.UP_TO_DATE in (home.logs_dir / launcher.INSTALL_LOG).read_text(encoding="utf-8")
+
+
+# --- TASK-102.03: stopping the launcher stops the app -----------------------------
+
+import signal as _signal  # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+
+
+class _ServingLaunch:
+    """A launch whose app serves until stopped, or until a deadline so a
+    test without the fix ends instead of hanging."""
+
+    def __init__(self, deadline: float = 5.0):
+        self.serving = False
+        self.stopped_at: float | None = None
+        until = time.monotonic() + deadline
+        launch = self
+        self.app = types.SimpleNamespace(
+            alive=lambda: launch.stopped_at is None and time.monotonic() < until)
+
+    def report(self, state, text):
+        pass
+
+    def stop(self):
+        self.stopped_at = time.monotonic()
+
+
+def test_a_sigterm_ends_the_headless_launcher_through_its_own_stop(monkeypatch):
+    """The outside macOS walk of 0.8.0: after `pkill MyScribe` the app kept
+    serving. Ctrl+C was handled; SIGTERM, which pkill sends, was not."""
+    monkeypatch.setattr(launcher, "first_run", lambda *a, **k: True)
+    unhandled = []
+    previous = _signal.signal(_signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    try:
+        launch = _ServingLaunch()
+        threading.Timer(0.3, _signal.raise_signal, args=(_signal.SIGTERM,)).start()
+        started = time.monotonic()
+
+        assert launcher.run_headless(launch) == 0
+
+        assert unhandled == [], "the launcher left SIGTERM to whoever handled it before"
+        assert launch.stopped_at is not None and launch.stopped_at - started < 2.0
+    finally:
+        _signal.signal(_signal.SIGTERM, previous)
+
+
+def test_the_headless_launcher_puts_back_the_sigterm_handler_it_found(monkeypatch):
+    monkeypatch.setattr(launcher, "first_run", lambda *a, **k: True)
+    mine = lambda *a: None  # noqa: E731
+    previous = _signal.signal(_signal.SIGTERM, mine)
+    try:
+        launcher.run_headless(_ServingLaunch(deadline=0.2))
+        assert _signal.getsignal(_signal.SIGTERM) is mine
+    finally:
+        _signal.signal(_signal.SIGTERM, previous)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and process groups")
+def test_a_killed_launcher_takes_its_real_app_with_it(tmp_path):
+    """A real launcher-side process, a real child in a session of its own (as
+    `AppProcess` starts it) and a real SIGTERM, as `pkill` sends it."""
+    script = tmp_path / "launcher_side.py"
+    pid_file = tmp_path / "child.pid"
+    script.write_text(textwrap.dedent(f"""
+        import importlib.util, subprocess, sys, types
+        spec = importlib.util.spec_from_file_location("myscribe_launcher", {str(LAUNCHER_PATH)!r})
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 start_new_session=True)
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        app = types.SimpleNamespace(alive=lambda: child.poll() is None, proc=child)
+        def stop():
+            launcher.AppProcess.stop(types.SimpleNamespace(proc=child), timeout=5)
+        launch = types.SimpleNamespace(serving=False, app=app, report=lambda *a: None, stop=stop)
+        launcher.first_run = lambda *a, **k: True
+        sys.exit(launcher.run_headless(launch))
+    """), encoding="utf-8")
+    side = _subprocess.Popen([sys.executable, str(script)])
+    deadline = time.monotonic() + 20
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    child = int(pid_file.read_text())
+    time.sleep(0.5)
+
+    side.send_signal(_signal.SIGTERM)
+    side.wait(15)
+
+    time.sleep(0.5)
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)
