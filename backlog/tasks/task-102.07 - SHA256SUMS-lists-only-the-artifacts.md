@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-04 05:27'
-updated_date: '2026-10-04 05:29'
+updated_date: '2026-10-04 05:56'
 labels:
   - release
 dependencies: []
@@ -35,6 +35,8 @@ Red: a test runs release.yml's SHA256SUMS step with bash in a temp dir holding a
 
 <!-- SECTION:NOTES:BEGIN -->
 Red: test_the_sums_list_the_artifacts_and_not_their_sha256_files listed the .sha256 files. First fix (find ! -name *.sha256) went red on a second bug the old code had too: the redirect creates SHA256SUMS before find, so it hashed itself and sha256sum -c reported 'SHA256SUMS: FAILED'. Now excluded by name. Green: tests/test_release_sums.py + test_release_kind.py 13 passed. The tests run the step's own script read from release.yml with bash. docs/RELEASING.md's manual publish line changed to the same command.
+
+CI on macos-latest (run 37180919925) failed test_the_sums_list_the_artifacts_and_not_their_sha256_files with [] - BSD find has no -printf, so the listing was empty there. The publish step itself runs on ubuntu, but the test runs the step's script on every runner, which is how it surfaced. Now ls | grep -v -e '\.sha256$' -e '^SHA256SUMS$' | xargs sha256sum; 13 passed locally, checked in WSL bash (a.dmg, b.exe listed).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
