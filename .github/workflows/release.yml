@@ -174,7 +174,12 @@ jobs:
       - name: SHA256SUMS
         run: |
           cd artifacts
-          sha256sum * > SHA256SUMS
+          # The artifacts only: each one's .sha256 is uploaded beside it, and
+          # listing those too made a plain `shasum -c SHA256SUMS` fail on the
+          # files a person did not download (TASK-102.07). SHA256SUMS itself is
+          # left out by name: the redirect creates it before find runs.
+          find . -maxdepth 1 -type f ! -name '*.sha256' ! -name SHA256SUMS -printf '%P\n' \
+            | sort | xargs sha256sum > SHA256SUMS
           cat SHA256SUMS
 
       - name: Attest what built these
