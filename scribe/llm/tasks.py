@@ -2308,18 +2308,34 @@ def apply_speakers(
             )
         }
 
+        # TASK-104.01: only clusters the run's words carry. A confident answer
+        # about SPEAKER_07 used to become a label, and a label alone is enough
+        # for the transcript page to list a speaker - one with no words.
+        clusters = {
+            str(row["speaker"])
+            for row in conn.execute(
+                "SELECT DISTINCT speaker FROM word WHERE run_id=? AND speaker IS NOT NULL", (run_id,)
+            )
+        }
+        said = _what_the_recording_says(conn, run_id)
+
         named: list[str] = []
         left: list[str] = []
         for guess in guesses:
             cluster = str(getattr(guess, "cluster", "") or "").strip()
             name = " ".join(str(getattr(guess, "name", "") or "").split())
             confidence = float(getattr(guess, "confidence", 0.0) or 0.0)
-            if not cluster:
+            if not cluster or cluster not in clusters:
                 continue
             if cluster in human:
                 left.append(cluster)
                 continue
             if not name or is_role_word(name) or confidence <= SPEAKER_CONFIDENCE_THRESHOLD:
+                left.append(cluster)
+                continue
+            if not name_is_supported(name, said):
+                # TASK-104.02: sure, by its own account, of a name the
+                # recording never mentions. A suggestion, not a write.
                 left.append(cluster)
                 continue
             written = conn.execute(
@@ -2336,6 +2352,38 @@ def apply_speakers(
 
     _clear_speaker_pass_note(conn, run_id)
     return {"named": named, "left": left, "threshold": SPEAKER_CONFIDENCE_THRESHOLD}
+
+
+def _what_the_recording_says(conn: sqlite3.Connection, run_id: int) -> set[str]:
+    """Every word the recording offers as evidence for a name, case-folded:
+    the transcript's words, its title and its file name (TASK-104.02). Read
+    under the caller's lock."""
+    words = set()
+    for row in conn.execute("SELECT text FROM word WHERE run_id=?", (run_id,)):
+        words.update(_name_words(row["text"]))
+    media = conn.execute(
+        "SELECT m.title, m.orig_name FROM run r JOIN media m ON m.id = r.media_id WHERE r.id=?",
+        (run_id,),
+    ).fetchone()
+    if media is not None:
+        words.update(_name_words(media["title"] or ""))
+        words.update(_name_words(Path(media["orig_name"] or "").stem))
+    return words
+
+
+def _name_words(text: str) -> list[str]:
+    return [w.casefold() for w in re.findall(r"[^\W\d_]{2,}", text or "")]
+
+
+def name_is_supported(name: str, said: set[str]) -> bool:
+    """Whether at least one word of ``name`` occurs in what the recording says.
+
+    TASK-104.02. A model's confidence is a claim about itself; a name said
+    aloud ("Marvin says ...") or given by the title ("Interview with Arthur
+    Dent") is something the recording contains. One word is enough, because
+    people are introduced by their first name and titled by their full one.
+    """
+    return any(word in said for word in _name_words(name))
 
 
 def _clear_speaker_pass_note(conn: sqlite3.Connection, run_id: int) -> None:
