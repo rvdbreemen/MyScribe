@@ -82,6 +82,7 @@ import sys
 import threading
 import time
 import traceback
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Callable, NamedTuple, Sequence
@@ -90,7 +91,7 @@ from pydantic import ValidationError
 
 from scribe import db, fsbrowse, jobs, media, paths
 from scribe.options import TranscribeOptions
-from scribe.stages.probe import MEDIA_EXTENSIONS
+from scribe.stages.probe import AUDIO_EXTENSIONS, MEDIA_EXTENSIONS
 
 QUIESCE_SECONDS = 5.0
 """How long a file's size and mtime must hold still before it is taken in.
@@ -287,6 +288,7 @@ def add_folder(
     options: TranscribeOptions,
     *,
     enabled: bool = True,
+    include_video: bool = False,
 ) -> int:
     """Register a folder to watch; returns its id.
 
@@ -294,11 +296,16 @@ def add_folder(
     shows back, and a user who typed a mapped drive letter should see it.
     Raises `sqlite3.IntegrityError` on a path already registered - the column
     is UNIQUE, and two rows for one folder would be two ingests of one file.
+
+    Audio only unless ``include_video`` (TASK-107.01): a folder somebody
+    points at is usually where recordings land, and a Downloads folder also
+    holds every video a browser or downloader left there.
     """
     with db.LOCK:
         cur = conn.execute(
-            "INSERT INTO watch_folder(path, enabled, options_json) VALUES (?, ?, ?)",
-            (str(path), 1 if enabled else 0, json.dumps(options.model_dump())),
+            "INSERT INTO watch_folder(path, enabled, options_json, include_video) VALUES (?, ?, ?, ?)",
+            (str(path), 1 if enabled else 0, json.dumps(options.model_dump()),
+             1 if include_video else 0),
         )
         conn.commit()
         return cur.lastrowid
@@ -355,6 +362,46 @@ def is_candidate(path: str | Path) -> bool:
     if in_data_dir(path):
         return False
     return not fsbrowse.is_hidden(path)
+
+
+def takes(folder: dict, path: str | Path) -> bool:
+    """Whether ``folder`` takes this candidate: every audio file, and video
+    only where the folder says so (TASK-107.01). A row without the key is one
+    read before v18 and keeps the old behaviour, video included."""
+    if folder.get("include_video", 1):
+        return True
+    suffixes = [suffix.lower() for suffix in Path(path).suffixes]
+    return bool(suffixes) and suffixes[-1] in AUDIO_EXTENSIONS
+
+
+@dataclass(frozen=True)
+class Preview:
+    """What watching a folder would take in right now, before anybody says yes."""
+
+    taken: int
+    skipped_video: int
+    by_extension: dict[str, int]
+
+
+def preview(root: str | Path, *, include_video: bool) -> Preview:
+    """Count what a folder would queue, with the same walk and the same rule
+    `reconcile` uses, so the number asked about is the number that happens.
+
+    Reads names only - no hash, no open - so a large folder costs a directory
+    walk. The outside walk of 0.8.3 is the reason: yes to ~/Downloads queued
+    882 jobs, and nothing said so before the answer.
+    """
+    folder = {"include_video": 1 if include_video else 0}
+    by_extension: dict[str, int] = {}
+    skipped = 0
+    for path in _walk(Path(root)):
+        if takes(folder, path):
+            suffix = path.suffix.lower()
+            by_extension[suffix] = by_extension.get(suffix, 0) + 1
+        else:
+            skipped += 1
+    return Preview(taken=sum(by_extension.values()), skipped_video=skipped,
+                   by_extension=dict(sorted(by_extension.items())))
 
 
 def folder_for(path: str | Path, watched: Sequence[dict]) -> dict | None:
@@ -599,6 +646,8 @@ class Watcher:
                 # The folder was removed, switched off, or dropped out of the
                 # browse roots while we waited - `watchable` asks all three.
                 continue
+            if not takes(folder, pending.path):
+                continue  # a video in a folder that takes audio only (TASK-107.01)
             try:
                 result = take_in(conn, pending.path, folder)
             except Exception:  # noqa: BLE001 - one bad file is not a dead watcher
@@ -719,6 +768,8 @@ class Watcher:
                     # file directly in a walked folder always finds its owner;
                     # None only ever means the path resolved somewhere else.
                     continue
+                if not takes(owner, path):
+                    continue  # audio-only folder, and this is a video (TASK-107.01)
                 try:
                     result = take_in(conn, path, owner)
                 except Exception:  # noqa: BLE001 - see pump: keep going

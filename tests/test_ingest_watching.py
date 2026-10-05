@@ -1809,3 +1809,69 @@ def test_a_watched_folders_job_still_fails_on_anything_else(
 
     row = conn.execute("SELECT status FROM job WHERE id=?", (job["id"],)).fetchone()
     assert row["status"] == "failed"
+
+
+# --- TASK-107.01: audio by default, video per folder, and a count first ------------
+
+
+def test_a_new_watch_folder_takes_audio_and_leaves_video(conn, watcher, watched):
+    """The outside walk of 0.8.3: ~/Downloads as a watch folder queued 882
+    jobs, 558 of them .ts files a downloader left behind. A folder added now
+    takes recordings - audio - unless somebody switched video on for it."""
+    drop(watched, "interview.mp3")
+    drop(watched, "lecture.mp4", b"video bytes")
+    drop(watched, "stream.ts", b"stream bytes")
+
+    assert watcher.reconcile(conn) == 1
+
+    assert [row["orig_name"] for row in media_rows(conn)] == ["interview.mp3"]
+
+
+def test_a_video_dropped_into_an_audio_only_folder_is_not_taken(conn, watcher, watched):
+    path = drop(watched, "clip.mov", b"a clip")
+
+    watcher.notice(path)
+    watcher.pump(conn, now=1000.0)
+    watcher.pump(conn, now=1000.0 + watching.QUIESCE_SECONDS)
+
+    assert media_rows(conn) == [] and job_rows(conn) == []
+
+
+def test_a_folder_with_video_switched_on_takes_both(conn, watcher, inbox):
+    watching.add_folder(conn, inbox, TranscribeOptions(), include_video=True)
+    drop(inbox, "interview.mp3")
+    drop(inbox, "lecture.mp4", b"video bytes")
+
+    assert watcher.reconcile(conn) == 2
+
+
+def test_a_folder_watched_before_the_switch_keeps_taking_video(tmp_path, data_dir):
+    """Nothing changes under anybody: a row from before the column existed
+    keeps doing what it did, video included."""
+    old = db.connect(tmp_path / "old.db")
+    for script in db._MIGRATIONS[:17]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 17")
+    old.execute("INSERT INTO watch_folder(path) VALUES (?)", (str(tmp_path / "inbox"),))
+    old.commit()
+
+    db.migrate(old)
+
+    (row,) = old.execute("SELECT include_video FROM watch_folder").fetchall()
+    assert row["include_video"] == 1
+    old.close()
+
+
+def test_the_preview_counts_what_a_folder_would_take_and_skip(inbox):
+    drop(inbox, "a.mp3")
+    drop(inbox, "b.m4a", b"b")
+    drop(inbox, "c.mp4", b"c")
+    drop(inbox, "deep/d.ts", b"d")
+    drop(inbox, "notes.txt", b"not media")
+
+    audio_only = watching.preview(inbox, include_video=False)
+    both = watching.preview(inbox, include_video=True)
+
+    assert (audio_only.taken, audio_only.skipped_video) == (2, 2)
+    assert audio_only.by_extension == {".m4a": 1, ".mp3": 1}
+    assert (both.taken, both.skipped_video) == (4, 0)
