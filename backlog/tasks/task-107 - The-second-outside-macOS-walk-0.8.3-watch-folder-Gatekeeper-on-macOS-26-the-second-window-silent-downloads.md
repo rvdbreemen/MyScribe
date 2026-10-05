@@ -3,9 +3,11 @@ id: TASK-107
 title: >-
   The second outside macOS walk (0.8.3): watch folder, Gatekeeper on macOS 26,
   the second window, silent downloads
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 06:56'
+updated_date: '2026-10-05 07:04'
 labels:
   - macos
   - installer

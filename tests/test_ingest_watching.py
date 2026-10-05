@@ -1809,3 +1809,171 @@ def test_a_watched_folders_job_still_fails_on_anything_else(
 
     row = conn.execute("SELECT status FROM job WHERE id=?", (job["id"],)).fetchone()
     assert row["status"] == "failed"
+
+
+# --- TASK-107.01: audio by default, video per folder, and a count first ------------
+
+
+def test_a_new_watch_folder_takes_audio_and_leaves_video(conn, watcher, watched):
+    """The outside walk of 0.8.3: ~/Downloads as a watch folder queued 882
+    jobs, 558 of them .ts files a downloader left behind. A folder added now
+    takes recordings - audio - unless somebody switched video on for it."""
+    drop(watched, "interview.mp3")
+    drop(watched, "lecture.mp4", b"video bytes")
+    drop(watched, "stream.ts", b"stream bytes")
+
+    assert watcher.reconcile(conn) == 1
+
+    assert [row["orig_name"] for row in media_rows(conn)] == ["interview.mp3"]
+
+
+def test_a_video_dropped_into_an_audio_only_folder_is_not_taken(conn, watcher, watched):
+    path = drop(watched, "clip.mov", b"a clip")
+
+    watcher.notice(path)
+    watcher.pump(conn, now=1000.0)
+    watcher.pump(conn, now=1000.0 + watching.QUIESCE_SECONDS)
+
+    assert media_rows(conn) == [] and job_rows(conn) == []
+
+
+def test_a_folder_with_video_switched_on_takes_both(conn, watcher, inbox):
+    watching.add_folder(conn, inbox, TranscribeOptions(), include_video=True)
+    drop(inbox, "interview.mp3")
+    drop(inbox, "lecture.mp4", b"video bytes")
+
+    assert watcher.reconcile(conn) == 2
+
+
+def test_a_folder_watched_before_the_switch_keeps_taking_video(tmp_path, data_dir):
+    """Nothing changes under anybody: a row from before the column existed
+    keeps doing what it did, video included."""
+    old = db.connect(tmp_path / "old.db")
+    for script in db._MIGRATIONS[:17]:
+        old.executescript(script)
+    old.execute("PRAGMA user_version = 17")
+    old.execute("INSERT INTO watch_folder(path) VALUES (?)", (str(tmp_path / "inbox"),))
+    old.commit()
+
+    db.migrate(old)
+
+    (row,) = old.execute("SELECT include_video FROM watch_folder").fetchall()
+    assert row["include_video"] == 1
+    old.close()
+
+
+def test_the_preview_counts_what_a_folder_would_take_and_skip(inbox):
+    drop(inbox, "a.mp3")
+    drop(inbox, "b.m4a", b"b")
+    drop(inbox, "c.mp4", b"c")
+    drop(inbox, "deep/d.ts", b"d")
+    drop(inbox, "notes.txt", b"not media")
+
+    audio_only = watching.preview(inbox, include_video=False)
+    both = watching.preview(inbox, include_video=True)
+
+    assert (audio_only.taken, audio_only.skipped_video) == (2, 2)
+    assert audio_only.by_extension == {".m4a": 1, ".mp3": 1}
+    assert (both.taken, both.skipped_video) == (4, 0)
+
+
+def test_the_settings_form_adds_an_audio_only_folder_and_says_what_it_left(client, conn, inbox):
+    """TASK-107.01: the form offers video as a box that starts unticked, and a
+    folder added there takes what arrives from now on. What was already in it
+    is counted and left alone - 'picked up shortly' was 882 jobs on a Mac."""
+    drop(inbox, "a.mp3")
+    drop(inbox, "b.mp4", b"b")
+    drop(inbox, "c.ts", b"c")
+
+    resp = client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+
+    (folder,) = watching.folders(conn, enabled_only=False)
+    assert folder["include_video"] == 0
+    assert "1 audio file already in it was left alone" in resp.text
+    assert 'name="include_video"' in resp.text
+    assert f'action="/settings/watch/{folder["id"]}/existing"' in resp.text
+
+
+def test_the_settings_form_can_switch_video_on(client, conn, inbox):
+    drop(inbox, "b.mp4", b"b")
+
+    resp = client.post("/settings/watch", data={"path": str(inbox), "include_video": "1"}, headers=HX)
+
+    (folder,) = watching.folders(conn, enabled_only=False)
+    assert folder["include_video"] == 1
+    assert "1 video file already in it was left alone" in resp.text
+    assert "audio and video" in resp.text
+
+
+def test_a_folder_added_through_a_door_leaves_what_was_already_there(client, conn, watcher, inbox):
+    drop(inbox, "old.mp3")
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+
+    assert watcher.reconcile(conn) == 0
+
+    drop(inbox, "new.mp3", b"new bytes")
+    assert watcher.reconcile(conn) == 1
+    assert [row["orig_name"] for row in media_rows(conn)] == ["new.mp3"]
+
+
+def test_a_file_left_alone_that_changes_is_taken(client, conn, watcher, inbox):
+    old = drop(inbox, "old.mp3")
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+    old.write_bytes(b"rewritten, so a different recording")
+    stamp = time.time() - SETTLED_AGO
+    os.utime(old, (stamp, stamp))
+
+    assert watcher.reconcile(conn) == 1
+
+
+def test_the_files_left_alone_can_be_transcribed_after_all(client, conn, watcher, inbox):
+    drop(inbox, "old.mp3")
+    drop(inbox, "older.mp3", b"older")
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+    (folder,) = watching.folders(conn, enabled_only=False)
+
+    resp = client.post(f"/settings/watch/{folder['id']}/existing", headers=HX)
+
+    assert "2 audio files already in it will be transcribed" in resp.text
+    assert watcher.reconcile(conn) == 2
+
+
+def test_a_folder_watched_before_this_still_takes_what_is_in_it(conn, watcher, inbox):
+    """Rows from before v18 have no record of what was there, and keep taking
+    everything, exactly as they did."""
+    drop(inbox, "old.mp3")
+    watching.add_folder(conn, inbox, TranscribeOptions(), include_video=True)
+
+    assert watcher.reconcile(conn) == 1
+
+
+def test_video_can_be_switched_on_for_a_folder_already_watched(client, conn, watcher, inbox):
+    """A folder added through first-run setup is audio only, and the way to
+    let its video in is a switch on its row - not removing and re-adding it."""
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+    (folder,) = watching.folders(conn, enabled_only=False)
+
+    resp = client.post(f"/settings/watch/{folder['id']}/video", data={"include_video": "1"}, headers=HX)
+
+    (folder,) = watching.folders(conn, enabled_only=False)
+    assert folder["include_video"] == 1
+    assert "audio and video" in resp.text
+    drop(inbox, "talk.mp4", b"arrived after")
+    assert watcher.reconcile(conn) == 1
+
+
+def test_an_audio_only_folder_offers_to_take_video_and_not_the_reverse(client, conn, inbox):
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+
+    body = client.get("/settings?section=watch").text
+
+    assert "Take video too" in body and ">Audio only<" not in body
+
+
+def test_one_file_left_alone_is_said_in_the_singular(client, conn, inbox):
+    drop(inbox, "only.mp3")
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+
+    body = client.get("/settings?section=watch").text
+
+    assert "1 file that was already here is left alone." in body

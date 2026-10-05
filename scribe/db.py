@@ -16,7 +16,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -523,11 +523,35 @@ _SCHEMA_V17 = """
 ALTER TABLE clean_reading ADD COLUMN words_hash TEXT;
 """
 
+_SCHEMA_V18 = """
+-- v18 (TASK-107.01): a watch folder takes audio unless video is switched on.
+--
+-- The outside macOS walk of 0.8.3 watched ~/Downloads and queued 882 jobs,
+-- 558 of them .ts files a downloader left behind. A folder added from now on
+-- takes audio only by default (`watching.add_folder`), and video is a choice
+-- per folder. The column's default is 1 so that every folder watched before
+-- this keeps doing exactly what it did: nothing changes under anybody.
+ALTER TABLE watch_folder ADD COLUMN include_video INTEGER NOT NULL DEFAULT 1;
+
+-- And it watches for what arrives, not for what was there (Robert,
+-- 2026-10-05): the question asks for a folder to watch "for new recordings".
+-- A folder added through a door (Settings, first-run setup) records here the
+-- files it already held, by the watcher's own key and the size and mtime it
+-- saw; the watcher leaves a file alone while it still matches. A file that
+-- changes is a new recording and is taken. Deleting a folder's rows is the
+-- "transcribe them after all" button. A folder from before v18 has no rows,
+-- so it keeps taking everything, as it always did.
+CREATE TABLE watch_existing(
+  folder_id INTEGER NOT NULL REFERENCES watch_folder(id) ON DELETE CASCADE,
+  path_key TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
+  PRIMARY KEY(folder_id, path_key));
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
     _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13, _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16,
-    _SCHEMA_V17,
+    _SCHEMA_V17, _SCHEMA_V18,
 ]
 
 

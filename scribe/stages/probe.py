@@ -80,17 +80,23 @@ _STREAM_KEYS = ("index", "codec_type", "codec_name", "channels", "sample_rate")
 # can point at the recordings without opening any of them. A hint for the eye
 # and nothing more: ffprobe decides what is media (see the module docstring),
 # and a `.bin` that turns out to be audio is as welcome in a job as a `.wav`.
-MEDIA_EXTENSIONS = frozenset(
+AUDIO_EXTENSIONS = frozenset(
     {
-        # audio
         ".aac", ".ac3", ".aif", ".aiff", ".amr", ".ape", ".caf", ".dts", ".flac",
         ".m4a", ".m4b", ".mka", ".mp2", ".mp3", ".oga", ".ogg", ".opus", ".wav",
         ".wma", ".wv",
-        # video: the audio track is what gets transcribed
+    }
+)
+VIDEO_EXTENSIONS = frozenset(
+    {
+        # the audio track is what gets transcribed
         ".3gp", ".avi", ".flv", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg",
         ".mpg", ".mts", ".ogv", ".ts", ".vob", ".webm", ".wmv",
     }
 )
+"""Split from AUDIO_EXTENSIONS so a watch folder can take recordings without
+every video a downloader left beside them (TASK-107.01)."""
+MEDIA_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 class NotMediaError(Exception):

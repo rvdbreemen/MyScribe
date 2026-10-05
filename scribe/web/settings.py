@@ -80,7 +80,7 @@ from scribe.ingest import watching
 from scribe.llm import base as llm_base
 from scribe.llm import ollama
 from scribe.options import TranscribeOptions, parse_options
-from scribe.stages import correct, transcribe
+from scribe.stages import correct, probe, transcribe
 from scribe.web import ai_ui, exports_ui, library, render, transcribe_dialog
 from scribe.web.transcribe_dialog import human_size
 
@@ -110,6 +110,35 @@ FLASH_CPU_FALLBACK_OFF = "A job is refused when the GPU cannot be reached."
 # The form field carrying the folder to watch, and the one carrying its switch.
 FIELD_WATCH_PATH = "path"
 FIELD_WATCH_ENABLED = "enabled"
+FIELD_WATCH_VIDEO = "include_video"
+
+
+def _count(n: int, one: str) -> str:
+    return f"{n} {one}" if n == 1 else f"{n} {one}s"
+
+
+def _what(found: "watching.Preview", include_video: bool) -> str:
+    video = sum(n for ext, n in found.by_extension.items() if ext in probe.VIDEO_EXTENSIONS)
+    audio = found.taken - video
+    if include_video and video:
+        return f"{_count(audio, 'audio file')} and {_count(video, 'video file')}" if audio else _count(video, "video file")
+    return _count(audio, "audio file")
+
+
+def watch_added_sentence(left: "watching.Preview", include_video: bool) -> str:
+    """What a new watch folder does with what it already holds, said right
+    after adding it (TASK-107.01). 'Picked up shortly' told nobody that
+    ~/Downloads was 882 jobs; now the folder takes what arrives, and what was
+    there is counted here and left alone until somebody asks for it."""
+    sentence = "Watching that folder for new recordings."
+    if left.taken:
+        verb = "was" if left.taken == 1 else "were"
+        sentence += (f" {_what(left, include_video)} already in it {verb} left alone; "
+                     "Transcribe them below if you want them too.")
+    if left.skipped_video:
+        sentence += f" {_count(left.skipped_video, 'video file')} ignored: video is off for this folder."
+    return sentence
+
 
 # The switch on the start-at-login card.
 FIELD_AUTOSTART = "enabled"
@@ -350,7 +379,9 @@ def watch_context(
                 "missing": not Path(folder["path"]).is_dir(),
                 "outside_roots": not folder.get("allowed", True),
                 "unwatchable": bool(watcher and watcher.cannot_watch(folder["path"])),
-                "summary": describe_options(folder["options"]),
+                "summary": describe_options(folder["options"]) + ("; audio and video" if folder.get("include_video", 1) else "; audio only"),
+                "left": watching.existing_left(conn, folder["id"]),
+                "include_video": bool(folder.get("include_video", 1)),
             }
             for folder in watching.folders(conn, enabled_only=False)
         ],
@@ -692,7 +723,8 @@ def parse_watch_path(conn: sqlite3.Connection, raw: str | None) -> Path:
     return path
 
 
-def add_watched(conn: sqlite3.Connection, raw: str | None, options: TranscribeOptions) -> Path:
+def add_watched(conn: sqlite3.Connection, raw: str | None, options: TranscribeOptions,
+                *, include_video: bool = False) -> tuple[Path, "watching.Preview"]:
     """Watch a folder after the four refusals, or a 4xx saying which one.
 
     The one function behind both doors that add a folder - this form and the
@@ -705,10 +737,13 @@ def add_watched(conn: sqlite3.Connection, raw: str | None, options: TranscribeOp
     """
     path = parse_watch_path(conn, raw)
     try:
-        watching.add_folder(conn, path, options)
+        folder_id = watching.add_folder(conn, path, options, include_video=include_video)
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail=f"{path} is already being watched") from None
-    return path
+    # Watched "for new recordings": what is already there is recorded and left
+    # alone, and said, with a way to take it after all (TASK-107.01).
+    left = watching.leave_existing(conn, folder_id, path, include_video=include_video)
+    return path, left
 
 
 def _get_watch_folder(conn: sqlite3.Connection, folder_id: int) -> dict:
@@ -730,8 +765,9 @@ async def add_watch_folder(request: Request) -> Response:
     conn = request.app.state.conn
     fields = transcribe_dialog._fields(await request.form())
     options = parse_options(fields)
-    add_watched(conn, fields.get(FIELD_WATCH_PATH), options)
-    return _watch_answer(request, conn, flash=FLASH_WATCH_ADDED)
+    include_video = fields.get(FIELD_WATCH_VIDEO) == "1"
+    _path, left = add_watched(conn, fields.get(FIELD_WATCH_PATH), options, include_video=include_video)
+    return _watch_answer(request, conn, flash=watch_added_sentence(left, include_video))
 
 
 @router.post("/settings/watch/{folder_id}", include_in_schema=False)
@@ -751,6 +787,36 @@ async def toggle_watch_folder(folder_id: int, request: Request) -> Response:
     return _watch_answer(
         request, conn, flash=FLASH_WATCH_ENABLED if enabled else FLASH_WATCH_DISABLED
     )
+
+
+@router.post("/settings/watch/{folder_id}/video", include_in_schema=False)
+async def switch_watch_video(folder_id: int, request: Request) -> Response:
+    """Video on or off for one folder (TASK-107.01): the folder setup added is
+    audio only, and this is how its video gets in without removing it."""
+    conn = request.app.state.conn
+    _get_watch_folder(conn, folder_id)
+    fields = transcribe_dialog._fields(await request.form())
+    on = fields.get(FIELD_WATCH_VIDEO) == "1"
+    watching.set_include_video(conn, folder_id, on)
+    return _watch_answer(request, conn, flash=(
+        "That folder now takes video files too." if on else "That folder now takes audio files only."))
+
+
+@router.post("/settings/watch/{folder_id}/existing", include_in_schema=False)
+def take_existing_files(folder_id: int, request: Request) -> Response:
+    """Transcribe what a folder held when it was added, after all
+    (TASK-107.01): the rows that kept it out are forgotten, and the watcher's
+    next walk takes those files in with the folder's options."""
+    conn = request.app.state.conn
+    folder = _get_watch_folder(conn, folder_id)
+    taken = watching.take_existing(conn, folder_id)
+    watcher = getattr(request.app.state, "watcher", None)
+    if watcher is not None:
+        watcher.request_reconcile()
+    kind = "audio or video file" if folder.get("include_video", 1) else "audio file"
+    verb = "it" if taken == 1 else "them"
+    return _watch_answer(request, conn, flash=(
+        f"{_count(taken, kind)} already in it will be transcribed; the watcher takes {verb} in shortly."))
 
 
 @router.post("/settings/watch/{folder_id}/delete", include_in_schema=False)

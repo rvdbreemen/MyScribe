@@ -49,7 +49,20 @@
             {% if folder.get('outside_roots') %}<span class="badge fail out-of-roots" title="This folder is outside the folders MyScribe may read from. Nothing in it is taken in until you widen them above.">outside the allowed folders</span>{% endif %}
             {% if folder.get('unwatchable') %}<span class="badge fail not-watching" title="No filesystem watch could be opened on this folder. Files already in it are still picked up when MyScribe starts; new ones are not noticed until then.">not watching live</span>{% endif %}
           </td>
-          <td class="summary">{{ folder.summary }}</td>
+          <td class="summary">{{ folder.summary }}
+            <form method="post" action="/settings/watch/{{ folder.id }}/video" class="inline-form"
+                  hx-post="/settings/watch/{{ folder.id }}/video" hx-target="#watch-folders" hx-swap="outerHTML">
+              <input type="hidden" name="include_video" value="{{ '0' if folder.get('include_video', 1) else '1' }}">
+              <button type="submit">{{ 'Audio only' if folder.get('include_video', 1) else 'Take video too' }}</button>
+            </form>
+            {% if folder.get('left') %}
+            <form method="post" action="/settings/watch/{{ folder.id }}/existing" class="inline-form"
+                  hx-post="/settings/watch/{{ folder.id }}/existing" hx-target="#watch-folders" hx-swap="outerHTML">
+              <span class="hint">{% if folder.left == 1 %}1 file that was already here is left alone.{% else %}{{ folder.left }} files that were already here are left alone.{% endif %}</span>
+              <button type="submit">Transcribe them</button>
+            </form>
+            {% endif %}
+          </td>
           <td>
             <form method="post" action="/settings/watch/{{ folder.id }}"
                   hx-post="/settings/watch/{{ folder.id }}" hx-target="#watch-folders" hx-swap="outerHTML">
@@ -82,6 +95,17 @@
       <p id="watch-path-hint" class="hint">
         A full path to a folder this app may read from - the same folders the transcribe
         dialog can pick files from. Subfolders are watched too.
+      </p>
+
+      <label class="check">
+        <input type="hidden" name="include_video" value="0">
+        <input type="checkbox" name="include_video" value="1">
+        Also take video files
+      </label>
+      <p class="hint">
+        Off by default: a folder like Downloads also holds every video a browser left there,
+        and each one would become a transcription. Everything already in the folder is
+        counted and said once you add it.
       </p>
 
       <label class="field">Language

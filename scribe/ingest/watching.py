@@ -82,6 +82,7 @@ import sys
 import threading
 import time
 import traceback
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Callable, NamedTuple, Sequence
@@ -90,7 +91,7 @@ from pydantic import ValidationError
 
 from scribe import db, fsbrowse, jobs, media, paths
 from scribe.options import TranscribeOptions
-from scribe.stages.probe import MEDIA_EXTENSIONS
+from scribe.stages.probe import AUDIO_EXTENSIONS, MEDIA_EXTENSIONS
 
 QUIESCE_SECONDS = 5.0
 """How long a file's size and mtime must hold still before it is taken in.
@@ -287,6 +288,7 @@ def add_folder(
     options: TranscribeOptions,
     *,
     enabled: bool = True,
+    include_video: bool = False,
 ) -> int:
     """Register a folder to watch; returns its id.
 
@@ -294,11 +296,16 @@ def add_folder(
     shows back, and a user who typed a mapped drive letter should see it.
     Raises `sqlite3.IntegrityError` on a path already registered - the column
     is UNIQUE, and two rows for one folder would be two ingests of one file.
+
+    Audio only unless ``include_video`` (TASK-107.01): a folder somebody
+    points at is usually where recordings land, and a Downloads folder also
+    holds every video a browser or downloader left there.
     """
     with db.LOCK:
         cur = conn.execute(
-            "INSERT INTO watch_folder(path, enabled, options_json) VALUES (?, ?, ?)",
-            (str(path), 1 if enabled else 0, json.dumps(options.model_dump())),
+            "INSERT INTO watch_folder(path, enabled, options_json, include_video) VALUES (?, ?, ?, ?)",
+            (str(path), 1 if enabled else 0, json.dumps(options.model_dump()),
+             1 if include_video else 0),
         )
         conn.commit()
         return cur.lastrowid
@@ -309,6 +316,18 @@ def set_enabled(conn: sqlite3.Connection, folder_id: int, enabled: bool) -> bool
     with db.LOCK:
         cur = conn.execute(
             "UPDATE watch_folder SET enabled=? WHERE id=?", (1 if enabled else 0, folder_id)
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def set_include_video(conn: sqlite3.Connection, folder_id: int, include_video: bool) -> bool:
+    """Let a folder take video too, or stop it; False when there is no such row.
+    Applies to what arrives from now on and to the files it is leaving alone
+    when somebody asks for them (TASK-107.01)."""
+    with db.LOCK:
+        cur = conn.execute(
+            "UPDATE watch_folder SET include_video=? WHERE id=?", (1 if include_video else 0, folder_id)
         )
         conn.commit()
         return cur.rowcount == 1
@@ -355,6 +374,107 @@ def is_candidate(path: str | Path) -> bool:
     if in_data_dir(path):
         return False
     return not fsbrowse.is_hidden(path)
+
+
+def takes(folder: dict, path: str | Path) -> bool:
+    """Whether ``folder`` takes this candidate: every audio file, and video
+    only where the folder says so (TASK-107.01). A row without the key is one
+    read before v18 and keeps the old behaviour, video included."""
+    if folder.get("include_video", 1):
+        return True
+    suffixes = [suffix.lower() for suffix in Path(path).suffixes]
+    return bool(suffixes) and suffixes[-1] in AUDIO_EXTENSIONS
+
+
+@dataclass(frozen=True)
+class Preview:
+    """What watching a folder would take in right now, before anybody says yes."""
+
+    taken: int
+    skipped_video: int
+    by_extension: dict[str, int]
+
+
+def preview(root: str | Path, *, include_video: bool) -> Preview:
+    """Count what a folder would queue, with the same walk and the same rule
+    `reconcile` uses, so the number asked about is the number that happens.
+
+    Reads names only - no hash, no open - so a large folder costs a directory
+    walk. The outside walk of 0.8.3 is the reason: yes to ~/Downloads queued
+    882 jobs, and nothing said so before the answer.
+    """
+    folder = {"include_video": 1 if include_video else 0}
+    by_extension: dict[str, int] = {}
+    skipped = 0
+    for path in _walk(Path(root)):
+        if takes(folder, path):
+            suffix = path.suffix.lower()
+            by_extension[suffix] = by_extension.get(suffix, 0) + 1
+        else:
+            skipped += 1
+    return Preview(taken=sum(by_extension.values()), skipped_video=skipped,
+                   by_extension=dict(sorted(by_extension.items())))
+
+
+def leave_existing(conn: sqlite3.Connection, folder_id: int, root: str | Path,
+                   *, include_video: bool) -> Preview:
+    """Record what a newly added folder already holds, so the watcher leaves it.
+
+    Robert, 2026-10-05: a folder is watched "for new recordings", and taking
+    in everything it held is how ~/Downloads became 882 jobs. Recorded by the
+    watcher's own key and the size and mtime it sees, so a file that is later
+    rewritten counts as new. Returns the count of what was left alone, by the
+    same rule the watcher uses. Nothing is hashed or opened.
+    """
+    folder = {"include_video": 1 if include_video else 0}
+    by_extension: dict[str, int] = {}
+    skipped = 0
+    rows = []
+    for path in _walk(Path(root)):
+        if not takes(folder, path):
+            skipped += 1
+            continue
+        size, mtime = _snapshot(path)
+        if size < 0:
+            continue
+        rows.append((folder_id, _key(path), size, mtime))
+        suffix = path.suffix.lower()
+        by_extension[suffix] = by_extension.get(suffix, 0) + 1
+    with db.LOCK:
+        conn.executemany(
+            "INSERT OR REPLACE INTO watch_existing(folder_id, path_key, size, mtime) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    return Preview(taken=len(rows), skipped_video=skipped, by_extension=dict(sorted(by_extension.items())))
+
+
+def take_existing(conn: sqlite3.Connection, folder_id: int) -> int:
+    """Forget what a folder held when it was added, so the next walk takes it
+    in after all; returns how many files that is."""
+    with db.LOCK:
+        cur = conn.execute("DELETE FROM watch_existing WHERE folder_id=?", (folder_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+def existing_left(conn: sqlite3.Connection, folder_id: int) -> int:
+    """How many files this folder is still leaving alone."""
+    with db.LOCK:
+        return conn.execute(
+            "SELECT COUNT(*) FROM watch_existing WHERE folder_id=?", (folder_id,)
+        ).fetchone()[0]
+
+
+def _left_alone(conn: sqlite3.Connection, folder: dict, key: str, snapshot: tuple[int, float]) -> bool:
+    """Whether this file was in the folder when it was added and has not
+    changed since. A different size or mtime is a new recording."""
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT size, mtime FROM watch_existing WHERE folder_id=? AND path_key=?",
+            (folder["id"], key),
+        ).fetchone()
+    return row is not None and (row["size"], row["mtime"]) == tuple(snapshot)
 
 
 def folder_for(path: str | Path, watched: Sequence[dict]) -> dict | None:
@@ -546,6 +666,7 @@ class Watcher:
         self._unschedulable: dict[str, str] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._walk_again = threading.Event()  # request_reconcile (TASK-107.01)
         self._thread: threading.Thread | None = None
 
     # --- the seam the tests drive ---------------------------------------------------
@@ -599,6 +720,10 @@ class Watcher:
                 # The folder was removed, switched off, or dropped out of the
                 # browse roots while we waited - `watchable` asks all three.
                 continue
+            if not takes(folder, pending.path):
+                continue  # a video in a folder that takes audio only (TASK-107.01)
+            if _left_alone(conn, folder, key, snapshot):
+                continue  # it was here when the folder was added (TASK-107.01)
             try:
                 result = take_in(conn, pending.path, folder)
             except Exception:  # noqa: BLE001 - one bad file is not a dead watcher
@@ -719,6 +844,10 @@ class Watcher:
                     # file directly in a walked folder always finds its owner;
                     # None only ever means the path resolved somewhere else.
                     continue
+                if not takes(owner, path):
+                    continue  # audio-only folder, and this is a video (TASK-107.01)
+                if _left_alone(conn, owner, key, snapshot):
+                    continue  # it was here when the folder was added (TASK-107.01)
                 try:
                     result = take_in(conn, path, owner)
                 except Exception:  # noqa: BLE001 - see pump: keep going
@@ -787,6 +916,9 @@ class Watcher:
             while not self._stop_event.is_set():
                 if observer is not None:
                     _survive(self._sync_schedules, observer, conn)
+                if self._walk_again.is_set():
+                    self._walk_again.clear()
+                    _survive(self.reconcile, conn)
                 _survive(self.pump, conn)
                 self._stop_event.wait(self.poll_interval)
         finally:
@@ -797,6 +929,15 @@ class Watcher:
             # stop is not a reason to read the folder again tomorrow.
             _survive(self._save_taken)
             conn.close()
+
+    def request_reconcile(self) -> None:
+        """Walk the folders again on the next tick rather than at the next start.
+
+        Asked by the settings page when somebody chooses to transcribe the
+        files a folder held when it was added (TASK-107.01): without it those
+        would wait for a restart, the only other time the folders are walked.
+        """
+        self._walk_again.set()
 
     def _open_observer(self):
         """The observer, started - or None when this machine cannot give one.
