@@ -2976,6 +2976,13 @@ def ask(questions: list[dict], *, out=None, read=input) -> dict:
     stream = out if out is not None else sys.stdout
     answers: dict[str, str | None] = {}
     for question in questions:
+        # `shown_if` is the one condition every front-end interprets (ADR-015),
+        # and this one used to ask everything: the OpenAI key after Ollama was
+        # chosen (TASK-107.05). A hidden question is not asked and puts no
+        # answer, as in the window.
+        condition = question.get("shown_if")
+        if isinstance(condition, dict) and answers.get(condition.get("question")) != condition.get("equals"):
+            continue
         print(question["text"], file=stream)
         for choice in question["choices"]:
             note = f" - {choice['note']}" if choice.get("note") else ""

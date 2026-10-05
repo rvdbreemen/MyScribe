@@ -49,7 +49,11 @@ Expected, in this order:
 - `sync uv sync --frozen into .../.venv`, uv's own lines, then a `stamp` line
 - the setup questions in the terminal; press Enter through all of them
 - the proof report: an `accel` line naming MLX, and a transcription line with
-  words and seconds for the 30-second clip
+  words and seconds for the 30-second clip. The proof starts the app on an
+  empty folder to check it answers, and needs port 4242 for that: with a
+  MyScribe already running it reports "not tested (a MyScribe is running on
+  port 4242)" and exits 1. Quit the running MyScribe first (the walk of 0.8.3
+  ran into this right after installing the dmg).
 - `start MyScribe is installed. Start it with:` and the command
 - `git status --short` prints nothing: uv.lock was not touched
 

@@ -2857,3 +2857,25 @@ def test_apply_installs_and_names_the_release_it_fetched(
     assert (plan["tag"], plan["url"], plan["sha256"]) == (canned_release["tag"], asset["url"], asset["digest"])
     out = capsys.readouterr().out
     assert canned_release["tag"] in out and asset["url"] in out and asset["digest"] in out
+
+
+def test_the_console_skips_a_question_its_condition_hides(monkeypatch):
+    """TASK-107.05: the terminal sitting asked for the OpenAI key after Ollama
+    was chosen (the outside walk of 0.8.3). The Tk window honours shown_if;
+    the console asked every question in the list. ADR-015 makes shown_if the
+    one condition every front-end interprets - this one too."""
+    questions = [
+        {"id": "llm_provider", "kind": "choice", "text": "Who answers?", "default": None,
+         "choices": [{"value": "ollama"}, {"value": "openai"}], "shown_if": None,
+         "current": "", "if_skipped": "nothing", "answer_later": "Settings"},
+        {"id": "openai_key", "kind": "secret", "text": "API key for OpenAI.", "default": None,
+         "choices": [], "shown_if": {"question": "llm_provider", "equals": "openai"},
+         "current": "", "if_skipped": "nothing", "answer_later": "Settings"},
+    ]
+    out = io.StringIO()
+    monkeypatch.setattr(setup.getpass, "getpass", lambda prompt="": "sk-asked-anyway")
+
+    given = setup.ask(questions, out=out, read=lambda: "ollama")
+
+    assert given == {"llm_provider": "ollama"}
+    assert "API key for OpenAI" not in out.getvalue()
