@@ -84,6 +84,17 @@
         dialog can pick files from. Subfolders are watched too.
       </p>
 
+      <label class="check">
+        <input type="hidden" name="include_video" value="0">
+        <input type="checkbox" name="include_video" value="1">
+        Also take video files
+      </label>
+      <p class="hint">
+        Off by default: a folder like Downloads also holds every video a browser left there,
+        and each one would become a transcription. Everything already in the folder is
+        counted and said once you add it.
+      </p>
+
       <label class="field">Language
         <select name="language">
           <option value=""{% if not watch_options.language %} selected{% endif %}>Auto-detect</option>

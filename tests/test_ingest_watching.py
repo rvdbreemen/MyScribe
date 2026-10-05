@@ -1875,3 +1875,30 @@ def test_the_preview_counts_what_a_folder_would_take_and_skip(inbox):
     assert (audio_only.taken, audio_only.skipped_video) == (2, 2)
     assert audio_only.by_extension == {".m4a": 1, ".mp3": 1}
     assert (both.taken, both.skipped_video) == (4, 0)
+
+
+def test_the_settings_form_adds_an_audio_only_folder_and_says_what_it_found(client, conn, inbox):
+    """TASK-107.01: the form offers video as a box that starts unticked, and
+    the answer says what the folder held - so a folder full of video does not
+    become a queue nobody saw coming."""
+    drop(inbox, "a.mp3")
+    drop(inbox, "b.mp4", b"b")
+    drop(inbox, "c.ts", b"c")
+
+    resp = client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+
+    (folder,) = watching.folders(conn, enabled_only=False)
+    assert folder["include_video"] == 0
+    assert "1 audio file" in resp.text and "2 video files skipped" in resp.text
+    assert 'name="include_video"' in resp.text
+
+
+def test_the_settings_form_can_switch_video_on(client, conn, inbox):
+    drop(inbox, "b.mp4", b"b")
+
+    resp = client.post("/settings/watch", data={"path": str(inbox), "include_video": "1"}, headers=HX)
+
+    (folder,) = watching.folders(conn, enabled_only=False)
+    assert folder["include_video"] == 1
+    assert "1 video file" in resp.text
+    assert "audio and video" in resp.text

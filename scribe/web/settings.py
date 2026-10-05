@@ -80,7 +80,7 @@ from scribe.ingest import watching
 from scribe.llm import base as llm_base
 from scribe.llm import ollama
 from scribe.options import TranscribeOptions, parse_options
-from scribe.stages import correct, transcribe
+from scribe.stages import correct, probe, transcribe
 from scribe.web import ai_ui, exports_ui, library, render, transcribe_dialog
 from scribe.web.transcribe_dialog import human_size
 
@@ -110,6 +110,27 @@ FLASH_CPU_FALLBACK_OFF = "A job is refused when the GPU cannot be reached."
 # The form field carrying the folder to watch, and the one carrying its switch.
 FIELD_WATCH_PATH = "path"
 FIELD_WATCH_ENABLED = "enabled"
+FIELD_WATCH_VIDEO = "include_video"
+
+
+def _count(n: int, one: str) -> str:
+    return f"{n} {one}" if n == 1 else f"{n} {one}s"
+
+
+def watch_added_sentence(found: "watching.Preview", include_video: bool) -> str:
+    """What a new watch folder is about to take in, said right after adding it
+    (TASK-107.01): 'picked up shortly' told nobody that ~/Downloads was 882
+    jobs. The count is `watching.preview`'s, the same walk and rule the
+    watcher uses."""
+    video = sum(n for ext, n in found.by_extension.items() if ext in probe.VIDEO_EXTENSIONS)
+    audio = found.taken - video
+    what = (f"{_count(audio, 'audio file')} and {_count(video, 'video file')}" if include_video
+            else _count(audio, "audio file"))
+    sentence = f"Watching that folder: {what} in it will be transcribed."
+    if found.skipped_video:
+        sentence += (f" {_count(found.skipped_video, 'video file')} skipped; switch video on "
+                     "for this folder to take them too.")
+    return sentence
 
 # The switch on the start-at-login card.
 FIELD_AUTOSTART = "enabled"
@@ -350,7 +371,7 @@ def watch_context(
                 "missing": not Path(folder["path"]).is_dir(),
                 "outside_roots": not folder.get("allowed", True),
                 "unwatchable": bool(watcher and watcher.cannot_watch(folder["path"])),
-                "summary": describe_options(folder["options"]),
+                "summary": describe_options(folder["options"]) + ("; audio and video" if folder.get("include_video", 1) else "; audio only"),
             }
             for folder in watching.folders(conn, enabled_only=False)
         ],
@@ -692,7 +713,8 @@ def parse_watch_path(conn: sqlite3.Connection, raw: str | None) -> Path:
     return path
 
 
-def add_watched(conn: sqlite3.Connection, raw: str | None, options: TranscribeOptions) -> Path:
+def add_watched(conn: sqlite3.Connection, raw: str | None, options: TranscribeOptions,
+                *, include_video: bool = False) -> Path:
     """Watch a folder after the four refusals, or a 4xx saying which one.
 
     The one function behind both doors that add a folder - this form and the
@@ -705,7 +727,7 @@ def add_watched(conn: sqlite3.Connection, raw: str | None, options: TranscribeOp
     """
     path = parse_watch_path(conn, raw)
     try:
-        watching.add_folder(conn, path, options)
+        watching.add_folder(conn, path, options, include_video=include_video)
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail=f"{path} is already being watched") from None
     return path
@@ -730,8 +752,10 @@ async def add_watch_folder(request: Request) -> Response:
     conn = request.app.state.conn
     fields = transcribe_dialog._fields(await request.form())
     options = parse_options(fields)
-    add_watched(conn, fields.get(FIELD_WATCH_PATH), options)
-    return _watch_answer(request, conn, flash=FLASH_WATCH_ADDED)
+    include_video = fields.get(FIELD_WATCH_VIDEO) == "1"
+    path = add_watched(conn, fields.get(FIELD_WATCH_PATH), options, include_video=include_video)
+    found = watching.preview(path, include_video=include_video)
+    return _watch_answer(request, conn, flash=watch_added_sentence(found, include_video))
 
 
 @router.post("/settings/watch/{folder_id}", include_in_schema=False)
