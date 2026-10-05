@@ -3,11 +3,11 @@ id: TASK-101
 title: >-
   macOS: the first-run questions never open, because the launcher calls Tk from
   a worker thread on a Tcl 9 that _tkinter 3.12 thinks is unthreaded
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-03 19:37'
-updated_date: '2026-10-03 21:21'
+updated_date: '2026-10-05 06:54'
 labels:
   - installer
   - macos
@@ -36,7 +36,7 @@ So on_tk's root.after(0, run), called from the worker, registers a Tcl timer in 
 - [x] #2 Every Tk call the worker needs goes through the main thread's existing pump (or an equivalent main-thread queue), so the result no longer depends on how _tkinter judges Tcl's threading
 - [x] #3 An exception on the worker or in a Tk callback is written to <home>/logs/launcher.log (threading.excepthook and Tk's report_callback_exception), so a windowed build leaves a trace
 - [x] #4 Decided and recorded whether the launcher is also frozen with Python 3.13+, with the Tcl version per platform measured
-- [ ] #5 Evidence: the suite's summary line, and a real windowed first start on a fresh home reaching the questions; on macOS this needs a person with a Mac (Jim), and the task says so plainly if that has not happened
+- [x] #5 Evidence: the suite's summary line, and a real windowed first start on a fresh home reaching the questions; on macOS this needs a person with a Mac (Jim), and the task says so plainly if that has not happened
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,4 +63,12 @@ Suite, one file per test file (the halves stalled on socketpair at 420 s each): 
 Open: AC5's macOS half. A windowed first start on a fresh home on macOS needs a frozen build with this fix and a Mac (Jim).
 
 Released as stable 0.8.1 (Robert chose stable over 0.8.1b1: 0.8.0 does not work on a Mac at all, a beta would keep the download link there). PR #2 merged as 9a3abb4; ci.yml green on windows/ubuntu/macos (run 37153134731); tag v0.8.1 -> 9a3abb4; release.yml run 37154228681: version, three builds with smoke, publish all success; Release v0.8.1 is Latest, not a pre-release, 7 assets. Windows exe checked here: sha256sum -c SHA256SUMS OK, gh attestation verify -> refs/tags/v0.8.1. Still open: AC5 macOS, a person walking 0.8.1's first start on a Mac (Jim).
+
+AC5 met by the outside walk of 0.8.3 on macOS 26.0 (Hermes, Jim's agent, mail 2026-10-05): open -a on a fresh home, the sitting opened its seven questions in the window, Jim answered them, the answers were applied and the app started and served. Confirmed by Jim's screenshot of the screen; Hermes's own tooling misread it at first (System Events reports 0 windows for these Tk 9 windows, and a full-screen capture returned another app's Space).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The first-run questions open on macOS again: the launcher's worker no longer calls Tk (a queue the Tk thread's pump serves), so _tkinter 3.12's misreading of Tcl 9 as unthreaded no longer matters; worker and callback errors go to launcher.log. Red then green tests, real Tk on Windows, released in 0.8.1, and walked on macOS 26.0 with 0.8.3 by an outside tester.
+<!-- SECTION:FINAL_SUMMARY:END -->
