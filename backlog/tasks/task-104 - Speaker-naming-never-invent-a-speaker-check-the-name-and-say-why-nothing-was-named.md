@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-05 06:56'
-updated_date: '2026-10-05 14:43'
+updated_date: '2026-10-05 18:15'
 labels:
   - transcription
   - llm
@@ -21,6 +21,12 @@ ordinal: 186000
 <!-- SECTION:DESCRIPTION:BEGIN -->
 From the review of 2026-10-05 (prompt reviewer and flow check). The speaker pass runs automatically after every transcription (finalize queues it), but it can write a name for a cluster that does not exist, writes a name above 90 without checking it against the transcript, and is silent when no provider is chosen.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Released in 0.8.4 (tag v0.8.4 -> 2774c2a, release.yml run 37351054122 all success; Windows exe sha256sum -c OK, attestation -> refs/tags/v0.8.4).
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 

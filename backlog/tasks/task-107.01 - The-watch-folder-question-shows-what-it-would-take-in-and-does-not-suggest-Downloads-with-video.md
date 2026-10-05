@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-05 06:56'
-updated_date: '2026-10-05 13:07'
+updated_date: '2026-10-05 18:15'
 labels:
   - installer
   - bug
@@ -51,6 +51,8 @@ Core, red then green: tests/test_ingest_watching.py 5 new tests (audio-only reco
 Robert, 2026-10-05, second decision: a new watch folder takes only what arrives after it is added (the question says 'watch for new recordings'); what it held is recorded in watch_existing (path key, size, mtime) and left alone until it changes or somebody presses 'Transcribe them'. Folders from before v18 keep taking everything. Found on the way: a folder added to a running app was only walked at the next start (reconcile ran at startup only), so 'picked up shortly' was not true either; Watcher.request_reconcile now walks on the next tick when asked.
 Red then green (tests/test_ingest_watching.py): left alone at add, taken when changed, 'Transcribe them' takes them, old rows unchanged, audio-only filter, video switch on an existing folder (red: flag stayed 0), the button offering the right switch (red: the context row had no include_video key, so an audio-only folder showed 'Audio only'), singular wording. tests/test_setup_plan.py: the sitting test that showed the existing file taken at start now shows it left alone and a later file taken (deliberate change, diff in the commit); a success note only when something was left alone. Totals: test_ingest_watching + test_web_settings + test_setup_plan 334 passed; test_setup 15, test_setup_library 22, test_launcher_sitting 71, test_db 39.
 Real run (app on 4299, --no-supervisor, scratch library and a folder with 3 audio and 4 video files): adding it answered 'Watching that folder for new recordings. 3 audio files already in it were left alone; Transcribe them below if you want them too. 4 video files ignored: video is off for this folder.'; 'Transcribe them' answered '3 audio files already in it will be transcribed' and the watch_existing rows went to 0; media and jobs stayed 0 (no watcher in that mode). The screenshot showed a long path pushing the switch and the button out of the table; the watch table now wraps (app.css), re-shot and visible. The Browse button opens at the home folder (initialdir), not where macOS last was.
+
+Released in 0.8.4 (tag v0.8.4 -> 2774c2a, release.yml run 37351054122 all success; Windows exe sha256sum -c OK, attestation -> refs/tags/v0.8.4).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
