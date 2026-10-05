@@ -1,5 +1,35 @@
 ## [Unreleased]
 
+## [0.8.4] - 2026-10-05
+
+### Changed
+
+- **A watch folder watches for new recordings.** A folder you add now takes
+  the files that arrive in it from then on. What it already held is counted,
+  said, and left alone until a file changes or you press **Transcribe them**
+  on its row in Settings > Watch folders. A second outside walk on a Mac
+  answered yes to Downloads and got 882 transcription jobs (TASK-107.01).
+- **Audio only, unless you switch video on.** A new watch folder takes audio
+  files; video is a switch on its row (**Take video too**) or a box when you
+  add it. Folders you were already watching keep doing what they did, video
+  included. The library upgrades itself (schema 18).
+- The first-start question about a watch folder says this, and its Browse
+  button opens at your home folder.
+
+### Fixed
+
+- **No speaker that is not there.** An AI answer about a speaker the
+  recording does not have (SPEAKER_07 on a two-voice recording) no longer
+  appears as an extra speaker with no words (TASK-104.01).
+- **Automatic names need support in the recording.** A name is written by
+  itself only when one of its words is in the transcript, the title or the
+  file name; otherwise it stays a suggestion in the AI panel (TASK-104.02).
+- **A recording with speakers but no AI provider says so**, and where to
+  choose one, instead of showing Speaker 1 and Speaker 2 with no hint
+  (TASK-104.03).
+- A folder added to a running MyScribe was only looked through at the next
+  start; **Transcribe them** now looks at once.
+
 ## [0.8.3] - 2026-10-04
 
 The smaller findings of an outside walk of 0.8.0 on a Mac
