@@ -1938,6 +1938,11 @@ def shown(question: dict, answers: dict) -> bool:
 # --- what a failure says ----------------------------------------------------------
 
 
+CHOICE_WAITING = "A choice is waiting in the Set up MyScribe window: Retry, or Continue without."
+"""Said in the main window while the failure dialog waits (TASK-107.03): the
+status line otherwise stayed on 'Saving your answers...', which from outside
+read as a hang."""
+
 GATED_MODEL = (
     "The speaker model is gated, and the token MyScribe has does not open it. Accept the "
     f"conditions at {CONDITIONS_URL} with the account the token belongs to, then try again. "
@@ -2605,6 +2610,9 @@ def ask_failure(root, sentence: str) -> bool:
     win.title(f"Set up {APP_NAME}")
     win.transient(root)
     win.grab_set()
+    # In front, so the choice is seen rather than found (TASK-107.03).
+    win.lift()
+    win.focus_force()
     again: list[bool] = []
 
     tk.Label(win, text=sentence, wraplength=520, justify="left", anchor="w").pack(
@@ -2699,17 +2707,6 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
     requests: "queue.Queue[tuple[Callable, queue.Queue]]" = queue.Queue()
 
     def pump() -> None:
-        while True:
-            try:
-                work, answer = requests.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                result = work()
-            except Exception:
-                leave_a_trace("in the setup window", traceback.format_exc())
-                result = None
-            answer.put(result)
         try:
             while True:
                 state, text = events.get_nowait()
@@ -2737,6 +2734,21 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
                     root.after(3000, root.destroy)
         except queue.Empty:
             pass
+        # Requests after the events, not before (TASK-107.03): a request is a
+        # dialog that runs right here, inside this tick, and whatever the
+        # worker said before asking for it - "a choice is waiting" - has to be
+        # on screen while it is open, not after it closed.
+        while True:
+            try:
+                work, answer = requests.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                result = work()
+            except Exception:
+                leave_a_trace("in the setup window", traceback.format_exc())
+                result = None
+            answer.put(result)
         if launch.app is not None and launch.app.proc is not None and not launch.app.alive():
             status.set(f"MyScribe stopped; see {layout.logs_dir / 'app.log'}")
         root.after(200, pump)
@@ -2763,6 +2775,11 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         return on_tk(lambda: ask_setup(root, layout, plan))
 
     def retry(sentence: str) -> bool:
+        # Said in this window first, through the queue the worker may use
+        # (TASK-101): the dialog that waits is a second window, and the status
+        # line here would otherwise still say "Saving your answers..."
+        # (TASK-107.03).
+        events.put(("status", CHOICE_WAITING))
         return bool(on_tk(lambda: ask_failure(root, sentence)))
 
     sitting = threading.Lock()
