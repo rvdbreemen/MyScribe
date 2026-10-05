@@ -1528,3 +1528,10 @@ button.not-saved, button.not-saved:hover:enabled, .primary.not-saved {
 .phone-qr svg { background: #fff; padding: 8px; border-radius: 6px; max-width: 100%; height: auto; }
 .phone-url code { word-break: break-all; }
 .phone-received { margin: .2rem 0 .6rem; padding-left: 1.2rem; }
+
+/* TASK-107.01: a watch folder's path is long and its row carries the video
+   switch and "Transcribe them"; with every cell nowrap (above) a long path
+   pushed both out of the table. The path breaks anywhere, the summary wraps. */
+.watch-folders td.path { white-space: normal; overflow-wrap: anywhere; min-width: 16rem; }
+.watch-folders td.summary { white-space: normal; }
+.watch-folders td.summary .inline-form { margin-top: .35rem; }

@@ -812,7 +812,11 @@ def _questions(
             Question(
                 id="watch_folder",
                 kind="text",
-                text="Is there a folder MyScribe should watch for new recordings? Give its full path.",
+                text=(
+                    "Is there a folder MyScribe should watch for new recordings? Give its full path. "
+                    "Audio files that arrive in it from now on are transcribed; what is already in it "
+                    "is left alone, and video can be switched on later in Settings > Watch folders."
+                ),
                 choices=[],
                 current="",
                 default=None,
@@ -2378,12 +2382,17 @@ def apply(
         from scribe.web import settings as settings_ui
 
         try:
-            settings_ui.add_watched(conn, answers.watch_folder, transcribe_dialog.read_defaults(conn))
+            _path, left = settings_ui.add_watched(
+                conn, answers.watch_folder, transcribe_dialog.read_defaults(conn))
         except HTTPException as refused:
             report["notes"].append(f"watch_folder: {refused.detail}")
             report["reopen"].append("watch_folder")
         else:
             report["wrote"].append("watch_folder")
+            # Said, because the folder is watched for what arrives from now
+            # on: what it already held is left alone (TASK-107.01).
+            if left.taken or left.skipped_video:
+                report["notes"].append(f"watch_folder: {settings_ui.watch_added_sentence(left, False)}")
             answered.append("watch_folder")
     # TASK-089.22: start at login. A No is an answer too and is recorded as
     # one, or it would come back at every start (criterion 3). A Yes makes the

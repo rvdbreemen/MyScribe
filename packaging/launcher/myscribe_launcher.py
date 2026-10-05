@@ -2437,7 +2437,10 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
             def browse(entry=entries[name], name=name) -> None:
                 from tkinter import filedialog
 
-                picked = filedialog.askdirectory(parent=win, mustexist=True)
+                # The home folder, not wherever the OS dialog last was: on macOS
+                # that is often Downloads, and Downloads is the folder that
+                # became 882 jobs on a Mac (TASK-107.01).
+                picked = filedialog.askdirectory(parent=win, mustexist=True, initialdir=str(Path.home()))
                 if picked:
                     entry.delete(0, "end")
                     entry.insert(0, picked)

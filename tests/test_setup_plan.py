@@ -2434,16 +2434,18 @@ def test_render_prints_the_watched_folders(library, no_weights, inbox):
     assert "watch_folder" not in still_open
 
 
-def test_nothing_is_ingested_in_the_sitting_and_the_watcher_takes_the_file_in_at_start(
+def test_nothing_is_ingested_in_the_sitting_and_the_watcher_takes_what_arrives_after(
         library, no_weights, inbox):
     """Criterion 6, with the real lifespan: the real Watcher thread, the real
     watchdog observer and the startup reconcile, on this test's data directory.
 
-    A file that is already in the folder when the question is answered is the
-    strongest form of "nothing is ingested in the sitting": `apply` writes the
-    row and leaves the file where it is. The file is stamped 60 s old, as
-    tests/test_ingest_watching.py's `drop` does, because reconcile takes in
-    only what has held still for `QUIESCE_SECONDS`.
+    Changed by TASK-107.01 (Robert, 2026-10-05): this test used to show the
+    file already in the folder being taken in at the first start. That is how
+    ~/Downloads became 882 jobs on a Mac. The folder is watched "for new
+    recordings", so the file that was there is left alone - and a file that
+    arrives after the sitting is what the watcher takes. Both are stamped 60 s
+    old, as tests/test_ingest_watching.py's `drop` does, because the watcher
+    takes in only what has held still for `QUIESCE_SECONDS`.
 
     In-process rather than `python -m scribe` in a child: `--no-supervisor`
     switches the watcher off with it (`create_app`: a second observer over the
@@ -2459,22 +2461,30 @@ def test_nothing_is_ingested_in_the_sitting_and_the_watcher_takes_the_file_in_at
     old = time.time() - 60
     os.utime(recording, (old, old))
 
-    apply_watch(library, str(inbox))
+    report = apply_watch(library, str(inbox))
 
     assert library.execute("SELECT count(*) FROM media").fetchone()[0] == 0, "the sitting ingests nothing"
     assert library.execute("SELECT count(*) FROM job").fetchone()[0] == 0
+    assert any("1 audio file already in it was left alone" in note for note in report["notes"])
 
     app = create_app(db_path=paths.DB_PATH, start_supervisor=False, start_watcher=True)
     with TestClient(app, base_url="http://127.0.0.1"):
         assert app.state.watcher is not None and app.state.supervisor is None
+        time.sleep(3)  # the startup reconcile has walked the folder by now
+        assert library.execute("SELECT count(*) FROM media").fetchone()[0] == 0, (
+            "what was in the folder when it was added is left alone")
+
+        arrived = inbox / "later.mp3"
+        arrived.write_bytes(b"a recording made after the sitting")
+        os.utime(arrived, (old, old))
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if library.execute("SELECT count(*) FROM media").fetchone()[0]:
                 break
             time.sleep(0.25)
 
-    (media_row,) = library.execute("SELECT id, orig_name, size_bytes FROM media").fetchall()
-    assert media_row["orig_name"] == "meeting.mp3" and media_row["size_bytes"] == len(body)
+    (media_row,) = library.execute("SELECT id, orig_name FROM media").fetchall()
+    assert media_row["orig_name"] == "later.mp3"
     (job,) = library.execute("SELECT type, status, media_id FROM job").fetchall()
     assert (job["type"], job["status"], job["media_id"]) == ("transcribe", "queued", media_row["id"]), (
         "queued, and never claimed: no supervisor runs here")

@@ -532,6 +532,19 @@ _SCHEMA_V18 = """
 -- per folder. The column's default is 1 so that every folder watched before
 -- this keeps doing exactly what it did: nothing changes under anybody.
 ALTER TABLE watch_folder ADD COLUMN include_video INTEGER NOT NULL DEFAULT 1;
+
+-- And it watches for what arrives, not for what was there (Robert,
+-- 2026-10-05): the question asks for a folder to watch "for new recordings".
+-- A folder added through a door (Settings, first-run setup) records here the
+-- files it already held, by the watcher's own key and the size and mtime it
+-- saw; the watcher leaves a file alone while it still matches. A file that
+-- changes is a new recording and is taken. Deleting a folder's rows is the
+-- "transcribe them after all" button. A folder from before v18 has no rows,
+-- so it keeps taking everything, as it always did.
+CREATE TABLE watch_existing(
+  folder_id INTEGER NOT NULL REFERENCES watch_folder(id) ON DELETE CASCADE,
+  path_key TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
+  PRIMARY KEY(folder_id, path_key));
 """
 
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.

@@ -321,6 +321,18 @@ def set_enabled(conn: sqlite3.Connection, folder_id: int, enabled: bool) -> bool
         return cur.rowcount == 1
 
 
+def set_include_video(conn: sqlite3.Connection, folder_id: int, include_video: bool) -> bool:
+    """Let a folder take video too, or stop it; False when there is no such row.
+    Applies to what arrives from now on and to the files it is leaving alone
+    when somebody asks for them (TASK-107.01)."""
+    with db.LOCK:
+        cur = conn.execute(
+            "UPDATE watch_folder SET include_video=? WHERE id=?", (1 if include_video else 0, folder_id)
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
 def remove_folder(conn: sqlite3.Connection, folder_id: int) -> bool:
     """Stop watching a folder; False when there is no such row.
 
@@ -402,6 +414,67 @@ def preview(root: str | Path, *, include_video: bool) -> Preview:
             skipped += 1
     return Preview(taken=sum(by_extension.values()), skipped_video=skipped,
                    by_extension=dict(sorted(by_extension.items())))
+
+
+def leave_existing(conn: sqlite3.Connection, folder_id: int, root: str | Path,
+                   *, include_video: bool) -> Preview:
+    """Record what a newly added folder already holds, so the watcher leaves it.
+
+    Robert, 2026-10-05: a folder is watched "for new recordings", and taking
+    in everything it held is how ~/Downloads became 882 jobs. Recorded by the
+    watcher's own key and the size and mtime it sees, so a file that is later
+    rewritten counts as new. Returns the count of what was left alone, by the
+    same rule the watcher uses. Nothing is hashed or opened.
+    """
+    folder = {"include_video": 1 if include_video else 0}
+    by_extension: dict[str, int] = {}
+    skipped = 0
+    rows = []
+    for path in _walk(Path(root)):
+        if not takes(folder, path):
+            skipped += 1
+            continue
+        size, mtime = _snapshot(path)
+        if size < 0:
+            continue
+        rows.append((folder_id, _key(path), size, mtime))
+        suffix = path.suffix.lower()
+        by_extension[suffix] = by_extension.get(suffix, 0) + 1
+    with db.LOCK:
+        conn.executemany(
+            "INSERT OR REPLACE INTO watch_existing(folder_id, path_key, size, mtime) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    return Preview(taken=len(rows), skipped_video=skipped, by_extension=dict(sorted(by_extension.items())))
+
+
+def take_existing(conn: sqlite3.Connection, folder_id: int) -> int:
+    """Forget what a folder held when it was added, so the next walk takes it
+    in after all; returns how many files that is."""
+    with db.LOCK:
+        cur = conn.execute("DELETE FROM watch_existing WHERE folder_id=?", (folder_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+def existing_left(conn: sqlite3.Connection, folder_id: int) -> int:
+    """How many files this folder is still leaving alone."""
+    with db.LOCK:
+        return conn.execute(
+            "SELECT COUNT(*) FROM watch_existing WHERE folder_id=?", (folder_id,)
+        ).fetchone()[0]
+
+
+def _left_alone(conn: sqlite3.Connection, folder: dict, key: str, snapshot: tuple[int, float]) -> bool:
+    """Whether this file was in the folder when it was added and has not
+    changed since. A different size or mtime is a new recording."""
+    with db.LOCK:
+        row = conn.execute(
+            "SELECT size, mtime FROM watch_existing WHERE folder_id=? AND path_key=?",
+            (folder["id"], key),
+        ).fetchone()
+    return row is not None and (row["size"], row["mtime"]) == tuple(snapshot)
 
 
 def folder_for(path: str | Path, watched: Sequence[dict]) -> dict | None:
@@ -593,6 +666,7 @@ class Watcher:
         self._unschedulable: dict[str, str] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._walk_again = threading.Event()  # request_reconcile (TASK-107.01)
         self._thread: threading.Thread | None = None
 
     # --- the seam the tests drive ---------------------------------------------------
@@ -648,6 +722,8 @@ class Watcher:
                 continue
             if not takes(folder, pending.path):
                 continue  # a video in a folder that takes audio only (TASK-107.01)
+            if _left_alone(conn, folder, key, snapshot):
+                continue  # it was here when the folder was added (TASK-107.01)
             try:
                 result = take_in(conn, pending.path, folder)
             except Exception:  # noqa: BLE001 - one bad file is not a dead watcher
@@ -770,6 +846,8 @@ class Watcher:
                     continue
                 if not takes(owner, path):
                     continue  # audio-only folder, and this is a video (TASK-107.01)
+                if _left_alone(conn, owner, key, snapshot):
+                    continue  # it was here when the folder was added (TASK-107.01)
                 try:
                     result = take_in(conn, path, owner)
                 except Exception:  # noqa: BLE001 - see pump: keep going
@@ -838,6 +916,9 @@ class Watcher:
             while not self._stop_event.is_set():
                 if observer is not None:
                     _survive(self._sync_schedules, observer, conn)
+                if self._walk_again.is_set():
+                    self._walk_again.clear()
+                    _survive(self.reconcile, conn)
                 _survive(self.pump, conn)
                 self._stop_event.wait(self.poll_interval)
         finally:
@@ -848,6 +929,15 @@ class Watcher:
             # stop is not a reason to read the folder again tomorrow.
             _survive(self._save_taken)
             conn.close()
+
+    def request_reconcile(self) -> None:
+        """Walk the folders again on the next tick rather than at the next start.
+
+        Asked by the settings page when somebody chooses to transcribe the
+        files a folder held when it was added (TASK-107.01): without it those
+        would wait for a restart, the only other time the folders are walked.
+        """
+        self._walk_again.set()
 
     def _open_observer(self):
         """The observer, started - or None when this machine cannot give one.
