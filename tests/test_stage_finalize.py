@@ -775,3 +775,57 @@ def test_the_sweep_clears_the_note_when_it_finally_asks(conn, ollama_ready):
 
     assert finalize.sweep_speaker_passes(conn) != []
     assert "speaker_pass_note" not in _run_params(conn, run_id)
+
+
+# --- TASK-104.03: speakers and no provider says so -----------------------------------
+
+
+def test_speakers_with_no_provider_chosen_leave_a_note_that_names_the_fix(conn, own_work_dir):
+    """A fresh install has no provider (ADR-016), so the pass is never queued
+    - and the transcript showed 'Speaker 1' and 'Speaker 2' with no hint that
+    naming them exists. Silence was the answer for 'nobody chose'; now it is
+    a sentence."""
+    media_id = seed_media(conn, title="Guide")
+    words = _diarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    note = _run_params(conn, run_id).get("speaker_pass_note", "")
+    assert "no AI provider is chosen" in note
+    assert "Settings > AI providers" in note
+
+
+def test_the_no_provider_note_is_on_the_transcript_page(conn, own_work_dir):
+    from scribe.web import transcript as transcript_ui
+    media_id = seed_media(conn, title="Guide")
+    words = _diarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    run = conn.execute("SELECT * FROM run WHERE id=?", (run_id,)).fetchone()
+
+    assert "no AI provider is chosen" in transcript_ui.speaker_pass_note(dict(run))
+
+
+def test_no_provider_and_no_speakers_is_no_note(conn, own_work_dir):
+    media_id = seed_media(conn, title="Guide")
+    words = _undiarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    assert "speaker_pass_note" not in _run_params(conn, run_id)
+
+
+def test_no_provider_on_a_private_recording_is_no_note(conn, own_work_dir):
+    media_id = seed_media(conn, title="Guide")
+    words = _diarized_words()
+    run_id = seed_run(conn, media_id, words=words)
+    with db.LOCK:
+        conn.execute("UPDATE media SET private=1 WHERE id=?", (media_id,))
+        conn.commit()
+
+    finalize.run(_finalize_ctx(conn, media_id, run_id, words=words))
+
+    assert "speaker_pass_note" not in _run_params(conn, run_id)

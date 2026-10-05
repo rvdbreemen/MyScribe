@@ -509,6 +509,11 @@ says what it knows only to the database."""
 
 SPEAKER_PASS_KEY = "speaker_pass_note"
 
+NO_PROVIDER = "no AI provider is chosen yet - choose one in Settings > AI providers"
+"""Why a diarized run has no names when nobody has chosen (TASK-104.03).
+Ends without a stop, like the provider's own sentences, so
+`_speaker_pass_note` closes it the same way."""
+
 
 def _speaker_pass_note(why: str) -> str:
     """The note, with the provider's sentence closed off before ours begins.
@@ -571,7 +576,14 @@ def _speaker_pass_blocked(
 
     provider_name = llm.default_provider(conn)
     if not provider_name:
-        return ""
+        # TASK-104.03: silence used to be the answer here, so a fresh install
+        # showed "Speaker 1" and "Speaker 2" with no sign that naming them
+        # exists. Not on a private recording: a pinned one is never sent out
+        # by a pipeline step, and "choose a provider" would read as an
+        # invitation to do exactly that.
+        if privacy.is_private(conn, media_id):
+            return ""
+        return NO_PROVIDER
     if not llm.provider_class(provider_name).is_local and privacy.is_private(conn, media_id):
         return ""
     return _cannot_answer(conn, provider_name)
