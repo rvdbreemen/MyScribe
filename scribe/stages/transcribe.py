@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence
 
 import numpy as np
 
-from scribe import accel, cuda_setup, db, glossary, jobs, models
+from scribe import accel, applog, cuda_setup, db, glossary, jobs, models
 from scribe.stages import loudness, mlx_backend, seams, second_opinion
 
 if TYPE_CHECKING:  # avoids a runtime import cycle: runner imports this module
@@ -552,12 +552,37 @@ def _drop_echoes(segments: list[dict], words: list[dict], cuts: list[int]) -> tu
 # --- the model ------------------------------------------------------------------
 
 
+def fetch_missing_weights(
+    model_name: str, backend: str, on_weights: Callable[[str, int, int], None] | None
+) -> None:
+    """Fetch the weights this job is about to load, if they are not here yet.
+
+    TASK-107.04: on a Mac, tier max needed mlx-community/whisper-large-v3-mlx
+    (2.9 GB). Setup's download question had been left open, so the loader
+    pulled it from the Hub inside the first job - no progress, no log line,
+    a job that looked hung. Now the same `models.ensure` setup uses fetches it
+    first, verified, with bytes reported to ``on_weights(repo, done, total)``.
+
+    Nothing happens for a model already here (the library or the Hub cache:
+    `models.present`), or one the catalogue does not know - a directory
+    somebody converted, say - which the loader resolves as it always did.
+    """
+    from scribe import models
+
+    for model in models.catalogue().values():
+        if model.alias == model_name and models.loads_here(model, backend):
+            if not models.present(model):
+                models.ensure([model.repo], backend=backend, on_progress=on_weights)
+            return
+
+
 def load_model(
     model_name: str,
     *,
     device: str | None = None,
     compute_type: str | None = None,
     cpu_fallback: bool = False,
+    on_weights: Callable[[str, int, int], None] | None = None,
 ) -> tuple[Any, str, str]:
     """Construct a WhisperModel; returns (model, device, compute_type).
 
@@ -573,6 +598,9 @@ def load_model(
     """
     if device is None:
         device = accel.transcription_backend(cpu_fallback=cpu_fallback)
+    # The weights before the model: a loader handed a name it does not have
+    # fetches it silently (TASK-107.04).
+    fetch_missing_weights(model_name, device, on_weights)
     if device == mlx_backend.DEVICE:
         # Apple Silicon: the same weights on the Apple GPU through Metal.
         # CTranslate2 has no Metal backend, so faster-whisper is not an option
@@ -632,6 +660,7 @@ def transcribe_audio(
     lookahead_seconds: float = LOOKAHEAD_SECONDS,
     on_segment: Callable[[dict], None] | None = None,
     cpu_fallback: bool = False,
+    on_weights: Callable[[str, int, int], None] | None = None,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Transcribe one prepared wav; returns (info, segments, words).
 
@@ -655,7 +684,8 @@ def transcribe_audio(
     the language Whisper detected - because that is what goes in the run row.
     """
     model, device, compute_type = load_model(
-        model_name, device=device, compute_type=compute_type, cpu_fallback=cpu_fallback
+        model_name, device=device, compute_type=compute_type, cpu_fallback=cpu_fallback,
+        on_weights=on_weights,
     )
     extractor = getattr(model, "feature_extractor", None)
     duration = wav_duration(wav)
@@ -794,6 +824,25 @@ def transcribe_audio(
 # --- the stage ------------------------------------------------------------------
 
 
+class _WeightsReport:
+    """What a job says while it fetches the weights it needs (TASK-107.04):
+    the bytes as the job's progress, and once, an event on the job and a line
+    in the application log naming the model and its size - so 2.9 GB arriving
+    inside a job is something happening, not a job that hangs."""
+
+    def __init__(self, ctx: "RunnerContext") -> None:
+        self.ctx = ctx
+        self.said: set[str] = set()
+
+    def __call__(self, repo: str, done: int, total: int) -> None:
+        if repo not in self.said:
+            self.said.add(repo)
+            jobs.emit(self.ctx.conn, self.ctx.job["id"], "weights", repo=repo, bytes=total)
+            applog.log("transcribe.weights", job=self.ctx.job["id"], repo=repo, bytes=total)
+        if total:
+            self.ctx.report(min(done / total, 1.0))
+
+
 def run(ctx: "RunnerContext") -> None:
     """The stage: transcribe this job's prepared wav into words and segments."""
     wav = ctx.state.get("wav")
@@ -812,6 +861,7 @@ def run(ctx: "RunnerContext") -> None:
     hotwords = compose_hotwords(ctx.conn, media_row, _extra_hotwords(ctx.params))
 
     glimpse = LiveText(ctx)
+    weights = _WeightsReport(ctx)
     info, segments, words = transcribe_audio(
         wav,
         model_name=model_name,
@@ -825,6 +875,7 @@ def run(ctx: "RunnerContext") -> None:
         device=ctx.params.get("device"),
         compute_type=ctx.params.get("compute_type"),
         on_segment=glimpse.add,
+        on_weights=weights,
         # The Settings switch (TASK-092): whether a card CUDA cannot reach
         # may be passed over for the CPU. Off without a row.
         cpu_fallback=accel.cpu_fallback_allowed(ctx.conn),

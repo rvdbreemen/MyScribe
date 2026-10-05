@@ -31,6 +31,21 @@ def _no_library_db():
 
 
 @pytest.fixture(autouse=True)
+def _no_weights_fetched(request, monkeypatch):
+    """No test downloads speech weights (TASK-107.04).
+
+    `transcribe.load_model` now fetches the weights it is about to load when
+    they are missing, through `models.ensure` - and a test that calls the real
+    `load_model` with a fake model class reached the Hugging Face Hub for real.
+    So the fetch is a no-op everywhere, except in tests marked
+    `real_weights_fetch`, which stand in for `models.ensure` themselves.
+    """
+    if request.node.get_closest_marker("real_weights_fetch") is not None:
+        return
+    monkeypatch.setattr("scribe.stages.transcribe.fetch_missing_weights", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _plenty_of_disk(monkeypatch):
     """Every test runs on a volume with room, unless it says otherwise.
 
