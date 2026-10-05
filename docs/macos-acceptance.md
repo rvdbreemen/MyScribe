@@ -88,7 +88,9 @@ TASK-089.15 criterion 13. The dmg from the latest release, a fresh home.
     open ~/Downloads/MyScribe-*-macos-arm64.dmg      # drag MyScribe to Applications
     /Applications/MyScribe.app/Contents/MacOS/MyScribe --home ~/MyScribe-fresh-home
 
-Expected: Gatekeeper asks once (Control-click, Open, then Open Anyway); the
+Expected: Gatekeeper refuses once, and System Settings → Privacy & Security
+→ Open Anyway lets it start (on macOS 26 the refusal has no Open button and
+Control-click → Open is refused the same way - the walk of 0.8.3); the
 window asks where everything goes before anything is downloaded; after the
 sync it shows what it found and only the open questions, each with a Skip;
 "Save and start" ends with the app open in the browser. A photo or a screen

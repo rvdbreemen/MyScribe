@@ -31,6 +31,17 @@ def test_the_dmg_note_keeps_its_signing_instructions():
     assert "Open Anyway" in note and "Applications" in note
 
 
+def test_the_dmg_note_leads_with_the_route_macos_26_takes():
+    """TASK-107.02: on macOS 26 the refusal has no Open button and a
+    right-click > Open is refused too (the outside walk of 0.8.3); the way in
+    is Privacy & Security after one attempt. The right-click stays, labelled
+    for the older systems it still works on."""
+    note = build_release.DMG_NOTE
+    assert "Privacy & Security" in note
+    assert note.index("Privacy & Security") < note.index("right-click")
+    assert "macOS 14 and earlier" in note
+
+
 # --- TASK-102.01: the version Finder shows ----------------------------------------
 
 import plistlib  # noqa: E402

@@ -131,8 +131,10 @@ it does not, so a missing certificate cannot stop a release that is otherwise
 sound. Today neither is configured:
 
 * macOS ships ad-hoc signed. A downloaded dmg carries `com.apple.quarantine`
-  and Gatekeeper will refuse it until the user chooses **Open Anyway** - the
-  dmg's "Open me first" note explains that.
+  and Gatekeeper will refuse it until the user chooses **Open Anyway** in
+  System Settings → Privacy & Security - the dmg's "Open me first" note
+  explains that. Until then the app is killed at start (exit 137), even from
+  a terminal.
 * The Windows installer is unsigned and SmartScreen will say so.
 
 Set `MACOS_CERTIFICATE` or `WINDOWS_CERTIFICATE` in the repository's secrets

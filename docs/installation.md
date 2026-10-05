@@ -26,9 +26,15 @@ The files are not signed yet, so each system warns you the first time:
   `%LOCALAPPDATA%\Programs\MyScribe`, and its working files into
   `%LOCALAPPDATA%\MyScribe` unless you choose another folder at the first
   start. Uninstalling never touches your library.
-* **macOS** - Gatekeeper refuses an unsigned app outright. Open the dmg from
-  Finder with **Control-click → Open**, then **Open Anyway**; the dmg's
-  *Open me first* note says the same.
+* **macOS** - Gatekeeper refuses an unsigned app, and until you allow it the
+  app does not start at all, not even from a terminal. Drag MyScribe to
+  Applications and start it once; macOS says it could not verify it. Then open
+  **System Settings → Privacy & Security**, scroll to *Security*, press
+  **Open Anyway** beside MyScribe, confirm with Touch ID or your password, and
+  start it again. On macOS 15 and later this is the only way: the refusal
+  itself has no Open button any more, and Control-click → Open gives the same
+  refusal. On macOS 14 and earlier, **Control-click → Open**, then **Open**,
+  also works. The dmg's *Open me first* note says the same.
 * **Linux** - make the AppImage executable (`chmod +x`) and run it.
 
 ### Verify a download
