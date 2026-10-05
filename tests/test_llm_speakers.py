@@ -53,7 +53,10 @@ SPEAKERS_ANSWER = json.dumps(
 
 @pytest.fixture
 def media(conn):
-    media_id = seed_media(conn, title="Guide")
+    # The title names the two people the speaker tests call by name: since
+    # TASK-104.02 a name is written only when the recording - its words, its
+    # title or its file name - contains it.
+    media_id = seed_media(conn, title="Guide with Arthur and Zaphod")
     seed_run(conn, media_id)
     return media_id
 
@@ -541,23 +544,22 @@ def test_a_confident_name_is_written_by_the_job_itself(conn, media, monkeypatch)
     assert row["llm_output_id"] == output_id
 
 
-def test_a_name_at_or_below_the_threshold_is_not_written(conn, media, monkeypatch):
+@pytest.mark.parametrize(("confidence", "written"), [(89.9, False), (90, False), (90.1, True)])
+def test_a_name_at_or_below_the_threshold_is_not_written(conn, media, monkeypatch, confidence, written):
     """90 is the bar and it is not inclusive-by-accident: a cluster that did
-    not clear it keeps its default and stays a suggestion."""
+    not clear it keeps its default and stays a suggestion.
+
+    TASK-104.01 moved this onto a cluster the run has: it used to write 'Sure'
+    for SPEAKER_02, which the seeded run does not carry - the phantom speaker
+    that task removes."""
     provider, _ = fake_provider(
-        [
-            _answer(
-                {"cluster": "SPEAKER_00", "name": "Maybe", "confidence": 90},
-                {"cluster": "SPEAKER_01", "name": "Unsure", "confidence": 89.9},
-                {"cluster": "SPEAKER_02", "name": "Sure", "confidence": 90.1},
-            )
-        ]
+        [_answer({"cluster": "SPEAKER_01", "name": "Marvin", "confidence": confidence})]
     )
     register(monkeypatch, provider)
 
     tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
 
-    assert set(_named(conn, _run_id(conn, media))) == {"SPEAKER_02"}
+    assert ("SPEAKER_01" in _named(conn, _run_id(conn, media))) is written
 
 
 def test_a_name_a_person_typed_is_never_overwritten(conn, media, monkeypatch):
@@ -814,3 +816,63 @@ def test_a_second_analysis_does_not_erase_the_first(conn, media, monkeypatch):
     stored = rows(conn, media, "speakers")
     assert {row["id"] for row in stored} == {first, second}
     assert first != second
+
+
+# --- TASK-104: never invent a speaker, and only names the recording supports ------
+
+
+def test_a_confident_guess_about_a_cluster_the_run_does_not_have_is_not_written(conn, media, monkeypatch):
+    """TASK-104.01: a model that answers about SPEAKER_07 at 95 used to get a
+    speaker_label row - and run_speakers lists any cluster with a label, so a
+    speaker with no words appeared on the transcript page."""
+    provider, _ = fake_provider(
+        [_answer({"cluster": "SPEAKER_07", "name": "Marvin", "confidence": 95})]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    run_id = _run_id(conn, media)
+    assert _named(conn, run_id) == {}
+    from scribe.web import transcript as transcript_ui
+    assert "SPEAKER_07" not in {s["cluster"] for s in transcript_ui.run_speakers(conn, run_id)}
+
+
+def test_a_confident_name_the_recording_never_mentions_is_only_a_suggestion(conn, media, monkeypatch):
+    """TASK-104.02: confidence is the model's claim about itself. A name that
+    is not in the transcript, the title or the file name is not written
+    unattended; it stays what the panel offers."""
+    provider, _ = fake_provider(
+        [_answer({"cluster": "SPEAKER_01", "name": "Slartibartfast", "confidence": 97})]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, _run_id(conn, media)) == {}
+
+
+def test_a_confident_name_said_in_the_recording_is_written(conn, media, monkeypatch):
+    """'Marvin says ...' is in the seeded transcript, so the name stands on
+    something the recording itself contains."""
+    provider, _ = fake_provider(
+        [_answer({"cluster": "SPEAKER_01", "name": "Marvin", "confidence": 97})]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, _run_id(conn, media))["SPEAKER_01"][0] == "Marvin"
+
+
+def test_a_name_the_title_gives_is_written(conn, monkeypatch):
+    media_id = seed_media(conn, title="Interview with Arthur Dent")
+    seed_run(conn, media_id)
+    provider, _ = fake_provider(
+        [_answer({"cluster": "SPEAKER_00", "name": "Arthur Dent", "confidence": 96})]
+    )
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media_id, kind="speakers", provider_name="fake", model="fake-1")
+
+    assert _named(conn, _run_id(conn, media_id))["SPEAKER_00"][0] == "Arthur Dent"

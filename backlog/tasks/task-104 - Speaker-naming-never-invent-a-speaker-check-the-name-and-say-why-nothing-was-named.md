@@ -3,9 +3,11 @@ id: TASK-104
 title: >-
   Speaker naming: never invent a speaker, check the name, and say why nothing
   was named
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 06:56'
+updated_date: '2026-10-05 14:19'
 labels:
   - transcription
   - llm
