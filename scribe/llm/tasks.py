@@ -67,7 +67,7 @@ from scribe.llm import base, chunking, ollama, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 """Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
 JSON_SYSTEM, a kind's goal or the line `source_label` writes - because it is
 part of the stored key: answers to an edited question are not answers to the
@@ -714,7 +714,27 @@ JSON_SYSTEM = (
 )
 
 
-def system_for(spec: TaskSpec) -> str:
+LANGUAGE_SYSTEM = (
+    " The transcript is in {name}: write your answer in {name}, whatever language these "
+    "instructions are in."
+)
+"""Added when the run's language is known (TASK-105.01). Every instruction here
+is English and none named the transcript's language, so a Dutch recording was
+likely answered in English. The JSON keys stay as the schema names them; only
+the text in them follows the transcript."""
+
+
+def answer_language(run: Any) -> str | None:
+    """The name of the language an answer about `run` is written in: that of
+    its transcript - English for a translate run, whatever was spoken - or
+    None when it is not known."""
+    from scribe.stages.transcribe import LANGUAGE_CHOICES
+
+    code = "en" if run["task"] == "translate" else run["language"]
+    return dict(LANGUAGE_CHOICES).get(code or "")
+
+
+def system_for(spec: TaskSpec, language: str | None = None) -> str:
     """The system prompt for `spec`.
 
     The JSON instruction is added whenever the kind has a schema - including
@@ -723,7 +743,11 @@ def system_for(spec: TaskSpec) -> str:
     what stops a model that has no such constraint from wrapping a perfectly
     good object in an apology.
     """
-    return SYSTEM + (JSON_SYSTEM if spec.schema is not None else "")
+    return (
+        SYSTEM
+        + (LANGUAGE_SYSTEM.format(name=language) if language else "")
+        + (JSON_SYSTEM if spec.schema is not None else "")
+    )
 
 
 def chunk_goal(spec: TaskSpec, custom_prompt: str | None = None) -> str:
@@ -1022,6 +1046,8 @@ class TaskPlan:
     """`words_fingerprint` of the words the chunks were cut from, taken when
     the document was loaded - so a cleaning records what it read even if a
     correction lands while the model is answering (TASK-071)."""
+    language: str | None = None
+    """The name of the language answers are written in (`answer_language`)."""
     known_labels: tuple[str, ...] = ()
     """The vocabulary the library already uses, for the kinds whose prompt
     offers it. Read once when the plan is made rather than at each call, so
@@ -1184,6 +1210,7 @@ def plan_task(
         max_output_tokens=output_tokens,
         custom_prompt=(custom_prompt or "").strip() or None,
         known_labels=vocabulary(conn) if spec.kind == "labels" else (),
+        language=answer_language(doc.run),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
         note_budget=note_budget,
     )
@@ -1727,7 +1754,7 @@ def generate(
         response = _ask(
             conn,
             plan,
-            system=system_for(plan.spec),
+            system=system_for(plan.spec, plan.language),
             user=user_prompt(
                 plan.spec,
                 transcript=plan.chunks[0].text,
@@ -1794,7 +1821,7 @@ def generate(
     response = _ask(
         conn,
         plan,
-        system=system_for(plan.spec),
+        system=system_for(plan.spec, plan.language),
         user=render_prompt(
             chunking.MAP_REDUCE_PROMPTS["combine"], count=len(notes), body=body
         ),
@@ -1945,7 +1972,7 @@ def _collect_parts(
         response = _ask(
             conn,
             plan,
-            system=system_for(plan.spec),
+            system=system_for(plan.spec, plan.language),
             user=user_prompt(
                 plan.spec,
                 transcript=chunk.text,

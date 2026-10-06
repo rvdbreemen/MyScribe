@@ -266,8 +266,8 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "1521cbb64bc5bf663ea7ab845633f39ed2f1da09db946b45aafb779dca52daac"
-"""sha256 over everything a prompt is made of, for PROMPT_VERSION "2": the
+PROMPTS_DIGEST = "9c3cf88ecf4f038e9560532d016a247e05015faae18ab49995aca3128348a2d8"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "3": the
 templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal, and the
 source line `source_label` writes. Line endings are normalised first, because
 git rewrites them on checkout here.
@@ -275,6 +275,8 @@ git rewrites them on checkout here.
 Until TASK-105.02 (2026-10-06) only the templates were hashed, so a change to
 SYSTEM or a goal string reused answers to the old question. Recording the
 wider digest moved nothing: the material is what version "2" already asked.
+Version "3" (TASK-105.01, the same day) added LANGUAGE_SYSTEM: answers now
+come in the transcript's language.
 
 Moved once without a bump, on 2026-09-06, when `speakers.md` and `cleanup.md`
 were *added*: the six templates that existed were byte-identical before and
@@ -287,7 +289,7 @@ def prompt_material() -> bytes:
     parts: list[str] = []
     for path in sorted(tasks.PROMPTS_DIR.glob("*.md")):
         parts += [path.name, path.read_text(encoding="utf-8").replace(chr(13) + chr(10), chr(10))]
-    parts += ["SYSTEM", tasks.SYSTEM, "JSON_SYSTEM", tasks.JSON_SYSTEM]
+    parts += ["SYSTEM", tasks.SYSTEM, "JSON_SYSTEM", tasks.JSON_SYSTEM, "LANGUAGE_SYSTEM", tasks.LANGUAGE_SYSTEM]
     for kind in sorted(tasks.TASKS):
         parts += [f"goal:{kind}", tasks.TASKS[kind].goal]
     parts += ["source_label", tasks.source_label("Title", 61.0),
@@ -1912,3 +1914,41 @@ def test_the_speakers_pass_may_answer_in_16000_tokens_against_a_cloud_window():
     (`test_every_kind_fits_the_smallest_local_window`)."""
     spec = tasks.TASKS["speakers"]
     assert tasks.fit_output_tokens(spec, context_tokens=tasks.CLOUD_CONTEXT_TOKENS) == 16_000
+
+
+# --- TASK-105.01: the answer comes back in the recording's language -------------------
+
+
+def _system_sent(conn, monkeypatch, media_id, *, language, task="transcribe"):
+    """The system prompt one summary call went out with, for a run in `language`."""
+    with db.LOCK:
+        conn.execute("UPDATE run SET language=?, task=? WHERE media_id=?", (language, task, media_id))
+        conn.commit()
+    provider, calls = fake_provider([ANSWERS["summary"]])
+    register(monkeypatch, provider)
+    plan = tasks.plan_task(conn, media_id=media_id, kind="summary", provider_name="fake", model="fake-1")
+    tasks.generate(conn, plan)
+    return calls[-1].system
+
+
+def test_a_dutch_recording_is_answered_in_dutch(conn, monkeypatch, media):
+    """Every prompt is English and none named the transcript's language, so a
+    Dutch recording was likely summarised in English (the review of
+    2026-10-05). The run knows its language; the model is now told."""
+    system = _system_sent(conn, monkeypatch, media, language="nl")
+
+    assert "Dutch" in system and "write your answer in Dutch" in system
+
+
+def test_a_translated_run_is_answered_in_english(conn, monkeypatch, media):
+    """translate writes an English transcript of a recording in another
+    language; the answer follows the transcript, not the audio."""
+    system = _system_sent(conn, monkeypatch, media, language="nl", task="translate")
+
+    assert "write your answer in English" in system and "Dutch" not in system
+
+
+def test_an_unknown_language_adds_nothing(conn, monkeypatch, media):
+    system = _system_sent(conn, monkeypatch, media, language=None)
+
+    assert system.startswith(tasks.SYSTEM) and "write your answer in" not in system
