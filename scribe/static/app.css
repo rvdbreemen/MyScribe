@@ -1267,7 +1267,6 @@ table.presets td.actions form { margin: 0; }
 
 /* The menu. Nine things to ask, wrapping rather than scrolling: a row that
    scrolls sideways hides half its options behind a gesture. */
-.ai-menu { display: flex; flex-wrap: wrap; gap: .3rem; }
 
 /* The tabs. A dot says what the card holds without opening it, which is what
    makes the strip worth looking at while something is still being written. */

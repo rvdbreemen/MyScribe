@@ -74,19 +74,13 @@
     or pick one below for this question.</p>
   {% endif %}
 
-  <form class="ai-ask" method="post" action="/media/{{ ai.media_id }}/ai/summary">
-    {# One form, eight buttons: each carries its own formaction and hx-post, so
-       the provider, the model and the custom prompt are posted once from one
-       set of fields rather than repeated eight times. formaction is what does
-       the same without scripting. #}
-    <div class="ai-menu" role="group" aria-label="What to ask">
-      {% for panel in ai.panels[:-1] %}
-      <button type="submit" class="ai-action" data-asks="{{ panel.kind }}"
-              formaction="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
-              hx-post="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
-              hx-target="#ai-{{ panel.kind }}" hx-swap="outerHTML">{{ panel.label }}</button>
-      {% endfor %}
-    </div>
+  {# The provider, the model and the custom question, posted with every ask.
+     The tasks themselves are asked from their own tab (TASK-106.03): the row
+     of eight Ask buttons above the tabs named every task twice. A tab whose
+     task was never asked asks it when clicked (Robert, 2026-10-06, chosen over
+     a separate Ask click); the Ask buttons that do it live in each card
+     (_ai_output.html) and reach these fields through hx-include. #}
+  <form class="ai-ask" id="ai-ask" method="post" action="/media/{{ ai.media_id }}/ai/summary">
 
     {# The ninth needs a question, and the provider and model need saying only
        when they are wrong - so they collapse behind a line that says what they

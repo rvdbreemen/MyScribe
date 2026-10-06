@@ -2083,3 +2083,47 @@ def test_a_rename_of_the_recording_updates_the_title_at_the_top(client, conn, al
 
     assert 'id="transcript-title" class="transcript-title" hx-swap-oob="true"' in panel
     assert "Now with a new name" in panel
+
+
+# --- TASK-106.03: every task named once, asked from its tab -----------------------
+
+
+def test_each_task_is_named_once_above_the_answers_and_asked_from_its_card(client, transcribed):
+    """The page showed a row of eight Ask buttons above eight tabs with the
+    same names. The row is gone; a task nobody asked is asked from its card,
+    which the tab presses (Robert's choice, 2026-10-06)."""
+    from scribe.llm import tasks
+    page = client.get(f"/media/{transcribed['media']}").text
+    region = page[page.index('<section id="ai-region"'):page.index('id="transcript-panel"')]
+    above = region[:region.index('class="ai-panels"')]
+
+    assert 'class="ai-menu"' not in region
+    for kind in tasks.KINDS:
+        assert above.count(f'data-tab="{kind}"') == 1, kind
+        if kind != "custom":
+            assert f'formaction="/media/{transcribed["media"]}/ai/{kind}"' not in above, kind
+            card = re.search(rf'<section id="ai-{kind}".*?</section>', region, re.S).group(0)
+            assert "data-ask-now" in card and 'form="ai-ask"' in card, kind
+
+
+def test_an_answered_card_offers_ask_again_and_never_asks_by_itself(client, conn, transcribed):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+            " content, created_at, run_id) VALUES (?,?,?,?,?,?,?,?)",
+            (transcribed["media"], "summary", "ollama", "qwen3.5:4b", 1,
+             '{"text": "A summary."}', 0.0, transcribed["run"]),
+        )
+        conn.commit()
+    page = client.get(f"/media/{transcribed['media']}").text
+    card = re.search(r'<section id="ai-summary".*?</section>', page, re.S).group(0)
+
+    assert "Ask again" in card
+    assert "data-ask-now" not in card, "a tab click on an answer only shows it"
+
+
+def test_a_tab_presses_the_ask_button_of_a_task_never_asked():
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(encoding="utf-8")
+    handler = js.split("function wireAiTabs()")[1].split("document.addEventListener('keydown'")[0]
+    tab_branch = handler[handler.index("target.closest('.ai-tab')"):]
+    assert "[data-ask-now]" in tab_branch and ".click()" in tab_branch

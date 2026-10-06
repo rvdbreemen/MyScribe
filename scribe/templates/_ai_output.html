@@ -37,6 +37,15 @@
   environment.
 #}
 {% import "_macros.html" as m %}
+{% macro ask_button(panel, label, now=false) -%}
+{# form= and formaction: outside the form in markup, inside it for the
+   browser, so asking still posts without scripting (the reason the old
+   buttons carried formaction). #}
+<button type="submit" form="ai-ask" class="ai-action" data-asks="{{ panel.kind }}"{% if now %} data-ask-now{% endif %}
+        formaction="/media/{{ panel.media_id }}/ai/{{ panel.kind }}"
+        hx-post="/media/{{ panel.media_id }}/ai/{{ panel.kind }}" hx-include="#ai-ask"
+        hx-target="#ai-{{ panel.kind }}" hx-swap="outerHTML">{{ label }}</button>
+{%- endmacro %}
 {# Not a live region itself. Each poll swaps this element's outerHTML, and a
    screen reader treats the replacement as a new region, not as a change in
    one it was watching - so the answer arriving went unannounced. The live
@@ -55,6 +64,9 @@
       {{ m.when(panel.output.created_at) }}
       {% if panel.output.completion_tokens %}· {{ panel.output.completion_tokens }} tokens out{% endif %}
     </p>
+    {% endif %}
+    {% if panel.output and not panel.job and panel.kind != 'custom' %}
+    {{ ask_button(panel, "Ask again") }}
     {% endif %}
   </header>
 
@@ -222,6 +234,13 @@
     {% endif %}
   </div>
   {% elif not panel.job %}
-  <p class="muted">Not asked yet.</p>
+  {% if panel.kind == 'custom' %}
+  <p class="muted">Not asked yet. Type a question under <em>Ask &amp; provider</em>.</p>
+  {% else %}
+  {# data-ask-now: app.js presses this when the tab is clicked, so a tab
+     whose task was never asked asks it. The button stays visible for a
+     keyboard or a second try after a refusal. #}
+  <p class="muted">Not asked yet. {{ ask_button(panel, "Ask", now=true) }}</p>
+  {% endif %}
   {% endif %}
 </section>

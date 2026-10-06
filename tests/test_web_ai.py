@@ -287,7 +287,10 @@ def test_the_five_canned_questions_are_in_view_and_the_custom_one_is_beside_its_
     lives inside the collapsed block next to the box it reads."""
     body = client.get(f"/media/{media}").text
 
-    region = re.search(r'<section id="ai-region".*?</section>', body, re.DOTALL).group(0)
+    # The whole region, up to the transcript: since TASK-106.03 each card is a
+    # <section> with its task's Ask button, so the first </section> is no
+    # longer the region's end.
+    region = body[body.index('<section id="ai-region"'):body.index('id="transcript-panel"')]
     # The tag carries an id and hx-preserve since TASK-053.03, so the
     # pattern stops at the tag's own ">" rather than assuming the class
     # closes it.
@@ -325,7 +328,10 @@ def test_the_privacy_warning_stays_out_of_the_collapsed_block(client, conn, medi
 
     body = client.get(f"/media/{media}").text
 
-    region = re.search(r'<section id="ai-region".*?</section>', body, re.DOTALL).group(0)
+    # The whole region, up to the transcript: since TASK-106.03 each card is a
+    # <section> with its task's Ask button, so the first </section> is no
+    # longer the region's end.
+    region = body[body.index('<section id="ai-region"'):body.index('id="transcript-panel"')]
     # The tag carries an id and hx-preserve since TASK-053.03, so the
     # pattern stops at the tag's own ">" rather than assuming the class
     # closes it.
