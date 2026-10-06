@@ -934,7 +934,7 @@ def _smoke_without_a_model(monkeypatch, tmp_path):
         def transcribe(self, *args, **kwargs):
             return [segment], info
 
-    monkeypatch.setattr(transcribe_stage, "load_model", lambda name: (Model(), "cuda", "float16"))
+    monkeypatch.setattr(transcribe_stage, "load_model", lambda name, **kw: (Model(), "cuda", "float16"))
     return clip
 
 
@@ -1031,3 +1031,45 @@ def test_the_registered_twin_is_the_one_that_does_not_record(tmp_path, monkeypat
     asked.clear()
     doctor.check_gpu_smoke()
     assert asked == [{}], "the doctor's own command still records its timing"
+
+
+# --- PR #9 review, finding 7: the gpu-smoke's own weights ------------------------
+
+
+def _clip(tmp_path):
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"RIFF")
+    return clip
+
+
+def test_a_gpu_smoke_that_must_fetch_weights_says_so(tmp_path, monkeypatch, capsys):
+    """load_model now fetches weights that are missing (TASK-107.04); the
+    doctor passed no progress callback, so 1.6-2.9 GB arrived as silently as
+    before. It says what it fetches, on stderr, while the check is open."""
+    from scribe.stages import transcribe as transcribe_stage
+
+    def loading(name, **kw):
+        kw["on_weights"]("org/whisper-x", 800, 1_600)
+        raise RuntimeError("stop after the fetch")
+
+    monkeypatch.setattr(transcribe_stage, "load_model", loading)
+
+    doctor.gpu_smoke(clip=_clip(tmp_path), record=False)
+
+    assert "org/whisper-x" in capsys.readouterr().err
+
+
+def test_a_gpu_smoke_refused_by_the_hub_names_that_and_not_cudnn(tmp_path, monkeypatch):
+    from scribe import models
+    from scribe.stages import transcribe as transcribe_stage
+
+    def refused(name, **kw):
+        raise models.ModelError("org/gated is gated and no Hugging Face token is set", reason="token")
+
+    monkeypatch.setattr(transcribe_stage, "load_model", refused)
+
+    check = doctor.gpu_smoke(clip=_clip(tmp_path), record=False)
+
+    assert not check.ok and "token" in check.detail
+    assert "cudnn" not in check.fix_hint.lower()
+    assert "Hugging Face" in check.fix_hint

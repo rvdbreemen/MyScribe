@@ -464,6 +464,32 @@ def check_gpu_runtime() -> Check:
     )
 
 
+_WEIGHTS_HINTS = {
+    "token": "Save a Hugging Face token in Settings > Transcription and accept the model's "
+             "conditions on huggingface.co with that account.",
+    "disk": "Free some space on the drive that holds MyScribe's models, then run the doctor again.",
+    "offline": "Check the connection and run the doctor again; a download resumes where it stopped.",
+    "mismatch": "The download did not match its pin and was deleted; run the doctor again.",
+}
+
+
+def _say_weights_progress():
+    """What the gpu-smoke says while load_model fetches the weights it needs
+    (TASK-107.04): a line on stderr per tenth, so a 1.6-2.9 GB download inside
+    the doctor is something happening (PR #9 review, finding 7)."""
+    said: dict[str, int] = {}
+
+    def report(repo: str, done: int, total: int) -> None:
+        tenth = int(10 * done / total) if total else 0
+        if said.get(repo) == tenth:
+            return
+        said[repo] = tenth
+        print(f"gpu-smoke: fetching {repo} - {done / 2**30:.1f} of {total / 2**30:.1f} GB",
+              file=sys.stderr, flush=True)
+
+    return report
+
+
 def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None, *, record: bool = True) -> Check:
     """Transcribe a short clip on the GPU and record the timing.
 
@@ -489,11 +515,13 @@ def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None, *, reco
     # the CPU - through the same `load_model` the transcribe stage calls, so
     # what this measures is what a job gets. A CPU machine is slow here and
     # says so; that is the honest number.
+    from scribe import models as models_module
     from scribe.stages import transcribe as transcribe_stage
 
     try:
         load_start = time.perf_counter()
-        model, device, compute_type = transcribe_stage.load_model(model_name)
+        model, device, compute_type = transcribe_stage.load_model(
+            model_name, on_weights=_say_weights_progress())
         load_seconds = time.perf_counter() - load_start
 
         run_start = time.perf_counter()
@@ -506,6 +534,11 @@ def gpu_smoke(model_name: str = DEFAULT_MODEL, clip: Path | None = None, *, reco
         wall = time.perf_counter() - run_start
     except ImportError as exc:
         return Check(name="gpu-smoke", ok=False, detail=f"not installed ({exc})", fix_hint=_PIN_HINT)
+    except models_module.ModelError as exc:
+        # The weights could not be fetched (PR #9 review, finding 7): said as
+        # what it is, not as the cuDNN hint the generic branch below gives.
+        return Check(name="gpu-smoke", ok=False, detail=f"weights not fetched: {exc}",
+                     fix_hint=_WEIGHTS_HINTS.get(exc.reason, "Run the doctor again."))
     except accel.GpuUnreachable as exc:
         # What a job gets on this machine is the same refusal (TASK-092), and
         # the cuDNN hint below would send somebody after the wrong thing.
