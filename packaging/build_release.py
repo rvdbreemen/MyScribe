@@ -127,9 +127,11 @@ def stamp_bundle_version(app: Path, value: str, sign: Callable[[Path], None] = s
 
 DMG_NOTE = (
     "MyScribe is not signed with an Apple certificate yet.\n\n"
-    "Drag MyScribe to Applications, then start it once with a right-click\n"
-    "> Open, or open System Settings > Privacy & Security and press\n"
-    "\"Open Anyway\" after the first attempt.\n\n"
+    "Drag MyScribe to Applications and start it once. macOS says it could\n"
+    "not verify it. Then open System Settings > Privacy & Security, scroll to\n"
+    "Security, press \"Open Anyway\" beside MyScribe, confirm with Touch ID or\n"
+    "your password, and start it again. (On macOS 14 and earlier, a\n"
+    "right-click > Open also works.)\n\n"
     "The first start downloads the speech engine and shows its progress:\n"
     "about 2.7 GB on disk. The speech models, about 1.5 GB, follow during\n"
     "setup or with the first transcription. Both measured on an Apple Silicon\n"

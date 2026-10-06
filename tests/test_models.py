@@ -933,3 +933,39 @@ def test_the_payload_script_asks_for_every_repository_too(tmp_path, monkeypatch)
     fetch_models.ensure(tmp_path)
 
     assert set(asked[0]) == set(models.catalogue())
+
+
+# --- PR #9 review, finding 1: two writers for one model ------------------------------
+
+
+def test_two_fetches_of_one_model_never_write_at_the_same_time(tmp_path, one_model, monkeypatch):
+    """Since a job may fetch the weights it needs (TASK-107.04), setup and a
+    job can ask `ensure` for the same model at once. Both resumed into the one
+    shared .part file; the bytes interleaved, the digest failed and the file
+    was deleted. A lock per model makes them take turns, and the second finds
+    the work done."""
+    import threading
+    import time as _time
+
+    inside, most, fetched = [0], [0], []
+    real = serve()
+
+    def slow(model, rel, dest, token, on_bytes):
+        inside[0] += 1
+        most[0] = max(most[0], inside[0])
+        _time.sleep(0.2)
+        fetched.append(rel)
+        real(model, rel, dest, token, on_bytes)
+        inside[0] -= 1
+
+    monkeypatch.setattr(models, "fetch_file", slow)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(models.ensure(where=tmp_path)))
+               for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+
+    assert most[0] == 1, "two writers inside one model's files at once"
+    assert sorted(fetched) == sorted(BODIES), "the second fetch found the work done"

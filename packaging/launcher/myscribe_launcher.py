@@ -1443,6 +1443,38 @@ def progress_headline(event: dict) -> str:
     return f"Downloading {repo} - {int(percent)}%"
 
 
+# --- what the launcher says about the app it started ---------------------------------
+
+
+BROWSER_OPENED = "Opening MyScribe in your browser. If no browser window appears, go to {url}"
+BROWSER_REFUSED = "No browser could be opened. Go to {url} in your browser."
+
+
+def open_in_browser(url: str, report: Callable[[str, str], None]) -> None:
+    """Open the app in the default browser, and say where it is either way.
+
+    `webbrowser.open` answering True is not a confirmation: on a Mac whose
+    default browser was not running it returned True and opened nothing, and
+    neither the window nor launcher.log said what to do (the outside walk of
+    0.8.3, TASK-107.05). So the address is said every time, and a False is
+    said as what it is.
+    """
+    try:
+        opened = webbrowser.open(url)
+    except Exception:  # noqa: BLE001 - a broken browser registration is a False too
+        opened = False
+    if opened:
+        report("busy", BROWSER_OPENED.format(url=url))
+    else:
+        report("status", BROWSER_REFUSED.format(url=url))
+
+
+CHOICE_WAITING = "A choice is waiting in the Set up MyScribe window: Retry, or Continue without."
+"""Said in the main window while the failure dialog waits (TASK-107.03): the
+status line otherwise stayed on 'Saving your answers...', which from outside
+read as a hang."""
+
+
 # --- the run ----------------------------------------------------------------------
 
 
@@ -1511,9 +1543,10 @@ class Launch:
         already answers, which is a good end and not a start.
         """
         if running_instance(self.port):
-            self.report("done", f"MyScribe is already running at {self.url()}")
+            # The browser first: "done" is the line the window closes on.
             if self.open_browser:
-                webbrowser.open(self.url())
+                open_in_browser(self.url(), self.report)
+            self.report("done", f"MyScribe is already running at {self.url()}")
             self.serving = True
             return True
         if port_taken(self.port):
@@ -1550,7 +1583,7 @@ class Launch:
             return False
         self.report("running", f"MyScribe is running at {self.url()}")
         if self.open_browser:
-            webbrowser.open(self.url())
+            open_in_browser(self.url(), self.report)
         return True
 
     def run(self) -> bool:
@@ -2605,6 +2638,9 @@ def ask_failure(root, sentence: str) -> bool:
     win.title(f"Set up {APP_NAME}")
     win.transient(root)
     win.grab_set()
+    # In front, so the choice is seen rather than found (TASK-107.03).
+    win.lift()
+    win.focus_force()
     again: list[bool] = []
 
     tk.Label(win, text=sentence, wraplength=520, justify="left", anchor="w").pack(
@@ -2699,17 +2735,6 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
     requests: "queue.Queue[tuple[Callable, queue.Queue]]" = queue.Queue()
 
     def pump() -> None:
-        while True:
-            try:
-                work, answer = requests.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                result = work()
-            except Exception:
-                leave_a_trace("in the setup window", traceback.format_exc())
-                result = None
-            answer.put(result)
         try:
             while True:
                 state, text = events.get_nowait()
@@ -2737,6 +2762,21 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
                     root.after(3000, root.destroy)
         except queue.Empty:
             pass
+        # Requests after the events, not before (TASK-107.03): a request is a
+        # dialog that runs right here, inside this tick, and whatever the
+        # worker said before asking for it - "a choice is waiting" - has to be
+        # on screen while it is open, not after it closed.
+        while True:
+            try:
+                work, answer = requests.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                result = work()
+            except Exception:
+                leave_a_trace("in the setup window", traceback.format_exc())
+                result = None
+            answer.put(result)
         if launch.app is not None and launch.app.proc is not None and not launch.app.alive():
             status.set(f"MyScribe stopped; see {layout.logs_dir / 'app.log'}")
         root.after(200, pump)
@@ -2763,7 +2803,16 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         return on_tk(lambda: ask_setup(root, layout, plan))
 
     def retry(sentence: str) -> bool:
-        return bool(on_tk(lambda: ask_failure(root, sentence)))
+        def waiting_then_ask() -> bool:
+            # On the Tk thread, in the same work that opens the dialog, so the
+            # main window says a choice is waiting before the dialog appears -
+            # whatever order pump drains its two queues in (PR #9 review,
+            # finding 3). It used to stay on "Saving your answers..." (TASK-107.03).
+            status.set(CHOICE_WAITING)
+            append(CHOICE_WAITING)
+            return ask_failure(root, sentence)
+
+        return bool(on_tk(waiting_then_ask))
 
     sitting = threading.Lock()
 

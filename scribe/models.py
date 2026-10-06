@@ -24,10 +24,12 @@ model load.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import json
 import shutil
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -204,9 +206,20 @@ def local_dir(alias: str | None, backend: str, *, where: Path | None = None) -> 
     if not name:
         return None
     base = where or root()
+    model = for_alias(name, backend)
+    if model is not None and present(model, where=base):
+        return base / model.folder
+    return None
+
+
+def for_alias(name: str, backend: str) -> Model | None:
+    """The catalogue entry a loader on ``backend`` loads for ``name``, or None
+    for a name the catalogue does not serve there (somebody's own checkpoint).
+    One walk for `local_dir` and the job's weights fetch (PR #9 review,
+    finding 9)."""
     for model in catalogue().values():
-        if model.alias == name and loads_here(model, backend) and present(model, where=base):
-            return base / model.folder
+        if model.alias == name and loads_here(model, backend):
+            return model
     return None
 
 
@@ -252,6 +265,37 @@ def hub_snapshot(model: Model) -> Path | None:
         if size and path.stat().st_size != size:
             return None
     return base
+
+
+def hub_any_revision(model: Model) -> tuple[str, Path] | None:
+    """A huggingface_hub cache copy of ``model`` at *another* revision, whole:
+    every pinned file there by name and size. Returns (revision, folder).
+
+    Not `present` - that answers for the pinned revision only, and stays the
+    question setup and the doctor ask. This is the narrower question a job asks
+    before fetching (PR #9 review, finding 2): the loader resolves the bare
+    name through this cache, as it did before jobs fetched anything, so a copy
+    here is a copy it can use, and downloading ~3 GB again for a revision
+    label would be the regression.
+    """
+    from scribe import doctor
+
+    try:
+        snapshots = doctor.hf_cache_dir() / f"models--{model.repo.replace('/', '--')}" / "snapshots"
+        candidates = sorted(snapshots.iterdir()) if snapshots.is_dir() else []
+    except OSError:
+        return None
+    for folder in candidates:
+        if folder.name == model.revision or not folder.is_dir():
+            continue
+        whole = all(
+            (folder / rel).exists()
+            and (not int(pin.get("size") or 0) or (folder / rel).stat().st_size == int(pin["size"]))
+            for rel, pin in model.files.items()
+        )
+        if whole:
+            return folder.name, folder
+    return None
 
 
 def present(model: Model, *, where: Path | None = None, verify: bool = False) -> bool:
@@ -446,6 +490,40 @@ def _one_request(
         ) from exc
 
 
+@contextlib.contextmanager
+def _fetch_lock(folder: Path):
+    """One writer per model folder, across processes: setup's download and a
+    job's (TASK-107.04) used to meet in the same `.part` file. A lock file in
+    the folder, held with the OS's own exclusive lock - `msvcrt.locking` on
+    Windows, `fcntl.flock` elsewhere - and released when the block ends,
+    including by a crash, because the OS drops it with the handle."""
+    folder.mkdir(parents=True, exist_ok=True)
+    handle = open(folder / ".fetch.lock", "a+b")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            while True:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue  # LK_LOCK gives up after ~10 s; keep waiting
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        handle.close()
+
+
 def fetch_file(model: Model, rel: str, dest: Path, token: str | None, on_bytes: Callable[[int], None]) -> None:
     """One pinned file, streamed to ``dest``.
 
@@ -560,39 +638,45 @@ def ensure(
 
     done: list[str] = []
     for model in outstanding:
-        sent = 0
-        total = model.bytes_total
-        for rel, pin in model.files.items():
-            target = base / model.folder / rel
-            if target.exists() and digest(target) == pin["sha256"]:
-                sent += int(pin.get("size") or 0)
+        with _fetch_lock(base / model.folder):
+            # Taken in turn (PR #9 review): setup and a job can both fetch one
+            # model, and both resume into the same .part. Whoever waited finds
+            # the work done and moves on.
+            if present(model, where=base, verify=True):
                 continue
-            # `sent` counts whole files; `within` accumulates the chunks of the
-            # one being written. Adding a raw chunk size to `sent` was the first
-            # version and it made the bar go backwards mid-file, which is worse
-            # than no bar: it reads as a download restarting.
-            within = {"bytes": 0}
+            sent = 0
+            total = model.bytes_total
+            for rel, pin in model.files.items():
+                target = base / model.folder / rel
+                if target.exists() and digest(target) == pin["sha256"]:
+                    sent += int(pin.get("size") or 0)
+                    continue
+                # `sent` counts whole files; `within` accumulates the chunks of the
+                # one being written. Adding a raw chunk size to `sent` was the first
+                # version and it made the bar go backwards mid-file, which is worse
+                # than no bar: it reads as a download restarting.
+                within = {"bytes": 0}
 
-            def arrived(n: int, repo: str = model.repo, base: int = sent) -> None:
-                within["bytes"] += n
+                def arrived(n: int, repo: str = model.repo, base: int = sent) -> None:
+                    within["bytes"] += n
+                    if on_progress:
+                        on_progress(repo, min(base + within["bytes"], total), total)
+
+                fetch_file(model, rel, target, token, arrived)
+                found = digest(target)
+                if found != pin["sha256"]:
+                    # Deleted, not kept: a wrong weight file that stays is one
+                    # nothing will ever look for again.
+                    target.unlink(missing_ok=True)
+                    raise ModelError(
+                        f"{model.repo}/{rel} does not match its pin at revision {model.revision}; "
+                        "it was deleted rather than used",
+                        reason="mismatch",
+                    )
+                sent += int(pin.get("size") or 0)
                 if on_progress:
-                    on_progress(repo, min(base + within["bytes"], total), total)
-
-            fetch_file(model, rel, target, token, arrived)
-            found = digest(target)
-            if found != pin["sha256"]:
-                # Deleted, not kept: a wrong weight file that stays is one
-                # nothing will ever look for again.
-                target.unlink(missing_ok=True)
-                raise ModelError(
-                    f"{model.repo}/{rel} does not match its pin at revision {model.revision}; "
-                    "it was deleted rather than used",
-                    reason="mismatch",
-                )
-            sent += int(pin.get("size") or 0)
-            if on_progress:
-                on_progress(model.repo, min(sent, total), total)
-        done.append(model.repo)
+                    on_progress(model.repo, min(sent, total), total)
+            done.append(model.repo)
 
     # The credit goes beside every copy that is in this folder, not only beside
     # the ones this run wrote: a user who put the weights there by hand has the

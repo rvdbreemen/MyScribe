@@ -49,7 +49,11 @@ Expected, in this order:
 - `sync uv sync --frozen into .../.venv`, uv's own lines, then a `stamp` line
 - the setup questions in the terminal; press Enter through all of them
 - the proof report: an `accel` line naming MLX, and a transcription line with
-  words and seconds for the 30-second clip
+  words and seconds for the 30-second clip. The proof starts the app on an
+  empty folder to check it answers, and needs port 4242 for that: with a
+  MyScribe already running it reports "not tested (a MyScribe is running on
+  port 4242)" and exits 1. Quit the running MyScribe first (the walk of 0.8.3
+  ran into this right after installing the dmg).
 - `start MyScribe is installed. Start it with:` and the command
 - `git status --short` prints nothing: uv.lock was not touched
 
@@ -88,7 +92,9 @@ TASK-089.15 criterion 13. The dmg from the latest release, a fresh home.
     open ~/Downloads/MyScribe-*-macos-arm64.dmg      # drag MyScribe to Applications
     /Applications/MyScribe.app/Contents/MacOS/MyScribe --home ~/MyScribe-fresh-home
 
-Expected: Gatekeeper asks once (Control-click, Open, then Open Anyway); the
+Expected: Gatekeeper refuses once, and System Settings → Privacy & Security
+→ Open Anyway lets it start (on macOS 26 the refusal has no Open button and
+Control-click → Open is refused the same way - the walk of 0.8.3); the
 window asks where everything goes before anything is downloaded; after the
 sync it shows what it found and only the open questions, each with a Skip;
 "Save and start" ends with the app open in the browser. A photo or a screen

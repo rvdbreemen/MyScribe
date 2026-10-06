@@ -1091,15 +1091,25 @@ def test_the_weights_setup_downloaded_are_the_weights_that_load(tmp_path, monkey
     assert opened == [str(folder)]
 
 
+@pytest.mark.real_weights_fetch
 def test_a_folder_that_is_not_whole_is_not_used(tmp_path, monkeypatch):
     """faster-whisper would open it and fail, where the bare name still
-    resolves through the hub cache."""
+    resolves through the hub cache.
+
+    Since TASK-107.04 load_model first asks `models.ensure` for weights that
+    are not here - the fetch that used to happen silently inside the loader.
+    `ensure` is a recorder here, so nothing is downloaded and the folder stays
+    incomplete; the test still shows that such a folder is never opened."""
+    from scribe import models
     opened = _fake_whisper(monkeypatch)
     entry, _body = one_entry(monkeypatch, tmp_path, transcribe.DEFAULT_MODEL, ("cuda", "cpu"))
     (tmp_path / entry.folder).mkdir(parents=True)
+    asked = []
+    monkeypatch.setattr(models, "ensure", lambda wanted=None, **kw: asked.append(list(wanted)) or [])
 
     transcribe.load_model(transcribe.DEFAULT_MODEL, device="cpu")
 
+    assert asked == [[entry.repo]]
     assert opened == [transcribe.DEFAULT_MODEL]
 
 
@@ -1112,3 +1122,113 @@ def test_another_model_name_is_handed_over_as_before(tmp_path, monkeypatch):
     transcribe.load_model("tiny", device="cpu")
 
     assert opened == ["tiny"]
+
+
+# --- TASK-107.04: weights a job needs are fetched with progress, never silently ---
+
+
+def _fake_catalogue(monkeypatch, *, present: bool):
+    from scribe import models
+    model = SimpleNamespace(alias="large-v3", repo="org/whisper-large-v3-ct2", backends=None,
+                            bytes_total=3_000, gated=False)
+    monkeypatch.setattr(models, "catalogue", lambda: {"m": model})
+    monkeypatch.setattr(models, "present", lambda m, **kw: present)
+    fetched = []
+
+    def ensure(wanted=None, **kw):
+        fetched.append(list(wanted))
+        if kw.get("on_progress"):
+            kw["on_progress"]("org/whisper-large-v3-ct2", 1_500, 3_000)
+        return list(wanted)
+
+    monkeypatch.setattr(models, "ensure", ensure)
+    return fetched
+
+
+@pytest.mark.real_weights_fetch
+def test_missing_weights_are_fetched_through_ensure_with_progress(monkeypatch):
+    """The outside walk of 0.8.3: tier max needed a 2.9 GB model that was not
+    there, and the loader pulled it from the Hub inside the first job - no
+    progress, no log line. The same fetch setup does is used instead."""
+    fetched = _fake_catalogue(monkeypatch, present=False)
+    seen = []
+
+    transcribe.fetch_missing_weights("large-v3", "cpu", lambda repo, done, total: seen.append((repo, done, total)))
+
+    assert fetched == [["org/whisper-large-v3-ct2"]]
+    assert seen == [("org/whisper-large-v3-ct2", 1_500, 3_000)]
+
+
+@pytest.mark.real_weights_fetch
+def test_weights_already_here_are_not_fetched(monkeypatch):
+    fetched = _fake_catalogue(monkeypatch, present=True)
+
+    transcribe.fetch_missing_weights("large-v3", "cpu", None)
+
+    assert fetched == []
+
+
+@pytest.mark.real_weights_fetch
+def test_a_model_the_catalogue_does_not_know_is_left_to_the_loader(monkeypatch):
+    fetched = _fake_catalogue(monkeypatch, present=False)
+
+    transcribe.fetch_missing_weights("/some/converted/dir", "cpu", None)
+
+    assert fetched == []
+
+
+def test_the_stage_shows_a_weights_fetch_as_progress_an_event_and_a_log_line(conn, data_dir, monkeypatch):
+    from scribe import applog
+    logged = []
+    monkeypatch.setattr(applog, "log", lambda event, **kw: logged.append((event, kw)))
+    model = FakeWhisper([fake_segment(0.0, 30.0)])
+
+    def loading(name, **kw):
+        kw["on_weights"]("org/whisper-large-v3-ct2", 1_500, 3_000)
+        return model, "cpu", "int8"
+
+    monkeypatch.setattr(transcribe, "load_model", loading)
+    _, job_id = a_job_with_media(conn)
+    progress = []
+
+    ctx = make_ctx(conn, job_id, state={"wav": Path("audio.wav")}, progress=progress)
+    transcribe.run(ctx)
+    ctx_state = ctx.state
+
+    kinds = [row["kind"] for row in conn.execute("SELECT kind FROM job_event WHERE job_id=?", (job_id,))]
+    assert "weights" in kinds
+    assert any(event == "transcribe.weights" for event, _ in logged)
+    # PR #9 review, finding 6: the download fills the first part of the bar
+    # and the transcription the rest, so the bar never runs back to 0.
+    assert progress[0] == pytest.approx(transcribe.WEIGHTS_SHARE * 0.5)
+    assert progress == sorted(progress), "the bar went backwards"
+    assert ctx_state["fetched_weights"] is True
+
+
+@pytest.mark.real_weights_fetch
+def test_a_hub_cache_copy_at_another_revision_is_used_not_fetched_again(tmp_path, monkeypatch):
+    """PR #9 review, finding 2: present() accepts the hub cache only at the
+    pinned revision, so a cache holding the same model at another commit made
+    the job download ~3 GB again - where the loader, as before this PR, would
+    have used the cached copy. Same files and sizes at another revision is a
+    copy the loader can use; it is said in the log and not fetched."""
+    from scribe import applog, doctor, models
+    body = b"weights"
+    model = models.Model(repo="org/whisper-x", revision="a" * 40,
+                         files={"model.bin": {"sha256": "0" * 64, "size": len(body)}},
+                         license="mit", credit="x", gated=False, alias="large-v3", backends=("cpu",))
+    monkeypatch.setattr(models, "catalogue", lambda: {model.repo: model})
+    monkeypatch.setattr(models, "root", lambda: tmp_path / "library-models")
+    cache = tmp_path / "hub"
+    other = cache / "models--org--whisper-x" / "snapshots" / ("b" * 40)
+    other.mkdir(parents=True)
+    (other / "model.bin").write_bytes(body)
+    monkeypatch.setattr(doctor, "hf_cache_dir", lambda: cache)
+    fetched, logged = [], []
+    monkeypatch.setattr(models, "ensure", lambda wanted=None, **kw: fetched.append(wanted) or [])
+    monkeypatch.setattr(applog, "log", lambda event, **kw: logged.append((event, kw)))
+
+    transcribe.fetch_missing_weights("large-v3", "cpu", None)
+
+    assert fetched == []
+    assert ("transcribe.weights_cached_revision", {"repo": "org/whisper-x", "revision": "b" * 40}) in logged

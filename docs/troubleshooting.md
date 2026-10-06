@@ -33,7 +33,7 @@ report looks like this:
 | What you see | Why | What to do |
 | --- | --- | --- |
 | SmartScreen: "unknown publisher" | The installer is not signed yet. | **More info → Run anyway**. |
-| macOS refuses to open the app, or calls it "damaged" | Gatekeeper blocks unsigned apps. | **Control-click → Open**, then **Open Anyway**. |
+| macOS refuses to open the app, or calls it "damaged" | Gatekeeper blocks unsigned apps. | Start it once, then **System Settings → Privacy & Security → Open Anyway** and confirm. On macOS 14 and earlier, **Control-click → Open** also works. |
 | A transcript has no speakers, and says why | No Hugging Face token, or the model's conditions were not accepted. | Nothing is lost. Follow [Hugging Face token](configuration.md#hugging-face-token), then run the transcription again. |
 | A transcription is refused with a sentence about the NVIDIA driver | CUDA cannot reach the GPU. | Update or reinstall the NVIDIA driver, or allow the CPU under **Settings → This machine**. |
 | The doctor says `gpu-runtime: CPU build` (clone) | torch was installed without CUDA. | Run `python install.py` again. Plain `pip` installs a CPU-only torch on Windows. |

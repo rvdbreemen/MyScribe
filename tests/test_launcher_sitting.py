@@ -275,6 +275,12 @@ def _fake_tkinter(sitting: _Sitting):
         def grab_set(self):
             pass
 
+        def lift(self):
+            pass
+
+        def focus_force(self):
+            pass
+
         def protocol(self, name, callback):
             if name == "WM_DELETE_WINDOW":
                 sitting.on_close = callback
@@ -1686,3 +1692,39 @@ def test_a_sigterm_quits_the_window_the_way_quit_does(layout, monkeypatch):
 
     assert unhandled == [], "the window left SIGTERM to whoever handled it before"
     assert stopped and window.destroyed
+
+
+def test_a_choice_waiting_in_another_window_is_said_in_the_main_one(layout, monkeypatch):
+    """TASK-107.03: when the speaker model turned out gated, a second window
+    with Retry and Continue without waited for a choice while the main window
+    still said 'Saving your answers...' - from outside, a hang (the outside
+    walk of 0.8.3). The main window now says a choice is waiting."""
+    seen_while_open = []
+
+    def dialog(root, sentence):
+        # What the main window says while this dialog is open - the moment
+        # that matters. A real dialog runs inside pump; the harness's returns
+        # at once, which is how the first version of this test passed while a
+        # real Tk run still showed "Preparing...".
+        seen_while_open.append(window_ref[0].status.get())
+        return False
+
+    window_ref = []
+    monkeypatch.setattr(launcher, "ask_failure", dialog)
+
+    def gated(launch, ask, report, force_setup, at_login, retry):
+        report("busy", "Saving your answers...")
+        retry("The speaker model is gated.")
+        return True
+
+    real_window = _Window
+    def capture():
+        w = real_window()
+        window_ref.append(w)
+        return w
+    monkeypatch.setattr(sys.modules[__name__], "_Window", capture)
+
+    window = _window_with(layout, monkeypatch, gated)
+
+    assert seen_while_open == [launcher.CHOICE_WAITING]
+    assert launcher.CHOICE_WAITING in window.appended

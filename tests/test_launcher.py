@@ -2279,3 +2279,28 @@ def test_a_killed_launcher_takes_its_real_app_with_it(tmp_path):
     time.sleep(0.5)
     with pytest.raises(ProcessLookupError):
         os.kill(child, 0)
+
+
+# --- TASK-107.05: a browser that does not open is said ---------------------------
+
+
+def test_opening_the_browser_always_says_where_to_go(monkeypatch):
+    """The outside walk of 0.8.3: webbrowser.open returned True and opened
+    nothing (the default browser was not running), and neither the window nor
+    the log said what to do. The address is said every time, because True is
+    not a confirmation."""
+    said = []
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: True)
+
+    launcher.open_in_browser("http://127.0.0.1:4242/", lambda state, text: said.append((state, text)))
+
+    assert said == [("busy", launcher.BROWSER_OPENED.format(url="http://127.0.0.1:4242/"))]
+
+
+def test_a_browser_that_refuses_is_said_with_the_address(monkeypatch):
+    said = []
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: False)
+
+    launcher.open_in_browser("http://127.0.0.1:4242/", lambda state, text: said.append((state, text)))
+
+    assert said == [("status", launcher.BROWSER_REFUSED.format(url="http://127.0.0.1:4242/"))]
