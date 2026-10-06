@@ -2799,12 +2799,16 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         return on_tk(lambda: ask_setup(root, layout, plan))
 
     def retry(sentence: str) -> bool:
-        # Said in this window first, through the queue the worker may use
-        # (TASK-101): the dialog that waits is a second window, and the status
-        # line here would otherwise still say "Saving your answers..."
-        # (TASK-107.03).
-        events.put(("status", CHOICE_WAITING))
-        return bool(on_tk(lambda: ask_failure(root, sentence)))
+        def waiting_then_ask() -> bool:
+            # On the Tk thread, in the same work that opens the dialog, so the
+            # main window says a choice is waiting before the dialog appears -
+            # whatever order pump drains its two queues in (PR #9 review,
+            # finding 3). It used to stay on "Saving your answers..." (TASK-107.03).
+            status.set(CHOICE_WAITING)
+            append(CHOICE_WAITING)
+            return ask_failure(root, sentence)
+
+        return bool(on_tk(waiting_then_ask))
 
     sitting = threading.Lock()
 
