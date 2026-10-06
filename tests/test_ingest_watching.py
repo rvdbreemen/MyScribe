@@ -1977,3 +1977,49 @@ def test_one_file_left_alone_is_said_in_the_singular(client, conn, inbox):
     body = client.get("/settings?section=watch").text
 
     assert "1 file that was already here is left alone." in body
+
+
+# --- TASK-107.06: video switched on later does not sweep in what was there -----------
+
+
+def test_video_switched_on_later_leaves_the_videos_that_were_already_there(client, conn, watcher, inbox):
+    """Hermes, third macOS walk on 0.8.4: a folder added audio only counted its
+    videos as ignored but did not record them, so 'Take video too' and the
+    next walk queued every one - 761 jobs on a ~/Downloads. The flood 0.8.4
+    removed from adding, moved to the next start."""
+    drop(inbox, "old.mp3")
+    drop(inbox, "old.mp4", b"old video")
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+    (folder,) = watching.folders(conn, enabled_only=False)
+
+    client.post(f"/settings/watch/{folder['id']}/video", data={"include_video": "1"}, headers=HX)
+
+    assert watcher.reconcile(conn) == 0
+    drop(inbox, "new.mp4", b"arrived after")
+    assert watcher.reconcile(conn) == 1
+
+
+def test_transcribing_what_was_there_takes_only_what_the_folder_takes(client, conn, watcher, inbox):
+    """'Transcribe them' on an audio-only folder takes the audio; the videos
+    stay left alone, so switching video on afterwards still sweeps nothing."""
+    drop(inbox, "old.mp3")
+    drop(inbox, "old.mp4", b"old video")
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+    (folder,) = watching.folders(conn, enabled_only=False)
+
+    resp = client.post(f"/settings/watch/{folder['id']}/existing", headers=HX)
+
+    assert "1 audio file already in it will be transcribed" in resp.text
+    assert watcher.reconcile(conn) == 1
+    client.post(f"/settings/watch/{folder['id']}/video", data={"include_video": "1"}, headers=HX)
+    assert watcher.reconcile(conn) == 0
+
+
+def test_the_count_left_alone_is_what_transcribe_them_would_take(client, conn, inbox):
+    drop(inbox, "only.mp3")
+    drop(inbox, "clip.mp4", b"clip")
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+
+    body = client.get("/settings?section=watch").text
+
+    assert "1 file that was already here is left alone." in body
