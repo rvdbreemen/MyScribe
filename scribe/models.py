@@ -206,9 +206,20 @@ def local_dir(alias: str | None, backend: str, *, where: Path | None = None) -> 
     if not name:
         return None
     base = where or root()
+    model = for_alias(name, backend)
+    if model is not None and present(model, where=base):
+        return base / model.folder
+    return None
+
+
+def for_alias(name: str, backend: str) -> Model | None:
+    """The catalogue entry a loader on ``backend`` loads for ``name``, or None
+    for a name the catalogue does not serve there (somebody's own checkpoint).
+    One walk for `local_dir` and the job's weights fetch (PR #9 review,
+    finding 9)."""
     for model in catalogue().values():
-        if model.alias == name and loads_here(model, backend) and present(model, where=base):
-            return base / model.folder
+        if model.alias == name and loads_here(model, backend):
+            return model
     return None
 
 

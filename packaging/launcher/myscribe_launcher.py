@@ -1443,6 +1443,38 @@ def progress_headline(event: dict) -> str:
     return f"Downloading {repo} - {int(percent)}%"
 
 
+# --- what the launcher says about the app it started ---------------------------------
+
+
+BROWSER_OPENED = "Opening MyScribe in your browser. If no browser window appears, go to {url}"
+BROWSER_REFUSED = "No browser could be opened. Go to {url} in your browser."
+
+
+def open_in_browser(url: str, report: Callable[[str, str], None]) -> None:
+    """Open the app in the default browser, and say where it is either way.
+
+    `webbrowser.open` answering True is not a confirmation: on a Mac whose
+    default browser was not running it returned True and opened nothing, and
+    neither the window nor launcher.log said what to do (the outside walk of
+    0.8.3, TASK-107.05). So the address is said every time, and a False is
+    said as what it is.
+    """
+    try:
+        opened = webbrowser.open(url)
+    except Exception:  # noqa: BLE001 - a broken browser registration is a False too
+        opened = False
+    if opened:
+        report("busy", BROWSER_OPENED.format(url=url))
+    else:
+        report("status", BROWSER_REFUSED.format(url=url))
+
+
+CHOICE_WAITING = "A choice is waiting in the Set up MyScribe window: Retry, or Continue without."
+"""Said in the main window while the failure dialog waits (TASK-107.03): the
+status line otherwise stayed on 'Saving your answers...', which from outside
+read as a hang."""
+
+
 # --- the run ----------------------------------------------------------------------
 
 
@@ -1938,34 +1970,6 @@ def shown(question: dict, answers: dict) -> bool:
 
 # --- what a failure says ----------------------------------------------------------
 
-
-BROWSER_OPENED = "Opening MyScribe in your browser. If no browser window appears, go to {url}"
-BROWSER_REFUSED = "No browser could be opened. Go to {url} in your browser."
-
-
-def open_in_browser(url: str, report: Callable[[str, str], None]) -> None:
-    """Open the app in the default browser, and say where it is either way.
-
-    `webbrowser.open` answering True is not a confirmation: on a Mac whose
-    default browser was not running it returned True and opened nothing, and
-    neither the window nor launcher.log said what to do (the outside walk of
-    0.8.3, TASK-107.05). So the address is said every time, and a False is
-    said as what it is.
-    """
-    try:
-        opened = webbrowser.open(url)
-    except Exception:  # noqa: BLE001 - a broken browser registration is a False too
-        opened = False
-    if opened:
-        report("busy", BROWSER_OPENED.format(url=url))
-    else:
-        report("status", BROWSER_REFUSED.format(url=url))
-
-
-CHOICE_WAITING = "A choice is waiting in the Set up MyScribe window: Retry, or Continue without."
-"""Said in the main window while the failure dialog waits (TASK-107.03): the
-status line otherwise stayed on 'Saving your answers...', which from outside
-read as a hang."""
 
 GATED_MODEL = (
     "The speaker model is gated, and the token MyScribe has does not open it. Accept the "

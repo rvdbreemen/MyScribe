@@ -567,18 +567,16 @@ def fetch_missing_weights(
     `models.present`), or one the catalogue does not know - a directory
     somebody converted, say - which the loader resolves as it always did.
     """
-    for model in models.catalogue().values():
-        if model.alias == model_name and models.loads_here(model, backend):
-            if models.present(model):
-                return
-            cached = models.hub_any_revision(model)
-            if cached is not None:
-                # The same files at another revision: the loader resolves the
-                # name through this cache, as before (PR #9 review, finding 2).
-                applog.log("transcribe.weights_cached_revision", repo=model.repo, revision=cached[0])
-                return
-            models.ensure([model.repo], backend=backend, on_progress=on_weights)
-            return
+    model = models.for_alias(model_name, backend)
+    if model is None or models.present(model):
+        return
+    cached = models.hub_any_revision(model)
+    if cached is not None:
+        # The same files at another revision: the loader resolves the name
+        # through this cache, as before (PR #9 review, finding 2).
+        applog.log("transcribe.weights_cached_revision", repo=model.repo, revision=cached[0])
+        return
+    models.ensure([model.repo], backend=backend, on_progress=on_weights)
 
 
 def load_model(
