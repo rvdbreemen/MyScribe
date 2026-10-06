@@ -324,7 +324,8 @@ def set_enabled(conn: sqlite3.Connection, folder_id: int, enabled: bool) -> bool
 def set_include_video(conn: sqlite3.Connection, folder_id: int, include_video: bool) -> bool:
     """Let a folder take video too, or stop it; False when there is no such row.
     Applies to what arrives from now on and to the files it is leaving alone
-    when somebody asks for them (TASK-107.01)."""
+    when somebody asks for them (TASK-107.01). Never to those files by
+    itself: they stay left alone until 'Transcribe them' (TASK-107.06)."""
     with db.LOCK:
         cur = conn.execute(
             "UPDATE watch_folder SET include_video=? WHERE id=?", (1 if include_video else 0, folder_id)
@@ -425,19 +426,26 @@ def leave_existing(conn: sqlite3.Connection, folder_id: int, root: str | Path,
     watcher's own key and the size and mtime it sees, so a file that is later
     rewritten counts as new. Returns the count of what was left alone, by the
     same rule the watcher uses. Nothing is hashed or opened.
+
+    Every media file is recorded, the video of an audio-only folder too
+    (TASK-107.06): include_video decides what is taken from what ARRIVES. A
+    video left unrecorded here was taken at the first walk after somebody
+    switched video on - 761 jobs on the ~/Downloads of the third macOS walk.
     """
     folder = {"include_video": 1 if include_video else 0}
     by_extension: dict[str, int] = {}
     skipped = 0
     rows = []
+    taken = 0
     for path in _walk(Path(root)):
-        if not takes(folder, path):
-            skipped += 1
-            continue
         size, mtime = _snapshot(path)
         if size < 0:
             continue
         rows.append((folder_id, _key(path), size, mtime))
+        if not takes(folder, path):
+            skipped += 1
+            continue
+        taken += 1
         suffix = path.suffix.lower()
         by_extension[suffix] = by_extension.get(suffix, 0) + 1
     with db.LOCK:
@@ -446,24 +454,36 @@ def leave_existing(conn: sqlite3.Connection, folder_id: int, root: str | Path,
             rows,
         )
         conn.commit()
-    return Preview(taken=len(rows), skipped_video=skipped, by_extension=dict(sorted(by_extension.items())))
+    return Preview(taken=taken, skipped_video=skipped, by_extension=dict(sorted(by_extension.items())))
+
+
+def _existing_it_takes(conn: sqlite3.Connection, folder_id: int) -> list[str]:
+    """The keys left alone that this folder would take now: its video stays
+    out of both the count and 'Transcribe them' while video is off."""
+    with db.LOCK:
+        row = conn.execute("SELECT include_video FROM watch_folder WHERE id=?", (folder_id,)).fetchone()
+        keys = [r[0] for r in conn.execute(
+            "SELECT path_key FROM watch_existing WHERE folder_id=?", (folder_id,))]
+    folder = {"include_video": row[0] if row is not None else 1}
+    return [key for key in keys if takes(folder, key)]
 
 
 def take_existing(conn: sqlite3.Connection, folder_id: int) -> int:
     """Forget what a folder held when it was added, so the next walk takes it
-    in after all; returns how many files that is."""
+    in after all; returns how many files that is. Only what the folder takes:
+    an audio-only folder keeps leaving its old video alone (TASK-107.06)."""
+    keys = _existing_it_takes(conn, folder_id)
     with db.LOCK:
-        cur = conn.execute("DELETE FROM watch_existing WHERE folder_id=?", (folder_id,))
+        conn.executemany("DELETE FROM watch_existing WHERE folder_id=? AND path_key=?",
+                         [(folder_id, key) for key in keys])
         conn.commit()
-        return cur.rowcount
+    return len(keys)
 
 
 def existing_left(conn: sqlite3.Connection, folder_id: int) -> int:
-    """How many files this folder is still leaving alone."""
-    with db.LOCK:
-        return conn.execute(
-            "SELECT COUNT(*) FROM watch_existing WHERE folder_id=?", (folder_id,)
-        ).fetchone()[0]
+    """How many files this folder is still leaving alone that 'Transcribe
+    them' would take."""
+    return len(_existing_it_takes(conn, folder_id))
 
 
 def _left_alone(conn: sqlite3.Connection, folder: dict, key: str, snapshot: tuple[int, float]) -> bool:
