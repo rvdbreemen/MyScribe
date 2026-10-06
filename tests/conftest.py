@@ -40,7 +40,11 @@ def _no_weights_fetched(request, monkeypatch):
     So the fetch is a no-op everywhere, except in tests marked
     `real_weights_fetch`, which stand in for `models.ensure` themselves.
     """
+    # A `gpu` test is the real stack end to end (ADR-001's own verification):
+    # it runs the real fetch, as the app does (PR #9 review, finding 4).
     if request.node.get_closest_marker("real_weights_fetch") is not None:
+        return
+    if request.node.get_closest_marker("gpu") is not None:
         return
     monkeypatch.setattr("scribe.stages.transcribe.fetch_missing_weights", lambda *a, **k: None)
 
