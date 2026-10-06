@@ -266,9 +266,15 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "797bc9b36e5d58cbf3fb881a5524eee3b582b8c81a4be8b292cb2372ab8c416f"
-"""sha256 over the prompt templates, for PROMPT_VERSION "1". Line endings are
-normalised first, because git rewrites them on checkout here.
+PROMPTS_DIGEST = "1521cbb64bc5bf663ea7ab845633f39ed2f1da09db946b45aafb779dca52daac"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "2": the
+templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal, and the
+source line `source_label` writes. Line endings are normalised first, because
+git rewrites them on checkout here.
+
+Until TASK-105.02 (2026-10-06) only the templates were hashed, so a change to
+SYSTEM or a goal string reused answers to the old question. Recording the
+wider digest moved nothing: the material is what version "2" already asked.
 
 Moved once without a bump, on 2026-09-06, when `speakers.md` and `cleanup.md`
 were *added*: the six templates that existed were byte-identical before and
@@ -276,30 +282,41 @@ after, so every stored answer is still an answer to the question its row
 names. Adding a kind is not editing a question."""
 
 
-def test_editing_a_template_means_bumping_the_prompt_version():
+def prompt_material() -> bytes:
+    """Every piece of text a prompt is built from, in a fixed order."""
+    parts: list[str] = []
+    for path in sorted(tasks.PROMPTS_DIR.glob("*.md")):
+        parts += [path.name, path.read_text(encoding="utf-8").replace(chr(13) + chr(10), chr(10))]
+    parts += ["SYSTEM", tasks.SYSTEM, "JSON_SYSTEM", tasks.JSON_SYSTEM]
+    for kind in sorted(tasks.TASKS):
+        parts += [f"goal:{kind}", tasks.TASKS[kind].goal]
+    parts += ["source_label", tasks.source_label("Title", 61.0),
+              tasks.source_label("Title", 61.0, notes_from=3)]
+    return chr(0).join(parts).encode("utf-8")
+
+
+def test_editing_a_prompt_means_bumping_the_prompt_version():
     """`PROMPT_VERSION` is part of the key every answer is stored under, so that
     answers to two different questions never sit in one list pretending to be
     comparable. The plan states the rule; without something that fails, it is a
     rule nobody is told they broke.
 
-    If this fails and you did edit a template: bump `tasks.PROMPT_VERSION`, then
-    put the new digest below. If you did not edit one, something else did.
+    If this fails and you did edit a prompt - a template, SYSTEM, a goal, the
+    source line: bump `tasks.PROMPT_VERSION`, then put the new digest above. If
+    you did not edit one, something else did.
 
-    *Adding* a template is the other case, and it has the opposite answer:
-    record the new digest and leave the version alone. A new kind has no stored
+    *Adding* a kind is the other case, and it has the opposite answer: record
+    the new digest and leave the version alone. A new kind has no stored
     answers to be confused with, while bumping the version would change the key
     of every *other* kind - orphaning answers that were paid for and are still
     answers to exactly the question that was asked. TASK-023 added `labels.md`
     on 2026-09-10 and did not bump.
     """
-    digest = hashlib.sha256()
-    for path in sorted(tasks.PROMPTS_DIR.glob("*.md")):
-        digest.update(path.name.encode("utf-8"))
-        digest.update(path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+    digest = hashlib.sha256(prompt_material()).hexdigest()
 
-    assert digest.hexdigest() == PROMPTS_DIGEST, (
-        f"the prompt templates changed while PROMPT_VERSION is still "
-        f"{tasks.PROMPT_VERSION!r}: bump it, then record the new digest here"
+    assert digest == PROMPTS_DIGEST, (
+        f"a prompt changed while PROMPT_VERSION is still "
+        f"{tasks.PROMPT_VERSION!r}: bump it, then record the new digest ({digest})"
     )
 
 

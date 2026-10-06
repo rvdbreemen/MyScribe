@@ -68,9 +68,12 @@ from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
 PROMPT_VERSION = "2"
-"""Bumped whenever a template in `prompts/` changes, because it is part of the
-stored key: answers to an edited question are not answers to the old one, and a
-panel showing both without saying so would be comparing two different things."""
+"""Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
+JSON_SYSTEM, a kind's goal or the line `source_label` writes - because it is
+part of the stored key: answers to an edited question are not answers to the
+old one, and a panel showing both without saying so would be comparing two
+different things. tests/test_llm_tasks.py hashes all of it and fails on a
+change without a bump (TASK-105.02; before, only the templates counted)."""
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 

@@ -3,9 +3,11 @@ id: TASK-105
 title: >-
   Prompts answer in the recording's language, see the speakers they ask about,
   and version all their text
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 06:56'
+updated_date: '2026-10-06 20:34'
 labels:
   - llm
 dependencies: []
