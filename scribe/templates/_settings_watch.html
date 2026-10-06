@@ -30,6 +30,10 @@
 #}
 <section id="watch-folders" class="panel watch">
   <h2>Watch folders</h2>
+  {% if not watching %}
+  <p class="banner warn" data-watching-off>This MyScribe was started with <code>--no-supervisor</code>, so
+    these folders and your feeds are not looked at until it is started without it.</p>
+  {% endif %}
   <p class="hint">
     Anything dropped in one of these folders is transcribed by itself. A file is only
     taken in once it has stopped changing for {{ quiesce_seconds }} seconds - a copy that is still

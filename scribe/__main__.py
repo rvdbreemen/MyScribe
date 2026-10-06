@@ -36,7 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-supervisor",
         action="store_true",
-        help="do not start the job supervisor thread",
+        help="do not start the job supervisor thread, nor the watch folders and feeds"
+        " that follow it: nothing is transcribed or looked at by itself",
     )
     parser.add_argument(
         "--no-browser",

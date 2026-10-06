@@ -2023,3 +2023,38 @@ def test_the_count_left_alone_is_what_transcribe_them_would_take(client, conn, i
     body = client.get("/settings?section=watch").text
 
     assert "1 file that was already here is left alone." in body
+
+
+# --- TASK-107.07: --no-supervisor says that it also stops watching ----------------------
+
+
+def test_the_help_for_no_supervisor_says_it_stops_watch_folders_and_feeds():
+    """Hermes, third macOS walk: with --no-supervisor the start log said
+    "watcher": false and a watch folder did nothing, and nothing said so."""
+    from scribe.__main__ import build_parser
+
+    help_text = build_parser().format_help()
+    options = help_text[help_text.index(chr(10) + "  --"):]  # past the usage line
+    flag = " ".join(options[options.index("--no-supervisor"):options.index("--no-browser")].split())
+    assert "watch folders" in flag and "feeds" in flag
+
+
+def test_the_watch_card_says_when_nothing_is_watching(client, conn, inbox):
+    """The test app starts without a supervisor, exactly like --no-supervisor."""
+    client.post("/settings/watch", data={"path": str(inbox)}, headers=HX)
+
+    body = client.get("/settings?section=watch").text
+    card = body[body.index('id="watch-folders"'):]
+
+    assert "--no-supervisor" in card and "not looked at" in card
+
+
+def test_the_watch_card_says_nothing_of_the_kind_when_the_watcher_runs(conn):
+    from scribe.web import settings as settings_ui
+
+    class _Running:
+        def cannot_watch(self, path):
+            return False
+
+    assert settings_ui.watch_context(conn, watcher=_Running())["watching"] is True
+    assert settings_ui.watch_context(conn, watcher=None)["watching"] is False
