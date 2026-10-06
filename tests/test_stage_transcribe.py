@@ -1191,9 +1191,15 @@ def test_the_stage_shows_a_weights_fetch_as_progress_an_event_and_a_log_line(con
     _, job_id = a_job_with_media(conn)
     progress = []
 
-    transcribe.run(make_ctx(conn, job_id, state={"wav": Path("audio.wav")}, progress=progress))
+    ctx = make_ctx(conn, job_id, state={"wav": Path("audio.wav")}, progress=progress)
+    transcribe.run(ctx)
+    ctx_state = ctx.state
 
     kinds = [row["kind"] for row in conn.execute("SELECT kind FROM job_event WHERE job_id=?", (job_id,))]
     assert "weights" in kinds
     assert any(event == "transcribe.weights" for event, _ in logged)
-    assert 0.5 in progress
+    # PR #9 review, finding 6: the download fills the first part of the bar
+    # and the transcription the rest, so the bar never runs back to 0.
+    assert progress[0] == pytest.approx(transcribe.WEIGHTS_SHARE * 0.5)
+    assert progress == sorted(progress), "the bar went backwards"
+    assert ctx_state["fetched_weights"] is True

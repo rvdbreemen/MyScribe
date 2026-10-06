@@ -260,6 +260,10 @@ def _run(conn: sqlite3.Connection, job_id: int) -> int:
             fn(ctx)
             applog.log("stage.end", job=job_id, stage=stage_name,
                        seconds=round(time.monotonic() - started, 2))
+            if ctx.state.pop("fetched_weights", False):
+                # The stage downloaded weights before it worked: that time is
+                # the network's, not this machine's speed (PR #9 review).
+                continue
             jobs.record_stage_perf(
                 conn,
                 stage_name,

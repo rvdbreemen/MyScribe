@@ -824,23 +824,45 @@ def transcribe_audio(
 # --- the stage ------------------------------------------------------------------
 
 
+WEIGHTS_SHARE = 0.3
+"""The part of the stage's bar a weights download fills; the transcription
+fills the rest (PR #9 review, finding 6: reported as the whole bar, the
+download ran it to 100% and the transcription started it again from 0)."""
+
+
 class _WeightsReport:
     """What a job says while it fetches the weights it needs (TASK-107.04):
-    the bytes as the job's progress, and once, an event on the job and a line
-    in the application log naming the model and its size - so 2.9 GB arriving
-    inside a job is something happening, not a job that hangs."""
+    the bytes as the first `WEIGHTS_SHARE` of the job's progress, and once, an
+    event on the job and a line in the application log naming the model and
+    its size - so 2.9 GB arriving inside a job is something happening, not a
+    job that hangs.
+
+    It also marks the stage as one that fetched (`fetched_weights`), and the
+    runner files no timing for it: download plus transcription as one sample
+    poisoned the ETA, whose median the first job's number was the only one
+    of (PR #9 review, finding 5)."""
 
     def __init__(self, ctx: "RunnerContext") -> None:
         self.ctx = ctx
         self.said: set[str] = set()
+        self.fetched = False
 
     def __call__(self, repo: str, done: int, total: int) -> None:
         if repo not in self.said:
             self.said.add(repo)
+            self.fetched = True
+            self.ctx.state["fetched_weights"] = True
             jobs.emit(self.ctx.conn, self.ctx.job["id"], "weights", repo=repo, bytes=total)
             applog.log("transcribe.weights", job=self.ctx.job["id"], repo=repo, bytes=total)
         if total:
-            self.ctx.report(min(done / total, 1.0))
+            self.ctx.report(WEIGHTS_SHARE * min(done / total, 1.0))
+
+    def transcription(self, fraction: float) -> None:
+        """The transcription's own progress, after the download's share when
+        there was one, so the bar only ever moves forward."""
+        if self.fetched:
+            fraction = WEIGHTS_SHARE + (1.0 - WEIGHTS_SHARE) * fraction
+        self.ctx.report(fraction)
 
 
 def run(ctx: "RunnerContext") -> None:
@@ -868,7 +890,7 @@ def run(ctx: "RunnerContext") -> None:
         language=ctx.params.get("language"),
         task=task,
         hotwords=hotwords,
-        on_progress=ctx.report,
+        on_progress=weights.transcription,
         cancelled=ctx.cancelled,
         # Overridable so a CPU test can stay a CPU test on a machine with a
         # perfectly good GPU sitting right there.

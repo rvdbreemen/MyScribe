@@ -278,3 +278,22 @@ def test_stage_perf_for_a_default_job_is_filed_under_the_resolved_model(conn, mo
     assert runner.main([str(job_id)]) == 0
 
     assert conn.execute("SELECT model FROM stage_perf").fetchone()["model"] == "large-v3-turbo"
+
+
+def test_a_stage_that_fetched_weights_files_no_timing(conn, monkeypatch):
+    """PR #9 review, finding 5: a transcribe stage that downloaded 2.9 GB of
+    weights measured the download plus the transcription as one sample, and
+    eta_seconds takes the median of five - the first job's number was the
+    only one. Such a stage files nothing; the next stage still does."""
+    monkeypatch.setitem(
+        runner.STAGES,
+        "transcribe",
+        [("transcribe", lambda ctx: ctx.state.update(fetched_weights=True)),
+         ("finalize", lambda ctx: None)],
+    )
+    job_id = jobs.enqueue(conn, "transcribe", params={"model": "large-v3"})
+    jobs.claim_next(conn)
+
+    assert runner.main([str(job_id)]) == 0
+
+    assert [r["stage"] for r in conn.execute("SELECT stage FROM stage_perf")] == ["finalize"]
