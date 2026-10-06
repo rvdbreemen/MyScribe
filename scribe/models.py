@@ -24,10 +24,12 @@ model load.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import json
 import shutil
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -446,6 +448,40 @@ def _one_request(
         ) from exc
 
 
+@contextlib.contextmanager
+def _fetch_lock(folder: Path):
+    """One writer per model folder, across processes: setup's download and a
+    job's (TASK-107.04) used to meet in the same `.part` file. A lock file in
+    the folder, held with the OS's own exclusive lock - `msvcrt.locking` on
+    Windows, `fcntl.flock` elsewhere - and released when the block ends,
+    including by a crash, because the OS drops it with the handle."""
+    folder.mkdir(parents=True, exist_ok=True)
+    handle = open(folder / ".fetch.lock", "a+b")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            while True:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue  # LK_LOCK gives up after ~10 s; keep waiting
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        handle.close()
+
+
 def fetch_file(model: Model, rel: str, dest: Path, token: str | None, on_bytes: Callable[[int], None]) -> None:
     """One pinned file, streamed to ``dest``.
 
@@ -560,39 +596,45 @@ def ensure(
 
     done: list[str] = []
     for model in outstanding:
-        sent = 0
-        total = model.bytes_total
-        for rel, pin in model.files.items():
-            target = base / model.folder / rel
-            if target.exists() and digest(target) == pin["sha256"]:
-                sent += int(pin.get("size") or 0)
+        with _fetch_lock(base / model.folder):
+            # Taken in turn (PR #9 review): setup and a job can both fetch one
+            # model, and both resume into the same .part. Whoever waited finds
+            # the work done and moves on.
+            if present(model, where=base, verify=True):
                 continue
-            # `sent` counts whole files; `within` accumulates the chunks of the
-            # one being written. Adding a raw chunk size to `sent` was the first
-            # version and it made the bar go backwards mid-file, which is worse
-            # than no bar: it reads as a download restarting.
-            within = {"bytes": 0}
+            sent = 0
+            total = model.bytes_total
+            for rel, pin in model.files.items():
+                target = base / model.folder / rel
+                if target.exists() and digest(target) == pin["sha256"]:
+                    sent += int(pin.get("size") or 0)
+                    continue
+                # `sent` counts whole files; `within` accumulates the chunks of the
+                # one being written. Adding a raw chunk size to `sent` was the first
+                # version and it made the bar go backwards mid-file, which is worse
+                # than no bar: it reads as a download restarting.
+                within = {"bytes": 0}
 
-            def arrived(n: int, repo: str = model.repo, base: int = sent) -> None:
-                within["bytes"] += n
+                def arrived(n: int, repo: str = model.repo, base: int = sent) -> None:
+                    within["bytes"] += n
+                    if on_progress:
+                        on_progress(repo, min(base + within["bytes"], total), total)
+
+                fetch_file(model, rel, target, token, arrived)
+                found = digest(target)
+                if found != pin["sha256"]:
+                    # Deleted, not kept: a wrong weight file that stays is one
+                    # nothing will ever look for again.
+                    target.unlink(missing_ok=True)
+                    raise ModelError(
+                        f"{model.repo}/{rel} does not match its pin at revision {model.revision}; "
+                        "it was deleted rather than used",
+                        reason="mismatch",
+                    )
+                sent += int(pin.get("size") or 0)
                 if on_progress:
-                    on_progress(repo, min(base + within["bytes"], total), total)
-
-            fetch_file(model, rel, target, token, arrived)
-            found = digest(target)
-            if found != pin["sha256"]:
-                # Deleted, not kept: a wrong weight file that stays is one
-                # nothing will ever look for again.
-                target.unlink(missing_ok=True)
-                raise ModelError(
-                    f"{model.repo}/{rel} does not match its pin at revision {model.revision}; "
-                    "it was deleted rather than used",
-                    reason="mismatch",
-                )
-            sent += int(pin.get("size") or 0)
-            if on_progress:
-                on_progress(model.repo, min(sent, total), total)
-        done.append(model.repo)
+                    on_progress(model.repo, min(sent, total), total)
+            done.append(model.repo)
 
     # The credit goes beside every copy that is in this folder, not only beside
     # the ones this run wrote: a user who put the weights there by hand has the
