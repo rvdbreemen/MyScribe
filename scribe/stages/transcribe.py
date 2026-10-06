@@ -567,12 +567,17 @@ def fetch_missing_weights(
     `models.present`), or one the catalogue does not know - a directory
     somebody converted, say - which the loader resolves as it always did.
     """
-    from scribe import models
-
     for model in models.catalogue().values():
         if model.alias == model_name and models.loads_here(model, backend):
-            if not models.present(model):
-                models.ensure([model.repo], backend=backend, on_progress=on_weights)
+            if models.present(model):
+                return
+            cached = models.hub_any_revision(model)
+            if cached is not None:
+                # The same files at another revision: the loader resolves the
+                # name through this cache, as before (PR #9 review, finding 2).
+                applog.log("transcribe.weights_cached_revision", repo=model.repo, revision=cached[0])
+                return
+            models.ensure([model.repo], backend=backend, on_progress=on_weights)
             return
 
 

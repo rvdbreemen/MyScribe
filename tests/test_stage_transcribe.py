@@ -1203,3 +1203,32 @@ def test_the_stage_shows_a_weights_fetch_as_progress_an_event_and_a_log_line(con
     assert progress[0] == pytest.approx(transcribe.WEIGHTS_SHARE * 0.5)
     assert progress == sorted(progress), "the bar went backwards"
     assert ctx_state["fetched_weights"] is True
+
+
+@pytest.mark.real_weights_fetch
+def test_a_hub_cache_copy_at_another_revision_is_used_not_fetched_again(tmp_path, monkeypatch):
+    """PR #9 review, finding 2: present() accepts the hub cache only at the
+    pinned revision, so a cache holding the same model at another commit made
+    the job download ~3 GB again - where the loader, as before this PR, would
+    have used the cached copy. Same files and sizes at another revision is a
+    copy the loader can use; it is said in the log and not fetched."""
+    from scribe import applog, doctor, models
+    body = b"weights"
+    model = models.Model(repo="org/whisper-x", revision="a" * 40,
+                         files={"model.bin": {"sha256": "0" * 64, "size": len(body)}},
+                         license="mit", credit="x", gated=False, alias="large-v3", backends=("cpu",))
+    monkeypatch.setattr(models, "catalogue", lambda: {model.repo: model})
+    monkeypatch.setattr(models, "root", lambda: tmp_path / "library-models")
+    cache = tmp_path / "hub"
+    other = cache / "models--org--whisper-x" / "snapshots" / ("b" * 40)
+    other.mkdir(parents=True)
+    (other / "model.bin").write_bytes(body)
+    monkeypatch.setattr(doctor, "hf_cache_dir", lambda: cache)
+    fetched, logged = [], []
+    monkeypatch.setattr(models, "ensure", lambda wanted=None, **kw: fetched.append(wanted) or [])
+    monkeypatch.setattr(applog, "log", lambda event, **kw: logged.append((event, kw)))
+
+    transcribe.fetch_missing_weights("large-v3", "cpu", None)
+
+    assert fetched == []
+    assert ("transcribe.weights_cached_revision", {"repo": "org/whisper-x", "revision": "b" * 40}) in logged

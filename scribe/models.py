@@ -256,6 +256,37 @@ def hub_snapshot(model: Model) -> Path | None:
     return base
 
 
+def hub_any_revision(model: Model) -> tuple[str, Path] | None:
+    """A huggingface_hub cache copy of ``model`` at *another* revision, whole:
+    every pinned file there by name and size. Returns (revision, folder).
+
+    Not `present` - that answers for the pinned revision only, and stays the
+    question setup and the doctor ask. This is the narrower question a job asks
+    before fetching (PR #9 review, finding 2): the loader resolves the bare
+    name through this cache, as it did before jobs fetched anything, so a copy
+    here is a copy it can use, and downloading ~3 GB again for a revision
+    label would be the regression.
+    """
+    from scribe import doctor
+
+    try:
+        snapshots = doctor.hf_cache_dir() / f"models--{model.repo.replace('/', '--')}" / "snapshots"
+        candidates = sorted(snapshots.iterdir()) if snapshots.is_dir() else []
+    except OSError:
+        return None
+    for folder in candidates:
+        if folder.name == model.revision or not folder.is_dir():
+            continue
+        whole = all(
+            (folder / rel).exists()
+            and (not int(pin.get("size") or 0) or (folder / rel).stat().st_size == int(pin["size"]))
+            for rel, pin in model.files.items()
+        )
+        if whole:
+            return folder.name, folder
+    return None
+
+
 def present(model: Model, *, where: Path | None = None, verify: bool = False) -> bool:
     """Is every pinned file here? The question "must I download?".
 
