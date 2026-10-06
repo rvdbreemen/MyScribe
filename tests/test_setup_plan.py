@@ -2879,3 +2879,26 @@ def test_the_console_skips_a_question_its_condition_hides(monkeypatch):
 
     assert given == {"llm_provider": "ollama"}
     assert "API key for OpenAI" not in out.getvalue()
+
+
+def test_the_console_and_the_window_read_shown_if_the_same_way():
+    """PR #9 review, finding 8: one rule, two spellings - the launcher may not
+    import scribe (ADR-011, stdlib only), so `setup.shown` and the launcher's
+    `shown` are kept equal by feeding both the same cases."""
+    import importlib.util
+    from pathlib import Path as _Path
+    path = _Path(__file__).resolve().parent.parent / "packaging" / "launcher" / "myscribe_launcher.py"
+    spec = importlib.util.spec_from_file_location("launcher_for_parity", path)
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    cases = [
+        ({"shown_if": None}, {}),
+        ({}, {"x": "y"}),
+        ({"shown_if": {"question": "llm_provider", "equals": "openai"}}, {"llm_provider": "openai"}),
+        ({"shown_if": {"question": "llm_provider", "equals": "openai"}}, {"llm_provider": "ollama"}),
+        ({"shown_if": {"question": "llm_provider", "equals": "openai"}}, {}),
+        ({"shown_if": {"question": "library", "equals": "named"}}, {"library": None}),
+        ({"shown_if": "not a dict"}, {}),
+    ]
+    for question, answers in cases:
+        assert setup.shown(question, answers) == launcher.shown(question, answers), (question, answers)

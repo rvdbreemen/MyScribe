@@ -2965,6 +2965,20 @@ def _answer_to(question: dict, *, stream, read) -> str | None:
     return default or None
 
 
+def shown(question: dict, answers: dict) -> bool:
+    """Whether a question is asked, from `shown_if` and nothing else - the one
+    condition every front-end interprets (ADR-015).
+
+    The launcher has the same rule as its own `shown`, because it may not
+    import scribe (ADR-011); tests/test_setup_plan.py feeds both the same
+    cases so the two spellings cannot drift (PR #9 review, finding 8).
+    """
+    condition = question.get("shown_if")
+    if not isinstance(condition, dict):
+        return True
+    return answers.get(condition.get("question")) == condition.get("equals")
+
+
 def ask(questions: list[dict], *, out=None, read=input) -> dict:
     """The console asker, over the same list every other door renders.
 
@@ -2976,12 +2990,10 @@ def ask(questions: list[dict], *, out=None, read=input) -> dict:
     stream = out if out is not None else sys.stdout
     answers: dict[str, str | None] = {}
     for question in questions:
-        # `shown_if` is the one condition every front-end interprets (ADR-015),
-        # and this one used to ask everything: the OpenAI key after Ollama was
-        # chosen (TASK-107.05). A hidden question is not asked and puts no
+        # This front-end used to ask everything: the OpenAI key after Ollama
+        # was chosen (TASK-107.05). A hidden question is not asked and puts no
         # answer, as in the window.
-        condition = question.get("shown_if")
-        if isinstance(condition, dict) and answers.get(condition.get("question")) != condition.get("equals"):
+        if not shown(question, answers):
             continue
         print(question["text"], file=stream)
         for choice in question["choices"]:
