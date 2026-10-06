@@ -266,7 +266,7 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "9c3cf88ecf4f038e9560532d016a247e05015faae18ab49995aca3128348a2d8"
+PROMPTS_DIGEST = "a310926f0070f31dbea4fd3814a19efd7eb87e8ea37a9c1e2f7a65d84a044c4e"
 """sha256 over everything a prompt is made of, for PROMPT_VERSION "3": the
 templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal, and the
 source line `source_label` writes. Line endings are normalised first, because
@@ -276,7 +276,9 @@ Until TASK-105.02 (2026-10-06) only the templates were hashed, so a change to
 SYSTEM or a goal string reused answers to the old question. Recording the
 wider digest moved nothing: the material is what version "2" already asked.
 Version "3" (TASK-105.01, the same day) added LANGUAGE_SYSTEM: answers now
-come in the transcript's language.
+come in the transcript's language. Moved again within "3", before it was
+released, by TASK-105.03 (map_chunk keeps the speaker): no answer was ever
+stored under the version in between.
 
 Moved once without a bump, on 2026-09-06, when `speakers.md` and `cleanup.md`
 were *added*: the six templates that existed were byte-identical before and
@@ -1952,3 +1954,57 @@ def test_an_unknown_language_adds_nothing(conn, monkeypatch, media):
     system = _system_sent(conn, monkeypatch, media, language=None)
 
     assert system.startswith(tasks.SYSTEM) and "write your answer in" not in system
+
+
+# --- TASK-105.03: the kinds that ask who, see who ---------------------------------------
+
+
+def _diarized(conn, *, title="Standup"):
+    media_id = seed_media(conn, title=title)
+    words = []
+    for i, (who, text) in enumerate([("SPEAKER_00", "I will send the report on Friday."),
+                                      ("SPEAKER_01", "Then I book the room.")]):
+        for j, token in enumerate(text.split()):
+            words.append({"start": i * 5 + j * 0.4, "end": i * 5 + j * 0.4 + 0.3,
+                          "text": (" " if j else "") + token, "speaker": who})
+    segments = [{"start": 0.0, "end": 4.0, "text": "I will send the report on Friday."},
+                {"start": 5.0, "end": 8.0, "text": "Then I book the room."}]
+    seed_run(conn, media_id, words=words, segments=segments, labels={"SPEAKER_00": "Arthur Dent"})
+    return media_id
+
+
+def _user_sent(conn, monkeypatch, media_id, kind):
+    provider, calls = fake_provider([ANSWERS[kind]])
+    register(monkeypatch, provider)
+    plan = tasks.plan_task(conn, media_id=media_id, kind=kind, provider_name="fake", model="fake-1")
+    tasks.generate(conn, plan)
+    return calls[-1].user
+
+
+@pytest.mark.parametrize("kind", ["action_items", "minutes"])
+def test_the_kinds_that_ask_for_an_owner_see_the_speakers_by_name(conn, monkeypatch, kind):
+    """action_items and minutes ask for an owner 'by name or speaker label' but
+    were sent lines without any speaker - an owner the model cannot see. They
+    get the names the page shows: the one somebody set, else 'Speaker N'."""
+    user = _user_sent(conn, monkeypatch, _diarized(conn), kind)
+
+    assert "Arthur Dent: I will send the report" in user
+    assert "Speaker 2: Then I book the room" in user
+    assert "SPEAKER_0" not in user, "a raw cluster label would end up as the owner"
+
+
+def test_a_summary_still_reads_plain_lines(conn, monkeypatch):
+    user = _user_sent(conn, monkeypatch, _diarized(conn), "summary")
+
+    assert "Arthur Dent" not in user and "SPEAKER_00" not in user
+
+
+@pytest.mark.parametrize("speakers, kept", [(True, True), ("names", True), (False, False)])
+def test_notes_keep_the_speaker_when_the_lines_carry_one(speakers, kept):
+    """map_chunk did not ask to keep the speaker, so a long recording's notes
+    could drop it - and the speaker pass, which reads those notes, then has no
+    SPEAKER_XX left to name."""
+    text = tasks.render_prompt("map_chunk", index=1, count=2, start="0:00", end="5:00",
+                               goal="g", transcript="[0:01] x", speakers=speakers)
+
+    assert ("speaker" in text.lower()) is kept

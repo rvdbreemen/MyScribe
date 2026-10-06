@@ -305,11 +305,13 @@ class TaskSpec:
     excerpt are notes for *this* task rather than a generic summary."""
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     needs_prompt: bool = False
-    with_speakers: bool = False
-    """Whether each transcript line carries its cluster label (`SPEAKER_00:`).
-    Off for the summary kinds - the label is noise to them and the display
-    name is not decided yet - and on for the task whose question is what the
-    labels stand for, and for the rewrite that must keep who said what."""
+    with_speakers: chunking.Speakers = False
+    """Whether each transcript line carries its speaker, and how
+    (`chunking.Speakers`). The cluster label (`SPEAKER_00:`) for the task whose
+    question is what the labels stand for, and for the rewrite that must keep
+    who said what. The name the page shows for action items and minutes, which
+    ask who took something on (TASK-105.03; they were sent no speaker at all).
+    Off for the other summary kinds, where a speaker is noise."""
     combine: str = "reduce"
     """How a transcript that does not fit one call is handled. `reduce`: notes
     per chunk, one call combining them into the kind's shape. `concat`: the
@@ -359,6 +361,7 @@ TASKS: dict[str, TaskSpec] = {
         template="action_items",
         schema=ActionItems,
         goal="list everything somebody agreed to do, with who took it on and when it was said",
+        with_speakers="names",
     ),
     "chapters": TaskSpec(
         kind="chapters",
@@ -373,6 +376,7 @@ TASKS: dict[str, TaskSpec] = {
         template="minutes",
         schema=Minutes,
         goal="write the minutes: what was discussed, what was decided, what was agreed to do",
+        with_speakers="names",
     ),
     "blog": TaskSpec(
         kind="blog",
@@ -1874,7 +1878,9 @@ def _collect_notes(
         response = _ask(
             conn,
             plan,
-            system=SYSTEM,
+            # The language line too (TASK-105.01): notes taken in English from
+            # a Dutch transcript would hand the combine an English text.
+            system=SYSTEM + (LANGUAGE_SYSTEM.format(name=plan.language) if plan.language else ""),
             user=render_prompt(
                 chunking.MAP_REDUCE_PROMPTS["chunk"],
                 index=chunk.index + 1,  # one-based: the model is reading, not indexing
@@ -1883,6 +1889,7 @@ def _collect_notes(
                 end=render.format_ts(chunk.end),
                 goal=chunk_goal(plan.spec, plan.note_question),
                 transcript=chunk.text,
+                speakers=plan.spec.with_speakers,
             ),
             max_output_tokens=note_budget,
             json_schema=None,  # notes are prose; only the combine has a shape to keep
