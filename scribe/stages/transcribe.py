@@ -66,7 +66,7 @@ TRANSLATE_MODEL = "large-v3"
 TRANSLATE_SUBSTITUTION = "turbo cannot translate; using large-v3"
 
 # The two tiers a user picks from (spec section 3, ADR-004): Turbo is the
-# default model and Maximaal the full large-v3 - the same checkpoint translate
+# default model and Maximum the full large-v3 - the same checkpoint translate
 # falls back to, so neither name is spelled anywhere but in this module.
 TIER_MODELS: dict[str, str] = {"turbo": DEFAULT_MODEL, "max": TRANSLATE_MODEL}
 

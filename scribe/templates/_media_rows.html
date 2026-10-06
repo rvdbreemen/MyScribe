@@ -37,9 +37,9 @@
            view - information that happens to be a shortcut. #}
         <th class="folder">Category</th>
         <th class="labels">Labels</th>
-        <th{% if state.sort == 'created_at' %} aria-sort="descending"{% endif %}><a href="{{ sort_links.created_at }}" hx-get="{{ sort_links.created_at }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'created_at' %} aria-current="true"{% endif %}>Uploaded</a></th>
+        <th class="uploaded"{% if state.sort == 'created_at' %} aria-sort="descending"{% endif %}><a href="{{ sort_links.created_at }}" hx-get="{{ sort_links.created_at }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'created_at' %} aria-current="true"{% endif %}>Uploaded</a></th>
         <th class="num"{% if state.sort == 'duration' %} aria-sort="descending"{% endif %}><a href="{{ sort_links.duration }}" hx-get="{{ sort_links.duration }}" hx-target="#media-table" hx-swap="outerHTML" hx-push-url="true"{% if state.sort == 'duration' %} aria-current="true"{% endif %}>Duration</a></th>
-        <th title="Model tier of the current transcript">Mode</th>
+        <th class="mode" title="Model tier of the current transcript">Mode</th>
         <th>Status</th>
         <th class="actions"><span class="visually-hidden">Actions</span></th>
       </tr>
@@ -68,7 +68,7 @@
            The poll's own answer sets the flag itself in
            _media_status_poll.html. #}
         {% with oob = false %}{% include "_media_meta.html" %}{% endwith %}
-        <td>{{ m.when(row.created_at) }}</td>
+        <td class="uploaded">{{ m.when(row.created_at) }}</td>
         <td class="num">{{ m.ts(row.duration) }}</td>
         <td class="mode">{{ m.mode_icon(row.run_model) }}</td>
         {% include "_media_status.html" %}

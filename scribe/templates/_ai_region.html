@@ -167,7 +167,10 @@
      same place forever. #}
   <div class="ai-panels" id="ai-panels" data-ai-panels>
     {% for panel in ai.panels %}
-    <div class="ai-slot" data-slot="{{ panel.kind }}"{% if panel.kind != ai.selected %} hidden{% endif %}>
+    {# aria-live here, on the slot that stays, and not on the section inside
+       it that every poll replaces: a live region that is itself swapped out
+       is announced by nothing (base.html says so; TASK-106.06). #}
+    <div class="ai-slot" data-slot="{{ panel.kind }}" aria-live="polite"{% if panel.kind != ai.selected %} hidden{% endif %}>
       {% include "_ai_output.html" %}
     </div>
     {% endfor %}

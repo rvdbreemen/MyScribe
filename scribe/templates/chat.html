@@ -29,14 +29,15 @@
   player seeking to that moment - the same data-start the transcript's own
   timestamps carry, so app.js seeks in place wherever the link is rendered.
 
-  While a chat job is running the whole panel polls itself and htmx picks
-  #chat-panel out of the answer (hx-select), so the page needs no fragment
+  While a chat job is running the conversation polls itself and htmx picks
+  #chat-answers out of the answer (hx-select), so the page needs no fragment
   template of its own. It stops as soon as the job leaves the queue, because
-  `job` is then none and the attributes are not rendered.
+  `job` is then none and the attributes are not rendered. Only the
+  conversation, not the panel: the form below sat inside the swap and a
+  question being typed was wiped every few seconds (TASK-106.06).
 #}
 {% import "_macros.html" as m %}
-<div id="chat-panel" class="chat-page"
-     {% if job %}hx-get="/media/{{ media.id }}/chat" hx-trigger="every {{ poll }}s" hx-select="#chat-panel" hx-swap="outerHTML"{% endif %}>
+<div id="chat-panel" class="chat-page">
   <p class="crumbs"><a href="/media/{{ media.id }}">← {{ media.title }}</a></p>
 
   <header class="chat-head">
@@ -51,6 +52,8 @@
   <p class="hint">Transcribe this file first; there is nothing to ask about yet.</p>
   {% else %}
 
+  <div id="chat-answers"
+       {% if job %}hx-get="/media/{{ media.id }}/chat" hx-trigger="every {{ poll }}s" hx-select="#chat-answers" hx-swap="outerHTML"{% endif %}>
   <ol class="chat-log">
     {% for message in messages %}
     <li class="turn {{ 'asked' if message.mine else 'answered' }}">
@@ -70,6 +73,7 @@
   {% if job %}
   <p class="hint working" aria-live="polite">Thinking… <a href="/jobs/{{ job.id }}">job {{ job.id }}</a></p>
   {% endif %}
+  </div>
 
   {# The same sentence the transcript panel carries, and outside the form for
      the same reason (ADR-016): with nobody chosen the page asks rather than

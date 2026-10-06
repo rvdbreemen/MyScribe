@@ -2113,3 +2113,19 @@ def test_a_blocked_chat_turn_keeps_what_was_typed_and_answers_without_a_redirect
     assert "selected" in option_of(resp.text, "provider", "ollama")
     assert 'value="qwen3.5:4b"' in resp.text
     assert jobs_of(conn) == []
+
+
+def test_the_chat_poll_leaves_the_question_form_alone(client, conn, media, ollama_ready):
+    """TASK-106.06: the whole panel polled its own outerHTML while a job ran,
+    and the form inside it went with every swap - a question being typed was
+    wiped. Only the conversation polls now; the form is outside it."""
+    client.post(f"/media/{media}/chat", data={"question": "Who mentioned the towel?", "provider": "ollama"}, headers=HX)
+
+    page = client.get(f"/media/{media}/chat").text
+
+    poller = re.search(r'<div id="chat-answers"[^>]*>', page)
+    assert poller and "hx-trigger=\"every" in poller.group(0), "a running chat polls"
+    assert 'hx-select="#chat-answers"' in poller.group(0)
+    assert not re.search(r'<div id="chat-panel"[^>]*hx-trigger', page), "the panel itself no longer polls"
+    answers = page[page.index('<div id="chat-answers"'):page.index('<form class="chat-ask"')]
+    assert answers.count("<div") - answers.count("</div>") <= 0, "the poll's element closes before the form"

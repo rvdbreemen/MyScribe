@@ -37,14 +37,14 @@
   environment.
 #}
 {% import "_macros.html" as m %}
-{# aria-live sits on the section, not on the "Working…" line inside it. The
-   hint is what gets REMOVED when the answer lands, so a live region attached
-   to it is gone by the time there is something to announce - the arrival of
-   the answer, which is the only announcement worth making. On the section it
-   survives every poll, because each poll swaps this element's outerHTML and
-   the replacement carries the attribute too. #}
+{# Not a live region itself. Each poll swaps this element's outerHTML, and a
+   screen reader treats the replacement as a new region, not as a change in
+   one it was watching - so the answer arriving went unannounced. The live
+   region is the .ai-slot around it in _ai_region.html, which no poll
+   replaces (TASK-106.06). Nor is it the "Working…" line: that is what gets
+   removed when the answer lands. #}
 <section id="ai-{{ panel.kind }}" class="ai-output" data-kind="{{ panel.kind }}"
-         aria-live="polite" aria-busy="{{ 'true' if panel.job else 'false' }}"
+         aria-busy="{{ 'true' if panel.job else 'false' }}"
          {% if panel.job %}hx-get="/media/{{ panel.media_id }}/ai/{{ panel.kind }}" hx-trigger="every {{ panel.poll }}s" hx-swap="outerHTML"{% elif panel.kind == 'speakers' %}hx-get="/media/{{ panel.media_id }}/ai/{{ panel.kind }}" hx-trigger="speakers-applied from:body" hx-swap="outerHTML"{% endif %}>
   <header class="ai-output-head">
     <h3>{{ panel.label }}</h3>

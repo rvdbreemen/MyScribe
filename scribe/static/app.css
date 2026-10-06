@@ -279,7 +279,7 @@ button:disabled { opacity: .5; cursor: default; box-shadow: none; }
    browser's own display:none for it does not. */
 [hidden] { display: none !important; }
 
-input[type="text"], input[type="search"], input[type="number"], input[type="url"], select, textarea {
+input[type="text"], input[type="search"], input[type="number"], input[type="url"], input[type="password"], select, textarea {
   padding: .4rem .65rem;
   background: var(--bg-panel);
   color: var(--fg);
@@ -467,7 +467,7 @@ tbody tr:last-child td { border-bottom: none; }
 table.media th.check, table.media td.check, table.media th.actions, table.media td.actions { width: 1%; }
 table.media td.title a { color: var(--fg); text-decoration: none; }
 table.media td.title a:hover { text-decoration: underline; }
-table.media .mode { font-size: 1rem; }
+table.media td.mode { font-size: 1rem; }
 table.media thead a { color: var(--fg); text-decoration: none; }
 /* The arrow follows the direction the column actually sorts in (one fixed
    direction per key, see library.SORTS), and aria-sort says the same thing
@@ -883,7 +883,7 @@ dialog.export-dialog { width: min(880px, 96vw); }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 .elapsed { font-variant-numeric: tabular-nums; }
 
-table.jobs td.summary, table.jobs td.err { white-space: normal; overflow-wrap: anywhere; max-width: 30rem; }
+table.jobs td.summary, table.jobs td.err { white-space: normal; overflow-wrap: break-word; max-width: 30rem; min-width: 9rem; }
 table.jobs td.err { color: var(--bad); font-size: 12px; }
 table.jobs td.err code { font-weight: 600; }
 table.jobs th.actions, table.jobs td:last-child { width: 1%; }
@@ -1535,3 +1535,34 @@ button.not-saved, button.not-saved:hover:enabled, .primary.not-saved {
 .watch-folders td.path { white-space: normal; overflow-wrap: anywhere; min-width: 16rem; }
 .watch-folders td.summary { white-space: normal; }
 .watch-folders td.summary .inline-form { margin-top: .35rem; }
+
+/* ---- TASK-106: long text and narrow screens ----------------------------------
+   Measured on 2026-10-05 with a synthetic library: one 150-character title
+   made the library 1829 px wide in a 1440 px window (every cell is nowrap,
+   above), and at 390 px the library showed only titles, the feeds page was
+   748 px wide and the navigation stood in a column beside the logo. */
+/* break-word, not anywhere: it breaks a word only when the word alone is
+   wider than the column, so "getranscribeerd" stays whole at 390 px. */
+td.title { white-space: normal; overflow-wrap: break-word; min-width: 14rem; }
+.feeds td { white-space: normal; overflow-wrap: break-word; }
+.feeds td.muted { text-align: left; }
+.hf-token { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .5rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line-soft); }
+.hf-token .field { flex: 1 1 20rem; }
+.hf-token input { width: 100%; }
+.settings-main p.hint { max-width: 75ch; }
+
+@media (max-width: 600px) {
+  /* The library keeps what tells a row apart and what it needs doing:
+     title, duration, status, the menu. Category, labels, upload date and
+     tier come back on a wider window. */
+  .library-main .folder, .library-main .labels, .library-main .uploaded, .library-main .mode { display: none; }
+  td.title { min-width: 0; }
+  .topbar { flex-wrap: wrap; row-gap: .35rem; }
+  .nav { order: 3; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: .2rem 1rem; }
+  .nav a { margin-right: 0; }
+  .version { margin-left: 0; }
+}
+
+/* The cleaned reading is a <pre> for its line breaks, not for code: it wraps
+   and reads in the page's font (TASK-106.06; nothing styled it before). */
+.clean-text { white-space: pre-wrap; font: inherit; overflow-wrap: break-word; }

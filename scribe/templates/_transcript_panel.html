@@ -48,7 +48,7 @@
 {% import "_macros.html" as m %}
 {% import "_transcript_macros.html" as t %}
 <div id="transcript-panel" class="transcript-page" hx-get="/media/{{ media.id }}" hx-trigger="refresh" hx-swap="outerHTML">
-  <p class="crumbs"><a href="/">← Library</a></p>
+  {% if request.headers.get("hx-request") %}{% with title_oob = true %}{% include "_transcript_title.html" %}{% endwith %}{% endif %}
 
   {% if media.trashed_at %}
   <div class="banner warn">This file is in the trash.
@@ -60,14 +60,6 @@
 
   <div class="transcript-layout">
     <section class="transcript-main">
-      <header class="transcript-head">
-        <h1>{{ media.title }}</h1>
-        <p class="sub muted">
-          <span class="mono" title="Original filename">{{ media.orig_name }}</span>
-          · {{ m.ts(media.duration) }}
-          · uploaded {{ m.when(media.created_at) }}
-        </p>
-      </header>
 
       {% if run %}
       <div class="transcript-tools" role="toolbar" aria-label="Transcript tools">
