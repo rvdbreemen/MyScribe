@@ -98,7 +98,7 @@ def _provider(ctx: "RunnerContext") -> str:
     if not provider_name:
         raise ValueError(
             "an llm job needs a provider in its params; nothing is sent until somebody "
-            "has chosen one in Settings > AI providers (/settings#llm-providers)"
+            "has chosen one in Settings > AI providers (/settings?section=llm#llm-providers)"
         )
     return provider_name
 

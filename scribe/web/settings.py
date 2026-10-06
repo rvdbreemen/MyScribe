@@ -343,7 +343,7 @@ def describe_options(options) -> str:
     ADR-004 keeps that name spelled in exactly one module anyway.
     """
     language = dict(transcribe.LANGUAGE_CHOICES).get(options.language, "Auto-detect")
-    tier = "Maximaal" if options.tier == "max" else "Turbo"
+    tier = "Maximum" if options.tier == "max" else "Turbo"
     speakers = "speakers recognised" if options.diarize else "no speaker recognition"
     return f"{language}, {tier}, {speakers}"
 

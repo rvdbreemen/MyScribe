@@ -1778,7 +1778,17 @@
       /* A tab opens the panel: clicking "Chapters" to read nothing would be
          a control that looks broken. */
       var tab = target.closest('.ai-tab');
-      if (tab) { showTab(tab.getAttribute('data-tab'), true); return; }
+      if (tab) {
+        var kind = tab.getAttribute('data-tab');
+        showTab(kind, true);
+        /* A task never asked is asked by its tab (TASK-106.03, Robert's
+           choice). Only then: once an answer or a job is in the card the
+           button is gone, and the tab only shows what is there. */
+        var slot = tab.closest('[data-ai-region]').querySelector('[data-slot="' + kind + '"]');
+        var now = slot ? slot.querySelector('[data-ask-now]') : null;
+        if (now && !now.disabled) { now.click(); }
+        return;
+      }
 
       /* An Ask button switches to its own tab BEFORE the request leaves.
          htmx's swap lands in #ai-<kind>, and a swap into a hidden container

@@ -70,23 +70,17 @@
      inside the block below is one nobody answers. #}
   {% if not ai.provider %}
   <p class="warn no-provider">No provider is chosen yet, so nothing is sent anywhere.
-    <a href="/settings#llm-providers">Choose a provider in Settings &gt; AI providers</a>,
+    <a href="/settings?section=llm#llm-providers">Choose a provider in Settings &gt; AI providers</a>,
     or pick one below for this question.</p>
   {% endif %}
 
-  <form class="ai-ask" method="post" action="/media/{{ ai.media_id }}/ai/summary">
-    {# One form, eight buttons: each carries its own formaction and hx-post, so
-       the provider, the model and the custom prompt are posted once from one
-       set of fields rather than repeated eight times. formaction is what does
-       the same without scripting. #}
-    <div class="ai-menu" role="group" aria-label="What to ask">
-      {% for panel in ai.panels[:-1] %}
-      <button type="submit" class="ai-action" data-asks="{{ panel.kind }}"
-              formaction="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
-              hx-post="/media/{{ ai.media_id }}/ai/{{ panel.kind }}"
-              hx-target="#ai-{{ panel.kind }}" hx-swap="outerHTML">{{ panel.label }}</button>
-      {% endfor %}
-    </div>
+  {# The provider, the model and the custom question, posted with every ask.
+     The tasks themselves are asked from their own tab (TASK-106.03): the row
+     of eight Ask buttons above the tabs named every task twice. A tab whose
+     task was never asked asks it when clicked (Robert, 2026-10-06, chosen over
+     a separate Ask click); the Ask buttons that do it live in each card
+     (_ai_output.html) and reach these fields through hx-include. #}
+  <form class="ai-ask" id="ai-ask" method="post" action="/media/{{ ai.media_id }}/ai/summary">
 
     {# The ninth needs a question, and the provider and model need saying only
        when they are wrong - so they collapse behind a line that says what they
@@ -167,7 +161,10 @@
      same place forever. #}
   <div class="ai-panels" id="ai-panels" data-ai-panels>
     {% for panel in ai.panels %}
-    <div class="ai-slot" data-slot="{{ panel.kind }}"{% if panel.kind != ai.selected %} hidden{% endif %}>
+    {# aria-live here, on the slot that stays, and not on the section inside
+       it that every poll replaces: a live region that is itself swapped out
+       is announced by nothing (base.html says so; TASK-106.06). #}
+    <div class="ai-slot" data-slot="{{ panel.kind }}" aria-live="polite"{% if panel.kind != ai.selected %} hidden{% endif %}>
       {% include "_ai_output.html" %}
     </div>
     {% endfor %}

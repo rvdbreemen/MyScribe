@@ -287,7 +287,10 @@ def test_the_five_canned_questions_are_in_view_and_the_custom_one_is_beside_its_
     lives inside the collapsed block next to the box it reads."""
     body = client.get(f"/media/{media}").text
 
-    region = re.search(r'<section id="ai-region".*?</section>', body, re.DOTALL).group(0)
+    # The whole region, up to the transcript: since TASK-106.03 each card is a
+    # <section> with its task's Ask button, so the first </section> is no
+    # longer the region's end.
+    region = body[body.index('<section id="ai-region"'):body.index('id="transcript-panel"')]
     # The tag carries an id and hx-preserve since TASK-053.03, so the
     # pattern stops at the tag's own ">" rather than assuming the class
     # closes it.
@@ -325,7 +328,10 @@ def test_the_privacy_warning_stays_out_of_the_collapsed_block(client, conn, medi
 
     body = client.get(f"/media/{media}").text
 
-    region = re.search(r'<section id="ai-region".*?</section>', body, re.DOTALL).group(0)
+    # The whole region, up to the transcript: since TASK-106.03 each card is a
+    # <section> with its task's Ask button, so the first </section> is no
+    # longer the region's end.
+    region = body[body.index('<section id="ai-region"'):body.index('id="transcript-panel"')]
     # The tag carries an id and hx-preserve since TASK-053.03, so the
     # pattern stops at the tag's own ">" rather than assuming the class
     # closes it.
@@ -1614,7 +1620,7 @@ def test_a_window_that_cannot_be_worked_out_is_simply_not_shown(conn, monkeypatc
 # actually sends: a placeholder rather than a provider, a sentence a reader can
 # see without opening anything, and no `job` row.
 
-SETTINGS_LINK = "/settings#llm-providers"
+SETTINGS_LINK = "/settings?section=llm#llm-providers"
 
 
 def test_the_panel_preselects_no_provider_when_nobody_has_chosen(client, conn, media):
@@ -2113,3 +2119,19 @@ def test_a_blocked_chat_turn_keeps_what_was_typed_and_answers_without_a_redirect
     assert "selected" in option_of(resp.text, "provider", "ollama")
     assert 'value="qwen3.5:4b"' in resp.text
     assert jobs_of(conn) == []
+
+
+def test_the_chat_poll_leaves_the_question_form_alone(client, conn, media, ollama_ready):
+    """TASK-106.06: the whole panel polled its own outerHTML while a job ran,
+    and the form inside it went with every swap - a question being typed was
+    wiped. Only the conversation polls now; the form is outside it."""
+    client.post(f"/media/{media}/chat", data={"question": "Who mentioned the towel?", "provider": "ollama"}, headers=HX)
+
+    page = client.get(f"/media/{media}/chat").text
+
+    poller = re.search(r'<div id="chat-answers"[^>]*>', page)
+    assert poller and "hx-trigger=\"every" in poller.group(0), "a running chat polls"
+    assert 'hx-select="#chat-answers"' in poller.group(0)
+    assert not re.search(r'<div id="chat-panel"[^>]*hx-trigger', page), "the panel itself no longer polls"
+    answers = page[page.index('<div id="chat-answers"'):page.index('<form class="chat-ask"')]
+    assert answers.count("<div") - answers.count("</div>") <= 0, "the poll's element closes before the form"

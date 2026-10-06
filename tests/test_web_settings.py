@@ -1071,3 +1071,20 @@ def test_the_installer_and_the_switch_register_the_identical_item(client, conn, 
     setup.apply(setup.Answers(start_at_login=True), conn)
 
     assert login_entry.value == by_the_switch
+
+
+def test_every_choose_a_provider_link_opens_the_providers_card(client):
+    """TASK-106.02: the links pointed at /settings#llm-providers, but the page
+    opens the card ?section= names and nothing reads the hash - so they opened
+    the Defaults card. Every place that sends somebody to choose a provider
+    must land on the card where that is done."""
+    from scribe import web
+    from scribe.web import ai_ui
+    links = {ai_ui.SETTINGS_ANCHOR}
+    for template in ("_ai_region.html", "chat.html"):
+        text = (web.TEMPLATES_DIR / template).read_text(encoding="utf-8")
+        links.update(re.findall(r'href="(/settings[^"]*)"[^>]*>Choose a provider', text))
+    assert len(links) >= 1
+    for link in links:
+        page = client.get(link.split("#")[0]).text
+        assert re.search(r'id="ss-llm"[^>]*\schecked', page), link

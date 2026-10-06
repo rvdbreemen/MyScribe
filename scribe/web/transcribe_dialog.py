@@ -164,7 +164,7 @@ def options_summary(options: TranscribeOptions) -> str:
     """
     names = dict(transcribe.LANGUAGE_CHOICES)
     parts = [names.get(options.language or "", "Auto-detect")]
-    parts.append("Maximaal" if options.tier == "max" else "Turbo")
+    parts.append("Maximum" if options.tier == "max" else "Turbo")
 
     if not options.diarize:
         parts.append("no speakers")

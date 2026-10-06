@@ -23,7 +23,8 @@
 
 
 {# The model tier a run used. Turbo (the default model) is the lightning
-   bolt, Maximaal (large-v3) the target: speed against accuracy, which is what
+   bolt, Maximum (large-v3; "Maximaal" until TASK-106.05 put the interface
+   in one language) the target: speed against accuracy, which is what
    the two tiers actually trade. They were a dolphin and a whale, carried over
    from the app this one was modelled on, and a sea mammal says nothing about
    a transcription model - a bolt is the settled UI convention for "fast", and
@@ -38,7 +39,7 @@
 {% macro mode_icon(model) -%}
 {% if model %}
 {%- set turbo = 'turbo' in model|lower -%}
-{%- set tier = 'Turbo' if turbo else 'Maximaal' -%}
+{%- set tier = 'Turbo' if turbo else 'Maximum' -%}
 <span class="mode" role="img" aria-label="{{ tier }} model, {{ model }}" title="{{ tier }} ({{ model }})">{{ TIER_ICONS.turbo if turbo else TIER_ICONS.max }}</span>
 {%- endif %}
 {%- endmacro %}
@@ -94,13 +95,13 @@
 <form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/cancel"
       data-confirm="Cancel job {{ job.id }} ({{ job.title }})?{% if job.status == 'running' %} It is running now; the work done so far is lost.{% else %} It is still queued and is simply removed.{% endif %}"
       data-refresh="{{ refresh }}">
-  <button type="submit" class="danger"{% if job.cancel_requested %} disabled{% endif %}>{{ 'cancelling…' if job.cancel_requested else 'Cancel' }}</button>
+  <button type="submit" class="danger" id="job-{{ job.id }}-cancel"{% if job.cancel_requested %} disabled{% endif %}>{{ 'cancelling…' if job.cancel_requested else 'Cancel' }}</button>
 </form>
 {%- endmacro %}
 
 {% macro retry_form(job, refresh='#jobs-live') -%}
 <form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/retry" data-refresh="{{ refresh }}">
-  <button type="submit">Retry</button>
+  <button type="submit" id="job-{{ job.id }}-retry">Retry</button>
 </form>
 {%- endmacro %}
 
@@ -109,16 +110,20 @@
    board's fragment swaps its own outerHTML every two seconds while the queue
    is busy, and a <select> a person has open would be yanked away mid-choice.
    A button has no open state to lose. #}
+{# Every button carries an id (TASK-106.06): the board swaps itself every
+   two seconds while the queue is busy, and htmx puts the focus back only on
+   an element it can find again by id - a keyboard user on Cancel or a
+   priority arrow lost their place at every poll. #}
 {% macro priority_form(job, to, label, title, refresh='#jobs-live') -%}
 <form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/priority" data-refresh="{{ refresh }}">
   <input type="hidden" name="priority" value="{{ to }}">
-  <button type="submit" title="{{ title }}" aria-label="{{ title }}">{{ label }}</button>
+  <button type="submit" id="job-{{ job.id }}-{{ title.split()[0]|lower }}" title="{{ title }}" aria-label="{{ title }}">{{ label }}</button>
 </form>
 {%- endmacro %}
 
 {% macro move_form(job, where, label, title, refresh='#jobs-live') -%}
 <form class="inline-form" method="post" action="/api/jobs/{{ job.id }}/move" data-refresh="{{ refresh }}">
   <input type="hidden" name="where" value="{{ where }}">
-  <button type="submit" title="{{ title }}" aria-label="{{ title }}">{{ label }}</button>
+  <button type="submit" id="job-{{ job.id }}-{{ where }}" title="{{ title }}" aria-label="{{ title }}">{{ label }}</button>
 </form>
 {%- endmacro %}

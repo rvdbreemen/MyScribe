@@ -1348,7 +1348,7 @@ def test_bulk_label_queues_nothing_and_says_why_when_nobody_has_chosen(client, c
     assert _llm_jobs(conn) == []
     notice = json.loads(resp.headers["HX-Trigger"])["scribe-notice"]
     assert "choose a provider" in notice.lower()
-    assert "/settings#llm-providers" in notice
+    assert "/settings?section=llm#llm-providers" in notice
     # The library page posts `action` and `ids` and nothing else: there is no
     # provider select on this screen, so the notice must not send a person
     # looking for one. The panel and the chat form get that clause; this does not.
@@ -1394,7 +1394,7 @@ def test_bulk_label_to_an_ollama_that_is_not_running_queues_nothing_and_says_so(
     assert notice.startswith("Nothing was queued.")
     assert "not running" in notice and "start it" in notice
     # Starting a daemon is not done in Settings, so the notice names no page.
-    assert "/settings#llm-providers" not in notice
+    assert "/settings?section=llm#llm-providers" not in notice
     assert "for this request" not in notice.lower()
 
 
@@ -1415,7 +1415,7 @@ def test_bulk_label_to_a_cloud_provider_with_no_key_queues_nothing_and_names_set
     assert _llm_jobs(conn) == []
     notice = _notice(resp)
     assert "no api key" in notice.lower()
-    assert "/settings#llm-providers" in notice
+    assert "/settings?section=llm#llm-providers" in notice
 
 
 def test_bulk_label_about_the_saved_model_never_pulled_queues_nothing(

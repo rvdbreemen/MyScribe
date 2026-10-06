@@ -380,7 +380,7 @@ def test_both_tiers_render_their_own_icon_with_a_label_a_screen_reader_can_read(
     quick = _cell(body, "Quick one", "mode")
     careful = _cell(body, "Careful one", "mode")
     assert "\u26A1" in quick and 'aria-label="Turbo model, large-v3-turbo"' in quick
-    assert "\U0001F3AF" in careful and 'aria-label="Maximaal model, large-v3"' in careful
+    assert "\U0001F3AF" in careful and 'aria-label="Maximum model, large-v3"' in careful
     assert 'role="img"' in quick and 'role="img"' in careful
 
 

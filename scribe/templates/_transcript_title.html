@@ -1,0 +1,17 @@
+{#
+  The recording's name and the way back, above everything else on the page
+  (TASK-106.03): the page used to open on the privacy strip and the AI tasks,
+  with the title and the back link below them. Outside #transcript-panel like
+  the AI region, so it is first; the panel sends a copy out of band on every
+  htmx refresh (`title_oob`), so a rename still shows here at once.
+#}
+{% import "_macros.html" as m %}
+<header id="transcript-title" class="transcript-title"{% if title_oob %} hx-swap-oob="true"{% endif %}>
+  <p class="crumbs"><a href="/">← Library</a></p>
+  <h1>{{ media.title }}</h1>
+  <p class="sub muted">
+    <span class="mono" title="Original filename">{{ media.orig_name }}</span>
+    · {{ m.ts(media.duration) }}
+    · uploaded {{ m.when(media.created_at) }}
+  </p>
+</header>

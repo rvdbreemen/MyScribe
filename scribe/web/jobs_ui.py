@@ -131,7 +131,7 @@ def params_summary(params: dict) -> str:
     """The job's options in one line: tier, language, translate, speakers."""
     model = str(params.get("model") or transcribe.DEFAULT_MODEL)
     turbo = "turbo" in model.lower()
-    parts = [f"{TIER_ICONS['turbo']} Turbo" if turbo else f"{TIER_ICONS['max']} Maximaal"]
+    parts = [f"{TIER_ICONS['turbo']} Turbo" if turbo else f"{TIER_ICONS['max']} Maximum"]
     parts.append(str(params.get("language") or "auto-detect language"))
     if params.get("task") == "translate":
         parts.append("translate to English")

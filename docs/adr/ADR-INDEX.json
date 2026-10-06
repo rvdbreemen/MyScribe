@@ -1535,6 +1535,65 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-025",
+      "title": "How an outside program drives MyScribe without the web pages",
+      "path": "ADR-025-how-an-outside-program-drives-myscribe-without-the-web-pages.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-06",
+      "decision_summary": "Not decided; Robert decides.",
+      "topics": [
+        "api",
+        "automation",
+        "security"
+      ],
+      "aliases": [
+        "api v1",
+        "automation surface",
+        "bearer token",
+        "json api"
+      ],
+      "components": [
+        "scribe.app",
+        "scribe.guard"
+      ],
+      "symbols": [
+        "create_app",
+        "cross_site_reason"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Each /api/v1 route calls the same helper its HTML route calls; neither holds logic of its own.",
+          "Errors are JSON with a stable code and the detail the pages already show.",
+          "POST /api/v1/media honours an idempotency key, so a retried request queues no second job.",
+          "The routes appear in /openapi.json."
+        ],
+        "must_not": [
+          "Bind anything but 127.0.0.1, or widen guard.ALLOWEDHOSTS.",
+          "Serve an /api route through the phone door (ADR-022).",
+          "Change an HTML route's path or form fields."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testwebphone.py::testnorouteofthemainappanswersthroughthedoor."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -2021,6 +2080,36 @@
     {
       "source": "ADR-023",
       "target": "ADR-020",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-025",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-025",
+      "target": "ADR-013",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-025",
+      "target": "ADR-014",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-025",
+      "target": "ADR-015",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-025",
+      "target": "ADR-022",
       "type": "related",
       "resolved": true
     }

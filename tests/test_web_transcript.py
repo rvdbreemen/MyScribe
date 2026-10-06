@@ -1294,12 +1294,13 @@ def test_a_published_reading_is_shown_even_beside_a_later_refusal(client, conn, 
 # --- step 1 of the rebuild: four faults that were bugs (TASK-053.01) ------------------
 
 
-def test_the_answer_section_is_the_live_region_not_the_working_hint(client, conn, transcribed):
+def test_the_slot_around_an_answer_is_the_live_region_not_the_answer_or_the_hint(client, conn, transcribed):
     """The hint is REMOVED when the answer lands, so a live region attached to
     it is gone by the time there is something to announce - and the arrival of
-    the answer is the only announcement worth making. On the section it
-    survives every poll, because each poll swaps this element's outerHTML and
-    the replacement carries the attribute too.
+    the answer is the only announcement worth making. Not on the section
+    either (TASK-106.06): each poll swaps its outerHTML, and a screen reader
+    takes the replacement for a new region rather than a change in the one
+    it watched. It sits on the .ai-slot around it, which no poll replaces.
 
     An answer has to exist for there to be a section at all: since
     TASK-053.03 a kind nobody asked about renders nothing.
@@ -1317,8 +1318,10 @@ def test_the_answer_section_is_the_live_region_not_the_working_hint(client, conn
 
     section = re.search(r'<section id="ai-summary"[^>]*>', body)
     assert section, "no summary answer section"
-    assert 'aria-live="polite"' in section.group(0)
+    assert "aria-live" not in section.group(0)
     assert 'aria-busy="false"' in section.group(0)   # nothing running
+    slot = re.search(r'<div class="ai-slot" data-slot="summary"[^>]*>\s*<section id="ai-summary"', body)
+    assert slot and 'aria-live="polite"' in slot.group(0), "the stable slot is the live region"
 
     hint = re.search(r'<p class="hint working"[^>]*>', body)
     assert hint is None or "aria-live" not in hint.group(0)
@@ -2056,3 +2059,71 @@ def test_a_run_whose_speaker_pass_could_not_be_asked_says_so_on_the_page(
 
 def test_a_run_whose_speakers_were_asked_for_says_nothing_about_a_pass(client, transcribed):
     assert "data-speaker-pass-note" not in client.get(f"/media/{transcribed['media']}").text
+
+
+# --- TASK-106.03: the recording first --------------------------------------------
+
+
+def test_the_page_opens_on_the_title_and_the_way_back_before_the_ai_tasks(client, conn, alternating):
+    """Measured 2026-10-05: the page opened on the privacy strip and the AI
+    tasks, with the title and the back link below them."""
+    page = client.get(f"/media/{alternating['media']}").text
+
+    title = page.index('id="transcript-title"')
+    assert title < page.index('id="ai-region"') if 'id="ai-region"' in page else True
+    assert title < page.index("Not private") if "Not private" in page else True
+    assert page.count('id="transcript-title"') == 1, "the full page carries the title once"
+
+
+def test_a_rename_of_the_recording_updates_the_title_at_the_top(client, conn, alternating):
+    media_id = alternating["media"]
+    client.post(f"/media/{media_id}/rename", data={"title": "Now with a new name"})
+
+    panel = client.get(f"/media/{media_id}", headers={"HX-Request": "true"}).text
+
+    assert 'id="transcript-title" class="transcript-title" hx-swap-oob="true"' in panel
+    assert "Now with a new name" in panel
+
+
+# --- TASK-106.03: every task named once, asked from its tab -----------------------
+
+
+def test_each_task_is_named_once_above_the_answers_and_asked_from_its_card(client, transcribed):
+    """The page showed a row of eight Ask buttons above eight tabs with the
+    same names. The row is gone; a task nobody asked is asked from its card,
+    which the tab presses (Robert's choice, 2026-10-06)."""
+    from scribe.llm import tasks
+    page = client.get(f"/media/{transcribed['media']}").text
+    region = page[page.index('<section id="ai-region"'):page.index('id="transcript-panel"')]
+    above = region[:region.index('class="ai-panels"')]
+
+    assert 'class="ai-menu"' not in region
+    for kind in tasks.KINDS:
+        assert above.count(f'data-tab="{kind}"') == 1, kind
+        if kind != "custom":
+            assert f'formaction="/media/{transcribed["media"]}/ai/{kind}"' not in above, kind
+            card = re.search(rf'<section id="ai-{kind}".*?</section>', region, re.S).group(0)
+            assert "data-ask-now" in card and 'form="ai-ask"' in card, kind
+
+
+def test_an_answered_card_offers_ask_again_and_never_asks_by_itself(client, conn, transcribed):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO llm_output(media_id, kind, provider, model, prompt_version,"
+            " content, created_at, run_id) VALUES (?,?,?,?,?,?,?,?)",
+            (transcribed["media"], "summary", "ollama", "qwen3.5:4b", 1,
+             '{"text": "A summary."}', 0.0, transcribed["run"]),
+        )
+        conn.commit()
+    page = client.get(f"/media/{transcribed['media']}").text
+    card = re.search(r'<section id="ai-summary".*?</section>', page, re.S).group(0)
+
+    assert "Ask again" in card
+    assert "data-ask-now" not in card, "a tab click on an answer only shows it"
+
+
+def test_a_tab_presses_the_ask_button_of_a_task_never_asked():
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribe/static/app.js").read_text(encoding="utf-8")
+    handler = js.split("function wireAiTabs()")[1].split("document.addEventListener('keydown'")[0]
+    tab_branch = handler[handler.index("target.closest('.ai-tab')"):]
+    assert "[data-ask-now]" in tab_branch and ".click()" in tab_branch

@@ -264,7 +264,7 @@ def test_queued_jobs_list_in_claim_order_with_positions_and_a_params_summary(
     assert queued.index(f'href="/jobs/{urgent}"') < queued.index(f'href="/jobs/{board["queued"]}"')
     rows = re.findall(r'<td class="num">(\d+)</td>', queued)
     assert rows == ["1", "2"]
-    assert "Maximaal" in queued
+    assert "Maximum" in queued
     assert "nl" in queued
     assert "translate" in queued
     assert "2 speakers" in queued
@@ -827,3 +827,18 @@ def test_a_model_that_cannot_do_the_job_is_not_called_a_failure(client, conn):
     assert "This model cannot do this job" in page
     assert "Failed in prepare" not in page
     assert "MODEL_UNSUITABLE" in page
+
+
+def test_every_button_on_the_board_has_an_id_so_a_poll_keeps_focus_on_it(client, board):
+    """TASK-106.06: the board swaps itself every two seconds while the queue is
+    busy, and htmx gives focus back only to an element it finds again by id.
+    A keyboard user on Cancel or a priority arrow lost their place at every
+    poll. Ids are unique, so focus lands on the same button, not a twin."""
+    body = client.get("/jobs/fragment").text
+
+    buttons = re.findall(r"<button\b[^>]*>", body)
+    assert buttons, "the board has buttons to check"
+    ids = [re.search(r'\sid="([^"]+)"', b) for b in buttons]
+    assert all(ids), [b for b, i in zip(buttons, ids) if not i]
+    names = [i.group(1) for i in ids]
+    assert len(names) == len(set(names)), names

@@ -736,7 +736,7 @@ def test_the_options_summary_names_every_setting_that_is_not_the_default():
     picked = TranscribeOptions(language="nl", tier="max", diarize=False, translate=True)
     line = transcribe_dialog.options_summary(picked)
     assert "Dutch" in line, line
-    assert "Maximaal" in line, line
+    assert "Maximum" in line, line
     assert "no speakers" in line, line
     assert "translate" in line.lower(), line
 

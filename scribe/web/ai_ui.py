@@ -152,7 +152,7 @@ def setting_drop(conn: sqlite3.Connection, key: str) -> None:
 default_provider = llm.default_provider
 default_model = llm.default_model
 
-SETTINGS_ANCHOR = "/settings#llm-providers"
+SETTINGS_ANCHOR = "/settings?section=llm#llm-providers"
 """Where the provider is chosen, in one place: the panel's sentence, the
 settings line and the bulk action's notice all point at this."""
 
