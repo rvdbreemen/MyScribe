@@ -3,9 +3,11 @@ id: TASK-106
 title: >-
   Screen layout: tables, phone widths, the transcript page order and the
   settings link
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 06:56'
+updated_date: '2026-10-06 07:46'
 labels:
   - ui
 dependencies: []

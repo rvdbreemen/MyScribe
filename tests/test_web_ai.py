@@ -1614,7 +1614,7 @@ def test_a_window_that_cannot_be_worked_out_is_simply_not_shown(conn, monkeypatc
 # actually sends: a placeholder rather than a provider, a sentence a reader can
 # see without opening anything, and no `job` row.
 
-SETTINGS_LINK = "/settings#llm-providers"
+SETTINGS_LINK = "/settings?section=llm#llm-providers"
 
 
 def test_the_panel_preselects_no_provider_when_nobody_has_chosen(client, conn, media):
