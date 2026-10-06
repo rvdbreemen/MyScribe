@@ -1,5 +1,41 @@
 ## [Unreleased]
 
+## [0.8.5] - 2026-10-06
+
+### Fixed
+
+- **Switching video on later no longer sweeps in old videos.** A watch folder
+  added for audio left its existing audio alone but not its videos, so
+  **Take video too** made the next start transcribe every video already in
+  the folder - 761 jobs in a Downloads folder. Old files of every kind now
+  stay left alone until you press **Transcribe them**, and that button takes
+  only what the folder takes (TASK-107.06).
+- **A model download shows on the progress bar** instead of a job that seems
+  stuck: the first 30% of the bar is the download, and it is said in the job
+  log. A model already in the Hugging Face cache at another revision is used,
+  not fetched again. Two jobs never download the same model at once.
+- **The setup window says when a choice is waiting**, in its own text as well
+  as in the dialog, and says where the app is if the browser does not open.
+- The **Doctor**'s model test says what it is downloading and, when that
+  fails, why.
+
+### Changed
+
+- **The transcript page opens on the recording**: its title and the way back
+  come first, above the AI tasks.
+- **Each AI task is named once.** The row of Ask buttons is gone: click the
+  tab of a task to ask it, or **Ask again** on an answer to ask it anew.
+- **Every screen fits a phone** (390 px wide), and a long title wraps instead
+  of pushing the library off the page. On a phone the library shows title,
+  duration and status.
+- **Choose a provider** links open Settings on the AI providers card.
+- The large-v3 tier is called **Maximum** (it was Maximaal); the interface is
+  English throughout.
+- A question being typed in Chat survives while an answer is being written,
+  and the jobs board keeps the keyboard focus where it was.
+- The **Open me first** note in the macOS disk image leads with the route
+  macOS 15 and later take: System Settings > Privacy & Security > Open Anyway.
+
 ## [0.8.4] - 2026-10-05
 
 ### Changed
