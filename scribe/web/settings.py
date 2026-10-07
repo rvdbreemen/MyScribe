@@ -371,6 +371,10 @@ def watch_context(
     tried and refused.
     """
     return {
+        # False when the app runs without a supervisor (--no-supervisor):
+        # the watcher follows it, and a folder listed here then does nothing
+        # with nothing on the page saying so (TASK-107.07).
+        "watching": watcher is not None,
         "watch_folders": [
             {
                 "id": folder["id"],
