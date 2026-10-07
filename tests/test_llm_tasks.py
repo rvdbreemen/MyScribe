@@ -266,9 +266,19 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "797bc9b36e5d58cbf3fb881a5524eee3b582b8c81a4be8b292cb2372ab8c416f"
-"""sha256 over the prompt templates, for PROMPT_VERSION "1". Line endings are
-normalised first, because git rewrites them on checkout here.
+PROMPTS_DIGEST = "a310926f0070f31dbea4fd3814a19efd7eb87e8ea37a9c1e2f7a65d84a044c4e"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "3": the
+templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal, and the
+source line `source_label` writes. Line endings are normalised first, because
+git rewrites them on checkout here.
+
+Until TASK-105.02 (2026-10-06) only the templates were hashed, so a change to
+SYSTEM or a goal string reused answers to the old question. Recording the
+wider digest moved nothing: the material is what version "2" already asked.
+Version "3" (TASK-105.01, the same day) added LANGUAGE_SYSTEM: answers now
+come in the transcript's language. Moved again within "3", before it was
+released, by TASK-105.03 (map_chunk keeps the speaker): no answer was ever
+stored under the version in between.
 
 Moved once without a bump, on 2026-09-06, when `speakers.md` and `cleanup.md`
 were *added*: the six templates that existed were byte-identical before and
@@ -276,30 +286,41 @@ after, so every stored answer is still an answer to the question its row
 names. Adding a kind is not editing a question."""
 
 
-def test_editing_a_template_means_bumping_the_prompt_version():
+def prompt_material() -> bytes:
+    """Every piece of text a prompt is built from, in a fixed order."""
+    parts: list[str] = []
+    for path in sorted(tasks.PROMPTS_DIR.glob("*.md")):
+        parts += [path.name, path.read_text(encoding="utf-8").replace(chr(13) + chr(10), chr(10))]
+    parts += ["SYSTEM", tasks.SYSTEM, "JSON_SYSTEM", tasks.JSON_SYSTEM, "LANGUAGE_SYSTEM", tasks.LANGUAGE_SYSTEM]
+    for kind in sorted(tasks.TASKS):
+        parts += [f"goal:{kind}", tasks.TASKS[kind].goal]
+    parts += ["source_label", tasks.source_label("Title", 61.0),
+              tasks.source_label("Title", 61.0, notes_from=3)]
+    return chr(0).join(parts).encode("utf-8")
+
+
+def test_editing_a_prompt_means_bumping_the_prompt_version():
     """`PROMPT_VERSION` is part of the key every answer is stored under, so that
     answers to two different questions never sit in one list pretending to be
     comparable. The plan states the rule; without something that fails, it is a
     rule nobody is told they broke.
 
-    If this fails and you did edit a template: bump `tasks.PROMPT_VERSION`, then
-    put the new digest below. If you did not edit one, something else did.
+    If this fails and you did edit a prompt - a template, SYSTEM, a goal, the
+    source line: bump `tasks.PROMPT_VERSION`, then put the new digest above. If
+    you did not edit one, something else did.
 
-    *Adding* a template is the other case, and it has the opposite answer:
-    record the new digest and leave the version alone. A new kind has no stored
+    *Adding* a kind is the other case, and it has the opposite answer: record
+    the new digest and leave the version alone. A new kind has no stored
     answers to be confused with, while bumping the version would change the key
     of every *other* kind - orphaning answers that were paid for and are still
     answers to exactly the question that was asked. TASK-023 added `labels.md`
     on 2026-09-10 and did not bump.
     """
-    digest = hashlib.sha256()
-    for path in sorted(tasks.PROMPTS_DIR.glob("*.md")):
-        digest.update(path.name.encode("utf-8"))
-        digest.update(path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+    digest = hashlib.sha256(prompt_material()).hexdigest()
 
-    assert digest.hexdigest() == PROMPTS_DIGEST, (
-        f"the prompt templates changed while PROMPT_VERSION is still "
-        f"{tasks.PROMPT_VERSION!r}: bump it, then record the new digest here"
+    assert digest == PROMPTS_DIGEST, (
+        f"a prompt changed while PROMPT_VERSION is still "
+        f"{tasks.PROMPT_VERSION!r}: bump it, then record the new digest ({digest})"
     )
 
 
@@ -1895,3 +1916,95 @@ def test_the_speakers_pass_may_answer_in_16000_tokens_against_a_cloud_window():
     (`test_every_kind_fits_the_smallest_local_window`)."""
     spec = tasks.TASKS["speakers"]
     assert tasks.fit_output_tokens(spec, context_tokens=tasks.CLOUD_CONTEXT_TOKENS) == 16_000
+
+
+# --- TASK-105.01: the answer comes back in the recording's language -------------------
+
+
+def _system_sent(conn, monkeypatch, media_id, *, language, task="transcribe"):
+    """The system prompt one summary call went out with, for a run in `language`."""
+    with db.LOCK:
+        conn.execute("UPDATE run SET language=?, task=? WHERE media_id=?", (language, task, media_id))
+        conn.commit()
+    provider, calls = fake_provider([ANSWERS["summary"]])
+    register(monkeypatch, provider)
+    plan = tasks.plan_task(conn, media_id=media_id, kind="summary", provider_name="fake", model="fake-1")
+    tasks.generate(conn, plan)
+    return calls[-1].system
+
+
+def test_a_dutch_recording_is_answered_in_dutch(conn, monkeypatch, media):
+    """Every prompt is English and none named the transcript's language, so a
+    Dutch recording was likely summarised in English (the review of
+    2026-10-05). The run knows its language; the model is now told."""
+    system = _system_sent(conn, monkeypatch, media, language="nl")
+
+    assert "Dutch" in system and "write your answer in Dutch" in system
+
+
+def test_a_translated_run_is_answered_in_english(conn, monkeypatch, media):
+    """translate writes an English transcript of a recording in another
+    language; the answer follows the transcript, not the audio."""
+    system = _system_sent(conn, monkeypatch, media, language="nl", task="translate")
+
+    assert "write your answer in English" in system and "Dutch" not in system
+
+
+def test_an_unknown_language_adds_nothing(conn, monkeypatch, media):
+    system = _system_sent(conn, monkeypatch, media, language=None)
+
+    assert system.startswith(tasks.SYSTEM) and "write your answer in" not in system
+
+
+# --- TASK-105.03: the kinds that ask who, see who ---------------------------------------
+
+
+def _diarized(conn, *, title="Standup"):
+    media_id = seed_media(conn, title=title)
+    words = []
+    for i, (who, text) in enumerate([("SPEAKER_00", "I will send the report on Friday."),
+                                      ("SPEAKER_01", "Then I book the room.")]):
+        for j, token in enumerate(text.split()):
+            words.append({"start": i * 5 + j * 0.4, "end": i * 5 + j * 0.4 + 0.3,
+                          "text": (" " if j else "") + token, "speaker": who})
+    segments = [{"start": 0.0, "end": 4.0, "text": "I will send the report on Friday."},
+                {"start": 5.0, "end": 8.0, "text": "Then I book the room."}]
+    seed_run(conn, media_id, words=words, segments=segments, labels={"SPEAKER_00": "Arthur Dent"})
+    return media_id
+
+
+def _user_sent(conn, monkeypatch, media_id, kind):
+    provider, calls = fake_provider([ANSWERS[kind]])
+    register(monkeypatch, provider)
+    plan = tasks.plan_task(conn, media_id=media_id, kind=kind, provider_name="fake", model="fake-1")
+    tasks.generate(conn, plan)
+    return calls[-1].user
+
+
+@pytest.mark.parametrize("kind", ["action_items", "minutes"])
+def test_the_kinds_that_ask_for_an_owner_see_the_speakers_by_name(conn, monkeypatch, kind):
+    """action_items and minutes ask for an owner 'by name or speaker label' but
+    were sent lines without any speaker - an owner the model cannot see. They
+    get the names the page shows: the one somebody set, else 'Speaker N'."""
+    user = _user_sent(conn, monkeypatch, _diarized(conn), kind)
+
+    assert "Arthur Dent: I will send the report" in user
+    assert "Speaker 2: Then I book the room" in user
+    assert "SPEAKER_0" not in user, "a raw cluster label would end up as the owner"
+
+
+def test_a_summary_still_reads_plain_lines(conn, monkeypatch):
+    user = _user_sent(conn, monkeypatch, _diarized(conn), "summary")
+
+    assert "Arthur Dent" not in user and "SPEAKER_00" not in user
+
+
+@pytest.mark.parametrize("speakers, kept", [(True, True), ("names", True), (False, False)])
+def test_notes_keep_the_speaker_when_the_lines_carry_one(speakers, kept):
+    """map_chunk did not ask to keep the speaker, so a long recording's notes
+    could drop it - and the speaker pass, which reads those notes, then has no
+    SPEAKER_XX left to name."""
+    text = tasks.render_prompt("map_chunk", index=1, count=2, start="0:00", end="5:00",
+                               goal="g", transcript="[0:01] x", speakers=speakers)
+
+    assert ("speaker" in text.lower()) is kept

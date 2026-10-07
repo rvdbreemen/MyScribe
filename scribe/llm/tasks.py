@@ -67,10 +67,13 @@ from scribe.llm import base, chunking, ollama, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "2"
-"""Bumped whenever a template in `prompts/` changes, because it is part of the
-stored key: answers to an edited question are not answers to the old one, and a
-panel showing both without saying so would be comparing two different things."""
+PROMPT_VERSION = "3"
+"""Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
+JSON_SYSTEM, a kind's goal or the line `source_label` writes - because it is
+part of the stored key: answers to an edited question are not answers to the
+old one, and a panel showing both without saying so would be comparing two
+different things. tests/test_llm_tasks.py hashes all of it and fails on a
+change without a bump (TASK-105.02; before, only the templates counted)."""
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -302,11 +305,13 @@ class TaskSpec:
     excerpt are notes for *this* task rather than a generic summary."""
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     needs_prompt: bool = False
-    with_speakers: bool = False
-    """Whether each transcript line carries its cluster label (`SPEAKER_00:`).
-    Off for the summary kinds - the label is noise to them and the display
-    name is not decided yet - and on for the task whose question is what the
-    labels stand for, and for the rewrite that must keep who said what."""
+    with_speakers: chunking.Speakers = False
+    """Whether each transcript line carries its speaker, and how
+    (`chunking.Speakers`). The cluster label (`SPEAKER_00:`) for the task whose
+    question is what the labels stand for, and for the rewrite that must keep
+    who said what. The name the page shows for action items and minutes, which
+    ask who took something on (TASK-105.03; they were sent no speaker at all).
+    Off for the other summary kinds, where a speaker is noise."""
     combine: str = "reduce"
     """How a transcript that does not fit one call is handled. `reduce`: notes
     per chunk, one call combining them into the kind's shape. `concat`: the
@@ -356,6 +361,7 @@ TASKS: dict[str, TaskSpec] = {
         template="action_items",
         schema=ActionItems,
         goal="list everything somebody agreed to do, with who took it on and when it was said",
+        with_speakers="names",
     ),
     "chapters": TaskSpec(
         kind="chapters",
@@ -370,6 +376,7 @@ TASKS: dict[str, TaskSpec] = {
         template="minutes",
         schema=Minutes,
         goal="write the minutes: what was discussed, what was decided, what was agreed to do",
+        with_speakers="names",
     ),
     "blog": TaskSpec(
         kind="blog",
@@ -711,7 +718,27 @@ JSON_SYSTEM = (
 )
 
 
-def system_for(spec: TaskSpec) -> str:
+LANGUAGE_SYSTEM = (
+    " The transcript is in {name}: write your answer in {name}, whatever language these "
+    "instructions are in."
+)
+"""Added when the run's language is known (TASK-105.01). Every instruction here
+is English and none named the transcript's language, so a Dutch recording was
+likely answered in English. The JSON keys stay as the schema names them; only
+the text in them follows the transcript."""
+
+
+def answer_language(run: Any) -> str | None:
+    """The name of the language an answer about `run` is written in: that of
+    its transcript - English for a translate run, whatever was spoken - or
+    None when it is not known."""
+    from scribe.stages.transcribe import LANGUAGE_CHOICES
+
+    code = "en" if run["task"] == "translate" else run["language"]
+    return dict(LANGUAGE_CHOICES).get(code or "")
+
+
+def system_for(spec: TaskSpec, language: str | None = None) -> str:
     """The system prompt for `spec`.
 
     The JSON instruction is added whenever the kind has a schema - including
@@ -720,7 +747,11 @@ def system_for(spec: TaskSpec) -> str:
     what stops a model that has no such constraint from wrapping a perfectly
     good object in an apology.
     """
-    return SYSTEM + (JSON_SYSTEM if spec.schema is not None else "")
+    return (
+        SYSTEM
+        + (LANGUAGE_SYSTEM.format(name=language) if language else "")
+        + (JSON_SYSTEM if spec.schema is not None else "")
+    )
 
 
 def chunk_goal(spec: TaskSpec, custom_prompt: str | None = None) -> str:
@@ -1019,6 +1050,8 @@ class TaskPlan:
     """`words_fingerprint` of the words the chunks were cut from, taken when
     the document was loaded - so a cleaning records what it read even if a
     correction lands while the model is answering (TASK-071)."""
+    language: str | None = None
+    """The name of the language answers are written in (`answer_language`)."""
     known_labels: tuple[str, ...] = ()
     """The vocabulary the library already uses, for the kinds whose prompt
     offers it. Read once when the plan is made rather than at each call, so
@@ -1181,6 +1214,7 @@ def plan_task(
         max_output_tokens=output_tokens,
         custom_prompt=(custom_prompt or "").strip() or None,
         known_labels=vocabulary(conn) if spec.kind == "labels" else (),
+        language=answer_language(doc.run),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
         note_budget=note_budget,
     )
@@ -1724,7 +1758,7 @@ def generate(
         response = _ask(
             conn,
             plan,
-            system=system_for(plan.spec),
+            system=system_for(plan.spec, plan.language),
             user=user_prompt(
                 plan.spec,
                 transcript=plan.chunks[0].text,
@@ -1791,7 +1825,7 @@ def generate(
     response = _ask(
         conn,
         plan,
-        system=system_for(plan.spec),
+        system=system_for(plan.spec, plan.language),
         user=render_prompt(
             chunking.MAP_REDUCE_PROMPTS["combine"], count=len(notes), body=body
         ),
@@ -1844,7 +1878,9 @@ def _collect_notes(
         response = _ask(
             conn,
             plan,
-            system=SYSTEM,
+            # The language line too (TASK-105.01): notes taken in English from
+            # a Dutch transcript would hand the combine an English text.
+            system=SYSTEM + (LANGUAGE_SYSTEM.format(name=plan.language) if plan.language else ""),
             user=render_prompt(
                 chunking.MAP_REDUCE_PROMPTS["chunk"],
                 index=chunk.index + 1,  # one-based: the model is reading, not indexing
@@ -1853,6 +1889,7 @@ def _collect_notes(
                 end=render.format_ts(chunk.end),
                 goal=chunk_goal(plan.spec, plan.note_question),
                 transcript=chunk.text,
+                speakers=plan.spec.with_speakers,
             ),
             max_output_tokens=note_budget,
             json_schema=None,  # notes are prose; only the combine has a shape to keep
@@ -1942,7 +1979,7 @@ def _collect_parts(
         response = _ask(
             conn,
             plan,
-            system=system_for(plan.spec),
+            system=system_for(plan.spec, plan.language),
             user=user_prompt(
                 plan.spec,
                 transcript=chunk.text,

@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Literal, Union
 
 from scribe import render
 from scribe.exports.doc import TranscriptDoc
@@ -89,8 +90,9 @@ def timestamped_line(segment: dict, text: str, speaker: str | None = None) -> st
     produces something the player's existing seek handler already understands.
     `text` is the caller's - `segment_texts` derives it from the words - and
     never `segment["text"]`, for the reason the module docstring gives. The
-    speaker, when asked for, is the raw cluster label and never the display
-    name: the task that wants it is the one working out what the name *is*.
+    speaker is whatever the caller passes: the raw cluster label for the task
+    working out what the name *is*, the display name for the kinds that ask
+    who took something on (`transcript_lines`).
     """
     who = f"{speaker}: " if speaker else ""
     return f"[{render.format_ts(float(segment['start']))}] {who}{text}"
@@ -157,21 +159,30 @@ def segment_speakers(doc: TranscriptDoc) -> list[str | None]:
     return out
 
 
-def transcript_lines(doc: TranscriptDoc, *, speakers: bool = False) -> list[str]:
-    """One timestamped line per segment, with the cluster label when asked.
+Speakers = Union[bool, Literal["names"]]
+"""How a line names its speaker: not at all (False), by cluster label (True,
+for the task that works out who the labels are) or by the name the page
+shows (`"names"`: the one somebody set, else Speaker N - for the kinds that
+ask who took something on, TASK-105.03)."""
+
+
+def transcript_lines(doc: TranscriptDoc, *, speakers: Speakers = False) -> list[str]:
+    """One timestamped line per segment, with its speaker when asked.
 
     Aligned with `doc.segments` by position, which `plan` and the chat tool's
     excerpt rendering both index into.
     """
     texts = segment_texts(doc)
     whos = segment_speakers(doc) if speakers else [None] * len(texts)
+    if speakers == "names":
+        whos = [render.speaker_display(doc.labels, who) if who else None for who in whos]
     return [
         timestamped_line(segment, text, who)
         for segment, text, who in zip(doc.segments, texts, whos)
     ]
 
 
-def transcript_text(doc: TranscriptDoc, *, speakers: bool = False) -> str:
+def transcript_text(doc: TranscriptDoc, *, speakers: Speakers = False) -> str:
     """The whole transcript, one timestamped line per segment.
 
     The text a chunk holds when the document fits in one, and the thing
@@ -205,7 +216,7 @@ class Chunk:
     oversized: bool = False
 
 
-def needs_chunking(doc: TranscriptDoc, budget_tokens: int, *, speakers: bool = False) -> bool:
+def needs_chunking(doc: TranscriptDoc, budget_tokens: int, *, speakers: Speakers = False) -> bool:
     """Would the whole timestamped transcript exceed `budget_tokens`?
 
     The budget is what is left for the transcript *after* the system prompt,
@@ -220,7 +231,7 @@ def plan(
     *,
     budget_tokens: int,
     overlap_segments: int = 1,
-    speakers: bool = False,
+    speakers: Speakers = False,
 ) -> list[Chunk]:
     """Cut `doc` into chunks of at most `budget_tokens`, on segment boundaries.
 
