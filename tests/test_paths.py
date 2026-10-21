@@ -104,6 +104,22 @@ def test_a_mac_library_given_its_own_group_keeps_it(tmp_path, monkeypatch, befor
     assert stat.S_IMODE(data.stat().st_mode) == after
 
 
+@pytest.mark.skipif(os.name == "nt", reason="mode bits are a POSIX answer; Windows has ACLs")
+@pytest.mark.parametrize("before, after", [(0o750, 0o750), (0o755, 0o750)], ids=oct)
+def test_staffs_group_id_means_nothing_off_a_mac(tmp_path, monkeypatch, before, after):
+    """gid 20 is staff only on macOS; on Debian and Ubuntu it is dialout, and
+    a Linux library's group bits are its owner's choice. They go on a Mac
+    alone, so a refactor that drops the platform half of the condition fails
+    here (GitHub #42)."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    data = _existing_data_dir(tmp_path, monkeypatch, before)
+    monkeypatch.setattr(paths, "_DARWIN_SHARED_GROUPS", {data.stat().st_gid}, raising=False)
+
+    paths.ensure_dirs()
+
+    assert stat.S_IMODE(data.stat().st_mode) == after
+
+
 def test_each_job_gets_its_own_work_directory():
     # Scratch space per job, so one job's leftovers can never be handed to
     # another and finalize can delete a whole directory without thinking.

@@ -34,6 +34,13 @@
 
 ### Fixed
 
+- **Other accounts on a Linux or Mac computer can no longer read MyScribe's
+  logs.** `app.log` keeps the addresses of the pages you open, search terms
+  included, and was readable by every account on the computer. The launcher
+  now writes `app.log` and `launcher.log` for your account only, closes the
+  ones an earlier version left open, and creates a new home and its `.env`
+  the same way. A library on another drive on Windows keeps that drive's
+  permissions; `docs/configuration.md` says how to check them (GitHub #42).
 - **A first start on Windows no longer stops when uv cannot make its Python
   folder link.** uv downloads Python and then makes a junction beside it;
   where Windows refuses that (`os error 448`, GitHub issue #16) the install
