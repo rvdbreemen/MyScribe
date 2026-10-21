@@ -62,13 +62,21 @@ def _majors_in(stream, platform: str) -> set[int]:
     patterns = _patterns(*CUBLAS[platform])
     found: set[int] = set()
     tail = b""
-    while chunk := stream.read(CHUNK):
+    while True:
+        chunk = stream.read(CHUNK)
         window = tail + chunk
         for pattern in patterns:
             for match in pattern.finditer(window):
+                # A name touching the window's end may be cut by the chunk
+                # boundary - "libcublas.so.1" of "...so.12", which has no
+                # suffix to close it - so it is counted from the next window,
+                # whose 64-byte tail holds it whole.
+                if chunk and match.end() > len(window) - 16:
+                    continue
                 found.add(int(match.group(1).replace(b"\x00", b"")))
+        if not chunk:
+            return found
         tail = window[-64:]
-    return found
 
 
 def cublas_majors(wheel, platform: str) -> set[int]:
