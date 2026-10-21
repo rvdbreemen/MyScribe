@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -829,3 +830,71 @@ def test_discarding_the_recording_lets_the_dialog_close_again(tmp_path):
     assert result["after"]["busy"] is None, "the dialog stayed locked after the discard"
     assert result["after"]["start"] is False, "Record never came back"
     assert result["closed"] == 1, "the dialog would not close once the recorder had stopped"
+
+
+# --- the remux's bound ---------------------------------------------------------
+
+
+def test_the_remux_timeout_scales_with_the_chunks(tmp_path):
+    """The bound is bytes over a floor speed, not a constant: any constant
+    lies about somebody else's longer recording."""
+    small = tmp_path / "a.webm"
+    small.write_bytes(b"x")
+    assert recording._remux_timeout([small]) == 60.0
+    with open(tmp_path / "b.webm", "wb") as f:
+        f.truncate(90 * recording.REMUX_MIN_BYTES_PER_SECOND)
+    assert recording._remux_timeout([tmp_path / "b.webm"]) == 90.0
+
+
+def test_a_remux_that_stops_reading_is_a_failure_not_a_hang(tmp_path, monkeypatch):
+    """GitHub #34: the stall is an ffmpeg that stops reading stdin. The pipe
+    fills, the feed blocks on its write, and a timeout that only guards the
+    wait after the feed is never reached. A real child that never reads
+    stands in for ffmpeg here, with more bytes than any pipe buffers, so the
+    bound has to cover the feed too: killed, half file removed, RemuxFailed."""
+    chunk = tmp_path / "c.webm"
+    with open(chunk, "wb") as f:
+        f.truncate(8 * recording.COPY_SIZE)  # far past any pipe's buffer
+    dst = tmp_path / "out.mkv"
+    dst.write_bytes(b"partial")  # what ffmpeg managed before it stalled
+
+    children = []
+    real_popen = subprocess.Popen
+
+    def deaf_ffmpeg(cmd, **kwargs):
+        child = real_popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"], **kwargs
+        )
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(recording.subprocess, "Popen", deaf_ffmpeg)
+    monkeypatch.setattr(recording, "_remux_timeout", lambda chunks: 0.5)
+
+    outcome = {}
+
+    def run():
+        try:
+            outcome["result"] = recording.remux([chunk], dst)
+        except BaseException as exc:  # noqa: BLE001 - handed to the assert below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    started = time.monotonic()
+    worker.start()
+    worker.join(15)
+    try:
+        assert not worker.is_alive(), "remux still blocked feeding a child that never reads"
+    finally:
+        for child in children:  # a red run must not leave the sleeper behind
+            child.kill()
+            child.wait()
+        worker.join(15)
+
+    assert time.monotonic() - started < 10
+    assert isinstance(outcome.get("error"), recording.RemuxFailed), outcome
+    # The watchdog's own verdict, not the returncode branch's: the killed
+    # child exits non-zero too, so a RemuxFailed alone would still be raised
+    # with the timeout branch deleted.
+    assert "did not finish" in str(outcome["error"]), outcome
+    assert not dst.exists()

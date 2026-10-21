@@ -47,6 +47,7 @@ import secrets
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -91,6 +92,10 @@ STDERR_TAIL = 800
 # What the pipe into ffmpeg is fed in. The chunks are small; this only bounds
 # how much of a long recording is in memory at once.
 COPY_SIZE = 1 << 20
+
+# The floor a remux may stream at before it counts as stuck rather than slow:
+# a megabyte a second, a speed any disk still beats by a wide margin.
+REMUX_MIN_BYTES_PER_SECOND = 1_000_000
 
 # Exactly the alphabet `secrets.token_urlsafe` emits, and nothing else. No
 # dot, no separator either way round, so "..", "a/b" and "a\\b" are refused
@@ -390,6 +395,9 @@ def remux(chunks: list[Path], dst: str | Path) -> Path:
     log = dst.with_name(dst.name + ".ffmpeg.log")
 
     try:
+        # Before the spawn: a chunk that fails its stat() must not leave an
+        # ffmpeg behind holding the log open.
+        limit = _remux_timeout(chunks)
         with open(log, "wb") as errors:
             proc = subprocess.Popen(
                 [
@@ -406,6 +414,20 @@ def remux(chunks: list[Path], dst: str | Path) -> Path:
                 stderr=errors,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            # One watchdog over the feed and the wait together (GitHub #34): an
+            # ffmpeg that stops reading fills the pipe, and `_feed` then
+            # blocks on its write long before any wait(timeout=) is reached.
+            # The kill breaks the pipe, `_feed` swallows that, and the wait
+            # returns - so the bound holds wherever the stall is.
+            timed_out = threading.Event()
+
+            def give_up() -> None:
+                timed_out.set()
+                proc.kill()
+
+            watchdog = threading.Timer(limit, give_up)
+            watchdog.daemon = True
+            watchdog.start()
             try:
                 _feed(proc, chunks)
                 returncode = proc.wait()
@@ -413,7 +435,15 @@ def remux(chunks: list[Path], dst: str | Path) -> Path:
                 proc.kill()
                 proc.wait()
                 raise
+            finally:
+                watchdog.cancel()
 
+        if timed_out.is_set():
+            # ffmpeg is dead and waited for by now: the unlink comes after
+            # the kill because Windows refuses to delete a file a process
+            # still holds open.
+            dst.unlink(missing_ok=True)
+            raise RemuxFailed("ffmpeg did not finish assembling the recording in time")
         if returncode != 0:
             # Half a file is worse than none: the next thing to look at this
             # directory would ingest it.
@@ -422,6 +452,19 @@ def remux(chunks: list[Path], dst: str | Path) -> Path:
     finally:
         log.unlink(missing_ok=True)
     return dst
+
+
+def _remux_timeout(chunks: list[Path]) -> float:
+    """As long as the slowest honest disk needs: the chunks at 1 MB/s.
+
+    ``-c copy`` streams the input through, so the cost is proportional to
+    bytes and not duration - no constant could say where a long recording's
+    ceiling is without lying about a longer one. A remux slower than
+    `REMUX_MIN_BYTES_PER_SECOND` is a hung ffmpeg holding a request thread,
+    and that is what the bound exists to catch.
+    """
+    total = sum(chunk.stat().st_size for chunk in chunks)
+    return max(60.0, total / REMUX_MIN_BYTES_PER_SECOND)
 
 
 def _feed(proc: subprocess.Popen, chunks: list[Path]) -> None:
