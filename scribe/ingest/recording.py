@@ -335,13 +335,15 @@ def sweep(conn: sqlite3.Connection, older_than: float = SWEEP_AFTER_SECONDS) -> 
     and is *still* recording gains a chunk every five seconds, and sweeping it
     would delete a recording in progress.
 
-    Never raises on one bad directory: this is meant to run at startup, where
-    a file somebody still has open is litter for the next sweep and not a
-    reason to refuse to start.
+    Never raises on one bad directory: a file somebody still has open is
+    litter for the next sweep, not a reason to refuse to start or to stop
+    the watcher.
 
     Called from `scribe.app.create_app`'s lifespan, beside
-    `supervisor.reconcile`: both answer the same question, which is what a
-    previous life of this process left behind.
+    `supervisor.reconcile` - what a previous life of this process left
+    behind - and hourly from `watching.Watcher._housekeeping` while the app
+    runs (GitHub #39), so a live session is swept only once it has been idle
+    for `older_than`.
     """
     root = rec_root()
     if not root.is_dir():
