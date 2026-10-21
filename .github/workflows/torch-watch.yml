@@ -1,0 +1,80 @@
+# Watches the way out of the torch 2.10 pin (GitHub #43).
+#
+# torch stays at 2.10 while CTranslate2 loads CUDA 12's cuBLAS; the comment
+# above the pin in pyproject.toml says why the cu126 route is not taken. The
+# exit is a CTranslate2 release built against CUDA 13. Once a week
+# packaging/watch_torch_exit.py reads the newest ctranslate2 wheels from PyPI
+# and prints which cuBLAS they load; a TRIGGER line means CUDA 13 arrived, and
+# this workflow then says so on issue #43, once.
+#
+# Standard library only, on the runner's own python3 (as ci.yml does), so the
+# job installs nothing. The only credential is the job's GITHUB_TOKEN, with
+# write access to issues and nothing else.
+name: torch-watch
+
+on:
+  schedule:
+    # Mondays 06:17 UTC: off the hour, since GitHub delays and can drop
+    # scheduled runs under the load at the start of every hour.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan the newest ctranslate2 wheels
+        # The script always exits 0; its lines are the result.
+        run: |
+          python3 --version
+          python3 packaging/watch_torch_exit.py | tee watch.txt
+        shell: bash
+
+      - name: Say so on issue 43, once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MARKER: "<!-- torch-watch:ctranslate2-cuda13 -->"
+        # The marker keeps a trigger that stays true from commenting every
+        # week. The bodies go into a variable and grep reads a here-string: a
+        # pipe into `grep -q` can end in SIGPIPE, which pipefail turns into
+        # "not found" and a duplicate comment.
+        run: |
+          if ! grep -q '^TRIGGER:' watch.txt; then
+            echo "No trigger this week."
+            exit 0
+          fi
+          bodies=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/43/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body')
+          if grep -qF -- "$MARKER" <<<"$bodies"; then
+            echo "Issue #43 already carries the trigger comment; not repeating it."
+            exit 0
+          fi
+          {
+            echo "$MARKER"
+            echo "The weekly torch watch found a CTranslate2 build on CUDA 13, the exit this issue waits for."
+            echo
+            echo '```'
+            cat watch.txt
+            echo '```'
+            echo
+            echo "Next: move torch to the cu130 index on Windows and back to plain PyPI on Linux, re-lock, and re-run the doctor on all three platforms."
+          } > comment.md
+          gh issue comment 43 --repo "$GITHUB_REPOSITORY" --body-file comment.md
+        shell: bash
+
+      - name: Fail when a source could not be read
+        # A watcher that cannot see must not pass for a quiet week: a failed
+        # scheduled run is what reaches a person.
+        run: |
+          if grep '^CHECK-FAILED:' watch.txt; then
+            echo "::error::torch-watch could not read one of its sources; see the scan step."
+            exit 1
+          fi
+        shell: bash
