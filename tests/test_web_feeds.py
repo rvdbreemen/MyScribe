@@ -495,6 +495,7 @@ def test_backfill_from_a_feed_whose_host_is_gone_says_so(browser, conn, feed_who
     assert response.status_code == 400, response.text
     detail = response.json()["detail"]
     assert feed_whose_host_is_gone in detail
+    assert "Name or service not known" in detail  # the why, not only the which
     assert feeds.is_asking(conn, feed_id) is True
     assert _queued(conn) == before
 
