@@ -6,6 +6,7 @@ a fresh connection per runner child, and cross-process safety from the
 SQL itself (BEGIN IMMEDIATE claims, CHECK-constrained status).
 """
 
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -586,12 +587,30 @@ def connect(path: str | Path | None = None) -> sqlite3.Connection:
     if path is None:
         paths.adopt_legacy_db()  # a scribe.db from before the rename, if any
         path = paths.DB_PATH
+    path = Path(path)
+    if os.name != "nt" and str(path) != ":memory:":
+        # GitHub #42: a new library is born 0600 rather than chmodded after
+        # the WAL pragma, which left it and its -wal/-shm at 0644 for a
+        # moment; SQLite gives the sidecars the main file's mode. O_EXCL
+        # leaves an existing file alone, and a failure here is sqlite's to
+        # report.
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        except OSError:
+            pass
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS:d}")
+    # Transcripts and cleartext API keys live in here; SQLite creates the file
+    # with the process umask, and 0644 is the wrong default for that (the same
+    # answer .env got). The -wal/-shm sidecars carry the same bytes. A library
+    # from before GitHub #42 is tightened here; one already 0600 is left be.
+    for file in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        if file.exists():
+            paths.keep_private(file, 0o600)
     return conn
 
 

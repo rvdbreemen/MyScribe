@@ -280,3 +280,31 @@ def test_writers_hold_the_cross_process_mutex_while_deciding_to_rotate(logs_dir)
     source = inspect.getsource(applog._append)
     assert source.index("_acquire(mutex)") < source.index("_rotate_if_needed(")
     assert source.index("_acquire(mutex)") < source.index("with _lock:")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="mode bits are a POSIX answer; Windows has ACLs")
+def test_the_log_file_is_private(logs_dir):
+    """Log lines carry transcript paths, URLs and error text: not a sibling
+    user's reading material."""
+    import stat
+
+    applog.configure("web")
+    applog.log("record.start")
+
+    assert stat.S_IMODE(applog.path().stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="mode bits are a POSIX answer; Windows has ACLs")
+def test_a_log_written_before_the_tightening_is_tightened_at_start(logs_dir):
+    """os.open's mode only applies at creation; configure() is where an old
+    0644 file gets corrected."""
+    import stat
+
+    logs_dir.mkdir(parents=True)
+    target = applog.path()
+    target.write_bytes(b'{"event":"old"}\n')
+    os.chmod(target, 0o644)
+
+    applog.configure("web")
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600

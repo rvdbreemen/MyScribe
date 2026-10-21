@@ -113,6 +113,10 @@ def configure(proc: str, *, this_thread_only: bool = False) -> None:
         _names.proc = proc
     else:
         _default_proc = proc
+    # New lines land 0600 (see _append); a log written before that, and its
+    # rotations, are tightened here rather than left world-readable.
+    for existing in path().parent.glob(path().name + "*"):
+        paths.keep_private(existing, 0o600)
 
 
 def _proc_name() -> str:
@@ -186,7 +190,10 @@ def _append(line: bytes) -> None:
         try:
             with _lock:
                 _rotate_if_needed(target, len(line))
-                fd = os.open(str(target), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+                # 0600, not the umask's 0644: log lines can carry transcript
+                # paths, URLs and error text a sibling user has no business
+                # reading - the same answer the database gets.
+                fd = os.open(str(target), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
                 try:
                     os.write(fd, line)
                 finally:

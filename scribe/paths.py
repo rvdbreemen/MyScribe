@@ -1,4 +1,6 @@
 import os
+import stat
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -65,14 +67,79 @@ def refresh() -> None:
     does: every reader says `paths.DATA_DIR` at the moment it needs it.
     """
     import importlib
-    import sys
 
     importlib.reload(sys.modules[__name__])
 
 
 def ensure_dirs() -> None:
+    """Create the library's folders and keep DATA_DIR to its owner and group.
+
+    A DATA_DIR this call creates is 0700. An existing one loses its bits for
+    "other" at every start, and on macOS also its group bits while its group
+    is staff, which every local account is in (GitHub #42). At every start
+    and not once, because "once" needs a marker that a copied or restored
+    library loses. So a deliberate o+x for a media server under another
+    account is undone at the next start; share through a group of the
+    library's own (chgrp), whose bits are left alone.
+
+    The files below - media originals, work/ wavs, app.log.lock - are
+    written with the process umask, often 0644. Their privacy rests on
+    DATA_DIR: nobody outside its owner (and a group they chose) can pass it
+    to reach them. db.connect and applog still make their own files 0600.
+    """
+    created = not DATA_DIR.exists()
     for p in (DATA_DIR, MEDIA_DIR, LOGS_DIR, WORK_DIR, MODELS_DIR):
         p.mkdir(parents=True, exist_ok=True)
+    if created:
+        keep_private(DATA_DIR, 0o700)
+    elif os.name != "nt":
+        # GitHub #42: every library made before this fix sits at the umask's
+        # 0755, so media/ stays traversable and the recordings readable by
+        # anybody on the machine. No choice of the owner's needs "other" in
+        # here, so those bits go. Once they are gone this is a stat and
+        # nothing more.
+        try:
+            st = DATA_DIR.stat()
+        except OSError:
+            return
+        mode = stat.S_IMODE(st.st_mode)
+        closed = 0o007
+        if sys.platform == "darwin" and st.st_gid in _DARWIN_SHARED_GROUPS:
+            # On Linux a user's own group is normally theirs alone, so group
+            # bits there are the owner's choice and stay. On macOS every
+            # local account has primary group staff and a new file takes its
+            # folder's group: a 0750 library in staff is readable by every
+            # account on the Mac, so the group bits go as well.
+            closed = 0o077
+        if mode & closed:
+            keep_private(DATA_DIR, mode & ~closed)
+
+
+# macOS's staff (gid 20): the primary group of every local account. Read at
+# call time, so a test can name the group its tmp_path happens to be in.
+_DARWIN_SHARED_GROUPS = frozenset({20})
+
+
+def keep_private(path: Path, mode: int) -> None:
+    """``chmod path mode``, POSIX only, and never fatal.
+
+    The library holds transcripts, recordings and API keys in cleartext, so
+    world-readable is the wrong default for anything under DATA_DIR: `.env`
+    is written 0600, and this is the same answer for everything else. A
+    0700 DATA_DIR makes every sibling user unable to reach whatever lands
+    below. Windows has ACLs, not mode bits; there the directory's own
+    permissions are already the answer. A chmod that fails (a filesystem
+    without modes, a file we do not own) must not refuse to start over.
+    """
+    if os.name == "nt":
+        return
+    try:
+        # db.connect runs this on every connection: a file already right
+        # costs a stat, not a chmod (GitHub #42).
+        if stat.S_IMODE(os.stat(path).st_mode) != mode:
+            os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 def job_work_dir(job_id: int) -> Path:

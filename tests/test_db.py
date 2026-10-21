@@ -1,3 +1,4 @@
+import os
 import sqlite3
 
 import pytest
@@ -763,6 +764,62 @@ def test_unsubscribing_forgets_what_that_feed_had_seen(conn):
     conn.commit()
 
     assert conn.execute("SELECT COUNT(*) FROM feed_seen").fetchone()[0] == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="mode bits are a POSIX answer; Windows has ACLs")
+def test_the_database_file_is_private(tmp_path):
+    """Transcripts and cleartext API keys live in this file; 0644 is wrong."""
+    import stat
+
+    conn = db.connect(tmp_path / "private.db")
+    try:
+        conn.execute("CREATE TABLE probe(id INTEGER)")  # force the -wal into being
+        conn.commit()
+        # Asserted while the connection is open: the last close() checkpoints
+        # and deletes -wal/-shm, which would leave nothing to check.
+        for name in ("private.db", "private.db-wal", "private.db-shm"):
+            assert stat.S_IMODE((tmp_path / name).stat().st_mode) == 0o600, name
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="mode bits are a POSIX answer; Windows has ACLs")
+def test_a_new_database_is_private_from_its_first_byte(tmp_path, monkeypatch):
+    """GitHub #42: a chmod after the WAL pragma leaves the new file and its
+    sidecars at the umask's 0644 for a moment; the file has to be born 0600."""
+    import stat
+
+    monkeypatch.setattr(db.paths, "keep_private", lambda path, mode: None)  # no tightening afterwards
+    old_umask = os.umask(0o022)
+    try:
+        conn = db.connect(tmp_path / "born.db")
+        try:
+            conn.execute("CREATE TABLE probe(id INTEGER)")
+            conn.commit()
+            for name in ("born.db", "born.db-wal", "born.db-shm"):
+                assert stat.S_IMODE((tmp_path / name).stat().st_mode) == 0o600, name
+        finally:
+            conn.close()
+    finally:
+        os.umask(old_umask)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="mode bits are a POSIX answer; Windows has ACLs")
+def test_a_database_that_is_already_private_is_not_chmodded_again(tmp_path, monkeypatch):
+    """Every request opens a connection; a library already at 0600 needs no
+    chmod each time."""
+    first = db.connect(tmp_path / "quiet.db")
+    try:
+        first.execute("CREATE TABLE probe(id INTEGER)")
+        first.commit()
+        calls = []
+        real_chmod = os.chmod
+        monkeypatch.setattr(os, "chmod", lambda *a, **kw: (calls.append(a), real_chmod(*a, **kw)))
+        db.connect(tmp_path / "quiet.db").close()
+    finally:
+        first.close()
+
+    assert calls == []
 
 
 # --- a migration that fails half-way, a newer library, a slow writer -------------
