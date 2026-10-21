@@ -472,9 +472,10 @@ def poll(
     # set difference and finds the new episode wherever it sits; a cap
     # (`playlistend`) would keep the first entries in document order, and a
     # source that lists oldest first would never show its new ones again.
-    # On the watcher's thread a huge listing is bounded by
-    # `PROBE_TIMEOUT_SECONDS`; the Feeds page's "check now" hands in the
-    # plain probe and waits for it, on a threadpool worker.
+    # On the watcher's thread the wait for a huge listing is bounded by
+    # `PROBE_TIMEOUT_SECONDS`, and a listing that answers later is polled on
+    # a later wake; the Feeds page's "check now" hands in the plain probe and
+    # waits for it, on a threadpool worker.
     try:
         # Unattended, so under the public guard: the feed document, every
         # redirect it answers with and a page it is discovered from may not
@@ -581,11 +582,15 @@ Sized for the whole listing a poll asks for. A feed is one document, read in
 seconds even at a few thousand episodes. A channel is paged, at the 40 entries
 a second measured in `urls.probe_opts` (2026-09-08): 3000 entries take about
 75 s, so two and a half minutes is twice that, and a listing of up to about
-6000 entries still answers. A larger channel is recorded as not answering
-rather than followed. A dripping host costs at most this once per due time,
-since a feed whose worker still runs is skipped. The budget is looked at
-between feeds, so the longest tick is `TICK_BUDGET_SECONDS` plus this, about
-five and a half minutes; the next wake then waits its interval from there.
+6000 entries still answers within it. The bound is how long the tick waits,
+not how much work a feed may do: a larger channel is recorded as not
+answering for now, and the listing its worker finishes later is polled on
+the next wake (GitHub #36, from the review of PR #62). A dripping host costs
+at most this once per due time, since a feed whose worker still runs is
+skipped, and one that never finishes keeps counting as failing. The budget
+is looked at between feeds, so the longest tick is `TICK_BUDGET_SECONDS`
+plus this, about five and a half minutes; the next wake then waits its
+interval from there.
 Read at call time: the tests patch it.
 """
 
@@ -742,9 +747,11 @@ class FeedWatcher:
         self._probe = probe
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        # The probe thread of each feed's last poll, by feed id. Read and
-        # written only by the tick, on this watcher's thread (GitHub #36).
-        self._probing: dict[int, threading.Thread] = {}
+        # The probe each feed's tick stopped waiting for, by feed id: still
+        # running, or done and not yet polled. A probe that answers in time is
+        # never left here. Read and written only by the tick, on this
+        # watcher's thread (GitHub #36).
+        self._probing: dict[int, Future] = {}
 
     def start(self) -> None:
         """Start the tick on a daemon thread (idempotent)."""
@@ -788,17 +795,17 @@ class FeedWatcher:
         Only the probe runs on the worker - network I/O and nothing else. The
         recording, `known_sources` and the queueing stay in `poll` on this
         watcher's thread and connection, so a worker that answers after it was
-        given up on writes nothing: its result falls into a Future nobody
-        reads.
+        given up on writes nothing itself: its Future stays in `_probing` and
+        `_poll_late` hands its listing to `poll` on a later wake.
 
         A daemon thread rather than a subprocess, which could be killed:
         `probe` is passed in (the tests hand it a closure, which a spawned
         child cannot unpickle), a child would pay an interpreter start and a
         yt-dlp import per feed, and `UrlInfo` would have to cross back pickled.
-        What a thread cannot be is stopped, so it is remembered in `_probing`
-        and its feed is skipped, and recorded as failing, while it lives - at
-        most one stuck thread per feed, and `urls.SOCKET_TIMEOUT` still ends
-        one whose host goes silent.
+        What a thread cannot be is stopped, so its Future is remembered in
+        `_probing` and its feed is skipped, and recorded as failing, while it
+        runs - at most one stuck thread per feed, and `urls.SOCKET_TIMEOUT`
+        still ends one whose host goes silent.
         The same trade `ingest_ui.probe_or_none` makes for the dialog.
         """
 
@@ -812,14 +819,42 @@ class FeedWatcher:
                     outcome.set_exception(exc)
 
             worker = threading.Thread(target=run, name=f"scribe-feed-{feed_id}", daemon=True)
-            self._probing[feed_id] = worker
+            self._probing[feed_id] = outcome
             worker.start()
             worker.join(PROBE_TIMEOUT_SECONDS)
-            if worker.is_alive():
+            if not outcome.done():
                 raise TimeoutError(f"did not answer within {PROBE_TIMEOUT_SECONDS:g} s")
+            # Answered in time and polled now, so not left for `_poll_late`
+            # to poll a second time on the next wake.
+            del self._probing[feed_id]
             return outcome.result()
 
         return bounded
+
+    def _poll_late(
+        self, conn: sqlite3.Connection, feed_id: int, outcome: Future, options: dict
+    ) -> None:
+        """Poll the listing a probe brought back after the tick stopped waiting.
+
+        GitHub #36, from the review of PR #62: a channel of 6000-16000 entries
+        lists for longer than `PROBE_TIMEOUT_SECONDS`, and throwing its answer
+        away failed it at every due time where the unbounded poll had followed
+        it, slowly. Its listing goes through `poll` like any other - here, on
+        the watcher's thread and connection - so it is queued and recorded the
+        same way, gates included.
+
+        A late failure is dropped: the timeout already recorded this due
+        time's failure, and a second record would count one check twice. A
+        feed unsubscribed or paused in the meantime is not polled either.
+        """
+        if outcome.exception() is not None:
+            return
+        with db.LOCK:
+            row = conn.execute("SELECT * FROM feed WHERE id=?", (feed_id,)).fetchone()
+        if row is None or row["paused"]:
+            return
+        info = outcome.result()
+        _poll_one(conn, dict(row), lambda url, **kwargs: info, known_sources, options)
 
     def tick(self, conn: sqlite3.Connection) -> int:
         """Check every feed that is due; returns how many were checked.
@@ -830,12 +865,20 @@ class FeedWatcher:
         stops, leaving the rest due for the next wake rather than stacking an
         afternoon of polling in front of them. The budget is looked at between
         feeds; one probe that hangs is bounded by `PROBE_TIMEOUT_SECONDS`
-        (GitHub #36).
+        (GitHub #36). A listing that answered after an earlier tick stopped
+        waiting is polled first, whether or not its feed is due: the timeout
+        stamped `checked_at`, so it is not.
         """
+        options = read_defaults(conn).to_params()
+        late = [(fid, outcome) for fid, outcome in self._probing.items() if outcome.done()]
+        for feed_id, outcome in late:
+            # Out of `_probing` before the poll, so one that raises under
+            # `_survive` is not polled again on every wake.
+            del self._probing[feed_id]
+            _survive(self._poll_late, conn, feed_id, outcome, options)
         due = due_feeds(conn)
         if not due:
-            return 0
-        options = read_defaults(conn).to_params()
+            return len(late)
         probe = self._probe or urls.probe
         deadline = time.monotonic() + TICK_BUDGET_SECONDS
         checked = 0
@@ -844,7 +887,7 @@ class FeedWatcher:
                 break
             feed_id = int(feed["id"])
             previous = self._probing.get(feed_id)
-            if previous is not None and previous.is_alive():
+            if previous is not None and not previous.done():
                 # Its last probe was given up on and is still running. Not
                 # probed a second time - another thread every wake is how
                 # hung workers would pile up - but recorded as this due
@@ -854,6 +897,7 @@ class FeedWatcher:
                 # counts once per due time, not once per wake (GitHub #36).
                 _survive(_still_running, conn, feed_id)
                 continue
+            # One that finished during this tick is superseded by a fresh poll.
             self._probing.pop(feed_id, None)
             # `poll` takes its collaborators by keyword, so the call is bound
             # here and handed to `_survive` as one thunk. Wrapped per feed and
@@ -863,7 +907,7 @@ class FeedWatcher:
                 _poll_one, conn, feed, self._bounded(feed_id, probe), known_sources, options
             )
             checked += 1
-        return checked
+        return checked + len(late)
 
     def _loop(self) -> None:
         """Its own connection, opened here and closed here."""
