@@ -92,10 +92,11 @@ alone. A home the installed MyScribe creates is open to your account only,
 and so are its `app.log` and `launcher.log`.
 
 On Windows MyScribe changes no permissions. The default home, under
-`%LOCALAPPDATA%`, is closed to other accounts. A library you put anywhere
-else - another drive, a clone - gets that folder's permissions, and the root
-of a second drive often lets every account that signs in to the computer
-read and change it. Check the folder's *Security* tab if that matters.
+`%LOCALAPPDATA%`, is closed to other accounts. A home or library you put
+anywhere else - another drive, a clone - gets that folder's permissions,
+and the root of a second drive often lets every account that signs in to
+the computer read and change it. Check the folder's *Security* tab if that
+matters.
 
 ## GPU and CPU
 

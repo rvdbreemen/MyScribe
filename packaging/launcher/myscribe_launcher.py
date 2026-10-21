@@ -519,8 +519,9 @@ def _owner_only(path, flags: int) -> int:
 
     app.log holds uvicorn's access log - request paths, search terms - and
     tracebacks, and ``.env`` is where the template asks for the tokens. At
-    the umask's 0644 every account on the machine could read them (GitHub
-    #42), so they are made 0600, and a file from before this fix is closed
+    the umask's 0644 any account that can reach the folder reads them - a
+    home on another drive, a home folder left open (GitHub #42) - so they
+    are made 0600, and a file from before this fix is closed
     as it is opened - what scribe.applog does for the app's own log. A
     chmod that fails stops nothing.
     """
