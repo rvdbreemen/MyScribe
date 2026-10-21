@@ -514,12 +514,43 @@ def install_tools(layout: Layout) -> None:
     stamp.write_text(json.dumps(wanted), encoding="utf-8")
 
 
+def _owner_only(path, flags: int) -> int:
+    """An ``open()`` opener for the files the launcher writes under the home.
+
+    app.log holds uvicorn's access log - request paths, search terms - and
+    tracebacks, and ``.env`` is where the template asks for the tokens. At
+    the umask's 0644 any account that can reach the folder reads them - a
+    home on another drive, a home folder left open (GitHub #42) - so they
+    are made 0600, and a file from before this fix is closed
+    as it is opened - what scribe.applog does for the app's own log. A
+    chmod that fails stops nothing.
+    """
+    fd = os.open(path, flags, 0o600)
+    try:
+        if os.fstat(fd).st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    return fd
+
+
+# POSIX only: Windows has ACLs, not mode bits, and keeps the plain open().
+OWNER_ONLY = None if IS_WINDOWS else _owner_only
+# GitHub #42: a folder the launcher makes is its owner's alone. On Windows a
+# current Python turns mode 0o700 into a protected ACL that drops what the
+# folder would inherit (measured on 3.12.9), so there the default stays.
+PRIVATE_DIR = 0o777 if IS_WINDOWS else 0o700
+
+
 def prepare_home(layout: Layout) -> None:
+    # The mode reaches only a folder this call creates: a home or library the
+    # user picked was there first, and how open it is was their choice.
     for folder in (layout.home, layout.data_dir, layout.logs_dir):
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR)
     example = layout.app_dir / ".env.example"
     if not layout.env_file.exists() and example.exists():
-        shutil.copyfile(example, layout.env_file)
+        with open(example, "rb") as source, open(layout.env_file, "wb", opener=OWNER_ONLY) as target:
+            shutil.copyfileobj(source, target)
 
 
 def _release_frozen_dll_directory() -> None:
@@ -1455,7 +1486,7 @@ class AppProcess:
         return [str(self.layout.env_python), "-m", "scribe", "--no-browser", "--port", str(self.port)]
 
     def start(self) -> None:
-        log = open(self.layout.logs_dir / "app.log", "ab")
+        log = open(self.layout.logs_dir / "app.log", "ab", opener=OWNER_ONLY)
         try:
             kwargs: dict = {}
             if IS_WINDOWS:
@@ -1598,7 +1629,7 @@ class InstallLog:
         if not self.path.parent.exists():
             return
         try:
-            with open(self.path, "a", encoding="utf-8") as handle:
+            with open(self.path, "a", encoding="utf-8", opener=OWNER_ONLY) as handle:
                 handle.writelines(line + "\n" for line in self.pending)
         except OSError:
             return  # the lines wait; a log that cannot be written stops nothing

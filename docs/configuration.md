@@ -83,11 +83,20 @@ folder set with `install.py --data-dir` or `SCRIBE_DATA_DIR`.
 **Back up `myscribe.db` and `media/`.** Everything else can be downloaded or
 rebuilt.
 
-**The library is closed to other accounts.** On Linux and macOS, MyScribe
-removes access for everyone outside the folder's owner and group at every
-start, and on a Mac also for the `staff` group every account is in. To share
-it, for example with a media server under another account, give the folder a
-group of its own (`chgrp`): MyScribe leaves that group's access alone.
+**Who else on the computer can open the library.** On Linux and macOS,
+MyScribe removes access for everyone outside the folder's owner and group at
+every start, and on a Mac also for the `staff` group every account is in. To
+share it, for example with a media server under another account, give the
+folder a group of its own (`chgrp`): MyScribe leaves that group's access
+alone. A home the installed MyScribe creates is open to your account only,
+and so are its `app.log` and `launcher.log`.
+
+On Windows MyScribe changes no permissions. The default home, under
+`%LOCALAPPDATA%`, is closed to other accounts. A home or library you put
+anywhere else - another drive, a clone - gets that folder's permissions,
+and the root of a second drive often lets every account that signs in to
+the computer read and change it. Check the folder's *Security* tab if that
+matters.
 
 ## GPU and CPU
 

@@ -34,6 +34,15 @@
 
 ### Fixed
 
+- **MyScribe's logs on Linux and macOS are for your account only.** `app.log`
+  keeps the addresses of the pages you open, search terms included. It was
+  written readable for every account, which counted wherever the folders
+  above the home let other accounts through - a home on another drive, or a
+  home folder left open. The launcher now writes `app.log` and
+  `launcher.log` for your account only, closes the ones an earlier version
+  left open, and creates a new home and its `.env` the same way. On Windows
+  a home or library on another drive keeps that drive's permissions;
+  `docs/configuration.md` says what to check (GitHub #42).
 - **Fetching a followed feed's back catalogue says why it failed.** When the
   feed now redirects to this computer or the local network, or its host is
   gone, the Feeds page answers with the feed's address and the reason instead
