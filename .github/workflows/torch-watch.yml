@@ -23,6 +23,12 @@ permissions:
   contents: read
   issues: write
 
+# One run at a time: a manual run overlapping the Monday one on a trigger
+# week could otherwise read the comments before either posts, and comment twice.
+concurrency:
+  group: torch-watch
+  cancel-in-progress: false
+
 jobs:
   watch:
     runs-on: ubuntu-latest

@@ -124,3 +124,33 @@ def test_the_newest_cu130_torch_for_windows_cp312_is_read_from_the_index():
         '<a href="/whl/cu130/torch-2.14.0%2Bcu130-cp312-cp312-win_amd64.whl#sha256=ee">x</a>'
     )
     assert watch.newest_torch(page) == "2.14.1+cu130"
+
+
+def test_a_name_cut_by_a_chunk_boundary_adds_no_phantom_major():
+    """On Linux the name has no suffix, so 'libcublas.so.12' cut after
+    'libcublas.so.1' at a chunk boundary matched as major 1 as well."""
+    cut = watch.CHUNK - len(b"libcublas.so.1")
+    library = b"\xcc" * cut + b"libcublas.so.12" + b"\x00" * 1000
+    assert watch._majors_in(io.BytesIO(library), "linux") == {12}
+
+
+def test_main_prints_the_trigger_line_the_workflow_looks_for(monkeypatch, capsys):
+    """The workflow greps '^TRIGGER:'; a renamed line would mean a CUDA 13
+    build arrives and nobody is told."""
+    monkeypatch.setattr(watch, "_fetch_text", lambda url: "{}")
+    monkeypatch.setattr(watch, "pick_wheels", lambda data: ("9.9.9", {"win": "https://x/win.whl", "linux": "https://x/linux.whl"}))
+    monkeypatch.setattr(watch, "newest_torch", lambda text: "2.14.1+cu130")
+
+    class Remote(io.BytesIO):
+        fetched, size, requests = 1, 1, 1
+
+        def __init__(self, url):
+            source = _win(_library(b"cublas64_13.dll")) if url.endswith("win.whl") else _linux(_library(b"libcublas.so.13"))
+            super().__init__(source.getvalue())
+
+    monkeypatch.setattr(watch, "RangeFile", Remote)
+
+    assert watch.main() == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith("TRIGGER:") for line in lines), lines
+    assert not any(line.startswith("CHECK-FAILED:") for line in lines), lines
