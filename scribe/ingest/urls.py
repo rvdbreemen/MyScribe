@@ -35,9 +35,11 @@ needs.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import os
 import re
+import socket
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from html.parser import HTMLParser
@@ -45,7 +47,13 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import (
+    AbstractHTTPHandler,
+    HTTPRedirectHandler,
+    Request,
+    build_opener,
+    urlopen,
+)
 
 from scribe import glossary
 
@@ -460,10 +468,9 @@ def is_local_host(host: str | None) -> bool:
     reserved - is local. A name is local when it is `localhost`, ends in
     `.localhost`, or ends in `.local` (mDNS: printers, NAS boxes). No host at
     all is local too: there is nothing public to fetch. Names are not
-    resolved, on purpose: a lookup inside a guard is a network call the guard
-    exists to prevent, and a name that resolves to a private address only
-    at fetch time is out of this guard's reach. It stops the author who
-    writes the address down, which is the case there is (TASK-072).
+    resolved *here* - that is `resolves_private`, and it runs at request
+    time, where redirect hops are judged too. This stays the cheap literal
+    check that refuses before any network is touched (TASK-072).
     """
     name = (host or "").strip().lower()
     if not name:
@@ -495,13 +502,335 @@ def ensure_public_http_url(url: str) -> str:
     return text
 
 
-def fetch_page(url: str, *, limit: int) -> tuple[str, str]:
+def resolves_private(host: str | None, addresses: list[str] | None = None) -> bool:
+    """Does ``host`` resolve to an address outside the public internet?
+
+    The fetch-time half of `is_local_host`: the literal spelling is judged
+    before anything is fetched, but a public-looking name can resolve to a
+    private address, and checking it is only safe the moment the request is
+    actually made - which is why `public_only` calls this per request rather
+    than `ensure_public_http_url` calling it once.
+
+    ``addresses`` are answers already looked up - the ones a connection is
+    about to use (`_connect_checked`) - and are judged instead of asking again.
+
+    A name that will not resolve answers False rather than refusing: it
+    reaches nothing either way, and the fetch's own "could not resolve host"
+    says the truer thing. That fail-open is safe only because the connection
+    judges its own lookup again before it connects (GitHub #41). The lookup
+    has no timeout of its own - the OS resolver's applies, as it does to the
+    connection's lookup. A literal answers by `ipaddress` without a lookup.
+    """
+    name = (host or "").strip()
+    if not name:
+        return True
+    try:
+        return not ipaddress.ip_address(name).is_global
+    except ValueError:
+        pass
+    if addresses is None:
+        try:
+            addresses = [answer[4][0] for answer in socket.getaddrinfo(name, None)]
+        except OSError:
+            return False
+    return any(not ipaddress.ip_address(address).is_global for address in addresses)
+
+
+def _refuse_private(what: str) -> UnsupportedUrl:
+    return UnsupportedUrl(
+        f"{what} resolves to this machine or the local network; "
+        "a feed or playlist cannot ask for that"
+    )
+
+
+def _require_public_target(url: str) -> str:
+    """`ensure_public_http_url`, and the host must resolve publicly too."""
+    text = ensure_public_http_url(url)
+    if resolves_private(urlparse(text).hostname):
+        raise _refuse_private(text)
+    return text
+
+
+def _connect_checked(address, timeout, source_address=None):
+    """`socket.create_connection`, connecting only to answers it has judged.
+
+    Checking a name and then letting the connection look it up again leaves
+    a gap: a resolver can answer public to the check and private to the
+    connect (DNS rebinding, GitHub #41). Here the one lookup is both judged
+    and used - the socket goes to the very address that passed. TLS is not
+    affected: `http.client` still wraps the socket with the host *name*.
+    """
+    host, port = address[0], address[1]
+    answers = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    if resolves_private(host, [answer[4][0] for answer in answers]):
+        raise _refuse_private(host)
+    error: OSError | None = None
+    for answer in answers:
+        try:
+            return socket.create_connection(answer[4][:2], timeout, source_address)
+        except OSError as exc:
+            error = exc
+    raise error or OSError(f"{host} has no address to connect to")
+
+
+def public_only(ydl) -> None:
+    """Restrict a `YoutubeDL` to fetching public http(s) URLs.
+
+    Two layers, because yt-dlp has two places a URL enters. `ydl.urlopen` is
+    the call every request a `YoutubeDL` *starts* goes through, so wrapping it
+    judges each URL an extractor or downloader asks for - the literal
+    spelling and what the name resolves to - before anything is sent.
+
+    Redirects do not come back through it: urlopen hands the request to a
+    request handler once, and the handler follows any 302 itself (GitHub
+    #41). So the `YoutubeDL` also gets a request director holding a single
+    handler, yt-dlp's urllib one, whose redirect step judges every hop - see
+    `_public_urllib_handler` for why that handler and not the others.
+
+    A resolver that answers differently at check time and connect time is
+    met by that handler too: without a proxy it connects to the address it
+    judged (see `_guard_opener`). Behind a proxy that pin is off, and the
+    URL and redirect checks - by name - are the guard. What the connection
+    then reaches depends on the proxy: an HTTP proxy, and a socks4a or
+    socks5h one, looks the name up itself, an answer the guard never sees;
+    a socks4 or socks5 one is handed an address yt-dlp's SOCKS code looked
+    up locally, a second lookup the guard did not judge (GitHub #41).
+
+    Downloads stay inside yt-dlp, where the two layers above can see them:
+    see `_native_downloads_only`. ffmpeg still post-processes local files;
+    it is never handed a URL to fetch.
+
+    A `ydl` with no `urlopen` has no network path to guard - the test seam
+    is built that way - and is left alone. Guarding twice is a no-op: `probe`
+    passes the same `ydl` on when it retries with a discovered feed.
+    """
+    real_open = getattr(ydl, "urlopen", None)
+    if real_open is None or getattr(ydl, "_scribe_public_only", False):
+        return
+
+    def guarded(req, *args, **kwargs):
+        _require_public_target(_request_url(req))
+        return real_open(req, *args, **kwargs)
+
+    ydl.urlopen = guarded
+    build_director = getattr(ydl, "build_request_director", None)
+    if build_director is not None:
+        if "_request_director" in vars(ydl):
+            # Already built (a cached_property): close what it opened first.
+            ydl._request_director.close()
+        ydl._request_director = build_director([_public_urllib_handler()])
+    _native_downloads_only(ydl)
+    ydl._scribe_public_only = True
+
+
+NATIVE_PROTOCOLS = frozenset(
+    {"http", "https", "m3u8", "m3u8_native", "http_dash_segments", "http_dash_segments_generator"}
+)
+"""The protocols yt-dlp's own downloaders fetch over plain http(s), through
+`ydl.urlopen`: a file, an HLS playlist and its segments, DASH segments."""
+
+
+def _not_held(url, by: str) -> UnsupportedUrl:
+    return UnsupportedUrl(
+        f"{url} would be fetched by {by}, which is not held to this app's "
+        "address checks; a feed or playlist cannot ask for that"
+    )
+
+
+def _native_downloads_only(ydl) -> None:
+    """Keep every download of a guarded ``ydl`` inside yt-dlp's own fetching.
+
+    yt-dlp gives HLS to ffmpeg by default, honours an ``external_downloader``
+    (aria2c, curl, ...), fetches rtmp with rtmpdump - and each of those opens
+    its own connections to the playlist, segment and key URLs, outside
+    `ydl.urlopen` and every check `public_only` makes. A feed's author writes
+    those URLs (GitHub #41). So, in three layers:
+
+    - every protocol is sent to yt-dlp's native downloader
+      (``external_downloader`` "native" - what ``hls_prefer_native`` became);
+    - a format whose protocol no native downloader fetches over http(s) -
+      rtmp, rtsp, mms, f4m - is refused by name before a downloader starts;
+    - an outside downloader yt-dlp still starts by itself is refused for this
+      ``ydl`` (`_outside_downloaders_refuse`): a live stream always goes to
+      ffmpeg, and the HLS downloader hands a playlist it cannot decrypt
+      (SAMPLE-AES) to ffmpeg whatever the options say.
+    """
+    params = getattr(ydl, "params", None)
+    if isinstance(params, dict):
+        params["external_downloader"] = {"default": "native"}
+    real_dl = getattr(ydl, "dl", None)
+    if real_dl is None:
+        return
+    _outside_downloaders_refuse()
+
+    def dl(name, info, *args, **kwargs):
+        from yt_dlp.utils import determine_protocol
+
+        for fmt in info.get("requested_formats") or [info]:
+            for protocol in determine_protocol(fmt).split("+"):
+                if protocol not in NATIVE_PROTOCOLS:
+                    raise _not_held(fmt.get("url"), f"an outside program ({protocol})")
+        return real_dl(name, info, *args, **kwargs)
+
+    ydl.dl = dl
+
+
+@functools.cache
+def _outside_downloaders_refuse() -> None:
+    """Make yt-dlp's outside downloaders refuse a ``ydl`` under `public_only`.
+
+    On the classes, because yt-dlp builds these downloaders itself, deep
+    inside a download (`HlsFD.real_download` constructs `FFmpegFD` directly).
+    Every one that starts a program comes through one of these two methods:
+    `ExternalFD` is ffmpeg, aria2c, curl, wget and the rest, `RtmpFD` is
+    rtmpdump. A ``ydl`` nobody guarded - a URL a person pasted - is let
+    through untouched. Built on first use, like `_public_urllib_handler`.
+    """
+    from yt_dlp.downloader.external import ExternalFD
+    from yt_dlp.downloader.rtmp import RtmpFD
+
+    for cls in (ExternalFD, RtmpFD):
+        cls.real_download = _refused_when_public(cls.real_download)
+
+
+def _refused_when_public(real_download):
+    def checked(self, filename, info_dict):
+        if getattr(self.ydl, "_scribe_public_only", False):
+            basename = getattr(self, "get_basename", None)
+            raise _not_held(info_dict.get("url"), basename() if basename else "rtmpdump")
+        return real_download(self, filename, info_dict)
+
+    return checked
+
+
+@functools.cache
+def _public_urllib_handler():
+    """yt-dlp's urllib request handler, judging every redirect it follows.
+
+    Why only this handler: yt-dlp prefers `requests` (and `curl_cffi` when it
+    is installed), and both follow redirects inside their own sessions, where
+    nothing outside can see the hop. The urllib handler follows them through
+    an `urllib.request.OpenerDirector`, whose redirect step `_guard_opener`
+    can wrap. yt-dlp supports running on urllib alone - it is what its
+    ``prefer-legacy-http-handler`` option selects - so an unattended feed
+    loses connection reuse, not features.
+
+    The director is a cached_property that only `YoutubeDL.close()` drops
+    (and rebuilds unguarded on next use); nothing here closes a `ydl` it
+    still means to use.
+
+    Built on first use, because importing yt-dlp is what `build_ydl` exists
+    to put off.
+    """
+    from yt_dlp.networking._urllib import UrllibRH
+    from yt_dlp.networking.exceptions import RequestError
+
+    class PublicUrllibRH(UrllibRH):
+        # The key YoutubeDL looks its urllib handler up by (its `_opener`,
+        # its "file:// URLs are disabled" message), so it still finds it.
+        RH_KEY = "Urllib"
+
+        def _create_instance(self, *args, **kwargs):
+            return _guard_opener(super()._create_instance(*args, **kwargs))
+
+        def _send(self, request):
+            try:
+                return super()._send(request)
+            except UrlError as refused:
+                # The director reports anything that is not a RequestError
+                # as a yt-dlp bug ("please report this issue"); a refused hop
+                # is a failed request, in the guard's own words.
+                raise RequestError(str(refused), cause=refused) from refused
+
+    return PublicUrllibRH
+
+
+def _request_url(req) -> str:
+    """The URL of whatever was handed to ``urlopen``.
+
+    yt-dlp passes its own `yt_dlp.networking.common.Request`, which has
+    ``.url``, no ``.full_url``, and a str() that is its repr - read as a
+    string, every request was refused as "not a web address" (GitHub #41).
+    A urllib `Request` has ``.full_url``; a plain string is the URL. Anything
+    else falls through to str() and is refused, which is the safe way round.
+    """
+    if isinstance(req, str):
+        return req
+    for name in ("full_url", "url"):
+        url = getattr(req, name, None)
+        if isinstance(url, str):
+            return url
+    return str(req)
+
+
+def _guard_opener(opener):
+    """``opener``, judging every hop, not just the first: a public URL may not 302 home.
+
+    `redirect_request` is where urllib decides the next hop, so the check
+    lives there - refusing by raising, which urllib surfaces as an error on
+    the request rather than a redirect it followed. It is wrapped on the
+    handler the opener already holds rather than replaced by a subclass,
+    because the same function guards two openers: discovery's own and the
+    one yt-dlp's urllib handler builds with its own redirect handler, which
+    has to keep its redirect rules (GitHub #41).
+
+    Its http(s) handlers connect through `_connect_checked` for the same
+    reason: every hop opens its own connection, and that connection goes to
+    the address that was judged. Not behind a proxy: the socket then goes to
+    the proxy, which may well live on this network, so there the URL and
+    redirect checks are the whole guard. An HTTP, socks4a or socks5h proxy
+    looks the name up itself; for socks4 and socks5 yt-dlp's SOCKS code
+    (`yt_dlp.socks`) looks it up here, at connect time, in a lookup of its
+    own that this pin does not reach (GitHub #41).
+    """
+    for handler in opener.handlers:
+        if isinstance(handler, HTTPRedirectHandler):
+            handler.redirect_request = _judging_hops(handler.redirect_request)
+        if isinstance(handler, AbstractHTTPHandler):
+            handler.do_open = _connecting_checked(handler.do_open)
+    return opener
+
+
+def _judging_hops(redirect_request):
+    def judged(req, fp, code, msg, headers, newurl):
+        try:
+            _require_public_target(newurl)
+        except UrlError:
+            # urllib reads and closes the 302's body only once this returns;
+            # raising past that would leave its socket open until GC.
+            if fp is not None:
+                fp.close()
+            raise
+        return redirect_request(req, fp, code, msg, headers, newurl)
+
+    return judged
+
+
+def _connecting_checked(do_open):
+    def opened(http_class, req, **kwargs):
+        def connection(*args, **conn_kwargs):
+            conn = http_class(*args, **conn_kwargs)
+            # A SOCKS proxy passes this test - yt-dlp carries it in a header,
+            # not as a urllib proxy - and its connection class ignores
+            # `_create_connection`, so the assignment is harmless there.
+            if not (req.has_proxy() or req._tunnel_host):
+                conn._create_connection = _connect_checked
+            return conn
+
+        return do_open(connection, req, **kwargs)
+
+    return opened
+
+
+def fetch_page(url: str, *, limit: int, public: bool = False) -> tuple[str, str]:
     """``(content_type, text)`` for ``url``, reading at most ``limit`` bytes.
 
     The one place discovery touches the network, and a seam the tests replace.
-    Deliberately small: no cookies, no rediression policy of our own, no
-    retry. A page that will not load in one try is a page whose podcast the
-    user can still reach by pasting the feed.
+    Deliberately small: no cookies, no retry. A page that will not load in one
+    try is a page whose podcast the user can still reach by pasting the feed.
+
+    ``public`` is for a page a feed pointed at rather than a person: the URL
+    itself and every redirect it answers with must stay outside this network.
     """
     request = Request(
         url,
@@ -510,7 +839,12 @@ def fetch_page(url: str, *, limit: int) -> tuple[str, str]:
             "Accept": _HTML_ACCEPT,
         },
     )
-    with urlopen(request, timeout=DISCOVERY_TIMEOUT) as response:  # noqa: S310 - scheme checked by the caller
+    if public:
+        _require_public_target(url)
+        open_url = _guard_opener(build_opener()).open
+    else:
+        open_url = urlopen
+    with open_url(request, timeout=DISCOVERY_TIMEOUT) as response:  # noqa: S310 - scheme checked by the caller
         content_type = response.headers.get_content_type()
         charset = response.headers.get_content_charset() or "utf-8"
         body = response.read(limit)
@@ -554,7 +888,12 @@ def feed_links(html: str) -> list[str]:
     return [parser.found[kind] for kind in FEED_LINK_TYPES if kind in parser.found]
 
 
-def discover_feed(page_url: str, *, fetch: Callable[..., tuple[str, str]] | None = None) -> str | None:
+def discover_feed(
+    page_url: str,
+    *,
+    fetch: Callable[..., tuple[str, str]] | None = None,
+    public: bool = False,
+) -> str | None:
     """The feed ``page_url`` announces, or None.
 
     A podcast home page is not something yt-dlp has an extractor for, but it
@@ -570,7 +909,9 @@ def discover_feed(page_url: str, *, fetch: Callable[..., tuple[str, str]] | None
     before anything touches it. Nothing here raises: a discovery that cannot
     answer returns None and lets the original failure stand.
     """
-    fetch = fetch or fetch_page
+    fetch = fetch or (
+        lambda url, *, limit: fetch_page(url, limit=limit, public=public)
+    )
     try:
         content_type, body = fetch(page_url, limit=MAX_DISCOVERY_BYTES)
     except Exception:  # noqa: BLE001 - discovery is a second chance, never a new failure
@@ -594,6 +935,7 @@ def probe(
     ydl=None,
     fetch: Callable[..., tuple[str, str]] | None = None,
     discover: bool = True,
+    public: bool = False,
 ) -> UrlInfo:
     """What this URL is, without downloading a byte.
 
@@ -610,16 +952,18 @@ def probe(
     """
     url = ensure_http_url(url)
     ydl = ydl if ydl is not None else build_ydl(probe_opts(cookies_file, limit=limit))
+    if public:
+        public_only(ydl)
     try:
         info = _extract(ydl, url, download=False)
     except UnsupportedUrl as unsupported:
         if not discover:
             raise
-        feed = discover_feed(url, fetch=fetch)
+        feed = discover_feed(url, fetch=fetch, public=public)
         if feed is None:
             raise
         try:
-            return probe(feed, cookies_file=cookies_file, limit=limit, ydl=ydl, discover=False)
+            return probe(feed, cookies_file=cookies_file, limit=limit, ydl=ydl, discover=False, public=public)
         except UrlError:
             # The feed was announced but is no better. The page is what the
             # user pasted and what they can act on, so its error is the one
@@ -662,6 +1006,7 @@ def download(
     cookies_file: str | None = None,
     ydl=None,
     title_hint: str | None = None,
+    public: bool = False,
 ) -> DownloadedMedia:
     """Fetch the audio of one video into ``dest_dir``; returns where it landed.
 
@@ -693,6 +1038,8 @@ def download(
 
     if ydl is None:
         ydl = build_ydl(download_opts(dest, cookies_file))
+    if public:
+        public_only(ydl)
     if on_progress is not None:
         ydl.add_progress_hook(_progress_hook(on_progress))
 

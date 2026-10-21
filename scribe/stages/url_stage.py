@@ -158,16 +158,18 @@ def fetch(ctx: "RunnerContext") -> None:
     # gets its own ValueError - that is a bug in the caller, not a full disk.
     doctor.require_disk_headroom()
     cookies_file = ctx.params.get("cookies_file") or None
-    if ctx.params.get("from_playlist"):
+    public = bool(ctx.params.get("from_playlist"))
+    if public:
         # This address is the feed's or the listing's, not the person's, and
         # a followed feed is fetched unattended: it may not point at this
-        # machine or the network behind it (TASK-072). Before yt-dlp sees it.
+        # machine or the network behind it (TASK-072). Before yt-dlp sees it -
+        # and `public` keeps the guard on through every request yt-dlp makes.
         urls.ensure_public_http_url(url)
 
-    info = urls.probe(url, cookies_file=cookies_file)
+    info = urls.probe(url, cookies_file=cookies_file, public=public)
 
     if info.kind == "playlist":
-        if ctx.params.get("from_playlist"):
+        if public:
             # A playlist inside a playlist. Refusing costs the user one entry;
             # fanning out again could cost them their database.
             raise urls.UnsupportedUrl(
@@ -193,6 +195,7 @@ def fetch(ctx: "RunnerContext") -> None:
         on_progress=ctx.report,
         cookies_file=cookies_file,
         title_hint=_entry_title(ctx),
+        public=public,
     )
 
 

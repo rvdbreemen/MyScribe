@@ -301,7 +301,9 @@ def backfill(
     # queued, marked or answered, and the question stays open for later.
     doctor.require_disk_headroom()
 
-    info = probe(feed["url"], limit=None)
+    # `public`: the feed's address is the feed's word by now, not the person's
+    # - its document may 302 anywhere since it was followed (GitHub #41).
+    info = probe(feed["url"], limit=None, public=True)
     entries = newest_first(list(info.entries or []))
     wanted = entries if choice == "all" else entries[: int(choice)]
     states = known_sources(conn, list(wanted))
@@ -462,7 +464,10 @@ def poll(
         _record(conn, feed_id, result=stored[:200], failed=True, now=stamp)
         return {"queued": [], "new": 0, "error": result}
     try:
-        info = probe(feed["url"], limit=None)
+        # Unattended, so under the public guard: the feed document, every
+        # redirect it answers with and a page it is discovered from may not
+        # point at this machine or its network (GitHub #41, TASK-072).
+        info = probe(feed["url"], limit=None, public=True)
     except Exception as exc:  # noqa: BLE001 - any failure is the feed's failure
         result = f"{type(exc).__name__}: {exc}"
         _record(conn, feed_id, result=result[:200], failed=True, now=stamp)
