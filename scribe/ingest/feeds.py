@@ -595,8 +595,9 @@ Read at call time: the tests patch it.
 """
 
 
-def _survive(step: Callable, *args) -> None:
-    """Run one step and live through whatever it does.
+def _survive(step: Callable, *args):
+    """Run one step, live through whatever it does, and hand back what it
+    returned - None when it raised.
 
     `Supervisor._loop` and `watching.Watcher` do the same, for the same reason:
     a background thread that dies on a transient error - a host that went away,
@@ -605,9 +606,10 @@ def _survive(step: Callable, *args) -> None:
     does not stop the others being checked.
     """
     try:
-        step(*args)
+        return step(*args)
     except Exception:  # noqa: BLE001 - the whole point is to catch everything
         traceback.print_exc()
+        return None
 
 
 def _job_params(text: str | None) -> dict:
@@ -747,11 +749,15 @@ class FeedWatcher:
         self._probe = probe
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        # The probe each feed's tick stopped waiting for, by feed id: still
-        # running, or done and not yet polled. A probe that answers in time is
-        # never left here. Read and written only by the tick, on this
-        # watcher's thread (GitHub #36).
-        self._probing: dict[int, Future] = {}
+        # The probe each feed's tick stopped waiting for, by feed id, with the
+        # URL it probed: still running, or done and not yet polled. A probe
+        # that answers in time is never left here. Read and written only by
+        # the tick, on this watcher's thread (GitHub #36). The URL travels
+        # with it because feed ids are reused - `feed.id` is a plain INTEGER
+        # PRIMARY KEY, so a feed unsubscribed while its probe ran can hand its
+        # id to the next one followed, and a late listing must not be filed
+        # under somebody else's feed.
+        self._probing: dict[int, tuple[str, Future]] = {}
 
     def start(self) -> None:
         """Start the tick on a daemon thread (idempotent)."""
@@ -819,7 +825,7 @@ class FeedWatcher:
                     outcome.set_exception(exc)
 
             worker = threading.Thread(target=run, name=f"scribe-feed-{feed_id}", daemon=True)
-            self._probing[feed_id] = outcome
+            self._probing[feed_id] = (url, outcome)
             worker.start()
             worker.join(PROBE_TIMEOUT_SECONDS)
             if not outcome.done():
@@ -832,8 +838,8 @@ class FeedWatcher:
         return bounded
 
     def _poll_late(
-        self, conn: sqlite3.Connection, feed_id: int, outcome: Future, options: dict
-    ) -> None:
+        self, conn: sqlite3.Connection, feed_id: int, probed: str, outcome: Future, options: dict
+    ) -> bool:
         """Poll the listing a probe brought back after the tick stopped waiting.
 
         GitHub #36, from the review of PR #62: a channel of 6000-16000 entries
@@ -845,16 +851,20 @@ class FeedWatcher:
 
         A late failure is dropped: the timeout already recorded this due
         time's failure, and a second record would count one check twice. A
-        feed unsubscribed or paused in the meantime is not polled either.
+        feed unsubscribed or paused in the meantime is not polled either, and
+        neither is a row that now holds a different URL under the same id - a
+        feed followed after this one was unsubscribed. Returns whether it
+        polled.
         """
         if outcome.exception() is not None:
-            return
+            return False
         with db.LOCK:
             row = conn.execute("SELECT * FROM feed WHERE id=?", (feed_id,)).fetchone()
-        if row is None or row["paused"]:
-            return
+        if row is None or row["paused"] or row["url"] != probed:
+            return False
         info = outcome.result()
         _poll_one(conn, dict(row), lambda url, **kwargs: info, known_sources, options)
+        return True
 
     def tick(self, conn: sqlite3.Connection) -> int:
         """Check every feed that is due; returns how many were checked.
@@ -870,15 +880,16 @@ class FeedWatcher:
         stamped `checked_at`, so it is not.
         """
         options = read_defaults(conn).to_params()
-        late = [(fid, outcome) for fid, outcome in self._probing.items() if outcome.done()]
-        for feed_id, outcome in late:
+        harvested = 0
+        late = [(fid, held) for fid, held in self._probing.items() if held[1].done()]
+        for feed_id, (probed, outcome) in late:
             # Out of `_probing` before the poll, so one that raises under
             # `_survive` is not polled again on every wake.
             del self._probing[feed_id]
-            _survive(self._poll_late, conn, feed_id, outcome, options)
+            harvested += bool(_survive(self._poll_late, conn, feed_id, probed, outcome, options))
         due = due_feeds(conn)
         if not due:
-            return len(late)
+            return harvested
         probe = self._probe or urls.probe
         deadline = time.monotonic() + TICK_BUDGET_SECONDS
         checked = 0
@@ -887,7 +898,7 @@ class FeedWatcher:
                 break
             feed_id = int(feed["id"])
             previous = self._probing.get(feed_id)
-            if previous is not None and not previous.done():
+            if previous is not None and not previous[1].done():
                 # Its last probe was given up on and is still running. Not
                 # probed a second time - another thread every wake is how
                 # hung workers would pile up - but recorded as this due
@@ -897,8 +908,14 @@ class FeedWatcher:
                 # counts once per due time, not once per wake (GitHub #36).
                 _survive(_still_running, conn, feed_id)
                 continue
-            # One that finished during this tick is superseded by a fresh poll.
-            self._probing.pop(feed_id, None)
+            # One that finished during this tick: its listing is used rather
+            # than fetched again - for a channel that always lists longer
+            # than the bound, a fresh probe would only time out once more.
+            if previous is not None:
+                del self._probing[feed_id]
+                if _survive(self._poll_late, conn, feed_id, previous[0], previous[1], options):
+                    checked += 1
+                    continue
             # `poll` takes its collaborators by keyword, so the call is bound
             # here and handed to `_survive` as one thunk. Wrapped per feed and
             # not per tick: a podcast whose host is down costs that feed its
@@ -907,7 +924,7 @@ class FeedWatcher:
                 _poll_one, conn, feed, self._bounded(feed_id, probe), known_sources, options
             )
             checked += 1
-        return checked + len(late)
+        return checked + harvested
 
     def _loop(self) -> None:
         """Its own connection, opened here and closed here."""

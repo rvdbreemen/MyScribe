@@ -627,3 +627,44 @@ def test_an_oldest_first_source_still_has_its_newest_entry_found(conn):
 
     assert out["new"] == 1
     assert [p[url_stage.ENTRY_KEY]["source_id"] for p in _queued(conn)] == ["Generic:g602"]
+
+
+def test_a_late_listing_is_never_filed_under_a_feed_that_took_its_id(conn, monkeypatch):
+    """Review of PR #75: feed.id is a plain INTEGER PRIMARY KEY, so a feed
+    unsubscribed while its probe ran can hand its id to the next one
+    followed. Matched by id alone, the old feed's late listing was queued
+    as the new feed's episodes, into the new feed's folder."""
+    import threading
+
+    monkeypatch.setattr(feeds, "PROBE_TIMEOUT_SECONDS", 0.3, raising=False)
+    old_id = feeds.subscribe(conn, HUNG_URL, answered=True, entries=[entry(1)])
+    release = threading.Event()
+
+    def slow(url, **kwargs):
+        if url != HUNG_URL:
+            return playlist()  # the new feed has nothing of its own yet
+        release.wait()
+        return playlist(entry(1), entry(2), entry(3))
+
+    watcher = feeds.FeedWatcher("never-opened.db", probe=slow)
+    helpers = []
+    try:
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the tick never came back"
+
+        feeds.unsubscribe(conn, old_id)
+        new_id = feeds.subscribe(conn, "https://example.test/another.xml", answered=True, entries=[])
+        assert new_id == old_id, "this test needs the id to be reused"
+
+        release.set()
+        _join_probe_worker(old_id)
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the next tick never came back"
+
+        assert _queued(conn) == [], "the old feed's episodes were queued as the new feed's"
+    finally:
+        release.set()
+        for helper in helpers:
+            helper.join(10.0)
