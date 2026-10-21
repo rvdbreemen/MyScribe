@@ -98,7 +98,6 @@ import sqlite3
 import threading
 from concurrent.futures import Future
 from pathlib import Path
-from urllib.parse import urldefrag
 
 from anyio import move_on_after, to_thread
 from fastapi import APIRouter, HTTPException, Request
@@ -566,77 +565,6 @@ def preview_view(
     }
 
 
-def _job_params(text: str | None) -> dict:
-    try:
-        params = json.loads(text or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return params if isinstance(params, dict) else {}
-
-
-def known_sources(conn: sqlite3.Connection, entries: list[dict]) -> list[str | None]:
-    """One state per listed entry: "queued", "library", "trash" or None.
-
-    Matched by the entry's URL without its fragment and by its extractor-
-    scoped `source_id`, against the media rows' provenance (v10) and the
-    `ingest_url` jobs still queued or running. Precedence queued > library >
-    trash: the transient fact that stops a duplicate download wins, and "in
-    library" reappears on its own once the job finishes. A trashed recording
-    is named as such rather than hidden, because re-importing it would dedupe
-    onto the trashed row and the finished transcript would be invisible.
-
-    One statement for the media side: at most two parameters per entry, so
-    5000 at `MAX_LISTED`, well under the 32766 that SQLite >= 3.35 (asserted
-    in `db.connect`) allows. Under `db.LOCK`, like every read in this process
-    (ADR-002).
-    """
-    url_keys = [urldefrag(str(entry.get("url") or "")).url for entry in entries]
-    id_keys = [entry.get("source_id") or None for entry in entries]
-    wanted_urls = sorted({key for key in url_keys if key})
-    wanted_ids = sorted({key for key in id_keys if key})
-    by_url: dict[str, str] = {}
-    by_id: dict[str, str] = {}
-
-    with db.LOCK:
-        if wanted_urls or wanted_ids:
-            clauses, params = [], []
-            if wanted_urls:
-                clauses.append(f"source_url IN ({','.join('?' * len(wanted_urls))})")
-                params.extend(wanted_urls)
-            if wanted_ids:
-                clauses.append(f"source_id IN ({','.join('?' * len(wanted_ids))})")
-                params.extend(wanted_ids)
-            rows = conn.execute(
-                "SELECT source_url, source_id, trashed_at FROM media WHERE " + " OR ".join(clauses),
-                params,
-            ).fetchall()
-            for row in rows:
-                state = "library" if row["trashed_at"] is None else "trash"
-                for key, table in ((row["source_url"], by_url), (row["source_id"], by_id)):
-                    if key and table.get(key) != "library":
-                        table[key] = state
-        live = conn.execute(
-            "SELECT params_json FROM job WHERE type=? AND status IN ('queued', 'running')",
-            (url_stage.JOB_TYPE,),
-        ).fetchall()
-
-    queued_urls: set[str] = set()
-    queued_ids: set[str] = set()
-    for row in live:
-        params = _job_params(row["params_json"])
-        queued_urls.add(urldefrag(str(params.get("url") or "")).url)
-        entry = params.get(url_stage.ENTRY_KEY)
-        if isinstance(entry, dict) and entry.get("source_id"):
-            queued_ids.add(str(entry["source_id"]))
-
-    out: list[str | None] = []
-    for url_key, id_key in zip(url_keys, id_keys):
-        if (url_key and url_key in queued_urls) or (id_key and id_key in queued_ids):
-            out.append("queued")
-            continue
-        found = {by_url.get(url_key or ""), by_id.get(id_key or "")} - {None}
-        out.append("library" if "library" in found else ("trash" if "trash" in found else None))
-    return out
 
 
 def probe_in_slot(url: str) -> urls.UrlInfo:
@@ -759,7 +687,7 @@ async def url_preview(request: Request) -> Response:
         return _panel(request, {"state": "error", "message": str(exc)})
     if info is None:
         return _panel(request, {"state": "error", "message": HINT_SLOW, "retry": not patient})
-    states = await run_in_threadpool(known_sources, conn, info.entries) if info.entries else []
+    states = await run_in_threadpool(feeds.known_sources, conn, info.entries) if info.entries else []
     return _panel(request, preview_view(info, url=text, states=states, cap=url_stage.MAX_FAN_OUT))
 
 

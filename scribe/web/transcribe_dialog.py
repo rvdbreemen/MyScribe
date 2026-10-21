@@ -41,12 +41,22 @@ from typing import Any, Mapping
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
 from scribe import applog, db, fsbrowse, jobs, media
-from scribe.options import TranscribeOptions, parse_options
+from scribe.options import (
+    DEFAULT_LANGUAGE,
+    SETTING_DIARIZE,
+    SETTING_LANGUAGE,
+    SETTING_TIER,
+    TranscribeOptions,
+    parse_options,
+    read_defaults,
+    save_defaults,
+    save_diarize,
+    save_tier,
+)
 from scribe.stages import transcribe
 from scribe.web import library, render
 
@@ -57,79 +67,12 @@ JOB_TYPE = "transcribe"
 # The multipart field the dialog's file input posts under.
 FILES_FIELD = "files"
 
-# The setting rows the dialog reads for its defaults and writes back on submit.
-SETTING_LANGUAGE = "default_language"
-SETTING_TIER = "default_tier"
-SETTING_DIARIZE = "default_diarize"
-# Auto-detect. This was "nl" until 2026-09-02, when two English recordings went
-# through with language=nl on their runs: Whisper transcribed them correctly
-# regardless - a language code is a bias, not a constraint - but the run row
-# then claimed a language the audio did not have. Detection gets Dutch right
-# too, and the stage pins whatever the first window detects for the rest of
-# the file, so the only thing a fixed default bought was a wrong label.
-DEFAULT_LANGUAGE: str | None = None
-
-
-# --- defaults --------------------------------------------------------------------
-
-
-def read_defaults(conn: sqlite3.Connection) -> TranscribeOptions:
-    """The options the dialog opens with: the last ones submitted, else
-    auto-detect, Turbo, speakers on. A stored "" is auto-detect too (that is
-    how save_defaults writes it). A setting somebody edited into nonsense
-    falls back to those rather than breaking the dialog."""
-    with db.LOCK:
-        rows = conn.execute(
-            "SELECT key, value FROM setting WHERE key IN (?, ?, ?)",
-            (SETTING_LANGUAGE, SETTING_TIER, SETTING_DIARIZE),
-        ).fetchall()
-    stored = {row["key"]: row["value"] for row in rows}
-    try:
-        return TranscribeOptions(
-            language=stored.get(SETTING_LANGUAGE) or DEFAULT_LANGUAGE,
-            tier=stored.get(SETTING_TIER, "turbo"),
-            diarize=stored.get(SETTING_DIARIZE, "1"),
-        )
-    except ValidationError:
-        return TranscribeOptions(language=DEFAULT_LANGUAGE)
-
-
-def save_defaults(conn: sqlite3.Connection, options: TranscribeOptions) -> None:
-    """Remember language, tier and diarize as the next dialog's defaults."""
-    with db.LOCK:
-        conn.executemany(
-            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
-            [
-                (SETTING_LANGUAGE, options.language or ""),
-                (SETTING_TIER, options.tier),
-                (SETTING_DIARIZE, "1" if options.diarize else "0"),
-            ],
-        )
-        conn.commit()
-
-
-def _save_one(conn: sqlite3.Connection, key: str, value: str) -> None:
-    """One default row, and only that one.
-
-    `save_defaults` writes all three in one statement, which is right for a
-    dialog that submitted all three and wrong for anybody who answered one: a
-    first-run sitting that saved the tier also wrote `default_diarize`, a row
-    seven call sites rewrite and read, with a choice nobody made (ADR-015,
-    Must Not; TASK-089.09).
-    """
-    with db.LOCK:
-        conn.execute("INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)", (key, value))
-        conn.commit()
-
-
-def save_tier(conn: sqlite3.Connection, tier: str) -> None:
-    """Remember the transcription tier, and nothing else."""
-    _save_one(conn, SETTING_TIER, tier)
-
-
-def save_diarize(conn: sqlite3.Connection, diarize: bool) -> None:
-    """Remember whether speakers are separated by default, and nothing else."""
-    _save_one(conn, SETTING_DIARIZE, "1" if diarize else "0")
+# The dialog's stored defaults - read_defaults, save_defaults and the SETTING_
+# names behind them - are imported from `scribe.options` above rather than
+# spelled here: the feed watcher asks the same question on a thread that may
+# not import this package, and the layer rule is why (see url_stage's own
+# note about OPTIONS_KEY). Callers that name `transcribe_dialog.read_defaults`
+# keep resolving to the same function.
 
 
 # --- the dialog ------------------------------------------------------------------

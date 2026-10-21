@@ -161,7 +161,7 @@ async def poll_feed(feed_id: int, request: Request) -> Response:
         conn,
         feed,
         probe=ingest_ui.urls.probe,
-        known_sources=ingest_ui.known_sources,
+        known_sources=feeds.known_sources,
         options=options,
     )
     return _after_change(request, conn)
@@ -196,7 +196,7 @@ async def backfill_feed(
             feed,
             choice.strip(),
             probe=ingest_ui.urls.probe,
-            known_sources=ingest_ui.known_sources,
+            known_sources=feeds.known_sources,
             options=options,
         )
     except ValueError as exc:

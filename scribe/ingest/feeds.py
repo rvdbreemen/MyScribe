@@ -31,15 +31,20 @@ drive it and the watcher supplies the real one.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import sys
 import threading
 import time
 import traceback
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Callable, Sequence
+from urllib.parse import urldefrag
 
 from scribe import applog, db, doctor, jobs
 from scribe.ingest import urls
+from scribe.options import read_defaults
 from scribe.stages import url_stage
 
 MAX_NEW_PER_POLL = 25
@@ -463,6 +468,13 @@ def poll(
         stored = prefix + exc.fitted(200 - len(prefix))
         _record(conn, feed_id, result=stored[:200], failed=True, now=stamp)
         return {"queued": [], "new": 0, "error": result}
+    # The whole listing, not the top of it (GitHub #36). `new_entries` is a
+    # set difference and finds the new episode wherever it sits; a cap
+    # (`playlistend`) would keep the first entries in document order, and a
+    # source that lists oldest first would never show its new ones again.
+    # On the watcher's thread a huge listing is bounded by
+    # `PROBE_TIMEOUT_SECONDS`; the Feeds page's "check now" hands in the
+    # plain probe and waits for it, on a threadpool worker.
     try:
         # Unattended, so under the public guard: the feed document, every
         # redirect it answers with and a page it is discovered from may not
@@ -544,6 +556,39 @@ query over a table with as many rows as the person has podcasts.
 at once. Nothing about a daily feed rewards that.
 """
 
+TICK_BUDGET_SECONDS = 180.0
+"""How long one wake may spend polling feeds before the rest wait a wake.
+
+Feeds are polled serially: a string of slow hosts would otherwise hold every
+later feed hostage for as long as they take. Checked between feeds, so it
+cannot stop a probe already running; `PROBE_TIMEOUT_SECONDS` bounds each one.
+Whatever the budget does not reach stays due: `checked_at` is only stamped
+for feeds the tick got to, so the next wake picks up exactly where this one
+stopped. Three minutes is a few slow feeds' worth, and comfortably inside the
+five-minute wake.
+"""
+
+PROBE_TIMEOUT_SECONDS = 150.0
+"""How long the watcher waits for one feed's probe before giving up on it.
+
+GitHub #36. `urls.SOCKET_TIMEOUT` bounds one socket read, not the probe: a
+host that drips a byte every few seconds never trips it, and a listing that
+keeps answering runs as long as it has entries. So the probe runs on a
+worker thread and the tick waits this long; past it the feed is recorded as
+failed, like a probe that raised, and the tick goes on to the next feed.
+
+Sized for the whole listing a poll asks for. A feed is one document, read in
+seconds even at a few thousand episodes. A channel is paged, at the 40 entries
+a second measured in `urls.probe_opts` (2026-09-08): 3000 entries take about
+75 s, so two and a half minutes is twice that, and a listing of up to about
+6000 entries still answers. A larger channel is recorded as not answering
+rather than followed. A dripping host costs at most this once per due time,
+since a feed whose worker still runs is skipped. The budget is looked at
+between feeds, so the longest tick is `TICK_BUDGET_SECONDS` plus this, about
+five and a half minutes; the next wake then waits its interval from there.
+Read at call time: the tests patch it.
+"""
+
 
 def _survive(step: Callable, *args) -> None:
     """Run one step and live through whatever it does.
@@ -560,6 +605,89 @@ def _survive(step: Callable, *args) -> None:
         traceback.print_exc()
 
 
+def _job_params(text: str | None) -> dict:
+    try:
+        params = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return params if isinstance(params, dict) else {}
+
+
+_KEYS_PER_STATEMENT = 5000
+"""Bound parameters per `known_sources` media query: well under SQLite's
+32766 (>= 3.35, asserted in `db.connect`), and a dialog listing of
+`ingest_ui.MAX_LISTED` entries is still one statement per column (GitHub #36)."""
+
+
+def known_sources(conn: sqlite3.Connection, entries: list[dict]) -> list[str | None]:
+    """One state per listed entry: "queued", "library", "trash" or None.
+
+    Matched by the entry's URL without its fragment and by its extractor-
+    scoped `source_id`, against the media rows' provenance (v10) and the
+    `ingest_url` jobs still queued or running. Precedence queued > library >
+    trash: the transient fact that stops a duplicate download wins, and "in
+    library" reappears on its own once the job finishes. A trashed recording
+    is named as such rather than hidden, because re-importing it would dedupe
+    onto the trashed row and the finished transcript would be invisible.
+
+    The media side is asked in chunks of `_KEYS_PER_STATEMENT` keys. One
+    statement for the whole listing bound two parameters per entry, and a
+    feed poll lists the whole source: past 16383 entries that was SQLite's
+    "too many SQL variables" (32766), raised outside the probe's `try`, so the
+    feed was never recorded and stayed due on every wake (GitHub #36). Under
+    `db.LOCK`, like every read in this process (ADR-002).
+
+    Lives here rather than in `scribe.web.ingest_ui`, where it was born: the
+    feed watcher asks the same question on a thread that may not import
+    scribe.web.
+    """
+    url_keys = [urldefrag(str(entry.get("url") or "")).url for entry in entries]
+    id_keys = [entry.get("source_id") or None for entry in entries]
+    wanted_urls = sorted({key for key in url_keys if key})
+    wanted_ids = sorted({key for key in id_keys if key})
+    by_url: dict[str, str] = {}
+    by_id: dict[str, str] = {}
+
+    with db.LOCK:
+        for column, wanted in (("source_url", wanted_urls), ("source_id", wanted_ids)):
+            for start in range(0, len(wanted), _KEYS_PER_STATEMENT):
+                chunk = wanted[start : start + _KEYS_PER_STATEMENT]
+                rows = conn.execute(
+                    "SELECT source_url, source_id, trashed_at FROM media"
+                    f" WHERE {column} IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+                # A row can come back from more than one chunk; "library"
+                # winning over "trash" makes that harmless.
+                for row in rows:
+                    state = "library" if row["trashed_at"] is None else "trash"
+                    for key, table in ((row["source_url"], by_url), (row["source_id"], by_id)):
+                        if key and table.get(key) != "library":
+                            table[key] = state
+        live = conn.execute(
+            "SELECT params_json FROM job WHERE type=? AND status IN ('queued', 'running')",
+            (url_stage.JOB_TYPE,),
+        ).fetchall()
+
+    queued_urls: set[str] = set()
+    queued_ids: set[str] = set()
+    for row in live:
+        params = _job_params(row["params_json"])
+        queued_urls.add(urldefrag(str(params.get("url") or "")).url)
+        entry = params.get(url_stage.ENTRY_KEY)
+        if isinstance(entry, dict) and entry.get("source_id"):
+            queued_ids.add(str(entry["source_id"]))
+
+    out: list[str | None] = []
+    for url_key, id_key in zip(url_keys, id_keys):
+        if (url_key and url_key in queued_urls) or (id_key and id_key in queued_ids):
+            out.append("queued")
+            continue
+        found = {by_url.get(url_key or ""), by_id.get(id_key or "")} - {None}
+        out.append("library" if "library" in found else ("trash" if "trash" in found else None))
+    return out
+
+
 def _poll_one(
     conn: sqlite3.Connection,
     feed: dict,
@@ -574,6 +702,18 @@ def _poll_one(
     variable is the classic way to check every feed against the last one.
     """
     return poll(conn, feed, probe=probe, known_sources=known_sources, options=options)
+
+
+def _still_running(conn: sqlite3.Connection, feed_id: int) -> None:
+    """Record a due feed whose previous probe has not come back as failed."""
+    _record(
+        conn,
+        feed_id,
+        result=f"did not answer: the check given up on after {PROBE_TIMEOUT_SECONDS:g} s"
+        " is still running",
+        failed=True,
+        now=time.time(),
+    )
 
 
 class FeedWatcher:
@@ -602,6 +742,9 @@ class FeedWatcher:
         self._probe = probe
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # The probe thread of each feed's last poll, by feed id. Read and
+        # written only by the tick, on this watcher's thread (GitHub #36).
+        self._probing: dict[int, threading.Thread] = {}
 
     def start(self) -> None:
         """Start the tick on a daemon thread (idempotent)."""
@@ -612,38 +755,115 @@ class FeedWatcher:
         self._thread.start()
 
     def stop(self, timeout: float = 10.0) -> None:
+        """Ask the loop to finish and join it.
+
+        A join that runs out of time is said on stderr and the thread is
+        *kept*, the same answer `watching.Watcher.stop` gives for the same
+        reason: a thread mid-poll will finish on its own, and dropping the
+        reference made that indistinguishable from a clean stop.
+        """
         self._stop_event.set()
         thread = self._thread
-        if thread is not None:
-            thread.join(timeout)
+        if thread is None:
+            return
+        thread.join(timeout)
+        if thread.is_alive():
+            print(
+                f"scribe: the feed-checking thread is still running {timeout:g}s after"
+                " being asked to stop; it is most likely mid-poll and will finish"
+                " on its own.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        self._thread = None
+
+    def _bounded(
+        self, feed_id: int, probe: Callable[..., urls.UrlInfo]
+    ) -> Callable[..., urls.UrlInfo]:
+        """`probe` with a wall clock on it: run on a worker thread, given up on
+        after `PROBE_TIMEOUT_SECONDS` with a `TimeoutError` that `poll` records
+        like any other failed probe (GitHub #36).
+
+        Only the probe runs on the worker - network I/O and nothing else. The
+        recording, `known_sources` and the queueing stay in `poll` on this
+        watcher's thread and connection, so a worker that answers after it was
+        given up on writes nothing: its result falls into a Future nobody
+        reads.
+
+        A daemon thread rather than a subprocess, which could be killed:
+        `probe` is passed in (the tests hand it a closure, which a spawned
+        child cannot unpickle), a child would pay an interpreter start and a
+        yt-dlp import per feed, and `UrlInfo` would have to cross back pickled.
+        What a thread cannot be is stopped, so it is remembered in `_probing`
+        and its feed is skipped, and recorded as failing, while it lives - at
+        most one stuck thread per feed, and `urls.SOCKET_TIMEOUT` still ends
+        one whose host goes silent.
+        The same trade `ingest_ui.probe_or_none` makes for the dialog.
+        """
+
+        def bounded(url: str, **kwargs) -> urls.UrlInfo:
+            outcome: Future = Future()
+
+            def run() -> None:
+                try:
+                    outcome.set_result(probe(url, **kwargs))
+                except BaseException as exc:  # noqa: BLE001 - handed to the tick as is
+                    outcome.set_exception(exc)
+
+            worker = threading.Thread(target=run, name=f"scribe-feed-{feed_id}", daemon=True)
+            self._probing[feed_id] = worker
+            worker.start()
+            worker.join(PROBE_TIMEOUT_SECONDS)
+            if worker.is_alive():
+                raise TimeoutError(f"did not answer within {PROBE_TIMEOUT_SECONDS:g} s")
+            return outcome.result()
+
+        return bounded
 
     def tick(self, conn: sqlite3.Connection) -> int:
         """Check every feed that is due; returns how many were checked.
 
         Each feed is wrapped on its own, so a podcast whose host is down costs
-        that feed its turn and nothing else.
+        that feed its turn and nothing else. And the wake itself is bounded
+        (`TICK_BUDGET_SECONDS`): a string of slow feeds spends the budget and
+        stops, leaving the rest due for the next wake rather than stacking an
+        afternoon of polling in front of them. The budget is looked at between
+        feeds; one probe that hangs is bounded by `PROBE_TIMEOUT_SECONDS`
+        (GitHub #36).
         """
-        from scribe.web import ingest_ui, transcribe_dialog
-
         due = due_feeds(conn)
         if not due:
             return 0
-        options = transcribe_dialog.read_defaults(conn).to_params()
+        options = read_defaults(conn).to_params()
         probe = self._probe or urls.probe
+        deadline = time.monotonic() + TICK_BUDGET_SECONDS
+        checked = 0
         for feed in due:
+            if checked and time.monotonic() >= deadline:
+                break
+            feed_id = int(feed["id"])
+            previous = self._probing.get(feed_id)
+            if previous is not None and previous.is_alive():
+                # Its last probe was given up on and is still running. Not
+                # probed a second time - another thread every wake is how
+                # hung workers would pile up - but recorded as this due
+                # time's failure: left due and unrecorded, the counter never
+                # reached MAX_FAILURES_REPORTED and the Feeds page said
+                # "trying again" for ever. `checked_at` is stamped, so it
+                # counts once per due time, not once per wake (GitHub #36).
+                _survive(_still_running, conn, feed_id)
+                continue
+            self._probing.pop(feed_id, None)
             # `poll` takes its collaborators by keyword, so the call is bound
             # here and handed to `_survive` as one thunk. Wrapped per feed and
             # not per tick: a podcast whose host is down costs that feed its
             # turn, not the others theirs.
             _survive(
-                _poll_one,
-                conn,
-                feed,
-                probe,
-                ingest_ui.known_sources,
-                options,
+                _poll_one, conn, feed, self._bounded(feed_id, probe), known_sources, options
             )
-        return len(due)
+            checked += 1
+        return checked
 
     def _loop(self) -> None:
         """Its own connection, opened here and closed here."""

@@ -21,6 +21,7 @@ from typing import Any, Literal, Mapping
 from fastapi import HTTPException
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
+from scribe import db
 from scribe.stages import transcribe
 
 # Speaker-count hints beyond this are a typo, not a meeting.
@@ -177,3 +178,81 @@ def parse_options(source: Mapping[str, Any]) -> TranscribeOptions:
             for error in exc.errors()
         )
         raise HTTPException(status_code=400, detail=f"invalid transcribe options: {problems}")
+
+
+# --- the stored defaults ---------------------------------------------------------
+
+# The setting rows a transcribe dialog opens with and writes back on submit.
+# They live here rather than in web/transcribe_dialog.py, which used to own
+# them: the feed watcher needs the same answer on a thread that may not
+# import scribe.web, and the question "what would a transcription default
+# to" is an options question, not a dialog one.
+SETTING_LANGUAGE = "default_language"
+SETTING_TIER = "default_tier"
+SETTING_DIARIZE = "default_diarize"
+# Auto-detect. This was "nl" until 2026-09-02, when two English recordings went
+# through with language=nl on their runs: Whisper transcribed them correctly
+# regardless - a language code is a bias, not a constraint - but the run row
+# then claimed a language the audio did not have. Detection gets Dutch right
+# too, and the stage pins whatever the first window detects for the rest of
+# the file, so the only thing a fixed default bought was a wrong label.
+DEFAULT_LANGUAGE: str | None = None
+
+
+def read_defaults(conn) -> TranscribeOptions:
+    """The options the dialog opens with: the last ones submitted, else
+    auto-detect, Turbo, speakers on. A stored "" is auto-detect too (that is
+    how save_defaults writes it). A setting somebody edited into nonsense
+    falls back to those rather than breaking the dialog."""
+    with db.LOCK:
+        rows = conn.execute(
+            "SELECT key, value FROM setting WHERE key IN (?, ?, ?)",
+            (SETTING_LANGUAGE, SETTING_TIER, SETTING_DIARIZE),
+        ).fetchall()
+    stored = {row["key"]: row["value"] for row in rows}
+    try:
+        return TranscribeOptions(
+            language=stored.get(SETTING_LANGUAGE) or DEFAULT_LANGUAGE,
+            tier=stored.get(SETTING_TIER, "turbo"),
+            diarize=stored.get(SETTING_DIARIZE, "1"),
+        )
+    except ValidationError:
+        return TranscribeOptions(language=DEFAULT_LANGUAGE)
+
+
+def save_defaults(conn, options: TranscribeOptions) -> None:
+    """Remember language, tier and diarize as the next dialog's defaults."""
+    with db.LOCK:
+        conn.executemany(
+            "INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+            [
+                (SETTING_LANGUAGE, options.language or ""),
+                (SETTING_TIER, options.tier),
+                (SETTING_DIARIZE, "1" if options.diarize else "0"),
+            ],
+        )
+        conn.commit()
+
+
+def _save_one(conn, key: str, value: str) -> None:
+    """One default row, and only that one.
+
+    `save_defaults` writes all three in one statement, which is right for a
+    dialog that submitted all three and wrong for anybody who answered one: a
+    first-run sitting that saved the tier also wrote `default_diarize`, a row
+    seven call sites rewrite and read, with a choice nobody made (ADR-015,
+    Must Not; TASK-089.09).
+    """
+    with db.LOCK:
+        conn.execute("INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+
+
+def save_tier(conn, tier: str) -> None:
+    """Remember the transcription tier, and nothing else."""
+    _save_one(conn, SETTING_TIER, tier)
+
+
+def save_diarize(conn, diarize: bool) -> None:
+    """Remember whether speakers are separated by default, and nothing else."""
+    _save_one(conn, SETTING_DIARIZE, "1" if diarize else "0")

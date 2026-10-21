@@ -39,7 +39,7 @@ from fastapi.testclient import TestClient
 
 from scribe import db, fsbrowse, paths
 from scribe.app import create_app
-from scribe.ingest import urls
+from scribe.ingest import feeds, urls
 from scribe.stages import transcribe, url_stage
 from scribe.web import ingest_ui
 from test_ingest_urls import FakeYdl, build_returning, playlist_info, single_info
@@ -1227,7 +1227,7 @@ def test_known_sources_marks_queued_and_running_jobs_but_no_terminal_one(conn):
     jobs.enqueue(conn, url_stage.JOB_TYPE, params={"url": FEED_URL})  # the feed itself, from Fetch
     assert conn.execute("SELECT status FROM job WHERE id=?", (running,)).fetchone()["status"] == "running"
 
-    states = ingest_ui.known_sources(conn, [{"url": u, "source_id": None} for u in urls_])
+    states = feeds.known_sources(conn, [{"url": u, "source_id": None} for u in urls_])
 
     assert states == ["queued", "queued", None, None, None, None, None]
 
@@ -1237,7 +1237,7 @@ def test_known_sources_matches_on_the_id_when_the_url_differs(conn, tmp_path, da
     the channel listing calls watch?v=ID; the extractor-scoped id says so."""
     _seed_media(conn, tmp_path, "a.mp3", source_url="https://youtu.be/vid0", source_id="Youtube:vid0")
 
-    states = ingest_ui.known_sources(
+    states = feeds.known_sources(
         conn,
         [
             {"url": "https://www.youtube.com/watch?v=vid0", "source_id": "Youtube:vid0"},
@@ -1246,6 +1246,28 @@ def test_known_sources_matches_on_the_id_when_the_url_differs(conn, tmp_path, da
     )
 
     assert states == ["library", None]
+
+
+def test_known_sources_answers_a_listing_past_sqlites_variable_limit(conn, tmp_path, data_dir):
+    """GitHub #36: a feed poll lists the whole source, and two bound
+    parameters per entry in one statement passed SQLite's limit (32766) past
+    16383 entries - "too many SQL variables", raised outside the probe's try,
+    so the feed was never recorded and stayed due on every wake."""
+    import sqlite3
+
+    count = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) // 2 + 1
+    listing = [
+        {"url": f"https://example.test/watch?v=big{i}", "source_id": f"Youtube:big{i}"}
+        for i in range(count)
+    ]
+    _seed_media(conn, tmp_path, "a.mp3", source_url=listing[-1]["url"])
+    _seed_media(conn, tmp_path, "b.mp3", source_id=listing[0]["source_id"])
+
+    states = feeds.known_sources(conn, listing)
+
+    assert len(states) == count
+    assert states[0] == "library" and states[-1] == "library"
+    assert set(states[1:-1]) == {None}
 
 
 def test_the_header_says_the_first_n_when_the_listing_was_cut(client, monkeypatch):
