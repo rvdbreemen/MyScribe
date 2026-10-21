@@ -486,6 +486,127 @@ def test_a_feed_that_stays_hung_counts_once_per_due_time_until_it_shows_as_faili
             helper.join(10.0)
 
 
+def _join_probe_worker(feed_id):
+    """Wait for the feed's probe thread to finish; the watcher names it."""
+    import threading
+
+    for thread in threading.enumerate():
+        if thread.name == f"scribe-feed-{feed_id}":
+            thread.join(10.0)
+            assert not thread.is_alive(), "the released probe never finished"
+
+
+def test_a_listing_that_answers_after_the_tick_moved_on_is_queued_on_the_next(
+    conn, monkeypatch
+):
+    """GitHub #36, from the review of PR #62: a channel of some 6000-16000
+    entries takes longer than PROBE_TIMEOUT_SECONDS to list. The bound is how
+    long the tick waits, not how much work a feed may do: the listing that
+    comes back late is kept and polled on the next wake, rather than thrown
+    away at every due time so the channel never delivered an episode again."""
+    import threading
+
+    monkeypatch.setattr(feeds, "PROBE_TIMEOUT_SECONDS", 0.3, raising=False)
+    slow_id = feeds.subscribe(conn, HUNG_URL, answered=True, entries=[entry(1)])
+    release, calls = threading.Event(), []
+
+    def slow(url, **kwargs):
+        calls.append(url)
+        release.wait()
+        return playlist(entry(1), entry(2), entry(3))
+
+    watcher = feeds.FeedWatcher("never-opened.db", probe=slow)
+    helpers = []
+    try:
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the tick never came back"
+        assert _feed(conn, slow_id)["failures"] == 1  # no answer yet: failing for now
+        assert _queued(conn) == []
+
+        release.set()  # the listing finishes after the tick moved on
+        _join_probe_worker(slow_id)
+        helper, done = _tick_in_background(watcher, conn)  # the next wake
+        helpers.append(helper)
+        assert done.wait(10.0), "the next tick never came back"
+
+        assert [p[url_stage.ENTRY_KEY]["source_id"] for p in _queued(conn)] == [
+            "Generic:g2",
+            "Generic:g3",
+        ]
+        slow = _feed(conn, slow_id)
+        assert (slow["failures"], slow["last_result"]) == (0, "2 new")
+        assert calls == [HUNG_URL]  # its own answer, not a second listing
+    finally:
+        release.set()
+        for helper in helpers:
+            helper.join(10.0)
+
+
+def test_a_listing_that_answered_in_time_is_polled_once_not_again_next_wake(
+    conn, monkeypatch
+):
+    """Only an answer the tick stopped waiting for is kept for the next wake.
+    One polled in time and kept as well would be polled twice: the next wake
+    would queue the following batch past the cap a day early (GitHub #36)."""
+    monkeypatch.setattr(feeds, "MAX_NEW_PER_POLL", 1)
+    feed_id = feeds.subscribe(conn, FEED_URL, answered=True)
+    watcher = feeds.FeedWatcher(
+        "never-opened.db", probe=probing(playlist(entry(1), entry(2), entry(3)))
+    )
+
+    assert watcher.tick(conn) == 1
+    assert watcher.tick(conn) == 0  # the next wake, the feed not due
+
+    assert len(_queued(conn)) == 1
+    assert "queued 1" in _feed(conn, feed_id)["last_result"]
+
+
+def test_a_late_failure_is_not_counted_twice(conn, monkeypatch):
+    """The timeout already recorded this due time's failure. A probe that then
+    raises after all is the same attempt: the next wake forgets it rather
+    than adding a second failure for one check (GitHub #36)."""
+    import threading
+
+    monkeypatch.setattr(feeds, "PROBE_TIMEOUT_SECONDS", 0.3, raising=False)
+    slow_id = feeds.subscribe(conn, HUNG_URL, answered=True)
+    release, calls = threading.Event(), []
+
+    def slow_then_down(url, **kwargs):
+        calls.append(url)
+        release.wait()
+        raise urls.UrlError("no such host")
+
+    watcher = feeds.FeedWatcher("never-opened.db", probe=slow_then_down)
+    helpers = []
+    try:
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the tick never came back"
+        release.set()
+        _join_probe_worker(slow_id)
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the next tick never came back"
+
+        assert _feed(conn, slow_id)["failures"] == 1
+
+        # Forgotten, not held: the next due time probes again, and its
+        # failure is the second.
+        conn.execute("UPDATE feed SET checked_at=NULL WHERE id=?", (slow_id,))
+        conn.commit()
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the third tick never came back"
+        assert calls == [HUNG_URL, HUNG_URL]
+        slow = _feed(conn, slow_id)
+        assert slow["failures"] == 2 and "no such host" in slow["last_result"]
+    finally:
+        release.set()
+        for helper in helpers:
+            helper.join(10.0)
+
+
 def test_an_oldest_first_source_still_has_its_newest_entry_found(conn):
     """GitHub #36: a poll asks for the whole listing. A cap (`playlistend`)
     assumed every source lists newest first; for one that lists oldest first
@@ -506,3 +627,44 @@ def test_an_oldest_first_source_still_has_its_newest_entry_found(conn):
 
     assert out["new"] == 1
     assert [p[url_stage.ENTRY_KEY]["source_id"] for p in _queued(conn)] == ["Generic:g602"]
+
+
+def test_a_late_listing_is_never_filed_under_a_feed_that_took_its_id(conn, monkeypatch):
+    """Review of PR #75: feed.id is a plain INTEGER PRIMARY KEY, so a feed
+    unsubscribed while its probe ran can hand its id to the next one
+    followed. Matched by id alone, the old feed's late listing was queued
+    as the new feed's episodes, into the new feed's folder."""
+    import threading
+
+    monkeypatch.setattr(feeds, "PROBE_TIMEOUT_SECONDS", 0.3, raising=False)
+    old_id = feeds.subscribe(conn, HUNG_URL, answered=True, entries=[entry(1)])
+    release = threading.Event()
+
+    def slow(url, **kwargs):
+        if url != HUNG_URL:
+            return playlist()  # the new feed has nothing of its own yet
+        release.wait()
+        return playlist(entry(1), entry(2), entry(3))
+
+    watcher = feeds.FeedWatcher("never-opened.db", probe=slow)
+    helpers = []
+    try:
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the tick never came back"
+
+        feeds.unsubscribe(conn, old_id)
+        new_id = feeds.subscribe(conn, "https://example.test/another.xml", answered=True, entries=[])
+        assert new_id == old_id, "this test needs the id to be reused"
+
+        release.set()
+        _join_probe_worker(old_id)
+        helper, done = _tick_in_background(watcher, conn)
+        helpers.append(helper)
+        assert done.wait(10.0), "the next tick never came back"
+
+        assert _queued(conn) == [], "the old feed's episodes were queued as the new feed's"
+    finally:
+        release.set()
+        for helper in helpers:
+            helper.join(10.0)

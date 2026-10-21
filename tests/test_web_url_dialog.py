@@ -1270,6 +1270,38 @@ def test_known_sources_answers_a_listing_past_sqlites_variable_limit(conn, tmp_p
     assert set(states[1:-1]) == {None}
 
 
+def test_known_sources_asks_in_chunks_under_the_connections_variable_limit(
+    conn, tmp_path, data_dir, monkeypatch
+):
+    """GitHub #36, from the review of PR #62: the test above stays green
+    without the chunking, because each column is its own statement and 16384
+    keys is under 32766. Here the connection's limit is lowered below the
+    listing, so one statement per column is "too many SQL variables" - and a
+    match in every chunk, the trashed one included, must still be found."""
+    import sqlite3
+
+    # The shipped chunk fits the limit a connection really has.
+    assert feeds._KEYS_PER_STATEMENT <= conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+
+    monkeypatch.setattr(feeds, "_KEYS_PER_STATEMENT", 40)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 50)
+    listing = [
+        {"url": f"https://example.test/watch?v=c{i:03d}", "source_id": f"Youtube:c{i:03d}"}
+        for i in range(130)  # four chunks of each column
+    ]
+    _seed_media(conn, tmp_path, "a.mp3", source_url=listing[0]["url"])
+    _seed_media(conn, tmp_path, "b.mp3", source_id=listing[45]["source_id"])
+    _seed_media(conn, tmp_path, "c.mp3", source_url=listing[129]["url"])
+    trashed = _seed_media(conn, tmp_path, "d.mp3", source_id=listing[80]["source_id"])
+    conn.execute("UPDATE media SET trashed_at=1.0 WHERE id=?", (trashed["id"],))
+    conn.commit()
+
+    states = feeds.known_sources(conn, listing)
+
+    found = {i: state for i, state in enumerate(states) if state is not None}
+    assert found == {0: "library", 45: "library", 80: "trash", 129: "library"}
+
+
 def test_the_header_says_the_first_n_when_the_listing_was_cut(client, monkeypatch):
     monkeypatch.setattr(ingest_ui, "MAX_LISTED", 3)
     info = playlist_info(3)
