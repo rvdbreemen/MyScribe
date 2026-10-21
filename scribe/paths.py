@@ -124,12 +124,16 @@ def keep_private(path: Path, mode: int) -> None:
     """``chmod path mode``, POSIX only, and never fatal.
 
     The library holds transcripts, recordings and API keys in cleartext, so
-    world-readable is the wrong default for anything under DATA_DIR: `.env`
-    is written 0600, and this is the same answer for everything else. A
-    0700 DATA_DIR makes every sibling user unable to reach whatever lands
-    below. Windows has ACLs, not mode bits; there the directory's own
-    permissions are already the answer. A chmod that fails (a filesystem
-    without modes, a file we do not own) must not refuse to start over.
+    world-readable is the wrong default for anything under DATA_DIR: a
+    `.env` MyScribe creates is 0600, and this is the same answer for
+    everything else. A 0700 DATA_DIR makes every sibling user unable to
+    reach whatever lands below. Windows has ACLs, not mode bits, and this
+    changes none of them (GitHub #42): the installer's default home under
+    %LOCALAPPDATA% is the user's alone, but a home or library anywhere
+    else - another drive, a clone - has whatever that folder grants, and a
+    second drive's root often lets every signed-in account in. A chmod that
+    fails (a filesystem without modes, a file we do not own) must not
+    refuse to start over.
     """
     if os.name == "nt":
         return

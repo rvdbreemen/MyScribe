@@ -34,6 +34,15 @@
 
 ### Fixed
 
+- **MyScribe's logs on Linux and macOS are for your account only.** `app.log`
+  keeps the addresses of the pages you open, search terms included. It was
+  written readable for every account, which counted wherever the folders
+  above the home let other accounts through - a home on another drive, or a
+  home folder left open. The launcher now writes `app.log` and
+  `launcher.log` for your account only, closes the ones an earlier version
+  left open, and creates a new home and its `.env` the same way. On Windows
+  a home or library on another drive keeps that drive's permissions;
+  `docs/configuration.md` says what to check (GitHub #42).
 - **A first start on Windows no longer stops when uv cannot make its Python
   folder link.** uv downloads Python and then makes a junction beside it;
   where Windows refuses that (`os error 448`, GitHub issue #16) the install

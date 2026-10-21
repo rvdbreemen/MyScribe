@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import sys
 import textwrap
 import threading
@@ -106,6 +107,108 @@ def test_first_run_copies_the_env_template_and_never_overwrites_it(layout):
     layout.env_file.write_text("HF_TOKEN=hf_mine\n", encoding="utf-8")
     launcher.prepare_home(layout)
     assert layout.env_file.read_text(encoding="utf-8") == "HF_TOKEN=hf_mine\n"
+
+
+# --- what the launcher writes is its owner's alone (GitHub #42) -----------------------
+
+
+POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="mode bits are a POSIX answer; Windows has ACLs")
+
+
+@pytest.fixture
+def umask_022():
+    """The common umask, pinned: under a runner's 077 every folder is born
+    0700 anyway and these tests would be green for a launcher that never
+    asked for it."""
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+@POSIX_ONLY
+def test_a_home_the_launcher_makes_is_its_owners_alone(layout, umask_022):
+    """app.log holds uvicorn's access log - request paths, search terms - and
+    tracebacks; .env is where the template asks for the tokens. Under a 0755
+    home every account on the machine could read both."""
+    launcher.prepare_home(layout)
+
+    assert _mode(layout.home) == 0o700
+    assert _mode(layout.logs_dir) == 0o700
+    assert _mode(layout.data_dir) == 0o700
+    assert _mode(layout.env_file) == 0o600
+
+
+@POSIX_ONLY
+def test_folders_that_already_exist_keep_their_mode(tmp_path, layout, umask_022):
+    """A home or library the user picked was there first, and how open it is
+    was their choice: only what the launcher makes is made private."""
+    library = tmp_path / "library"
+    library.mkdir()
+    os.chmod(library, 0o750)
+    layout.home.mkdir()
+    os.chmod(layout.home, 0o755)
+    adopted = launcher.Layout(layout.home, layout.payload, data=library)
+
+    launcher.prepare_home(adopted)
+
+    assert _mode(adopted.home) == 0o755
+    assert _mode(library) == 0o750
+    assert _mode(adopted.logs_dir) == 0o700
+
+
+def _no_app(monkeypatch):
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *args, **kwargs: types.SimpleNamespace())
+
+
+@POSIX_ONLY
+def test_app_log_is_written_for_its_owner_only(layout, monkeypatch, umask_022):
+    launcher.prepare_home(layout)
+    _no_app(monkeypatch)
+
+    launcher.AppProcess(layout, _free_port()).start()
+
+    assert _mode(layout.logs_dir / "app.log") == 0o600
+
+
+@POSIX_ONLY
+def test_an_app_log_from_before_is_closed_and_kept(layout, monkeypatch, umask_022):
+    """Every install before this fix has a 0644 app.log; the file's mode at
+    creation does not reach it, so the launcher tightens it - what applog
+    does for the app's own log."""
+    launcher.prepare_home(layout)
+    log = layout.logs_dir / "app.log"
+    log.write_bytes(b"GET /search?q=diagnosis\n")
+    os.chmod(log, 0o644)
+    _no_app(monkeypatch)
+
+    launcher.AppProcess(layout, _free_port()).start()
+
+    assert _mode(log) == 0o600
+    assert log.read_bytes() == b"GET /search?q=diagnosis\n"
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("existing", [False, True], ids=["new", "from-before"])
+def test_the_launchers_own_logs_are_written_for_their_owner_only(tmp_path, layout, umask_022, existing):
+    launcher.prepare_home(layout)
+    pointer = tmp_path / "MyScribe.location"
+    install = layout.logs_dir / launcher.INSTALL_LOG
+    early = launcher.early_log_path(pointer)
+    if existing:
+        for path in (install, early):
+            path.write_text("before\n", encoding="utf-8")
+            os.chmod(path, 0o644)
+
+    launcher.InstallLog(install).write("a line")
+    launcher.write_early(["a line"], pointer)
+
+    assert _mode(install) == 0o600
+    assert _mode(early) == 0o600
+    assert install.read_text(encoding="utf-8").splitlines()[-1] == "a line"
 
 
 # --- the sync decision ------------------------------------------------------------
