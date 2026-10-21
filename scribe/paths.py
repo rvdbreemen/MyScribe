@@ -106,9 +106,10 @@ def sweep_work_dirs(keep: Callable[[int], bool]) -> int:
 
     ``keep(job_id)`` says whether the job may still need it - in practice
     `jobs.keeps_its_scratch`, which also covers a job that starts while this
-    runs (GitHub #33); the caller owns the database this module stays below. A name that is not a job id
-    is not a job's scratch - the recordings' `rec/` lives beside them - and
-    is left alone, as is anything that will not delete.
+    runs (GitHub #33); the caller owns the database this module stays below.
+    A name that is not a job id is not a job's scratch - the recordings'
+    `rec/` lives beside them - and is left alone, as is anything that will
+    not delete.
 
     The "later sweep" `remove_job_work_dir` has always deferred to: every
     exit the runner does not live to see - SIGKILL, an OOM-kill, a power
