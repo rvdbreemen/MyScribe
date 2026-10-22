@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: 2026-10-19 05:51
-updated_date: '2026-10-22T00:29:00Z'
+updated_date: '2026-10-22T18:54:00Z'
 labels:
   - packaging
   - autostart
@@ -57,4 +57,6 @@ Evidence (2026-10-20):
 - AC #4 open: Roberts walk on an installed build with this change. 1) Start MyScribe once by hand, check the Run value now ends in --headless. 2) Log out and in: no window, Get-Process MyScribe shows it, http://localhost:4242/health answers. 3) Switch it off in Settings, log out and in: nothing answers on 4242.
 
 2026-10-22: 0.9.0 is the release to walk on for AC #4 (log out and in on Windows: no window, /health answers; switched off: nothing answers). The release PR is release-0.9.0; status and AC left as they are until Robert's walk.
+
+2026-10-22 on Robert's real machine with 0.9.0: started with the old Run value command (MyScribe.exe --at-login --no-browser) from a shell; /health 0.9.0 after 16 s and the Run value read back as 'C:/Users/rvdbr/AppData/Local/Programs/MyScribe/MyScribe.exe --at-login --no-browser --headless' (an older login item is rewritten). The installer's headless restart afterwards: MyScribe.exe --at-login --no-browser --headless, hwnd=0 for it and both python children. A real logon is still not observed.
 <!-- SECTION:NOTES:END -->
