@@ -64,8 +64,8 @@ release carries the fixes from an outside audit of the code (GitHub #29-#52).
   (GitHub #34, #35).
 - **Leftovers are cleaned up.** At start, MyScribe removes the work folders of
   jobs that ended without cleaning up, and partial uploads older than a day.
-  An abandoned browser recording is swept every hour, not only at start
-  (GitHub #33, #39).
+  A browser recording left idle for a day is now removed while MyScribe runs,
+  checked every hour, not only at start (GitHub #33, #39).
 - **One slow feed no longer holds up the others.** A feed that does not
   answer within 150 seconds is left for later and the other feeds are checked.
   When its listing arrives late, the next check uses it, so a large channel is
@@ -106,12 +106,13 @@ release carries the fixes from an outside audit of the code (GitHub #29-#52).
   the same button works later (GitHub #41).
 - **On Linux and macOS your library is for your account only.**
   `myscribe.db` holds every transcript and the stored API keys, and it was
-  readable by every account on the computer. The database and its `-wal` and
-  `-shm` files, `app.log` and `launcher.log` are now written for your account
-  only, files an earlier version left open are closed, and a new home, its
-  data folder and its `.env` are created the same way. `app.log` matters
-  because it keeps the addresses of the pages you open, search terms
-  included. On Windows a home or library on another drive keeps that drive's
+  written readable for every account. That counted wherever the folders above
+  it let other accounts through: a library on another drive, or a home folder
+  left open. The database and its `-wal` and `-shm` files, `app.log` and
+  `launcher.log` are now written for your account only, files an earlier
+  version left open are closed, and a new home, its data folder and its
+  `.env` are created the same way. `app.log` matters because it keeps the
+  addresses of the pages you open, search terms included. On Windows a home or library on another drive keeps that drive's
   permissions; `docs/configuration.md` says what to check (GitHub #42).
 - **Pillow 13.0.0, aiohttp 3.14.4 and certifi 2026.10.19**, with yarl 1.25.1.
   certifi drops the emSign root certificates whose intermediate keys were
