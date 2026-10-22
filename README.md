@@ -50,6 +50,10 @@ The downloads are not signed yet, so your system warns you the first time.
 [Installing MyScribe](docs/installation.md) shows what to click on each system,
 how to verify a download, and how to install from source.
 
+To update, install the new file over the old one; your library and settings
+stay. On Windows the installer stops a running MyScribe first and starts it
+again afterwards when it starts at login. [Updating](docs/installation.md#updating).
+
 ### 2. First start
 
 The first start asks where MyScribe should keep its files, shows the free
@@ -81,6 +85,13 @@ with its transcript, speakers and the AI panel beside it.
 - **Speakers** need a free Hugging Face token once. Without it, a transcript
   is complete but has no speakers, and says how to fix that.
   [Configuration](docs/configuration.md#hugging-face-token).
+- **In the background** - with *Start at login* on, MyScribe starts without a
+  window when you log in; open it at `http://127.0.0.1:4242`. To stop it, press
+  **Stop MyScribe** under Settings > *Start at login*, or run the launcher with
+  `--stop`. A job that was running starts over at the next start; if MyScribe
+  has to be ended because it did not stop within a minute, that job is marked
+  interrupted and Retry starts it over.
+  [Stopping MyScribe](docs/installation.md#stopping-myscribe).
 - **Is this computer set up right?** Run the doctor: every line that fails
   names the command that fixes it. [Troubleshooting](docs/troubleshooting.md).
 
