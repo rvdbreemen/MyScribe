@@ -11,6 +11,7 @@ supersedes: []
 superseded_by: null
 related:
   - "ADR-020"
+  - "ADR-029"
 topics:
   - "llm"
   - "reasoning"
@@ -54,6 +55,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen (via Claude, session 2026-09-27)"
     reason: Robert accepted it on 2026-09-27 when the ADR-020 check blocked the 0.7.2 commit
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-23
+    status: Accepted
+    changed_by: Claude (agent, session 2026-10-23)
+    reason: Related to ADR-029
     changed_via: adr-kit lifecycle
 ```
 

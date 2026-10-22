@@ -26,6 +26,15 @@
   card, *This transcript*, ended under the player at the bottom of the page,
   where even scrolling the column could not reach it. The column now ends
   above the player (TASK-121).
+- **A failed AI answer says why.** An answer that ran out of room at its
+  token limit now says so, instead of "did not answer with a JSON object",
+  and every such message - and the job's live log - names the model that
+  actually answered, which matters with OpenRouter's *Auto* router, where
+  each request can go to a different model (TASK-123).
+- **A local model that thinks too long still answers.** When an Ollama model
+  such as gemma4 spends its whole answer budget thinking and writes nothing,
+  MyScribe now asks it once more without thinking, which answered the same
+  question in a fifth of the time, instead of failing the job (ADR-029).
 
 ### Changed
 

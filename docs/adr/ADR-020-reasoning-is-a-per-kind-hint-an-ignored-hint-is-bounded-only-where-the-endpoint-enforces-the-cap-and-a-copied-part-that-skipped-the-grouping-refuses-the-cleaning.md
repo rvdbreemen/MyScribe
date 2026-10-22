@@ -12,6 +12,7 @@ supersedes:
 superseded_by: null
 related:
   - "ADR-023"
+  - "ADR-029"
 topics:
   - "llm"
   - "reasoning-models"
@@ -86,6 +87,11 @@ status_history:
     status: Accepted
     changed_by: Claude (agent, session 2026-09-27)
     reason: Related to ADR-023
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-23
+    status: Accepted
+    changed_by: Claude (agent, session 2026-10-23)
+    reason: Related to ADR-029
     changed_via: adr-kit lifecycle
 ```
 

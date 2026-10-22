@@ -394,8 +394,11 @@ class OpenAILikeProvider(base.Provider):
             # A failed call writes no row, so this message is the only receipt
             # of what it spent (job 154: 8,000 tokens, and the board said only
             # "no message content").
+            # The model that answered as well: under openrouter/auto each call
+            # may be a different one (TASK-123).
             raise base.BadResponse(
-                f"{self.name} answered with no message content (finish_reason={finish!r}, "
+                f"{self.name} answered with no message content (model="
+                f"{getattr(completion, 'model', None) or req.model!r}, finish_reason={finish!r}, "
                 f"completion_tokens={completion_tokens}, reasoning_tokens={reasoning_tokens}, "
                 f"upstream={upstream!r}, {base.hint_words(hint_sent)})"
             )
@@ -520,7 +523,7 @@ def _spend(completion: Any) -> str:
     finish = getattr(choices[0], "finish_reason", None) if choices else None
     usage = getattr(completion, "usage", None)
     return (
-        f"(finish_reason={finish!r}, "
+        f"(model={getattr(completion, 'model', None)!r}, finish_reason={finish!r}, "
         f"completion_tokens={getattr(usage, 'completion_tokens', None)}, "
         f"reasoning_tokens={_reasoning_tokens(completion)}, "
         f"upstream={getattr(completion, 'provider', None)!r})"

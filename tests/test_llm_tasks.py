@@ -2008,3 +2008,72 @@ def test_notes_keep_the_speaker_when_the_lines_carry_one(speakers, kept):
                                goal="g", transcript="[0:01] x", speakers=speakers)
 
     assert ("speaker" in text.lower()) is kept
+
+
+# --- a cut-off object answer says it was cut off, and who answered (TASK-123) ------------
+
+
+def test_a_one_call_object_answer_cut_off_at_the_cap_says_so_and_names_the_model(
+    conn, media, monkeypatch
+):
+    """Job 427 on Robert's library (2026-10-22): a blog answer stopped at its
+    6000-token cap in the middle of a JSON string, and the board said 'the
+    model did not answer with a JSON object' - which reads as a model that
+    ignored the format, not one that ran out of room. Under openrouter/auto
+    the model that answered is the other half of the diagnosis."""
+    cut = replace(
+        truncated('{"title": "Why a towel", "body": "## Why\n\nBecause it is'),
+        model="deepseek/deepseek-v4-flash", completion_tokens=6000, reasoning_tokens=5400,
+        upstream="BaseTen",
+    )
+    provider, _ = fake_provider([cut])
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1")
+
+    message = str(caught.value)
+    assert "ran out of room" in message and "-token cap" in message, message
+    assert "model='deepseek/deepseek-v4-flash'" in message, message
+    assert "not answer with a JSON object" not in message, message
+
+
+def test_a_combined_object_answer_cut_off_at_the_cap_says_so(conn, monkeypatch):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    cut = replace(truncated('{"paragraph": "Two travellers discuss'), model="x/y")
+    provider, _ = fake_provider(map_reduce_script(cut))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(
+            conn, media_id=media_id, kind="summary", provider_name="fake", model="fake-1",
+            budget_tokens=100,
+        )
+
+    assert "ran out of room" in str(caught.value), str(caught.value)
+    assert "model='x/y'" in str(caught.value)
+
+
+def test_a_refused_cut_off_part_names_the_model_that_answered(conn, monkeypatch):
+    media_id = seed_media(conn, title="Guide")
+    seed_run(conn, media_id)
+    provider, _ = fake_provider([replace(truncated("[0:01] Ford: Don't"), model="z/model")])
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1")
+
+    assert "model='z/model'" in str(caught.value), str(caught.value)
+
+
+def test_repair_json_accepts_a_raw_newline_inside_a_string():
+    """Models write real line breaks inside a JSON string more often than the
+    escaped kind; strict parsing stopped job 427's reply at char 700."""
+    assert tasks.repair_json('{"body": "line one\nline two"}') == {"body": "line one\nline two"}
+
+
+def test_repair_json_says_why_it_could_not_parse():
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.repair_json('{"body": "never closed')
+    assert "json:" in str(caught.value), str(caught.value)

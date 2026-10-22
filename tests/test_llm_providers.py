@@ -588,6 +588,9 @@ def test_a_contentless_length_answer_says_what_it_spent():
     assert "length" in message
     assert "8000" in message and "7990" in message, message
     assert "Wafer" in message, message
+    # The model that answered, too: under openrouter/auto every call may be a
+    # different one, and the board could not say which (TASK-123, jobs 423-428).
+    assert "deepseek/deepseek-v4-flash-0731" in message, message
 
 
 # --- an answer lost entirely to reasoning (TASK-099) ------------------------------

@@ -1014,3 +1014,52 @@ def test_a_chat_is_given_the_budget_not_the_probe_s():
     p.complete(base.ChatRequest(system="s", user="u", model="big:27b"))
 
     assert ollama.timeout_for(32768) in seen, f"the completion never got its budget: {seen}"
+
+
+# --- an answer lost entirely to thinking is asked once more without it (ADR-029) ----------
+#
+# Jobs 429-431, 2026-10-23, on a copy of Robert's library: minutes, blog and
+# speakers on media 61 (2h28m) with gemma4:12b each came back with no content,
+# done_reason 'length', the whole budget in `thinking`. An A/B on synthetic
+# text: no think key 41.1 s, 750 tokens, 2008 characters of thinking; think
+# false 7.8 s, 148 tokens, no thinking, the same JSON.
+
+LOST = dict(text="", done_reason="length", thinking="Thinking Process: first I must...")
+
+
+def test_an_answer_lost_to_thinking_is_asked_once_more_with_think_false():
+    rec = Recorder(chat_answer(**LOST), chat_answer('{"agenda": []}'))
+
+    answer = provider(rec).complete(REQUEST)
+
+    assert answer.text == '{"agenda": []}'
+    assert rec.calls == 2
+    assert "think" not in rec.body(0), "the first request of every kind stays as it was (ADR-020)"
+    assert rec.body(1)["think"] is False
+    assert answer.hint_sent is True
+
+
+def test_a_retry_that_is_empty_too_fails_naming_both_attempts_and_stops():
+    rec = Recorder(chat_answer(**LOST), chat_answer("", done_reason="length"))
+
+    with pytest.raises(base.BadResponse) as exc:
+        provider(rec).complete(REQUEST)
+
+    assert rec.calls == 2, "exactly once more, never a third time"
+    message = str(exc.value)
+    assert "thinking" in message and "think=false" in message, message
+
+
+def test_no_retry_for_an_answer_with_text_a_hinted_request_or_no_thinking():
+    cases = [
+        (chat_answer("Par", done_reason="length", thinking="hm"), REQUEST),
+        (chat_answer(**LOST), base.ChatRequest(system="", user="u", model="m", reasoning_off=True)),
+        (chat_answer("", done_reason="length"), REQUEST),
+    ]
+    for answer, request in cases:
+        rec = Recorder(answer, chat_answer("second"))
+        try:
+            provider(rec).complete(request)
+        except base.BadResponse:
+            pass
+        assert rec.calls == 1, (answer, request)
