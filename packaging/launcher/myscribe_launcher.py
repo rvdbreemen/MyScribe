@@ -1466,6 +1466,14 @@ def stop_running(port: int, report: Callable[[str, str], None], wait: float = ST
 
 def port_taken(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        # Bound the way uvicorn binds. Without SO_REUSEADDR a POSIX bind fails
+        # for about a minute after a server on the port stopped, on the
+        # connections it left in TIME_WAIT, and a start right after a stop said
+        # the port was taken (TASK-118). A listening socket still refuses the
+        # bind. Not on Windows, where the option lets a bind take a port that
+        # is in use.
+        if not IS_WINDOWS:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((HOST, port))
         except OSError:
