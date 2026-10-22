@@ -189,8 +189,10 @@ prints nothing; what it did is in `MyScribe-launcher.log` beside
 **A release:** download the new file and install it over the old one. Your
 home, library and settings stay where they are; the next start updates the
 speech engine when the new version needs it. On Windows the installer stops a
-running MyScribe first - a job that was running starts over afterwards - and
-starts it again without a window when *Start at login* is on.
+running MyScribe first and starts it again without a window when *Start at
+login* is on. From 0.9.0 on, a job that was running starts over afterwards;
+0.8.x has no stop, so it is ended, and its running job is marked interrupted:
+Retry on the jobs page starts it over.
 
 **A clone:** `git pull`, then `python install.py`.
 

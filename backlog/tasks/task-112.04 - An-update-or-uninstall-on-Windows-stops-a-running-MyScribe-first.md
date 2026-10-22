@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: 2026-10-19 05:51
-updated_date: '2026-10-22T00:29:00Z'
+updated_date: '2026-10-22T00:48:00Z'
 labels:
   - packaging
   - autostart
@@ -57,4 +57,6 @@ B. Update over a new version with a job running (route path): queue a recording,
 C. Uninstall (AC2): while MyScribe runs, Settings > Apps > MyScribe > Uninstall. Afterwards: no MyScribe.exe or home python.exe from it runs, %LOCALAPPDATA%\Programs\MyScribe is gone, the Run value MyScribe is gone, and %LOCALAPPDATA%\MyScribe (the library) is still there. Reinstall afterwards to keep using it.
 
 2026-10-22: 0.9.0 is the release to walk on for AC #2 and AC #4. That means a real install of 0.9.0 over a running 0.8.6 on Windows, with the install log, and an uninstall while MyScribe runs. The release PR is release-0.9.0; status and AC left as they are until Robert's walk.
+
+Correction to the release walk (2026-10-22): the Windows installer is MyScribe-<version>-windows-x64.exe (for this release: MyScribe-0.9.0-windows-x64.exe /LOG=%TEMP%\myscribe-setup.log), not ...-setup.exe. And step B (the running job requeued through the stop route) can only be seen when updating a 0.9.0 over a 0.9.0 or later: 0.8.x has no stop route, so an update from 0.8.6 ends it and its running job is marked interrupted (Retry starts it over).
 <!-- SECTION:NOTES:END -->

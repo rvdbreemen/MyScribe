@@ -88,7 +88,9 @@ with its transcript, speakers and the AI panel beside it.
 - **In the background** - with *Start at login* on, MyScribe starts without a
   window when you log in; open it at `http://127.0.0.1:4242`. To stop it, press
   **Stop MyScribe** under Settings > *Start at login*, or run the launcher with
-  `--stop`. A job that was running starts over at the next start.
+  `--stop`. A job that was running starts over at the next start; if MyScribe
+  has to be ended because it did not stop within a minute, that job is marked
+  interrupted and Retry starts it over.
   [Stopping MyScribe](docs/installation.md#stopping-myscribe).
 - **Is this computer set up right?** Run the doctor: every line that fails
   names the command that fixes it. [Troubleshooting](docs/troubleshooting.md).

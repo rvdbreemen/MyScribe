@@ -21,12 +21,14 @@ release carries the fixes from an outside audit of the code (GitHub #29-#52).
 - **An update or uninstall on Windows stops a running MyScribe first.** A
   MyScribe started at login used to keep serving the old version after an
   update. The installer now asks it to stop - its running job starts over
-  afterwards - or ends it when it is a version without a stop, and starts it
-  again without a window when *Start at login* is on. A server from a clone or
-  another install on the same port is left alone (TASK-112.04).
+  afterwards - or, for 0.8.x and earlier, which have no stop, ends it; a job
+  that was running is then marked interrupted, and Retry starts it over. It
+  starts MyScribe again without a window when *Start at login* is on. A server
+  from a clone or another install on the same port is left alone
+  (TASK-112.04).
 - **Started at login, MyScribe runs without a window.** The login entry now
   starts the launcher with `--headless`, so there is no window to keep open;
-  open MyScribe from its shortcut or at `http://localhost:4242`. An entry an
+  open MyScribe from its shortcut or at `http://127.0.0.1:4242`. An entry an
   earlier version wrote is brought up to date at the next start, and one you
   switched off stays off (TASK-112.01, ADR-026).
 - **The launcher's exit code says whether MyScribe crashed.** A server that
@@ -60,20 +62,22 @@ release carries the fixes from an outside audit of the code (GitHub #29-#52).
   30 seconds (GitHub #38).
 - **A stuck ffmpeg no longer hangs a page.** Saving a browser recording and
   making a playback copy now have a time limit that grows with the recording;
-  when it runs out, the step fails and its temporary file is removed
+  when it runs out, the step fails and its temporary file is removed. A
+  recording whose playback copy timed out is not tried again on every play;
+  the backfill command (`python -m scribe.proxies`) retries it
   (GitHub #34, #35).
-- **Leftovers are cleaned up.** At start, MyScribe removes the work folders of
-  jobs that ended without cleaning up, and partial uploads older than a day.
-  A browser recording left idle for a day is now removed while MyScribe runs,
-  checked every hour, not only at start (GitHub #33, #39).
+- **Leftovers are cleaned up.** At start and every hour while MyScribe runs,
+  it removes the work folders of jobs that ended without cleaning up, partial
+  files older than a day, and a browser recording left idle for a day
+  (GitHub #33, #39).
 - **One slow feed no longer holds up the others.** A feed that does not
   answer within 150 seconds is left for later and the other feeds are checked.
   When its listing arrives late, the next check uses it, so a large channel is
   still followed (GitHub #36).
 - **A watch folder with a link back into itself is walked once.** A junction
   or bind mount inside the folder used to produce the same files under ever
-  longer paths, and a junction to another folder took that folder in twice
-  (GitHub #40).
+  longer paths, and a junction to another folder inside it took that folder
+  in twice (GitHub #40).
 - **Replace all is quicker.** Correcting every occurrence of a word teaches
   the glossary once instead of once per occurrence (GitHub #50).
 - **An AI provider can be unset.** The provider list in Settings offers **No
@@ -99,20 +103,28 @@ release carries the fixes from an outside audit of the code (GitHub #29-#52).
   followed feed or playlist was checked only by the address as written; a
   redirect, or a host name that resolves to a private address, got past it.
   Every redirect and the address a host resolves to are now checked too, and
-  such a feed is refused. A link you paste yourself keeps the existing rules.
+  such a feed is refused. Behind a proxy, the address and every redirect are
+  still checked, but the proxy does the lookup. A followed feed's episodes are
+  downloaded by yt-dlp itself: a live stream, or a format only ffmpeg or
+  another program can fetch, is refused. A link you paste yourself keeps the
+  existing rules.
   When the back catalogue of a followed feed cannot be fetched for this
   reason, or because its host is gone, the Feeds page names the feed's
   address and the reason instead of a server error; nothing is queued, and
   the same button works later (GitHub #41).
-- **On Linux and macOS your library is for your account only.**
+- **On Linux and macOS other accounts can no longer read your library.**
   `myscribe.db` holds every transcript and the stored API keys, and it was
   written readable for every account. That counted wherever the folders above
   it let other accounts through: a library on another drive, or a home folder
   left open. The database and its `-wal` and `-shm` files, `app.log` and
-  `launcher.log` are now written for your account only, files an earlier
-  version left open are closed, and a new home, its data folder and its
-  `.env` are created the same way. `app.log` matters because it keeps the
-  addresses of the pages you open, search terms included. On Windows a home or library on another drive keeps that drive's
+  `launcher.log` are now written for your account only, and a new home, its
+  data folder and its `.env` are created the same way. `app.log` matters
+  because it keeps the addresses of the pages you open, search terms
+  included. At every start MyScribe now removes access for everyone outside
+  the library folder's owner and group, and on a Mac also for the staff group
+  every account is in. To share the library, for example with a media server,
+  give the folder a group of its own (`chgrp`); that group's access is left
+  alone. On Windows a home or library on another drive keeps that drive's
   permissions; `docs/configuration.md` says what to check (GitHub #42).
 - **Pillow 13.0.0, aiohttp 3.14.4 and certifi 2026.10.19**, with yarl 1.25.1.
   certifi drops the emSign root certificates whose intermediate keys were
