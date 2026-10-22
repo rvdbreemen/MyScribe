@@ -5,7 +5,7 @@
 # exit is a CTranslate2 release built against CUDA 13. Once a week
 # packaging/watch_torch_exit.py reads the newest ctranslate2 wheels from PyPI
 # and prints which cuBLAS they load; a TRIGGER line means CUDA 13 arrived, and
-# this workflow then says so on issue #43, once.
+# this workflow then opens an issue saying so, once.
 #
 # Standard library only, on the runner's own python3 (as ci.yml does), so the
 # job installs nothing. The only credential is the job's GITHUB_TOKEN, with
@@ -43,36 +43,39 @@ jobs:
           python3 packaging/watch_torch_exit.py | tee watch.txt
         shell: bash
 
-      - name: Say so on issue 43, once
+      - name: Open an issue when the exit arrives, once
         env:
           GH_TOKEN: ${{ github.token }}
           MARKER: "<!-- torch-watch:ctranslate2-cuda13 -->"
-        # The marker keeps a trigger that stays true from commenting every
-        # week. The bodies go into a variable and grep reads a here-string: a
-        # pipe into `grep -q` can end in SIGPIPE, which pipefail turns into
-        # "not found" and a duplicate comment.
+        # Its own issue, not a comment on #43: that issue was closed once this
+        # watch took over the tracking, and a closed issue is where nobody
+        # looks. The marker keeps a trigger that stays true from opening a
+        # second one while the first is open. The bodies go into a variable
+        # and grep reads a here-string: a pipe into `grep -q` can end in
+        # SIGPIPE, which pipefail turns into "not found" and a duplicate.
         run: |
           if ! grep -q '^TRIGGER:' watch.txt; then
             echo "No trigger this week."
             exit 0
           fi
-          bodies=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/43/comments" \
+          bodies=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
             --jq '.[] | select(.user.login == "github-actions[bot]") | .body')
           if grep -qF -- "$MARKER" <<<"$bodies"; then
-            echo "Issue #43 already carries the trigger comment; not repeating it."
+            echo "An open issue already says so; not opening another."
             exit 0
           fi
           {
             echo "$MARKER"
-            echo "The weekly torch watch found a CTranslate2 build on CUDA 13, the exit this issue waits for."
+            echo "The weekly torch watch found a CTranslate2 build on CUDA 13: torch can leave the 2.10 pin (GHSA-rrmf-rvhw-rf47, see #43)."
             echo
             echo '```'
             cat watch.txt
             echo '```'
             echo
             echo "Next: move torch to the cu130 index on Windows and back to plain PyPI on Linux, re-lock, and re-run the doctor on all three platforms."
-          } > comment.md
-          gh issue comment 43 --repo "$GITHUB_REPOSITORY" --body-file comment.md
+          } > issue.md
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "CTranslate2 ships a CUDA 13 build: torch can leave 2.10" --body-file issue.md
         shell: bash
 
       - name: Fail when a source could not be read
