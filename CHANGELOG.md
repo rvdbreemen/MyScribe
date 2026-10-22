@@ -26,6 +26,15 @@
   card, *This transcript*, ended under the player at the bottom of the page,
   where even scrolling the column could not reach it. The column now ends
   above the player (TASK-121).
+- **A failed AI answer says why.** An answer that ran out of room at its
+  token limit now says so, instead of "did not answer with a JSON object",
+  and every such message - and the job's live log - names the model that
+  actually answered, which matters with OpenRouter's *Auto* router, where
+  each request can go to a different model (TASK-123).
+- **Ollama can use the context window it asked for.** A local model whose
+  window MyScribe measured above 8,192 tokens - most current ones - was still
+  refused a prompt longer than 8,192 words, so an hour-long recording failed
+  before the model saw it (TASK-123).
 
 ### Changed
 

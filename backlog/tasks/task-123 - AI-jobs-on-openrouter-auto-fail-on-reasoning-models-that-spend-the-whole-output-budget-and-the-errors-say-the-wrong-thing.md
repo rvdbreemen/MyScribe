@@ -3,9 +3,11 @@ id: TASK-123
 title: >-
   AI jobs on openrouter/auto fail on reasoning models that spend the whole
   output budget, and the errors say the wrong thing
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-22T21:10:00Z'
+updated_date: '2026-10-22T21:48:00Z'
 labels:
   - llm
   - bug
@@ -22,7 +24,13 @@ Robert, 2026-10-22, jobs 423-428 on media 61 (read-only from his job and job_eve
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A truncated answer (finish_reason=length) is reported as cut off at the token limit, with the model that answered
+- [x] #1 A truncated answer (finish_reason=length) is reported as cut off at the token limit, with the model that answered
 - [ ] #2 Robert chose how openrouter/auto is handled (reasoning controls, a warning, or not offered)
 - [ ] #3 A rerun of a failed kind on media 61 with the chosen handling succeeds, shown with its job events
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Code (branch fix/llm-cutoff-and-model): _refuse_a_cut_off_answer for schema kinds in the single call and the combine ('ran out of room ... N-token cap'); _spent, openai_like _spend and the no-content message name model=; llm-reply event adds model, reasoning_tokens, upstream; repair_json strict=False and '(json: <error>)'; Ollama _refuse_a_prompt_that_cannot_fit and _answer compare against context_tokens(model) instead of num_ctx (red first: 'window asked for is 8192' for a 9000-word prompt with a measured 32768 window). Tests red then green: 5 in test_llm_tasks, 1 in test_llm_providers, 1 in test_llm_live_log, 1 in test_llm_ollama; all test_llm*/test_web_ai*: 794 passed. Not yet: the live gemma4:12b run on a copy of the library (after the installer test frees the GPU), and Robert's choice for openrouter/auto.
+<!-- SECTION:NOTES:END -->
