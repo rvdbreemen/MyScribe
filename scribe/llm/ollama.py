@@ -86,6 +86,7 @@ pinned recording there while the pin still reads True.
 from __future__ import annotations
 
 import ipaddress
+from dataclasses import replace
 import sqlite3
 
 from scribe import db
@@ -713,6 +714,25 @@ class OllamaProvider(base.Provider):
 
     def complete(self, req: ChatRequest) -> ChatResponse:
         self._refuse_a_prompt_that_cannot_fit(req)
+        payload = self._post(req)
+        if not req.reasoning_off and _lost_to_thinking(payload):
+            # ADR-029: an answer that went entirely into `thinking` is asked
+            # exactly once more with `think: false`, the hint the first
+            # request of a kind never carries (ADR-020). Measured on gemma4:12b
+            # (jobs 429-431): the same JSON in 7.8 s instead of nothing.
+            first = self._empty_answer_reason(
+                payload, payload.get("message") or {}, req, payload.get("done_reason")
+            )
+            again = replace(req, reasoning_off=True)
+            try:
+                return self._answer(self._post(again), again)
+            except base.BadResponse as exc:
+                raise base.BadResponse(
+                    f"{first}; asked once more with think=false, which gave no answer either: {exc}"
+                ) from None
+        return self._answer(payload, req)
+
+    def _post(self, req: ChatRequest) -> dict:
         try:
             # The budget that matches the window this call was planned for,
             # not the one a model-info lookup was built with.
@@ -721,7 +741,7 @@ class OllamaProvider(base.Provider):
         except httpx2.HTTPError as exc:
             raise self._unreachable(exc) from None
         self._raise_for_status(response, model=req.model)
-        return self._answer(self._json(response), req)
+        return self._json(response)
 
     # --- the window, checked before the daemon gets a chance to truncate -------------
 
@@ -930,3 +950,16 @@ class OllamaProvider(base.Provider):
             # A dead or unstartable model runner. Transient: the card frees up.
             raise base.Unreachable(f"ollama at {self.host} failed with HTTP {status}: {detail}")
         raise base.BadResponse(f"ollama refused the request (HTTP {status}): {detail}")
+
+
+def _lost_to_thinking(payload: dict) -> bool:
+    """No answer because the whole budget went into `thinking` (ADR-029):
+    stopped at the cap, empty content, and some thinking to show for it. An
+    answer with text, one cut off without thinking, or one that finished of
+    its own accord is never asked again."""
+    message = payload.get("message") or {}
+    return (
+        payload.get("done_reason") == "length"
+        and not (message.get("content") or "").strip()
+        and bool((message.get("thinking") or "").strip())
+    )

@@ -1199,7 +1199,7 @@
       "path": "ADR-020-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap-and-a-copied-part-that-skipped-the-grouping-refuses-the-cleaning.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-09-27",
+      "date": "2026-10-23",
       "decision_summary": "Chosen option: A.",
       "topics": [
         "llm",
@@ -1424,7 +1424,7 @@
       "path": "ADR-023-an-answer-lost-entirely-to-reasoning-is-asked-once-more-with-the-reasoning-hint.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-09-27",
+      "date": "2026-10-23",
       "decision_summary": "Chosen option: A, together with a higher cap for speakers (16,000 output tokens, from 8,000), decided by Robert on 20...",
       "topics": [
         "llm",
@@ -1755,6 +1755,62 @@
         ],
         "verification": [
           "tests/testsupervisor.py and tests/testapp.py tests of TASK-112.03."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-029",
+      "title": "An Ollama answer lost entirely to thinking is asked once more with think false",
+      "path": "ADR-029-an-ollama-answer-lost-entirely-to-thinking-is-asked-once-more-with-think-false.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-23",
+      "decision_summary": "Chosen option: A, decided by Robert on 2026-10-23 with the three options and the A/B in front of him.",
+      "topics": [
+        "ollama",
+        "reasoning",
+        "thinking"
+      ],
+      "aliases": [
+        "answer lost to thinking",
+        "think false retry"
+      ],
+      "components": [
+        "scribe/llm/ollama.py"
+      ],
+      "symbols": [
+        "_lost_to_thinking",
+        "OllamaProvider.complete"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Retry only when the request carried no hint and the answer has empty content, donereason length, and non-empty thinking.",
+          "Retry exactly once, with reasoningoff set (think: false), and record hintsent true on the answer.",
+          "When the retry gives no answer either, fail with a message that names what the first attempt spent and that the retry was made."
+        ],
+        "must_not": [
+          "Change the first request of any kind.",
+          "Retry an answer that has text, one cut off without thinking, one that finished of its own accord, or a request that already carried the hint."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testananswerlosttothinkingisaskedoncemorewiththinkfalse",
+          "tests/testllmollama.py::testaretrythatisemptytoofailsnamingbothattemptsandstops",
+          "tests/testllmollama.py::testnoretryforananswerwithtextahintedrequestornothinking"
         ]
       },
       "scope": {
@@ -2222,6 +2278,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-020",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-021",
       "target": "ADR-015",
       "type": "related",
@@ -2254,6 +2316,12 @@
     {
       "source": "ADR-023",
       "target": "ADR-020",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-023",
+      "target": "ADR-029",
       "type": "related",
       "resolved": true
     },
@@ -2332,6 +2400,18 @@
     {
       "source": "ADR-028",
       "target": "ADR-026",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-029",
+      "target": "ADR-020",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-029",
+      "target": "ADR-023",
       "type": "related",
       "resolved": true
     }
