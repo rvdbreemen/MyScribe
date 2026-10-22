@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-22T18:19:00Z'
-updated_date: '2026-10-22T18:25:00Z'
+updated_date: '2026-10-22T20:45:00Z'
 labels:
   - packaging
   - release
@@ -24,8 +24,8 @@ CI never runs the installer: --smoke starts the frozen launcher, and ISCC builds
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Linux: the 0.9.0 AppImage verifies against SHA256SUMS and starts with chmod +x alone, or the missing piece is named
-- [ ] #2 Linux: 0.9.0 started over a home made by 0.8.6 updates it and /health says 0.9.0
+- [x] #1 Linux: the 0.9.0 AppImage verifies against SHA256SUMS and starts with chmod +x alone, or the missing piece is named
+- [x] #2 Linux: 0.9.0 started over a home made by 0.8.6 updates it and /health says 0.9.0
 - [ ] #3 Linux: Start at login writes a desktop entry whose Exec line starts MyScribe headless, and --stop on a running job requeues it
 - [ ] #4 Windows Sandbox: a fresh install of 0.9.0 starts, serves /health and a page, with nothing else installed first
 - [ ] #5 Windows Sandbox: the 0.9.0 installer over a running 0.8.6 with Start at login stops it, installs, and restarts it headless, shown by the install log
@@ -42,4 +42,8 @@ CI never runs the installer: --smoke starts the frozen launcher, and ISCC builds
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-22 setup. Windows Sandbox (Containers-DisposableClientVM) enabled through an elevated prompt: State Enabled, a restart is needed before it runs. Artifacts: gh release download v0.9.0 and v0.8.6 (AppImage + windows exe + SHA256SUMS) into scratchpad itest/dl; sha256sum -c SHA256SUMS --ignore-missing: all four OK. Sandbox driver: itest/win/run-all.ps1 (steps A 0.8.6 -> 0.9.0 with login on, B job running during 0.9.0 -> 0.9.0, C uninstall while running, D fresh home --smoke), itest/myscribe-itest.wsb (8 GB, dl and win read-only, results writable, LogonCommand runs the script). Linux: both AppImages run --version with chmod +x alone (static-pie runtime; only libfuse3 on this Ubuntu, no libfuse2 needed): 0.8.6 and 0.9.0 printed, exit 0. Windows 4242 on the host was refused before the tests; WSL uses NAT networking (no mirrored mode in .wslconfig) and the AppImage tests use port 4300.
+
+2026-10-22 Linux evidence (WSL Ubuntu, fake HOME ~/mstest/home with XDG dirs inside it, port 4300; scripts in scratchpad itest/scripts). L2: 0.8.6 first start headless: /health 0.8.6 after 8 min (20:23:21 -> 20:31:30); first-run questions not asked (no terminal). L3: 0.8.6 stopped by SIGTERM; 0.9.0 on the same home synced (pillow 12.3.0 -> 13.0.0, yarl 1.24.5 -> 1.25.1), /health 0.9.0, schema user_version 18 before and after. L5 (0.9.0): POST /settings/autostart 303; ~/.config/autostart/myscribe.desktop Exec=.../MyScribe-0.9.0-linux-x64.AppImage --at-login --no-browser --headless. L6 (0.9.0): --stop on a running job: 'MyScribe stopped. A job that was running is back at the front of the queue', job (1,'queued'); the login command started at once: 'Port 4300 is used by another program; MyScribe cannot start.' -> TASK-118. Candidate 0.9.1 (rehearsal run 39843057516, sha256 74bbd174...9400 matches its .sha256): L4a /health 0.9.1 on the old home; L4b FAIL: the login entry still names the 0.9.0 AppImage after the update -> TASK-119; L4d --stop requeued the running job; L5a/L5b: --stop, port 4300 then held by three TIME-WAIT connections, the same 0.9.1 started at once served (0 refusals); L5c job (1,'done'); L5d /media/1 contains panic, harmless, 42. Not verified: a real XDG autostart at a login; a windowed start on WSLg.
+
+2026-10-22 after the reboot (boot 22:31): Robert's login entry fired but MyScribe did not run. D:/Data/MyScribe/logs/launcher.log: 'MyScribe stopped unexpectedly (exit code 1073807364)' (0x40010004, the app ended by the shutdown) then 'Port 4242 is used by another program; MyScribe cannot start.' Cause: the TCP dynamic port range on this machine started at 1024 (64511 ports, set before this session, by whom unknown); with the container feature enabled vmcompute/hns/winnat run and reserved 4084-4883 in blocks of 100 (netsh excludedportrange), which covers 4242; a bind to 127.0.0.1:4242 failed with 'forbidden by its access permissions' (WSAEACCES). SYSTEM CHANGE, with Robert's choice: netsh int ipv4 and ipv6 set dynamicport tcp start=49152 num=16384 (the Windows default), net stop/start winnat; afterwards the exclusions were 2869, 5357, 5985, 47001, 50000-50059 (administered), 50131 and nothing near 4242. Revert: netsh int ipv4 set dynamicport tcp start=1024 num=64511 and the same for ipv6. MyScribe started with the Run value's command served 0.9.0 after 16 s, launcher and both pythons hwnd=0. Windows Sandbox: Containers-DisposableClientVM reports Enabled, RestartNeeded False, but there is no WindowsSandbox.exe or wsb.exe, no appx (Get-AppxPackage -AllUsers *Sandbox* empty), no Start menu entry, winget/msstore none; not pursued further. TASK-112.01 AC4 (a real login) is still not shown: the entry fired, the start died on the reserved port.
 <!-- SECTION:NOTES:END -->
