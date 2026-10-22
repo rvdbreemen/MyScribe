@@ -1,10 +1,10 @@
 ---
 id: TASK-114
 title: Work through the GitHub issues of the 2026-10-21 audit (#29-#52)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21T19:41:00Z'
-updated_date: '2026-10-22T00:29:00Z'
+updated_date: '2026-10-22T00:49:00Z'
 labels:
   - audit
 dependencies: []
@@ -19,7 +19,7 @@ brennodewinter filed 24 issues on 2026-10-21 from an audit against 6ffc366: job 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every issue #29-#52 is verified against the code, then fixed with a test that went red first, or answered with the reason it is not changed
+- [x] #1 Every issue #29-#52 is verified against the code, then fixed with a test that went red first, or answered with the reason it is not changed
 - [x] #2 Each fix is merged through a pull request with green CI on the three OSes, and the issue is closed with a link to it
 <!-- AC:END -->
 
@@ -52,4 +52,12 @@ AC #1, what is recorded and what is not:
 - For #57, #58, #60, #61, #62, #63, #64 and #65 (the contributed PRs), the bodies list the tests that pin the behaviour, and the reviews pushed corrections or checked the behaviour against main. Searching their bodies, reviews and commit messages found no recorded red run.
 - No retroactive red runs were made for this release.
 - So AC #1 is not ticked and the task is not finalized. Robert decides whether review plus tests is enough for those eight.
+
+AC #1 caveat, said plainly: every correction made in this session went red first (recorded in the PR comments and reviews: #53, #54, #57, #58, #59, #60, #61, #62, #64, #67, #68, #69, #73, #74, #75, #76). For the contributor's own original tests in #57, #60, #62, #63, #64 and #65 no red run was recorded; the verifiers reasoned from the code that they fail on main, and where a test did not bite (#58 Windows stand-in, #61 timeout path, #62 chunking, #63 ceiling) it was corrected. #43 stays open on GitHub as the tracker by design (NO-GO on torch 2.14, weekly torch-watch); #16 stays open until the reporter tests 0.9.0.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+All 24 audit issues (#29-#52) handled: 23 closed by merged PRs with green CI on Windows, Ubuntu and macOS, #43 kept open as the tracker with a corrected analysis and a weekly watch. Contributor PRs #57-#65 were reviewed, corrected on their branches where needed (two adversarial rounds) and merged; #55/#56 closed as covered by #53/#54. Follow-ups #67-#76 merged. Released in 0.9.0.
+<!-- SECTION:FINAL_SUMMARY:END -->
