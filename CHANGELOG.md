@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-22
+
+MyScribe runs in the background from login and can be stopped, and this
+release carries the fixes from an outside audit of the code (GitHub #29-#52).
+
 ### Added
 
 - **MyScribe can be stopped.** Settings > *Start at login* has a **Stop
@@ -8,6 +13,8 @@
   starts, so a stop loses no recording (TASK-112.03, ADR-028). If MyScribe does
   not stop within a minute, `--stop` ends it; that job is then marked
   interrupted. See *Stopping MyScribe* in `docs/installation.md`.
+- **MyScribe is licensed under the EUPL-1.2.** The licence text is in
+  `LICENSE.md`, which the app and the release payload now carry (PR #66).
 
 ### Changed
 
@@ -31,23 +38,50 @@
   the reason to `MyScribe-launcher.log` beside `MyScribe.location`, where it
   used to go nowhere. `--sync-only`, `--doctor` and `--smoke` still exit 1 on
   a failure (TASK-112.02).
+- **`/api/jobs` no longer returns the whole job history.** It answers the
+  newest 200 jobs, or up to 1000 with `limit`. The jobs page is not affected
+  (GitHub #48).
 
 ### Fixed
 
-- **MyScribe's logs on Linux and macOS are for your account only.** `app.log`
-  keeps the addresses of the pages you open, search terms included. It was
-  written readable for every account, which counted wherever the folders
-  above the home let other accounts through - a home on another drive, or a
-  home folder left open. The launcher now writes `app.log` and
-  `launcher.log` for your account only, closes the ones an earlier version
-  left open, and creates a new home and its `.env` the same way. On Windows
-  a home or library on another drive keeps that drive's permissions;
-  `docs/configuration.md` says what to check (GitHub #42).
-- **Fetching a followed feed's back catalogue says why it failed.** When the
-  feed now redirects to this computer or the local network, or its host is
-  gone, the Feeds page answers with the feed's address and the reason instead
-  of a server error. Nothing is queued and the question stays open, so the same
-  button works later (GitHub #41).
+- **A crash no longer leaves the queue stuck.** A job claimed just before a
+  crash, before its runner started, kept every later job waiting for good; it
+  is now marked interrupted after a minute, and Cancel ends it. A job whose
+  process number the system has given to another program no longer stays
+  "running", and Cancel never signals that program (GitHub #29, #32).
+- **An interrupted library upgrade leaves the library as it was.** Each
+  upgrade step is now all or nothing, so a crash halfway no longer leaves a
+  library that MyScribe cannot start on (GitHub #30).
+- **MyScribe refuses a library from a newer version** and says what to do,
+  instead of using a schema it does not know. The export command refuses it
+  too (GitHub #31).
+- **A busy library no longer fails a job.** A database write that waited more
+  than 5 seconds behind another one failed the running job; it now waits up to
+  30 seconds (GitHub #38).
+- **A stuck ffmpeg no longer hangs a page.** Saving a browser recording and
+  making a playback copy now have a time limit that grows with the recording;
+  when it runs out, the step fails and its temporary file is removed
+  (GitHub #34, #35).
+- **Leftovers are cleaned up.** At start, MyScribe removes the work folders of
+  jobs that ended without cleaning up, and partial uploads older than a day.
+  An abandoned browser recording is swept every hour, not only at start
+  (GitHub #33, #39).
+- **One slow feed no longer holds up the others.** A feed that does not
+  answer within 150 seconds is left for later and the other feeds are checked.
+  When its listing arrives late, the next check uses it, so a large channel is
+  still followed (GitHub #36).
+- **A watch folder with a link back into itself is walked once.** A junction
+  or bind mount inside the folder used to produce the same files under ever
+  longer paths, and a junction to another folder took that folder in twice
+  (GitHub #40).
+- **Replace all is quicker.** Correcting every occurrence of a word teaches
+  the glossary once instead of once per occurrence (GitHub #50).
+- **An AI provider can be unset.** The provider list in Settings offers **No
+  provider - nothing is sent anywhere** once one is chosen (GitHub #49).
+- **Asking questions no longer leaks a connection per question** to the AI
+  provider (GitHub #37).
+- **Quit on a Mac no longer raises `PermissionError`** when the app's
+  processes have just exited (PR #68).
 - **A first start on Windows no longer stops when uv cannot make its Python
   folder link.** uv downloads Python and then makes a junction beside it;
   where Windows refuses that (`os error 448`, GitHub issue #16) the install
@@ -58,6 +92,40 @@
   the computer itself says so and names the log. The Setup button before the
   speech engine is installed says that, instead of `[WinError 2]` and
   "MyScribe starts anyway" (TASK-113.02, GitHub issue #16).
+
+### Security
+
+- **A feed can no longer reach this computer or your local network.** A
+  followed feed or playlist was checked only by the address as written; a
+  redirect, or a host name that resolves to a private address, got past it.
+  Every redirect and the address a host resolves to are now checked too, and
+  such a feed is refused. A link you paste yourself keeps the existing rules.
+  When the back catalogue of a followed feed cannot be fetched for this
+  reason, or because its host is gone, the Feeds page names the feed's
+  address and the reason instead of a server error; nothing is queued, and
+  the same button works later (GitHub #41).
+- **On Linux and macOS your library is for your account only.**
+  `myscribe.db` holds every transcript and the stored API keys, and it was
+  readable by every account on the computer. The database and its `-wal` and
+  `-shm` files, `app.log` and `launcher.log` are now written for your account
+  only, files an earlier version left open are closed, and a new home, its
+  data folder and its `.env` are created the same way. `app.log` matters
+  because it keeps the addresses of the pages you open, search terms
+  included. On Windows a home or library on another drive keeps that drive's
+  permissions; `docs/configuration.md` says what to check (GitHub #42).
+- **Pillow 13.0.0, aiohttp 3.14.4 and certifi 2026.10.19**, with yarl 1.25.1.
+  certifi drops the emSign root certificates whose intermediate keys were
+  compromised (GHSA-6q48-6c7w-9gw2, critical). Pillow and aiohttp close the
+  advisories GitHub listed against the versions before (28 and 8); MyScribe's
+  own code calls neither directly (PR #72).
+
+### Maintenance
+
+- A weekly check watches for a CTranslate2 build on CUDA 13, the change that
+  would let the torch pin move; the issue stays open until then (GitHub #43).
+- Tidy-ups from the same audit with no change you can see. Among them, a job
+  type meant for the tests no longer runs in an installed copy (GitHub #44-#47,
+  #51, #52).
 
 ## [0.8.6] - 2026-10-19
 

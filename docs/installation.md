@@ -3,6 +3,7 @@
 - [From a release](#from-a-release) - the recommended way
 - [The first start](#the-first-start)
 - [From a clone](#from-a-clone) - for developers and early adopters
+- [Stopping MyScribe](#stopping-myscribe)
 - [Updating](#updating)
 - [Uninstalling](#uninstalling)
 

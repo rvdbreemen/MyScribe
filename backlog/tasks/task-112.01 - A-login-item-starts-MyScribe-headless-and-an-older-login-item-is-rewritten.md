@@ -1,11 +1,11 @@
 ---
 id: TASK-112.01
-title: 'A login item starts MyScribe headless, and an older login item is rewritten'
+title: A login item starts MyScribe headless, and an older login item is rewritten
 status: In Progress
 assignee:
   - '@claude'
-created_date: '2026-10-19 05:51'
-updated_date: '2026-10-20 02:41'
+created_date: 2026-10-19 05:51
+updated_date: '2026-10-22T00:29:00Z'
 labels:
   - packaging
   - autostart
@@ -55,4 +55,6 @@ Evidence (2026-10-20):
 - Checked by reading: the launcher children (run_streaming, AppProcess) already get CREATE_NO_WINDOW, and the Windows build is --windowed, so --headless shows no console.
 - Consequence to know: after an update the re-sync at login now runs with no window; its progress is only in launcher.log.
 - AC #4 open: Roberts walk on an installed build with this change. 1) Start MyScribe once by hand, check the Run value now ends in --headless. 2) Log out and in: no window, Get-Process MyScribe shows it, http://localhost:4242/health answers. 3) Switch it off in Settings, log out and in: nothing answers on 4242.
+
+2026-10-22: 0.9.0 is the release to walk on for AC #4 (log out and in on Windows: no window, /health answers; switched off: nothing answers). The release PR is release-0.9.0; status and AC left as they are until Robert's walk.
 <!-- SECTION:NOTES:END -->

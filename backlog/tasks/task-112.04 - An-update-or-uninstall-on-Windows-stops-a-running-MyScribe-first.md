@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: 2026-10-19 05:51
-updated_date: '2026-10-21T19:14:00Z'
+updated_date: '2026-10-22T00:29:00Z'
 labels:
   - packaging
   - autostart
@@ -55,4 +55,6 @@ Release walk for Robert (agreed 2026-10-21), on the next release over the runnin
 A. Update (AC1, AC4): 1) Check 0.8.6 runs: curl -s http://127.0.0.1:4242/health shows version 0.8.6. 2) Run the new installer with a log: MyScribe-<version>-windows-x64-setup.exe /LOG=%TEMP%\myscribe-setup.log. 3) Afterwards: the log names stop-myscribe.ps1 and %LOCALAPPDATA%\MyScribe-launcher.log has 'setup: Ending MyScribe.exe (process N)'; Restart Manager reports no application in use. 4) /health answers with the new version, and no window opened (Get-Process MyScribe shows it). 5) The Run value now ends in --headless (TASK-112.01).
 B. Update over a new version with a job running (route path): queue a recording, run the installer again while it transcribes; MyScribe-launcher.log says 'asking it to stop', and after the install the job is queued again and starts over.
 C. Uninstall (AC2): while MyScribe runs, Settings > Apps > MyScribe > Uninstall. Afterwards: no MyScribe.exe or home python.exe from it runs, %LOCALAPPDATA%\Programs\MyScribe is gone, the Run value MyScribe is gone, and %LOCALAPPDATA%\MyScribe (the library) is still there. Reinstall afterwards to keep using it.
+
+2026-10-22: 0.9.0 is the release to walk on for AC #2 and AC #4. That means a real install of 0.9.0 over a running 0.8.6 on Windows, with the install log, and an uninstall while MyScribe runs. The release PR is release-0.9.0; status and AC left as they are until Robert's walk.
 <!-- SECTION:NOTES:END -->

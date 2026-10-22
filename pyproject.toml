@@ -1,6 +1,6 @@
 [project]
 name = "myscribe"
-version = "0.8.6"
+version = "0.9.0"
 license = "EUPL-1.2"
 license-files = ["LICENSE.md"]
 description = "Local-first transcription with privacy by design: transcription and speaker detection run on your computer; labels, analysis and chat through Ollama, or optionally OpenRouter or OpenAI."
