@@ -11,8 +11,9 @@
 <div class="jobs-page">
   <h1>Jobs</h1>
   <p class="hint">
-    One job holds the GPU at a time; the queue waits its turn. A job's stages
-    go {{ stages|join(' → ') }}.
+    One job holds the GPU at a time; the queue waits its turn. The Job column
+    says what each one does. A transcription's stages go
+    {{ stages|join(' → ') }}.
   </p>
   {% include "_jobs_fragment.html" %}
 </div>

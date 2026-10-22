@@ -31,6 +31,7 @@
     <article class="jobcard">
       <div class="jobcard-head">
         <a class="job-title" href="/jobs/{{ job.id }}">{{ job.title }}</a>
+        <span class="badge job-kind">{{ job.kind }}</span>
         <span class="badge s-{{ job.status }}">{{ 'cancelling…' if job.cancel_requested else job.status }}</span>
         <span class="muted mono">job {{ job.id }}</span>
         {% if job.summary %}<span class="muted">{{ job.summary }}</span>{% endif %}
@@ -60,6 +61,7 @@
           <tr>
             <th class="num">#</th>
             <th>File</th>
+            <th>Job</th>
             <th>Options</th>
             <th>Queued</th>
             <th>Priority</th>
@@ -71,6 +73,7 @@
           <tr>
             <td class="num">{{ job.position }}</td>
             <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+            <td class="job-kind">{{ job.kind }}</td>
             <td class="summary">{{ job.summary }}</td>
             <td>{{ m.when(job.created_at) }}</td>
             <td>{{ job.priority_label }}</td>
@@ -83,7 +86,7 @@
             </td>
           </tr>
           {% else %}
-          <tr class="empty"><td colspan="6">The queue is empty.</td></tr>
+          <tr class="empty"><td colspan="7">The queue is empty.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -97,6 +100,7 @@
         <thead>
           <tr>
             <th>File</th>
+            <th>Job</th>
             <th>Outcome</th>
             <th>Stage</th>
             <th class="num">Took</th>
@@ -109,6 +113,7 @@
           {% for job in history %}
           <tr>
             <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+            <td class="job-kind">{{ job.kind }}</td>
             <td>{{ m.job_badge(job.id, job.status) }}</td>
             <td class="mono">{{ job.stage or '' }}</td>
             <td class="num">{{ m.ts(job.took) }}</td>
@@ -117,7 +122,7 @@
             <td>{% if job.retryable %}{{ m.retry_form(job) }}{% endif %}</td>
           </tr>
           {% else %}
-          <tr class="empty"><td colspan="7">No finished jobs yet.</td></tr>
+          <tr class="empty"><td colspan="8">No finished jobs yet.</td></tr>
           {% endfor %}
         </tbody>
       </table>

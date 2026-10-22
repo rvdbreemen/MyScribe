@@ -27,6 +27,14 @@
   where even scrolling the column could not reach it. The column now ends
   above the player (TASK-121).
 
+### Changed
+
+- **The jobs page says what each job does.** Every job now shows its kind -
+  *Transcribe*, *AI · Summary*, *Download link*, *Glossary corrections*,
+  *Machine check* - on the running card, in a *Job* column in the queue and
+  the history, and on its own page, so two jobs on the same recording are no
+  longer told apart only by their number (TASK-122).
+
 ## [0.9.0] - 2026-10-22
 
 MyScribe runs in the background from login and can be stopped, and this
