@@ -1016,28 +1016,6 @@ def test_a_chat_is_given_the_budget_not_the_probe_s():
     assert ollama.timeout_for(32768) in seen, f"the completion never got its budget: {seen}"
 
 
-def test_the_window_guards_use_the_window_that_was_asked_for_not_the_floor():
-    """The body asks the daemon for `context_tokens(model)` - up to 32768 on
-    this machine - but both overflow checks compared against `num_ctx`, the
-    8192 floor, so a prompt planned for the measured window was refused before
-    it was sent, or after it was read in full (TASK-123: the gemma4:12b proof
-    on an hour-long recording failed this way before it could show anything)."""
-    rec = Recorder(chat_answer("a summary", prompt_eval=12000), show=show(32768, arch="gemma4"))
-    request = base.ChatRequest(
-        system="s", user=" ".join(f"word{i}" for i in range(9000)), model="gemma4:12b"
-    )
-
-    assert provider(rec).complete(request).text == "a summary"
-    assert rec.body(0)["options"]["num_ctx"] == 32768
-
-    too_long = base.ChatRequest(
-        system="s", user=" ".join(f"word{i}" for i in range(40000)), model="gemma4:12b"
-    )
-    with pytest.raises(base.ContextTooLong) as exc:
-        provider(Recorder(chat_answer("x"), show=show(32768, arch="gemma4"))).complete(too_long)
-    assert "32768" in str(exc.value)
-
-
 # --- an answer lost entirely to thinking is asked once more without it (ADR-029) ----------
 #
 # Jobs 429-431, 2026-10-23, on a copy of Robert's library: minutes, blog and

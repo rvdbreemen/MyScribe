@@ -777,15 +777,11 @@ class OllamaProvider(base.Provider):
         (3 chars/token). An estimator that over-counts would refuse prompts
         that would have fitted; the floor only refuses what certainly does not.
         """
-        # The window the body asks for, not the floor: `_body` sends
-        # `context_tokens(model)`, and comparing against `num_ctx` refused every
-        # prompt planned for a measured window above 8192 (TASK-123).
-        window = self.context_tokens(req.model)
         floor = self.word_floor(req.system, req.user)
-        if floor >= window:
+        if floor >= self.num_ctx:
             raise base.ContextTooLong(
                 f"the prompt is {floor} words, so at least {floor} tokens, and the window "
-                f"asked for is {window}: ollama would drop the front of it and answer "
+                f"asked for is {self.num_ctx}: ollama would drop the front of it and answer "
                 f"from the rest without saying so; send less text (chunk it) or raise num_ctx"
             )
 
@@ -839,10 +835,9 @@ class OllamaProvider(base.Provider):
         # caught before the request instead, by
         # `_refuse_a_prompt_that_cannot_fit`. Neither check subsumes the other:
         # this one needs the answer, that one cannot wait for it.
-        window = self.context_tokens(req.model)
-        if isinstance(prompt_tokens, int) and prompt_tokens > window:
+        if isinstance(prompt_tokens, int) and prompt_tokens > self.num_ctx:
             raise base.ContextTooLong(
-                f"ollama read {prompt_tokens} prompt tokens into the {window}-token "
+                f"ollama read {prompt_tokens} prompt tokens into the {self.num_ctx}-token "
                 f"window asked for, so the prompt was truncated before the model saw it; "
                 f"send less text (chunk it) or raise num_ctx"
             )

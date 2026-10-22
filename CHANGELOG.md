@@ -31,10 +31,6 @@
   and every such message - and the job's live log - names the model that
   actually answered, which matters with OpenRouter's *Auto* router, where
   each request can go to a different model (TASK-123).
-- **Ollama can use the context window it asked for.** A local model whose
-  window MyScribe measured above 8,192 tokens - most current ones - was still
-  refused a prompt longer than 8,192 words, so an hour-long recording failed
-  before the model saw it (TASK-123).
 - **A local model that thinks too long still answers.** When an Ollama model
   such as gemma4 spends its whole answer budget thinking and writes nothing,
   MyScribe now asks it once more without thinking, which answered the same
