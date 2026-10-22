@@ -572,6 +572,27 @@ def test_a_free_port_is_neither_running_nor_taken():
     assert launcher.port_taken(port) is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="TIME_WAIT blocks a plain bind on POSIX only")
+def test_a_port_a_stopped_server_left_in_time_wait_is_free():
+    """A server that closed a connection itself leaves it in TIME_WAIT on its
+    own port for about a minute. A plain bind fails on that on Linux, and the
+    launcher said "Port 4300 is used by another program" right after a stop,
+    although uvicorn - which sets SO_REUSEADDR - would have bound (TASK-118)."""
+    port = _free_port()
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as uvicorn binds
+    listener.bind(("127.0.0.1", port))
+    listener.listen()
+    client = socket.create_connection(("127.0.0.1", port))
+    accepted, _ = listener.accept()
+    accepted.close()  # the server closes first, so the TIME_WAIT is on its port
+    client.recv(1)
+    client.close()
+    listener.close()
+
+    assert launcher.port_taken(port) is False
+
+
 def test_a_second_launch_opens_the_browser_instead_of_starting_again(layout, monkeypatch):
     port = _free_port()
     server = _serve(port, {"ok": True})

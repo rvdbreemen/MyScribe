@@ -16,6 +16,11 @@
   ended it, so a job that was running was marked interrupted instead of
   starting over. It now asks it to stop, also when the MyScribe running is
   0.9.0, and the job starts over after the update (TASK-117, ADR-028).
+- **On Linux and macOS, MyScribe starts again right after a stop.** For about
+  a minute after MyScribe stopped, a new start said "Port 4242 is used by
+  another program" and gave up, because the connections the old server had
+  just closed were still winding down on its port. The launcher now checks
+  the port the way the server binds it (TASK-118).
 
 ## [0.9.0] - 2026-10-22
 
