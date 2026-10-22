@@ -46,6 +46,10 @@ APP_NAME = "MyScribe"
 # What a release launcher tells the app about itself. Set by the launcher's
 # `app_environment`; absent means this is a clone started some other way.
 LAUNCHER_VARIABLE = "MYSCRIBE_LAUNCHER"
+# And its pid. The app's parent is not always the launcher: on Windows it is
+# uv's trampoline, env/Scripts/python.exe, which starts the real python as
+# its own child (TASK-117).
+LAUNCHER_PID_VARIABLE = "MYSCRIBE_LAUNCHER_PID"
 # Under this user's own hive, never the machine's.
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 # The identifier the release build gives the Mac bundle

@@ -90,11 +90,30 @@ function Get-Ours {
     })
 }
 
+function Get-OurAncestor([int]$id) {
+    # The process of this install above the app, if there is one. The app's
+    # parent is not the launcher on Windows: it is uv's trampoline,
+    # env\Scripts\python.exe in the home, and 0.9.0 names that trampoline as
+    # launcher_pid (TASK-117). So the chain is walked, a few steps at most.
+    $ours = Get-Ours
+    $all = @{}
+    foreach ($process in (Get-CimInstance Win32_Process)) { $all[[int]$process.ProcessId] = $process }
+    for ($step = 0; $step -lt 8 -and $all.ContainsKey($id); $step++) {
+        $mine = $ours | Where-Object { $_.ProcessId -eq $id }
+        if ($mine) { return $mine }
+        $id = [int]$all[$id].ParentProcessId
+    }
+    return $null
+}
+
 $stopped = $false
 $health = Get-Health
 $launcher = $null
 if ($health -and $health.launcher_pid) {
     $launcher = Get-Ours | Where-Object { $_.ProcessId -eq [int]$health.launcher_pid }
+}
+if (-not $launcher -and $health -and $health.pid) {
+    $launcher = Get-OurAncestor ([int]$health.pid)
 }
 if ($launcher -and $health.pid) {
     Say "MyScribe is running (process $($health.pid)); asking it to stop."

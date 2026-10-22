@@ -234,6 +234,23 @@ def _refresh_login_entry() -> None:
         applog.log("autostart.rewritten", where=entry.where, command=entry.command)
 
 
+def _launcher_pid() -> int | None:
+    """The pid of the release launcher that started this app, or None for a clone.
+
+    The launcher says it itself. The parent is the fallback for an older
+    launcher only: on Windows the app's parent is uv's trampoline,
+    env/Scripts/python.exe, and an installer that took it for the launcher
+    found it outside the install folder and ended the tree instead of asking
+    the stop route (TASK-117).
+    """
+    if not os.environ.get(autostart.LAUNCHER_VARIABLE):
+        return None
+    try:
+        return int(os.environ[autostart.LAUNCHER_PID_VARIABLE])
+    except (KeyError, ValueError):
+        return os.getppid()
+
+
 def create_app(
     db_path: str | Path | None = None,
     start_supervisor: bool = True,
@@ -344,7 +361,7 @@ def create_app(
             # supervisor sees the launcher's clean 0 and not a crash
             # (TASK-112.03).
             "pid": os.getpid(),
-            "launcher_pid": os.getppid() if os.environ.get(autostart.LAUNCHER_VARIABLE) else None,
+            "launcher_pid": _launcher_pid(),
         }
 
     @app.post("/api/shutdown", status_code=202)
