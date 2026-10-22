@@ -43,6 +43,11 @@
   left open, and creates a new home and its `.env` the same way. On Windows
   a home or library on another drive keeps that drive's permissions;
   `docs/configuration.md` says what to check (GitHub #42).
+- **Fetching a followed feed's back catalogue says why it failed.** When the
+  feed now redirects to this computer or the local network, or its host is
+  gone, the Feeds page answers with the feed's address and the reason instead
+  of a server error. Nothing is queued and the question stays open, so the same
+  button works later (GitHub #41).
 - **A first start on Windows no longer stops when uv cannot make its Python
   folder link.** uv downloads Python and then makes a junction beside it;
   where Windows refuses that (`os error 448`, GitHub issue #16) the install

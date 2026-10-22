@@ -6,8 +6,12 @@ Each of those missing is a way a subscription turns into a surprise.
 
 from __future__ import annotations
 
+import http.server
 import json
+import socket
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -350,3 +354,163 @@ def test_the_feeds_page_shows_a_disk_refusal_that_kept_what_to_do(client, conn, 
     assert "only 1.0 GB free at C:\\" + "a" * 20 + "\u2026" + "b" * 24 in body
     assert "keeps 10 GB clear" in body
     assert "Free up space and retry; nothing was downloaded." in body
+
+
+# --- GitHub #41 follow-up: a feed the guard refuses is a sentence, not a 500 ---------
+
+
+@pytest.fixture
+def browser(db_path, data_dir, conn):
+    """The app as a browser meets it: a server error is a 500 response rather
+    than an exception re-raised into the test, so "500" is what a red run says."""
+    app = create_app(db_path=db_path, start_supervisor=False, start_watcher=False)
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
+        yield c
+
+
+@pytest.fixture
+def feed_that_redirects_home(monkeypatch):
+    """A followed feed whose document now 302s to this machine.
+
+    The origin listens on 127.0.0.1 but is reached by the public-looking name
+    `feeds.test`, the way test_ingest_urls.py's `redirect_home` does it; the
+    trap is what the redirect points at, and a hit there would be the guard
+    failing. Real yt-dlp, real 302: nothing about the refusal is stubbed.
+    """
+    trap_hits: list[str] = []
+    origin_hits: list[str] = []
+
+    class Trap(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            trap_hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    trap = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Trap)
+    trap_url = f"http://127.0.0.1:{trap.server_address[1]}/latest/meta-data"
+
+    class Origin(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            origin_hits.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", trap_url)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    for server in (trap, origin):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        if host == "feeds.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", int(port or 0)))]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    real_resolves_private = urls.resolves_private
+    monkeypatch.setattr(urls.socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(
+        urls, "resolves_private",
+        lambda host, *rest: host != "feeds.test" and real_resolves_private(host, *rest),
+    )
+    try:
+        yield SimpleNamespace(
+            url=f"http://feeds.test:{origin.server_address[1]}/podcast.xml",
+            origin_hits=origin_hits,
+            trap_hits=trap_hits,
+        )
+    finally:
+        for server in (trap, origin):
+            server.shutdown()
+            server.server_close()
+
+
+@pytest.fixture
+def feed_whose_host_is_gone(monkeypatch):
+    """A followed feed whose name no longer resolves: the source's fault, and
+    the plainest one. Answered by the resolver stub, so no network is used."""
+    real_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        if host == "gone.test":
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(urls.socket, "getaddrinfo", getaddrinfo)
+    return "https://gone.test/podcast.xml"
+
+
+ASKING_ENTRIES = [
+    {"url": f"https://cdn.test/ep{n}.mp3", "title": f"Episode {n}", "source_id": f"Generic:g{n}"}
+    for n in range(12)
+]
+
+
+def _queued(conn) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM job WHERE type=?", (url_stage.JOB_TYPE,)
+    ).fetchone()["n"]
+
+
+def test_backfill_from_a_feed_that_redirects_home_says_why_and_leaves_the_question_open(
+    browser, conn, feed_that_redirects_home
+):
+    """GitHub #41, review of PR #59: `backfill` probes under the public guard,
+    and the guard's refusal is a `UrlError` - a RuntimeError the route did not
+    map, so the person pressing "everything" got a 500. It is the feed's
+    answer, so it is the person's answer too: which feed, and why."""
+    feed_id = feeds.subscribe(
+        conn, feed_that_redirects_home.url, title="The Feed", entries=ASKING_ENTRIES
+    )
+    before = _queued(conn)
+
+    response = browser.post(f"/feeds/{feed_id}/backfill", data={"choice": "all"}, headers=HX)
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert feed_that_redirects_home.url in detail
+    assert "latest/meta-data points at this machine or the local network" in detail
+    assert feeds.is_asking(conn, feed_id) is True  # the same button works later
+    assert _queued(conn) == before
+    assert feed_that_redirects_home.origin_hits
+    assert feed_that_redirects_home.trap_hits == []
+
+
+def test_backfill_from_a_feed_whose_host_is_gone_says_so(browser, conn, feed_whose_host_is_gone):
+    """The other way a followed feed fails on the button: its host is gone.
+    Not the person's fault and not the app's, so not a 500 either."""
+    feed_id = feeds.subscribe(conn, feed_whose_host_is_gone, title="The Feed", entries=ASKING_ENTRIES)
+    before = _queued(conn)
+
+    response = browser.post(f"/feeds/{feed_id}/backfill", data={"choice": "3"}, headers=HX)
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert feed_whose_host_is_gone in detail
+    assert "Name or service not known" in detail  # the why, not only the which
+    assert feeds.is_asking(conn, feed_id) is True
+    assert _queued(conn) == before
+
+
+def test_check_now_on_a_feed_that_redirects_home_answers_with_the_guard_s_sentence(
+    browser, conn, feed_that_redirects_home
+):
+    """The "check now" half of the same review point. `feeds.poll` already
+    turns any probe failure into the feed's last result, so this pins that
+    the button answers with the board and the reason on it, not a 500."""
+    feed_id = _subscribe(conn, url=feed_that_redirects_home.url)
+
+    response = browser.post(f"/feeds/{feed_id}/poll", headers=HX)
+
+    assert response.status_code == 200
+    assert "points at this machine or the local network" in response.text
+    assert _queued(conn) == 0
+    assert feed_that_redirects_home.trap_hits == []

@@ -36,7 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 
 from scribe import applog, db, doctor
-from scribe.ingest import feeds
+from scribe.ingest import feeds, urls
 from scribe.web import render
 
 router = APIRouter()
@@ -201,6 +201,15 @@ async def backfill_feed(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except urls.UrlError as exc:
+        # The feed's own failure, in its own words (GitHub #41, raised in the
+        # review of PR #59): the probe runs under the public guard, so a feed
+        # that now redirects to this machine is refused here, and a host that
+        # is gone fails here too. `UrlError` is a RuntimeError - unmapped it is
+        # a 500. Nothing was queued and the question is still open.
+        raise HTTPException(
+            status_code=400, detail=f"could not read the feed at {feed['url']}: {exc}"
+        ) from exc
     except doctor.NotEnoughDisk as exc:
         # 507, not 400: the answer was fine and the disk is not. The question
         # is still open, so the same button works once there is room.
