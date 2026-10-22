@@ -1576,6 +1576,22 @@ def test_the_rail_cannot_put_its_own_bottom_out_of_reach(client):
     assert "overflow-y: auto" in rail
 
 
+def test_the_rail_ends_above_the_player_bar(client):
+    """The player bar is stuck to the bottom of the window and paints over
+    what reaches there: bounded by the whole window's height, the rail's last
+    card, "This transcript", ended under it and could not be scrolled out
+    (Robert, 2026-10-22; measured 73 px hidden at 1280x760). app.js publishes
+    the bar's height and the rail subtracts it."""
+    root = pathlib.Path(__file__).resolve().parents[1] / "scribe/static"
+    css = (root / "app.css").read_text(encoding="utf-8")
+    js = (root / "app.js").read_text(encoding="utf-8")
+    rail = css.split(".rail {")[1].split("}")[0]
+    assert "var(--player-h" in rail.split("max-height:")[1].split(";")[0]
+    assert "[data-player-bar]" in js and "'--player-h'" in js
+    template = (root.parent / "templates" / "transcript.html").read_text(encoding="utf-8")
+    assert "data-player-bar" in template
+
+
 def test_the_typed_question_survives_a_panel_refresh(client, transcribed):
     """Eleven unrelated actions refresh this panel and panel_context rebuilds
     it from settings, so the question, the provider and whether the details

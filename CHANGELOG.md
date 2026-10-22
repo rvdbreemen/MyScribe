@@ -21,6 +21,11 @@
   another program" and gave up, because the connections the old server had
   just closed were still winding down on its port. The launcher now checks
   the port the way the server binds it (TASK-118).
+- **The last card beside a transcript is fully visible.** With several
+  speakers, the right-hand column grew taller than the window, and its last
+  card, *This transcript*, ended under the player at the bottom of the page,
+  where even scrolling the column could not reach it. The column now ends
+  above the player (TASK-121).
 
 ## [0.9.0] - 2026-10-22
 

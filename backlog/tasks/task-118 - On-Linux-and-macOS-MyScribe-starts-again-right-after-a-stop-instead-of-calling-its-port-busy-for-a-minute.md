@@ -3,9 +3,11 @@ id: TASK-118
 title: >-
   On Linux and macOS MyScribe starts again right after a stop, instead of
   calling its port busy for a minute
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-22T19:21:00Z'
+updated_date: '2026-10-22T20:13:00Z'
 labels:
   - packaging
   - linux
@@ -24,6 +26,12 @@ Found 2026-10-22 in WSL with the published AppImages (TASK-115). After a server 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 port_taken sets SO_REUSEADDR on POSIX only, so a port left in TIME_WAIT is free and a listening port is still taken; a POSIX test fails without it
-- [ ] #2 In WSL, --stop followed at once by a start serves again
+- [x] #1 port_taken sets SO_REUSEADDR on POSIX only, so a port left in TIME_WAIT is free and a listening port is still taken; a POSIX test fails without it
+- [x] #2 In WSL, --stop followed at once by a start serves again
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged in PR #81 (CI green on windows/macos/ubuntu). Linux before: FAILED test_a_port_a_stopped_server_left_in_time_wait_is_free; after: 4 passed; Windows 3 passed 1 skipped. Real run with the 0.9.1 rehearsal AppImage in WSL: right after --stop, ss showed three TIME-WAIT connections on 127.0.0.1:4300, and the same AppImage started at once served /health 0.9.1 with 0 'is used by another program' lines; the job --stop had requeued ran and ended done.
+<!-- SECTION:NOTES:END -->

@@ -1836,6 +1836,30 @@
     restoreTab();
   }
 
+  /* ---- the player's height, for what must end above it ----
+
+     The player bar is stuck to the bottom of the window and paints over
+     whatever reaches there. The right rail is stuck to the top and bounded by
+     the window's height, so its last card - "This transcript" - ended under
+     the player, and scrolling the rail to its end could not bring it out.
+     The bar's height is not fixed (the ribbon, and a second row when the
+     controls wrap), so it is measured and published as --player-h for the
+     CSS to subtract. */
+  function wirePlayerHeight() {
+    var bar = document.querySelector('[data-player-bar]');
+    if (!bar) { return; }
+    var root = document.documentElement;
+    function publish() {
+      root.style.setProperty('--player-h', bar.getBoundingClientRect().height + 'px');
+    }
+    publish();
+    if (window.ResizeObserver) {
+      new ResizeObserver(publish).observe(bar);
+    } else {
+      window.addEventListener('resize', publish);
+    }
+  }
+
   function start() {
     wireForms();
     wireSelectAll();
@@ -1847,6 +1871,7 @@
     wireExportDialog();
     wireJobLog();
     wireTranscript();
+    wirePlayerHeight();
     tickElapsed();
     window.setInterval(tickElapsed, 1000);
   }

@@ -1048,11 +1048,14 @@ mark.find { background: var(--warn-bg); color: inherit; padding: 0; }
    never scroll its own bottom into view - and this one grows: the Speakers
    card renders a field and a button per speaker, so a recording with eight
    of them can put "This transcript" permanently out of reach (TASK-053.03).
-   The column scrolls inside itself once it outgrows the window. */
+   The column scrolls inside itself once it outgrows the window - the part of
+   the window above the player bar, which is stuck to the bottom and painted
+   over the rail's last card until its height was taken off; app.js measures
+   it into --player-h (0 on a page without a player). */
 .rail {
   position: sticky;
   top: .5rem;
-  max-height: calc(100dvh - 1rem);
+  max-height: calc(100dvh - 1rem - var(--player-h, 0px));
   overflow-y: auto;
   overscroll-behavior: contain;
   display: flex;
