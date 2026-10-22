@@ -47,6 +47,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response, StreamingResponse
 
 from scribe import db, jobs, runner
+from scribe.llm import tasks
 from scribe.render import format_ts
 from scribe.stages import transcribe, url_stage
 from scribe.web import TIER_ICONS, library, render
@@ -175,6 +176,27 @@ def _job_title(row: dict, params: dict) -> str:
     return f"{row['type']} job"
 
 
+# What a job does, in a word or two: the board showed a number and a file, and
+# two jobs on one recording looked the same whether one transcribed it and the
+# other summarised it (TASK-122). The types are few and fixed; an AI job also
+# names its task, by the label the rail's button carries.
+JOB_KIND_NAMES = {
+    TRANSCRIBE_JOB_TYPE: "Transcribe",
+    url_stage.JOB_TYPE: "Download link",
+    "correct": "Glossary corrections",
+    "doctor": "Machine check",
+}
+LLM_JOB_TYPE = "llm"
+
+
+def job_kind(type_: str, params: dict) -> str:
+    """A job's kind as a person reads it; an unknown type is shown as itself."""
+    if type_ == LLM_JOB_TYPE:
+        task = tasks.TASKS.get(str(params.get("kind") or ""))
+        return f"AI · {task.label}" if task else "AI"
+    return JOB_KIND_NAMES.get(type_, type_)
+
+
 # The rungs the board offers. Three, because a person moving a job means one of
 # three things: ahead of everything, the ordinary case, or last. The bottom is
 # url_stage.BULK_PRIORITY itself rather than a copy of -10, so a feed job the
@@ -214,6 +236,7 @@ def job_view(conn: sqlite3.Connection, row: dict, now: float) -> dict:
     view = {
         **row,
         "title": _job_title(row, params),
+        "kind": job_kind(row["type"], params),
         "params": params,
         "summary": params_summary(params) if transcribing else "",
         "steps": stepper_steps(row["status"], row["stage"], stage_names_for(row["type"])),

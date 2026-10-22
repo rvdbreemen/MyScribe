@@ -842,3 +842,53 @@ def test_every_button_on_the_board_has_an_id_so_a_poll_keeps_focus_on_it(client,
     assert all(ids), [b for b, i in zip(buttons, ids) if not i]
     names = [i.group(1) for i in ids]
     assert len(names) == len(set(names)), names
+
+
+# --- what kind of work a job is (TASK-122) ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("type_", "params", "kind"),
+    [
+        ("transcribe", {}, "Transcribe"),
+        ("llm", {"kind": "cleanup"}, "AI · Clean transcript"),
+        ("llm", {"kind": "summary"}, "AI · Summary"),
+        ("llm", {"kind": "no-such-kind"}, "AI"),
+        ("ingest_url", {"url": "https://example.org/a.mp3"}, "Download link"),
+        ("correct", {}, "Glossary corrections"),
+        ("doctor", {}, "Machine check"),
+        ("future_type", {}, "future_type"),
+    ],
+)
+def test_every_job_type_has_a_name_a_person_can_read(type_, params, kind):
+    """The board said 'job 426' and a file name; two jobs on one recording
+    looked the same whether one transcribed it and the other summarised it
+    (Robert, 2026-10-22)."""
+    assert jobs_ui.job_kind(type_, params) == kind
+
+
+def test_the_board_names_the_kind_of_every_running_queued_and_finished_job(client, conn):
+    """Robert's screenshot: an AI job running on 'Audio Terrein sessie' and two
+    queued rows for the same file, with nothing saying what any of them does."""
+    media = seed_media(conn, title="Terrein")
+    running = jobs.enqueue(conn, "llm", media_id=media, params={"kind": "cleanup"})
+    conn.execute("UPDATE job SET status='running', stage='generate', started_at=? WHERE id=?",
+                 (time.time() - 30, running))
+    conn.commit()
+    jobs.enqueue(conn, "llm", media_id=media, params={"kind": "summary"})
+    jobs.enqueue(conn, "transcribe", media_id=media, params={})
+    done = seed_job(conn, media, status="done", stage="finalize")
+
+    page = client.get("/jobs").text
+
+    assert "AI · Clean transcript" in _section(page, "running")
+    queued = _section(page, "queued")
+    assert "AI · Summary" in queued and "Transcribe" in queued
+    assert "Transcribe" in _section(page, "history")
+    assert f'href="/jobs/{done}"' in _section(page, "history")
+
+
+def test_a_job_page_names_its_kind(client, conn):
+    media = seed_media(conn, title="Terrein")
+    job = jobs.enqueue(conn, "llm", media_id=media, params={"kind": "summary"})
+    assert "AI · Summary" in client.get(f"/jobs/{job}").text

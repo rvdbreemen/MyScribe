@@ -25,6 +25,7 @@
     <p class="sub">
       <span class="badge s-{{ job.status }}" data-job-status>{{ job.status }}</span>
       {% if job.cancel_requested and job.status in ('queued', 'running') %}<span class="badge">cancelling…</span>{% endif %}
+      <span class="badge job-kind">{{ job.kind }}</span>
       <span class="mono">job {{ job.id }}</span>
       {% if job.summary %}· {{ job.summary }}{% endif %}
       {% if job.media_id %}· <a href="/media/{{ job.media_id }}">open the recording</a>{% endif %}
