@@ -228,3 +228,38 @@ def test_a_cut_too_small_to_matter_is_not_announced():
 
     assert tasks.excerpt(text, limit=100) == text
     assert "not shown" in tasks.excerpt("A" * 1000, limit=100)
+
+
+def test_the_reply_event_names_the_model_that_answered(monkeypatch):
+    """Under openrouter/auto the model asked for is a router, not a model: the
+    reply names which one wrote the text, and where its tokens went (TASK-123,
+    jobs 423-428 on Robert's library, three upstreams in four jobs)."""
+    from scribe.stages import llm_stage
+
+    emitted: list[tuple] = []
+    monkeypatch.setattr(llm_stage.jobs, "emit", lambda conn, job_id, kind, **p: emitted.append((kind, p)))
+
+    class Ctx:
+        conn = None
+        job = {"id": 7}
+
+    class Request:
+        model = "openrouter/auto"
+        system = "S"
+        user = "U"
+
+    class Reply:
+        text = "R"
+        model = "deepseek/deepseek-v4-flash-0731"
+        prompt_tokens = 1
+        completion_tokens = 6000
+        reasoning_tokens = 5400
+        upstream = "BaseTen"
+        hint_sent = None
+        raw_finish_reason = "length"
+
+    llm_stage._watch(Ctx())("single", Request(), Reply())
+
+    reply = dict(emitted[0][1])
+    assert reply["model"] == "deepseek/deepseek-v4-flash-0731"
+    assert reply["reasoning_tokens"] == 5400 and reply["upstream"] == "BaseTen"

@@ -197,6 +197,11 @@ def _watch(ctx: "RunnerContext") -> Callable[[str, Any, Any], None]:
             prompt_tokens=getattr(response, "prompt_tokens", None),
             completion_tokens=getattr(response, "completion_tokens", None),
             finish_reason=getattr(response, "raw_finish_reason", "") or "",
+            # Which model wrote it, and where its tokens went: under
+            # openrouter/auto the model asked for is a router (TASK-123).
+            model=getattr(response, "model", None),
+            reasoning_tokens=getattr(response, "reasoning_tokens", None),
+            upstream=getattr(response, "upstream", None),
         )
 
     return watch

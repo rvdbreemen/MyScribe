@@ -1325,16 +1325,23 @@ def repair_json(text: str) -> dict:
     if first != -1 and last > first:
         candidates.append(text[first : last + 1])
 
+    # strict=False lets a raw line break stand inside a string: models write
+    # those more often than the escaped kind, and strict parsing stopped job
+    # 427's reply at char 700 (TASK-123). It widens nothing else - the object
+    # still has to validate against the kind's schema.
+    error = None
     for candidate in candidates:
         try:
-            payload = json.loads(candidate)
-        except ValueError:
+            payload = json.loads(candidate, strict=False)
+        except ValueError as exc:
+            error = exc
             continue
         if isinstance(payload, dict):
             return payload
 
+    why = f" (json: {error})" if error is not None else ""
     raise base.BadResponse(
-        "the model did not answer with a JSON object. What it said: " + clip(text)
+        f"the model did not answer with a JSON object{why}. What it said: " + clip(text)
     )
 
 
@@ -1778,10 +1785,14 @@ def generate(
             # The same refusal `_collect_parts` makes, for the recording short
             # enough to be one part. Row 15 (2026-09-11) is why: media 7's
             # cleanup came back at 12,000 of 12,000 tokens, finish 'length',
-            # and was stored as the cleaning. `custom` is left as it was - its
-            # row is stored and the panel says it was cut off - and a schema
-            # kind's cut-off object already fails `repair_json`.
+            # and was stored as the cleaning. A schema kind's cut-off object
+            # is refused below, saying so: it used to fall through to
+            # `repair_json` and read as "did not answer with a JSON object"
+            # (job 427, TASK-123). `custom` is left as it was - its row is
+            # stored and the panel says it was cut off.
             _refuse_a_cut_off_part(plan, plan.chunks[0], response)
+        else:
+            _refuse_a_cut_off_answer(plan, response)
         payload = parse_answer(plan.spec, response.text)
         return TaskResult(
             content=content_for(plan.spec, payload),
@@ -1836,6 +1847,7 @@ def generate(
         on_call=on_call,
     )
     step()
+    _refuse_a_cut_off_answer(plan, response)
     payload = parse_answer(plan.spec, response.text)
     return TaskResult(
         content=content_for(plan.spec, payload),
@@ -2057,6 +2069,26 @@ def _refuse_a_cut_off_part(plan: TaskPlan, chunk: Chunk, response: ChatResponse)
     )
 
 
+def _refuse_a_cut_off_answer(plan: TaskPlan, response: ChatResponse) -> None:
+    """Refuse an object answer that stopped at its cap, and say that it did.
+
+    A kind with a schema promises a JSON object, and one cut off at the cap is
+    half an object: `repair_json` cannot read it and used to report a model
+    that "did not answer with a JSON object" - true, and the wrong lead, since
+    the model was answering in JSON when it ran out of room (job 427 on
+    Robert's library, 2026-10-22: 6000 of 6000 tokens, finish 'length').
+    `custom` has no schema and keeps its own rule: stored, marked cut off.
+    """
+    if plan.spec.schema is None or response.raw_finish_reason != TRUNCATED_FINISH:
+        return
+    raise base.BadResponse(
+        f"the model ran out of room on the {plan.kind!r} task: it stopped at the "
+        f"{plan.max_output_tokens}-token cap ({_spent(response)}) before its answer was "
+        "complete, so there is nothing whole to store. What it managed: "
+        + clip(response.text or "")
+    )
+
+
 def _spent(response: ChatResponse) -> str:
     """What a call spent, in the words a refusal quotes.
 
@@ -2065,6 +2097,7 @@ def _spent(response: ChatResponse) -> str:
     row, and their error is then the jobs board's only record of the call.
     """
     return (
+        f"model={response.model!r}, "
         f"finish_reason={response.raw_finish_reason!r}, "
         f"completion_tokens={response.completion_tokens}, "
         f"reasoning_tokens={response.reasoning_tokens}, "
