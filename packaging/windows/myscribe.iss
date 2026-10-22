@@ -33,6 +33,16 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExe}
+; Off, because what Setup starts inherits it (TASK-116). Inno Setup 6.7.1 turns
+; Windows' RedirectionGuard on by default; its help says the setting is not
+; inherited by child processes, but the MyScribe that Setup started - the
+; checkbox below, and the headless restart in CurStepChanged - was measured
+; on 2026-10-22 with ProcessRedirectionTrustPolicy enforced. uv then cannot
+; follow the junction it made for the Python minor version, and the start
+; fails with "untrusted mount point (os error 448)". Setup installs for this
+; user only, unelevated, so the guard protects nothing a junction could not
+; already reach.
+RedirectionGuard=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"

@@ -54,6 +54,9 @@ PAYLOAD_VARIABLE = "MYSCRIBE_PAYLOAD"
 # What the app is told about this launcher, so a login entry can name the
 # launcher and not the environment's python (TASK-089.21).
 LAUNCHER_VARIABLE = "MYSCRIBE_LAUNCHER"
+# And this launcher's pid, which /health reports as launcher_pid: on Windows
+# the app's parent is uv's trampoline python.exe, not this process (TASK-117).
+LAUNCHER_PID_VARIABLE = "MYSCRIBE_LAUNCHER_PID"
 STAMP_NAME = ".myscribe-sync.json"
 READY_TIMEOUT = 120.0
 STOP_TIMEOUT = 15.0
@@ -466,6 +469,7 @@ def app_environment(layout: Layout, base: dict | None = None) -> dict:
     launcher = this_launcher()
     if launcher is not None:
         env[LAUNCHER_VARIABLE] = str(launcher)
+        env[LAUNCHER_PID_VARIABLE] = str(os.getpid())
     # The bundled ffmpeg and ffprobe first. A Mac app started from Finder gets
     # a PATH without Homebrew, so without this there would be no ffmpeg at all.
     env["PATH"] = os.pathsep.join(p for p in (str(layout.tools_dir), env.get("PATH", "")) if p)

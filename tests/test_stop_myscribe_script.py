@@ -159,6 +159,43 @@ def test_a_running_myscribe_is_asked_through_its_stop_route(install, started, tm
     assert "asking it to stop" in said and "starts over" in said
 
 
+def _descendants(pid: int) -> list[int]:
+    """Every process below ``pid``, nearest first."""
+    found, frontier = [], [pid]
+    while frontier:
+        below = [child for parent in frontier for child in _children(parent)]
+        found += below
+        frontier = below
+    return found
+
+
+def test_a_myscribe_whose_parent_is_uvs_trampoline_is_asked_through_its_route(install, started, tmp_path):
+    """The real tree on Windows: the launcher runs from the install folder, its
+    child is uv's trampoline env/Scripts/python.exe in the home, and the app is
+    below that. A 0.9.0 app names the trampoline as launcher_pid, which is not
+    in the install folder; the script must still see the launcher above it and
+    ask the route, or a running job is ended instead of requeued (TASK-117)."""
+    sleeper = tmp_path / "app.py"
+    sleeper.write_text("import time\ntime.sleep(120)\n")
+    launcher = _orphan([str(install / "MyScribe.exe"), "/c", sys.executable, str(sleeper)])
+    started.append(launcher)
+    deadline = time.monotonic() + 10
+    while not _descendants(launcher) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    below = _descendants(launcher)
+    trampoline, app = below[0], below[-1]
+    server = _Server({"ok": True, "pid": app, "launcher_pid": trampoline},
+                     on_stop=lambda: _end(app))
+    try:
+        code, said = _run(install, server.port, tmp_path)
+    finally:
+        server.close()
+
+    assert code == STOPPED and server.posted == ["/api/shutdown"], said
+    assert "asking it to stop" in said
+    assert _gone(app) and _gone(launcher)
+
+
 def test_a_0_8_myscribe_without_a_stop_route_is_ended_with_its_children(install, started, tmp_path):
     """0.8.x has no route and no pid in /health; its launcher runs from the
     install folder, and its python is that launcher's child."""

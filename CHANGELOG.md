@@ -1,5 +1,22 @@
 ## [Unreleased]
 
+### Fixed
+
+- **A MyScribe the Windows installer starts can start.** Since 0.8.0, the
+  MyScribe that the installer starts - **Start MyScribe** on its last page, and
+  the restart after an update when *Start at login* is on - inherited a
+  Windows protection the installer switches on for itself (RedirectionGuard).
+  Under it, Windows refuses the folder link the speech engine's Python lives
+  behind, and the first start failed with "untrusted mount point (os error
+  448)" (GitHub #16). The installer no longer switches it on. On 0.9.0 or
+  earlier: close that MyScribe and start it from the Start menu, which works
+  (TASK-116).
+- **An update on Windows stops a running MyScribe through its stop route.**
+  The installer did not recognise MyScribe's own server as this install's and
+  ended it, so a job that was running was marked interrupted instead of
+  starting over. It now asks it to stop, also when the MyScribe running is
+  0.9.0, and the job starts over after the update (TASK-117, ADR-028).
+
 ## [0.9.0] - 2026-10-22
 
 MyScribe runs in the background from login and can be stopped, and this

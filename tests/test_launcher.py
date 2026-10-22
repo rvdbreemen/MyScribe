@@ -1461,6 +1461,9 @@ def test_the_app_is_told_where_the_launcher_is(layout, monkeypatch):
     env = launcher.app_environment(layout, {"PATH": "/usr/bin"})
 
     assert env["MYSCRIBE_LAUNCHER"] == r"C:\Program Files\MyScribe\MyScribe.exe"
+    # Its own pid as well: on Windows the app's parent is uv's trampoline
+    # python.exe, so the app cannot find the launcher by asking (TASK-117).
+    assert env["MYSCRIBE_LAUNCHER_PID"] == str(os.getpid())
 
 
 def test_a_launcher_that_is_not_frozen_names_no_path_at_all(layout):
@@ -1469,7 +1472,8 @@ def test_a_launcher_that_is_not_frozen_names_no_path_at_all(layout):
     no variable at all is what makes the app fall back to the clone's own
     start script."""
     assert launcher.this_launcher() is None
-    assert "MYSCRIBE_LAUNCHER" not in launcher.app_environment(layout, {"PATH": "/usr/bin"})
+    env = launcher.app_environment(layout, {"PATH": "/usr/bin"})
+    assert "MYSCRIBE_LAUNCHER" not in env and "MYSCRIBE_LAUNCHER_PID" not in env
 
 
 def test_the_stable_path_a_login_entry_should_name_per_platform():

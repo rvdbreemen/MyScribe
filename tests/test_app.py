@@ -65,7 +65,18 @@ def test_health_ok_with_version(client, monkeypatch):
 
 def test_health_names_the_launcher_only_under_one(client, monkeypatch):
     monkeypatch.setenv("MYSCRIBE_LAUNCHER", "MyScribe.exe")
+    monkeypatch.delenv("MYSCRIBE_LAUNCHER_PID", raising=False)
     assert client.get("/health").json()["launcher_pid"] == os.getppid()
+
+
+def test_health_names_the_pid_the_launcher_gave_not_the_parent(client, monkeypatch):
+    """On Windows the app's parent is uv's trampoline, env/Scripts/python.exe,
+    and not the launcher: an installer that read the parent as the launcher
+    found it outside the install folder and ended the tree instead of asking
+    the stop route (TASK-117)."""
+    monkeypatch.setenv("MYSCRIBE_LAUNCHER", "MyScribe.exe")
+    monkeypatch.setenv("MYSCRIBE_LAUNCHER_PID", "4321")
+    assert client.get("/health").json()["launcher_pid"] == 4321
 
 
 # --- GET /api/jobs ------------------------------------------------------------
