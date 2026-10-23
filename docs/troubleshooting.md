@@ -34,6 +34,8 @@ report looks like this:
 | --- | --- | --- |
 | SmartScreen: "unknown publisher" | The installer is not signed yet. | **More info → Run anyway**. |
 | macOS refuses to open the app, or calls it "damaged" | Gatekeeper blocks unsigned apps. | Start it once, then **System Settings → Privacy & Security → Open Anyway** and confirm. On macOS 14 and earlier, **Control-click → Open** also works. |
+| Windows, right after installing: "untrusted mount point (os error 448)" and "Installing failed" | Up to 0.9.0, the MyScribe the installer starts runs under a Windows protection that blocks the speech engine's Python. | Close that MyScribe and start it from the Start menu. 0.9.1 and later do not have this. |
+| Linux or macOS: "Port 4242 is used by another program" just after MyScribe stopped | Up to 0.9.0, the port check counted the old server's last connections for about a minute. | Wait a minute and start again. 0.9.1 and later do not have this. |
 | A transcript has no speakers, and says why | No Hugging Face token, or the model's conditions were not accepted. | Nothing is lost. Follow [Hugging Face token](configuration.md#hugging-face-token), then run the transcription again. |
 | A transcription is refused with a sentence about the NVIDIA driver | CUDA cannot reach the GPU. | Update or reinstall the NVIDIA driver, or allow the CPU under **Settings → This machine**. |
 | The doctor says `gpu-runtime: CPU build` (clone) | torch was installed without CUDA. | Run `python install.py` again. Plain `pip` installs a CPU-only torch on Windows. |

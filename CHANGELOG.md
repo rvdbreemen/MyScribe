@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-23
+
+Fixes found by installing the 0.9.0 release on Windows and running its
+AppImage on Linux, and by running the AI tasks on a local model: a MyScribe
+the Windows installer starts can start again, an update stops it the way a
+Quit does, a start right after a stop is no longer refused on Linux and
+macOS, and AI failures say what happened. Installing MyScribe now ends with
+it open in your browser, and the jobs page says what each job does.
+
 ### Fixed
 
 - **A MyScribe the Windows installer starts can start.** Since 0.8.0, the
