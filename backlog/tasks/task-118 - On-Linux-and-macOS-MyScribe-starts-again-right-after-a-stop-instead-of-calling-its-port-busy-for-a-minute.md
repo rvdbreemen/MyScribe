@@ -3,11 +3,11 @@ id: TASK-118
 title: >-
   On Linux and macOS MyScribe starts again right after a stop, instead of
   calling its port busy for a minute
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-22T19:21:00Z'
-updated_date: '2026-10-22T20:13:00Z'
+updated_date: '2026-10-23T05:04:00Z'
 labels:
   - packaging
   - linux
@@ -35,3 +35,9 @@ Found 2026-10-22 in WSL with the published AppImages (TASK-115). After a server 
 <!-- SECTION:NOTES:BEGIN -->
 Merged in PR #81 (CI green on windows/macos/ubuntu). Linux before: FAILED test_a_port_a_stopped_server_left_in_time_wait_is_free; after: 4 passed; Windows 3 passed 1 skipped. Real run with the 0.9.1 rehearsal AppImage in WSL: right after --stop, ss showed three TIME-WAIT connections on 127.0.0.1:4300, and the same AppImage started at once served /health 0.9.1 with 0 'is used by another program' lines; the job --stop had requeued ran and ended done.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The launcher's port check now sets SO_REUSEADDR on POSIX, as uvicorn binds, so a start within a minute of a stop is no longer refused on a port left in TIME_WAIT; Windows keeps the plain bind. Verified: Linux test red then green (4 passed), Windows 3 passed 1 skipped; the 0.9.1 AppImage in WSL started at once after --stop with three TIME-WAIT connections on the port, 0 refusals, and the requeued job finished with the spoken words. Released in 0.9.1 (tag v0.9.1, tree 05defa7d, the same tree as the tested candidate 51ea3e2).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,11 +1,11 @@
 ---
 id: TASK-121
 title: The right rail ends above the player bar, so This transcript is reachable
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-22T20:54:00Z'
-updated_date: '2026-10-22T20:54:00Z'
+updated_date: '2026-10-23T05:04:00Z'
 labels:
   - ui
   - bug
@@ -31,3 +31,9 @@ Robert, 2026-10-22, with a screenshot: on a transcript with five speakers the ca
 <!-- SECTION:NOTES:BEGIN -->
 Evidence (scratchpad railbug/): before-1280x760.png - last card bottom 752, bar top 679, 73 px under the bar, rail max-height 744px. After the fix, same page and scroll: 1280x760 bottom 671 / bar 679; 1280x1000 911 / 919; 1100x700 611 / 619; hidden 0 in all three, --player-h 81.375px (after-*.png). Test test_the_rail_ends_above_the_player_bar red without the fix (AssertionError: 'var(--player-h' in ' calc(100dvh - 1rem)'), green with it; all nine test files that load app.js: 632 passed. At 900 px the rail stacks under the transcript and is not sticky; not affected.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The right rail's max-height subtracts the player bar's height, published by app.js as --player-h (ResizeObserver), so This transcript ends above the player. Verified in headless Chrome on synthetic data: 73 px hidden at 1280x760 before, 8 px clear after at three window sizes; test red then green; 632 tests that load app.js passed. Released in 0.9.1 (tag v0.9.1, tree 05defa7d, the same tree as the tested candidate 51ea3e2).
+<!-- SECTION:FINAL_SUMMARY:END -->

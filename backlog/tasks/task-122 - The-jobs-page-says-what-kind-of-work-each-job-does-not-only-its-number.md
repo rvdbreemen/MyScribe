@@ -1,11 +1,11 @@
 ---
 id: TASK-122
 title: The jobs page says what kind of work each job does, not only its number
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-22T20:54:00Z'
-updated_date: '2026-10-22T21:13:00Z'
+updated_date: '2026-10-23T05:04:00Z'
 labels:
   - ui
   - jobs
@@ -31,3 +31,9 @@ Robert, 2026-10-22, with a screenshot of /jobs: the running card reads 'Audio Te
 <!-- SECTION:NOTES:BEGIN -->
 jobs_ui.job_kind(type, params): Transcribe, AI · <task label> (AI when the kind is unknown), Download link, Glossary corrections, Machine check, else the type itself. Badge on the running card and job page, Job column in queue and history; page intro now says the stages listed are a transcription's. Tests red first (2 failed: board and job page), then tests/test_web_jobs.py 54 passed. Screenshots (scratchpad railbug/): jobs-after.png with a running AI · Clean transcript, queued AI · Summary / Transcribe / Download link, history Transcribe / Glossary corrections; job-detail-after.png shows AI · Summary beside queued.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every job shows its kind (Transcribe, AI · <task>, Download link, Glossary corrections, Machine check) on the running card, as a Job column in the queue and history, and on its page. Verified: tests red then green (54 passed), screenshots on synthetic jobs. Released in 0.9.1 (tag v0.9.1, tree 05defa7d, the same tree as the tested candidate 51ea3e2).
+<!-- SECTION:FINAL_SUMMARY:END -->
