@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-23T04:13:00Z'
-updated_date: '2026-10-23T04:13:00Z'
+updated_date: '2026-10-23T05:04:00Z'
 labels:
   - packaging
   - windows
@@ -30,4 +30,6 @@ Robert, 2026-10-23: 'Zorg dat aan het eind van installeren van myscribe altijd d
 
 <!-- SECTION:NOTES:BEGIN -->
 tests/test_uninstall_text.py: test_setup_always_ends_with_myscribe_open_in_the_browser and the updated headless-restart test red first (2 failed), then 10 passed with test_installer_redirectionguard; ISCC compiles (exit 0). Docs: installation.md Updating, README update line, CHANGELOG Changed.
+
+Live on Robert's machine: the final candidate (cdbf7725) and then the published v0.9.1 installer (20b3cdba, matches SHA256SUMS) over his running MyScribe with Start at login on: exit 0, 'asking it to stop' / 'MyScribe stopped; a job that was running starts over', restarted as MyScribe.exe --at-login --headless (hwnd=0, no --no-browser), launcher.log 'Opening MyScribe in your browser. If no browser window appears, go to http://127.0.0.1:4242/'. Not run: a fresh install (the window path); webbrowser.open answering True is the launcher's evidence, the tab itself was not observed by me. Released in 0.9.1 (tag v0.9.1, tree 05defa7d, the same tree as the tested candidate 51ea3e2).
 <!-- SECTION:NOTES:END -->
