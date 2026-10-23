@@ -38,6 +38,12 @@
 
 ### Changed
 
+- **Installing MyScribe ends with it open in your browser.** On Windows the
+  installer now always starts MyScribe when it is done - also when it runs
+  silently - and MyScribe opens in the browser as soon as it is ready: the
+  first start's window shows the download first, and after an update with
+  *Start at login* on it comes back without a window and opens the browser
+  itself. The *Start MyScribe* checkbox on the last page is gone (TASK-125).
 - **The jobs page says what each job does.** Every job now shows its kind -
   *Transcribe*, *AI · Summary*, *Download link*, *Glossary corrections*,
   *Machine check* - on the running card, in a *Job* column in the queue and
