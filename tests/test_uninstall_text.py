@@ -116,7 +116,23 @@ def test_an_update_and_an_uninstall_both_run_the_stop_script_first():
 
 def test_a_stopped_myscribe_with_its_login_item_on_comes_back_headless():
     """The command the login item runs (ADR-026), and only when the item is
-    there: an update must not switch on a login start nobody chose."""
+    there: an update must not switch on a login start nobody chose. Without
+    --no-browser: the launcher opens MyScribe in the browser once it serves."""
     code = "\n".join(_section(_iss(), "Code"))
-    assert "'--at-login --no-browser --headless'" in code
+    assert "'--at-login --headless'" in code
+    assert "--no-browser" not in code
     assert r"RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'MyScribe')" in code
+
+
+def test_setup_always_ends_with_myscribe_open_in_the_browser():
+    """Robert, 2026-10-23: at the end of an install MyScribe always opens in
+    the browser. Not a checkbox, which a silent install skips: the [Code]
+    starts it - the login item's headless way when that is what was running,
+    otherwise the launcher with its window - and either opens the browser
+    once MyScribe serves. One place starts it, so two launchers never race."""
+    iss = _iss()
+    assert _section(iss, "Run") == [], "a [Run] entry would be a second start"
+    code = "\n".join(_section(iss, "Code"))
+    post = code[code.index("procedure CurStepChanged"):code.index("function InitializeUninstall")]
+    assert "ssPostInstall" in post
+    assert "Exec(ExpandConstant('{app}\{#MyAppExe}'), ''" in post, post

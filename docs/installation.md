@@ -189,10 +189,16 @@ prints nothing; what it did is in `MyScribe-launcher.log` beside
 **A release:** download the new file and install it over the old one. Your
 home, library and settings stay where they are; the next start updates the
 speech engine when the new version needs it. On Windows the installer stops a
-running MyScribe first and starts it again without a window when *Start at
-login* is on. From 0.9.0 on, a job that was running starts over afterwards;
-0.8.x has no stop, so it is ended, and its running job is marked interrupted:
-Retry on the jobs page starts it over.
+running MyScribe first and starts it again - without a window when *Start at
+login* is on - and every install ends with MyScribe open in your browser.
+From the 0.9.1 installer on, a running 0.9.0 or later is asked to stop the
+way Quit does, and a job that was running starts over afterwards; 0.8.x has
+no stop, so it is ended, and its running job is marked interrupted: Retry on
+the jobs page starts it over.
+
+On Linux the new release is a new file. If *Start at login* is on, switch it
+off and on again in Settings after you start the new AppImage, so the login
+entry names the new file and not the old one.
 
 **A clone:** `git pull`, then `python install.py`.
 

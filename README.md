@@ -51,8 +51,8 @@ The downloads are not signed yet, so your system warns you the first time.
 how to verify a download, and how to install from source.
 
 To update, install the new file over the old one; your library and settings
-stay. On Windows the installer stops a running MyScribe first and starts it
-again afterwards when it starts at login. [Updating](docs/installation.md#updating).
+stay. On Windows the installer stops a running MyScribe first, and every
+install ends with MyScribe open in your browser. [Updating](docs/installation.md#updating).
 
 ### 2. First start
 

@@ -70,9 +70,6 @@ Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 ; UNVERIFIED on a real uninstall until TASK-089.23 criterion 5 is run.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MyScribe"; Flags: uninsdeletevalue dontcreatekey
 
-[Run]
-Filename: "{app}\{#MyAppExe}"; Description: "Start {#MyAppName}"; Flags: nowait postinstall skipifsilent
-
 [Code]
 // A headless MyScribe (ADR-026) keeps serving the old code after an update,
 // and its python.exe lives in the home, outside {app}, where Restart Manager
@@ -115,12 +112,25 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
 begin
-  // Back the way the login item starts it, and only when that item is there:
-  // an update must not switch on a login start nobody chose.
-  if (CurStep = ssPostInstall) and StoppedOne
+  // Setup always ends with MyScribe open in the browser (Robert, 2026-10-23),
+  // also when it runs silently - which is why this is code and not a [Run]
+  // checkbox, which /SILENT skips. One place starts it, so two launchers
+  // never race for the port.
+  if CurStep <> ssPostInstall then
+    Exit;
+  if StoppedOne
     and RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'MyScribe') then
-    Exec(ExpandConstant('{app}\{#MyAppExe}'), '--at-login --no-browser --headless', '',
-      SW_HIDE, ewNoWait, Code);
+    // Back the way the login item starts it, headless (ADR-026), and only
+    // when that item is there: an update must not switch on a login start
+    // nobody chose. The browser is not switched off here, so the launcher
+    // opens it itself once MyScribe serves.
+    Exec(ExpandConstant('{app}\{#MyAppExe}'), '--at-login --headless', '',
+      SW_HIDE, ewNoWait, Code)
+  else
+    // The launcher with its window: a first start asks where the files go and
+    // shows the download, and it opens the browser once MyScribe serves - or
+    // at once, when a MyScribe is already running.
+    Exec(ExpandConstant('{app}\{#MyAppExe}'), '', '', SW_SHOWNORMAL, ewNoWait, Code);
 end;
 
 function InitializeUninstall(): Boolean;
