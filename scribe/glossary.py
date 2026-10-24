@@ -230,8 +230,9 @@ FUNCTION_WORD_EDGE_FLOOR = 80.0
 # "Peters" and is refused at any floor above it. 80 joins 152 of the 212 and
 # 75 no more; 85 drops 20 ("Java Skript" 83.3, "Jan de Fries" 80). Kept at
 # 80 because a missed join leaves Whisper's text and a wrong one deletes a
-# word. What 80 still lets through:
-# "een", "den" and "men" are 80 against the "en" of "Henken" (see below).
+# word. "een", "den" and "men" are 80 against the "en" of "Henken", but
+# past a claim no function word joins any more (TASK-111, option b); they
+# join only when nothing claims the head - "Henken" listed without "Henk".
 PAST_CLAIM_FLOOR = 80.0
 
 # A lone word this short is never corrected unless it is spelled as one of
