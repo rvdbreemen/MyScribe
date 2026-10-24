@@ -367,6 +367,81 @@ def test_add_recording_of_a_missing_file_sends_nothing(transport, tmp_path):
     assert "not a file" in text and transport.requests == []
 
 
+def test_a_relative_path_is_refused_because_the_servers_folder_is_the_clients_choice(
+        transport, conn, transcribed, tmp_path, monkeypatch):
+    # An MCP client starts the server in a folder of its own choosing (its
+    # install dir, System32); a relative path would resolve against that.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "talk.wav").write_bytes(tiny_wav())
+    text = error_text(call(transport, "add_recording", {"path": "talk.wav"}))
+    assert "absolute" in text and transport.requests == []
+    text = error_text(call(transport, "export_transcript", {
+        "media_id": transcribed, "save_to": "out.srt"}))
+    assert "absolute" in text and transport.requests == []
+    assert not (tmp_path / "out.srt").exists() and jobs_of(conn) == []
+
+
+def test_a_file_that_cannot_be_read_is_a_tool_error_not_an_internal_error(
+        transport, conn, tmp_path, monkeypatch):
+    clip = tmp_path / "talk.wav"
+    clip.write_bytes(tiny_wav())
+    real_open = Path.open
+
+    def denied(self, *args, **kwargs):
+        if self == clip:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    text = error_text(call(transport, "add_recording", {"path": str(clip)}))
+    assert "cannot read" in text and "Permission denied" in text
+    assert jobs_of(conn) == []
+
+
+def test_a_file_that_vanishes_after_the_check_is_a_tool_error(transport, conn, tmp_path, monkeypatch):
+    clip = tmp_path / "talk.wav"
+    clip.write_bytes(tiny_wav())
+    real_multipart = mcp_server._multipart
+
+    def then_gone(fields, path):
+        answer = real_multipart(fields, path)
+        path.unlink()
+        return answer
+
+    monkeypatch.setattr(mcp_server, "_multipart", then_gone)
+    text = error_text(call(transport, "add_recording", {"path": str(clip)}))
+    assert "cannot read" in text and jobs_of(conn) == []
+
+
+def test_any_oserror_a_tool_meets_is_a_tool_error(transport, tmp_path, monkeypatch):
+    clip = tmp_path / "talk.wav"
+    clip.write_bytes(tiny_wav())
+
+    def denied(fields, path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(mcp_server, "_multipart", denied)
+    text = error_text(call(transport, "add_recording", {"path": str(clip)}))
+    assert "Permission denied" in text and str(clip) in text
+
+
+def test_a_read_error_mid_upload_is_not_reported_as_the_app_not_running(tmp_path):
+    # urllib turns any OSError raised while sending the body into a URLError,
+    # which the transport reports as "not answering"; the chunks must not
+    # raise an OSError.
+    clip = tmp_path / "talk.wav"
+    clip.write_bytes(b"x" * 10)
+    _, _, chunks = cli._multipart([], clip)
+    next(chunks)
+    clip.unlink()
+    with pytest.raises(cli.Failed) as caught:
+        list(chunks)
+    assert not isinstance(caught.value, OSError) and "cannot read" in caught.value.message
+    with pytest.raises(cli.Failed) as caught:  # gone before its size is read
+        cli._multipart([], clip)
+    assert "cannot read" in caught.value.message
+
+
 def test_transcribe_again(transport, conn, transcribed):
     job = payload(call(transport, "transcribe_again", {"media_id": transcribed, "tier": "max"}))
     assert job["media_id"] == transcribed and job["status"] == "queued"

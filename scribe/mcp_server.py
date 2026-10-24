@@ -173,10 +173,13 @@ def export_transcript(api: Api, args: dict) -> Answer:
     if "formats" in options:
         raise ToolError("give the formats as the formats argument, not inside options")
     body = {"formats": args.get("formats") or ["srt"], **options}
+    if args.get("save_to"):
+        _absolute(args["save_to"], "save_to")  # before the export is made, not after
     _, headers, data = api.request("POST", f"/media/{args['media_id']}/export", json_body=body,
                                    headers={"Accept": "*/*"})
     if args.get("save_to"):
-        path, replaced = write_file(data, args["save_to"], headers, f"media-{args['media_id']}.export")
+        path, replaced = write_file(data, str(_absolute(args["save_to"], "save_to")), headers,
+                                    f"media-{args['media_id']}.export")
         return Answer({"saved": str(path), "bytes": len(data), "replaced": replaced})
     kind = headers.get("content-type", "")
     name = _filename(headers)
@@ -192,8 +195,20 @@ def export_transcript(api: Api, args: dict) -> Answer:
                     "give save_to, a file or folder on this computer, and it is written there")
 
 
+def _absolute(text: str, name: str) -> Path:
+    """``text`` as a path, refused unless it is absolute (after ``~``).
+
+    The client starts this server in a folder of its own choosing - its
+    install folder, System32 - so a relative path would land there."""
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        raise ToolError(f"{name} must be an absolute path, such as C:/Users/me/talk.wav or "
+                        f"/home/me/talk.wav; {text!r} is relative")
+    return path
+
+
 def add_recording(api: Api, args: dict) -> Answer:
-    path = Path(args["path"]).expanduser()
+    path = _absolute(args["path"], "path")
     if not path.is_file():
         raise ToolError(f"{path} is not a file on this computer")
     options = _options(args)
@@ -275,15 +290,15 @@ TOOLS: tuple[Tool, ...] = (
                       "description": "Default [\"srt\"]"},
           "options": {"type": "object", "description": "Export options as the export dialog has "
                       "them, e.g. {\"speakers\": false} or {\"timestamps\": \"turn\"}"},
-          "save_to": {"type": "string", "description": "A file, or a folder to write it into under "
-                      "its own name; an existing file is replaced"}},
+          "save_to": {"type": "string", "description": "The absolute path of a file, or of a folder "
+                      "to write it into under its own name; an existing file is replaced"}},
          # destructive: save_to replaces a file that is already there.
          export_transcript, required=("media_id",), destructive=True, idempotent=True),
     Tool("add_recording", "Transcribe a file",
          "Send an audio or video file on this computer into the library and queue its "
          "transcription. Answers the recording and its job_id; follow the job with get_job. "
          "Known content is not stored twice (deduped), but is transcribed again.",
-         {"path": {"type": "string", "description": "The file's path on this computer"},
+         {"path": {"type": "string", "description": "The file's absolute path on this computer"},
           "by_path": {"type": "boolean", "description": "Let the app read the file where it is "
                       "instead of sending its bytes; only for files under the app's browse roots"},
           "title": {"type": "string"},
@@ -405,6 +420,11 @@ def call_tool(api: Api, params: Any) -> dict:
         answer = tool.run(api, args)
     except (Failed, ToolError) as exc:
         return _text_result(getattr(exc, "message", None) or str(exc), error=True)
+    except OSError as exc:
+        # A file on this computer that the tool could not use; the chunks of
+        # an upload already turn theirs into Failed (cli._multipart).
+        return _text_result(f"{tool.name}: {exc.strerror or exc}"
+                            + (f": {exc.filename}" if exc.filename else ""), error=True)
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
         # As the CLI: a 2xx answer without what the API promises.
         return _text_result("an answer from the app is not what the API promises "

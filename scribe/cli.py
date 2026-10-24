@@ -224,7 +224,12 @@ def _key_header(key: str | None) -> dict:
 
 
 def _multipart(fields: list[tuple[str, str]], path: Path) -> tuple[str, int, Iterator[bytes]]:
-    """A multipart body that reads ``path`` in chunks: (boundary, length, chunks)."""
+    """A multipart body that reads ``path`` in chunks: (boundary, length, chunks).
+
+    A file that cannot be read - no permission, gone since it was checked -
+    is `Failed` with ``cannot read``, here and while the chunks are sent: an
+    OSError out of the body would reach urllib, which reports it as a
+    URLError, and the user would read "MyScribe is not answering"."""
     boundary = "myscribe-" + secrets.token_hex(16)
     head = b""
     for name, value in fields:
@@ -234,16 +239,26 @@ def _multipart(fields: list[tuple[str, str]], path: Path) -> tuple[str, int, Ite
     head += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
              f"filename=\"{_quote(path.name)}\"\r\nContent-Type: {kind}\r\n\r\n").encode("utf-8")
     tail = f"\r\n--{boundary}--\r\n".encode("ascii")
-    length = len(head) + path.stat().st_size + len(tail)
+    try:
+        length = len(head) + path.stat().st_size + len(tail)
+    except OSError as exc:
+        raise _unreadable(path, exc) from None
 
     def chunks() -> Iterator[bytes]:
         yield head
-        with path.open("rb") as handle:
-            while block := handle.read(CHUNK):
-                yield block
+        try:
+            with path.open("rb") as handle:
+                while block := handle.read(CHUNK):
+                    yield block
+        except OSError as exc:
+            raise _unreadable(path, exc) from None
         yield tail
 
     return boundary, length, chunks()
+
+
+def _unreadable(path: Path, exc: OSError) -> Failed:
+    return Failed(Exit.USAGE, f"cannot read {path}: {exc.strerror or exc}")
 
 
 def _quote(text: str) -> str:

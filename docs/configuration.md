@@ -186,7 +186,7 @@ a lost answer gives the first answer back and queues nothing new.
 | --- | --- | --- |
 | 0 | `OK` | It worked; for `wait`, the job is done |
 | 1 | `SERVER_ERROR` | The app answered with a server error, with something that is not the API's answer, or with an answer that broke off |
-| 2 | `USAGE` | A wrong command line (a negative `--timeout`, say), a file that is not there, or an `--out` that cannot be written |
+| 2 | `USAGE` | A wrong command line (a negative `--timeout`, say), a file that is not there or cannot be read, or an `--out` that cannot be written |
 | 3 | `NOT_RUNNING` | Nothing answers on 127.0.0.1 at that port |
 | 4 | `NOT_FOUND` | No such recording or job |
 | 5 | `CONFLICT` | No transcript yet, or an idempotency key that is in use or was used for another request |
@@ -212,8 +212,8 @@ another port.
 | `get_recording` | One recording, whether it has a transcript, its latest job |
 | `search_transcripts` | Transcript segments that contain every word of `query` |
 | `get_transcript` | The transcript as the JSON export, word by word |
-| `export_transcript` | `formats` (default `["srt"]`) and `options`. One text format comes back as text. A docx, or several formats (a ZIP), needs `save_to`, a file or folder on this computer |
-| `add_recording` | Send the file at `path` in and queue its transcription: the bytes, or with `by_path` the path, for a file under the browse roots. Takes the transcription options, `title`, `folder_id` and `idempotency_key` |
+| `export_transcript` | `formats` (default `["srt"]`) and `options`. One text format comes back as text. A docx, or several formats (a ZIP), needs `save_to`, the absolute path of a file or folder on this computer |
+| `add_recording` | Send the file at `path` (absolute) in and queue its transcription: the bytes, or with `by_path` the path, for a file under the browse roots. Takes the transcription options, `title`, `folder_id` and `idempotency_key` |
 | `transcribe_again` | Queue a new transcription of a recording. No options repeats the last request |
 | `ask_ai` | Queue an AI job (`kind` summary, chapters, ... or custom with a `prompt`) |
 | `list_jobs`, `get_job`, `cancel_job` | Follow and cancel jobs |
@@ -253,5 +253,8 @@ configuration (`claude_desktop_config.json` for Claude Desktop):
 
 On macOS and Linux the Python is `.venv/bin/python`. Pass `PYTHONPATH`
 through `env` rather than relying on a working directory, because not every
-client sets one. MyScribe itself must be running: when it is not, every
+client sets one. For the same reason `add_recording`'s `path` and
+`export_transcript`'s `save_to` must be absolute paths: a relative one is
+refused with a tool error rather than read or written in whatever folder the
+client started the server in. MyScribe itself must be running: when it is not, every
 tool answers `MyScribe is not answering on 127.0.0.1:4242`.

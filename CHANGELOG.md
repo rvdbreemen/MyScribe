@@ -30,7 +30,9 @@
   `transcribe`, `jobs`, `cancel`, `wait`, `transcript` and `export`;
   `--idempotency-key` on `upload` and `transcribe`, `--json` for the API's
   own answer. `export` and `transcript --out` replace a file that is
-  already there and say so on stderr. Each outcome has its own exit code
+  already there and say so on stderr. An `upload` of a file that cannot be
+  read, or that disappears while it is sent, ends with `cannot read <file>`
+  and the usage exit code, not with "MyScribe is not answering". Each outcome has its own exit code
   (not running, not found, conflict, refused, job not done, wait timed
   out), listed in [Configuration](docs/configuration.md). There is no `myscribe` command
   yet: the project is not packaged, so the environment installs no console
@@ -45,7 +47,9 @@
   never opens the library itself. A failed action comes back as a tool
   result marked as an error, with the API's status, code and detail;
   arguments that do not fit a tool's schema come back the same way, with
-  what was wrong. `export_transcript` returns one text format as text; a
+  what was wrong, and so does a file the tool cannot read. `path` and
+  `save_to` must be absolute: a relative one is refused, because the client
+  chooses the folder the server runs in. `export_transcript` returns one text format as text; a
   docx or several formats (a ZIP) need `save_to`, and with `save_to` any
   export is written to that file or folder, replacing a file already there. `add_recording` sends the file's bytes,
   or its path with `by_path`, and takes an `idempotency_key`; a replayed
