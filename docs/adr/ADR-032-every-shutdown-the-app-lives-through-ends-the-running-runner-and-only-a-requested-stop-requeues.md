@@ -121,7 +121,7 @@ without its job page open: the runner goes with the app, and the row stays `runn
 * The lifespan's end stops the supervisor before the phone door, the feeds and the watcher (agent addition, approved by Robert on 2026-10-25).
 * The app's server cancels open reads, a job page's event stream among them, `SHUTDOWN_GRACE_SECONDS` (3 s) after a stop begins (agent addition, approved by Robert on 2026-10-25).
 * An upload in flight finishes, up to `UPLOAD_FINISH_SECONDS` (30 s) after the stop began, and is cut there: `POST /api/media`, `/transcribe/upload`, `/record/{session}/chunk` and `/finish`, and the phone door's POST (agent addition, approved by Robert on 2026-10-25).
-* The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace.
+* The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace. A Close of the door alone - its button, its fifteen minutes - still cuts an upload after that grace.
 * The launcher's `APP_SIGTERM_WAIT` (75 s) and `STOP_WAIT` (80 s) outlast the app's whole stop (62 s at worst).
 * The hard stop says "marked interrupted" only where the app lived through its SIGTERM, or on Windows.
 

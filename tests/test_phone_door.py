@@ -761,11 +761,11 @@ def _rest_and_answer(sock: socket.socket, rest: bytes) -> bytes:
     return answer
 
 
-def test_an_upload_in_flight_when_the_door_closes_is_allowed_to_finish(received, clock, publisher, logs):
-    """Robert, 2026-10-25: "exempt uploads". A Close - the button, the
-    fifteen minutes, the app stopping - used to cut a recording still on its
-    way in after GRACE_SECONDS (2 s). It now finishes, within the stop's
-    upload bound, and the laptop has the file."""
+def test_an_upload_in_flight_when_the_app_stops_is_allowed_to_finish(received, clock, publisher, logs):
+    """Robert, 2026-10-25: "exempt uploads". The app's stop used to cut a
+    recording still on its way in after GRACE_SECONDS (2 s). It now
+    finishes, within the deadline the app's stop hands the door, and the
+    laptop has the file."""
     import time
 
     d = make_door(received, clock, publisher)
@@ -774,7 +774,8 @@ def test_an_upload_in_flight_when_the_door_closes_is_allowed_to_finish(received,
         payload = b"\x00audio" * 40_000
         sock, rest = _half_an_upload(opening, payload)
         time.sleep(0.3)  # the request has begun reading its body
-        closing = threading.Thread(target=d.close, args=("closed",))
+        closing = threading.Thread(target=d.close, args=("app stopped",),
+                                   kwargs={"upload_deadline": time.monotonic() + 30})
         closing.start()
         time.sleep(phone_door.GRACE_SECONDS + 1.5)
         assert closing.is_alive(), "the door closed under an upload in flight"
@@ -808,3 +809,35 @@ def test_an_upload_still_going_at_a_passed_deadline_is_cut_after_the_grace(recei
         assert received.files == []
     finally:
         d.close()
+
+
+def test_a_close_of_the_door_alone_still_cuts_an_upload_after_the_grace(received, clock, publisher, logs):
+    """The exemption is for the app's stop. The Close button answers a request
+    on the laptop and the fifteen minutes are the door's promise; neither
+    waits half a minute for a phone, as before TASK-112.09."""
+    import time
+
+    d = make_door(received, clock, publisher)
+    try:
+        opening = d.open()
+        sock, rest = _half_an_upload(opening, b"\x00audio" * 40_000)
+        time.sleep(0.3)
+        started = time.monotonic()
+        d.close("closed on the laptop")
+        took = time.monotonic() - started
+        assert took < phone_door.GRACE_SECONDS + 3, f"the close took {took:.1f} s"
+        assert not _rest_and_answer(sock, rest).startswith(b"HTTP/1.1 200")
+        assert received.files == []
+    finally:
+        d.close()
+
+
+def test_a_second_close_waits_as_long_as_the_first_may_take(received, clock, publisher, logs):
+    """A close inside the app's stop may join the listener for
+    STOP_JOIN_SECONDS; a caller that finds it under way must not give up
+    sooner and go on to close the database under the phone's upload."""
+    d = make_door(received, clock, publisher)
+    waits: list[float] = []
+    d._closed.wait = lambda timeout=None: waits.append(timeout) or True  # the door is closing elsewhere
+    d.close()  # nothing open: this caller waits for the close under way
+    assert waits and waits[0] >= phone_door.UvicornListener.STOP_JOIN_SECONDS, waits

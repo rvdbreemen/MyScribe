@@ -1919,7 +1919,7 @@
           "The lifespan's end stops the supervisor before the phone door, the feeds and the watcher (agent addition, approved by Robert on 2026-10-25).",
           "The app's server cancels open reads, a job page's event stream among them, SHUTDOWNGRACESECONDS (3 s) after a stop begins (agent addition, approved by Robert on 2026-10-25).",
           "An upload in flight finishes, up to UPLOADFINISHSECONDS (30 s) after the stop began, and is cut there: POST /api/media, /transcribe/upload, /record/{session}/chunk and /finish, and the phone door's POST (agent addition, approved by Rober...",
-          "The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace.",
+          "The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace. A Close of the door alone - its button, its fifteen minutes - still cuts an upload after that grace.",
           "The launcher's APPSIGTERMWAIT (75 s) and STOPWAIT (80 s) outlast the app's whole stop (62 s at worst).",
           "The hard stop says \"marked interrupted\" only where the app lived through its SIGTERM, or on Windows."
         ],

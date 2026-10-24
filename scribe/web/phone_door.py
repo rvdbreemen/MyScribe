@@ -85,10 +85,11 @@ SHORTER_ENV = "SCRIBE_PHONE_DOOR_SECONDS"
 # address, owned by nobody, and a UDP connect sends no packet at all.
 ROUTE_PROBE = ("192.0.2.1", 9)
 
-# How long a Close waits for a request still open before cutting it off. An
-# upload in flight is let finish, up to `stopping.UPLOAD_FINISH_SECONDS`
-# (Robert, 2026-10-25, TASK-112.09); a Close inside the app's stop shares the
-# app's deadline, and never gives an upload less than this.
+# How long a Close waits for a request still open before cutting it off. A
+# Close inside the app's stop lets an upload in flight finish until the app's
+# deadline (`stopping.UPLOAD_FINISH_SECONDS` after the app's stop began;
+# Robert, 2026-10-25, TASK-112.09), and never gives it less than this. Any
+# other Close - the button, the fifteen minutes - cuts it after this.
 GRACE_SECONDS = 2.0
 
 Accept = Callable[[BinaryIO, str], object]
@@ -269,8 +270,9 @@ class UvicornListener:
 
     def stop(self, timeout: float = STOP_JOIN_SECONDS, *, upload_deadline: float | None = None) -> None:
         """Stop the server and wait for its thread. ``upload_deadline``: the
-        app's, when the door closes inside the app's own stop."""
-        self._server.upload_deadline = upload_deadline
+        app's, when the door closes inside the app's own stop; without it an
+        upload gets the grace only."""
+        self._server.upload_deadline = time.monotonic() if upload_deadline is None else upload_deadline
         self._server.should_exit = True
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -441,8 +443,9 @@ class Door:
                 stop, self._stop_watch = self._stop_watch, None
                 received = len(self.received)
         if opening is None:
-            # Closed already, or being closed by another thread right now.
-            self._closed.wait(20)
+            # Closed already, or being closed by another thread right now,
+            # which may join its listener for STOP_JOIN_SECONDS.
+            self._closed.wait(UvicornListener.STOP_JOIN_SECONDS + 5)
             return
         if stop is not None:
             stop.set()

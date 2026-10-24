@@ -89,6 +89,21 @@ def open_browser_when_ready(
     return thread
 
 
+def build_server(app, port: int) -> uvicorn.Server:
+    """The app's server: open reads cut after `SHUTDOWN_GRACE_SECONDS`, an
+    upload let finish up to `stopping.UPLOAD_FINISH_SECONDS` (ADR-032). The
+    stop's deadline for uploads goes to the lifespan, which hands it to the
+    phone door it closes, so a phone upload shares the app's bound."""
+    from scribe.web import stopping
+
+    return stopping.StoppingServer(
+        uvicorn.Config(app, host=HOST, port=port),
+        is_upload=stopping.is_app_upload,
+        grace=SHUTDOWN_GRACE_SECONDS,
+        on_stopping=lambda deadline: setattr(app.state, "upload_deadline", deadline),
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     # `.env` first, before anything reads the environment: scribe.paths fixes
@@ -100,16 +115,7 @@ def main(argv: list[str] | None = None) -> None:
     from scribe.app import create_app
 
     app = create_app(start_supervisor=not args.no_supervisor)
-    from scribe.web import stopping
-
-    # The stop's deadline for uploads goes to the lifespan, which hands it to
-    # the phone door it closes, so a phone upload shares the app's bound.
-    server = stopping.StoppingServer(
-        uvicorn.Config(app, host=HOST, port=args.port),
-        is_upload=stopping.is_app_upload,
-        grace=SHUTDOWN_GRACE_SECONDS,
-        on_stopping=lambda deadline: setattr(app.state, "upload_deadline", deadline),
-    )
+    server = build_server(app, args.port)
     # The stop route's way out: uvicorn's own flag, so the lifespan runs to
     # its end - the same path Ctrl+C takes (TASK-112.03).
     app.state.request_exit = lambda: setattr(server, "should_exit", True)
