@@ -690,6 +690,25 @@ def test_a_short_word_listed_as_a_variant_is_still_corrected(sentence, entry, ex
     assert _read(words_from(sentence), [entry]) == expected
 
 
+@pytest.mark.parametrize(
+    ("sentence", "entry", "expected"),
+    [
+        ("de api werkt", term("API"), "de api werkt"),
+        ("de gpu is heet", term("GPU"), "de gpu is heet"),
+        ("Ik ben er", term("Ben"), "Ik ben er"),
+        ("de api werkt", term("API", variants=("api",)), "de API werkt"),
+    ],
+)
+def test_a_short_terms_capitals_are_fixed_only_through_a_listed_variant(
+    sentence, entry, expected
+):
+    """The disclosed cost of the length guard: the listed term itself is not
+    a variant, so "api" stays lower case with "API" listed - counting it
+    would also turn "Ik ben er" into "Ik Ben er" with "Ben" listed. Listing
+    the lower-case spelling as a variant fixes the capitals again."""
+    assert _read(words_from(sentence), [entry]) == expected
+
+
 def test_a_short_term_spelled_right_still_claims_its_word():
     """The guards stop a correction, never a claim: an exact "Ida" still
     holds its word, so nothing else may be written over it (TASK-103)."""
@@ -750,6 +769,24 @@ def test_a_listed_name_keeps_the_function_word_after_it(sentence, terms):
     Petersen ik". When the head is itself a listed term and the word past it
     is a function word, the join is refused."""
     assert _read(words_from(sentence), [term(t) for t in terms]) == sentence
+
+
+@pytest.mark.parametrize(
+    ("sentence", "terms", "expected"),
+    [
+        ("Jan de Fries kwam", ["Jan", "Jan de Vries"], "Jan de Vries kwam"),
+        ("Henk van Dijck kwam", ["Henk", "Henk van Dijk"], "Henk van Dijk kwam"),
+        ("Jan de Fries kwam", ["Jan de Vries"], "Jan de Vries kwam"),
+    ],
+)
+def test_a_listed_first_name_does_not_stop_its_full_name_with_a_tussenvoegsel(
+    sentence, terms, expected
+):
+    """Option b refuses a join when the leftover past the claim is a function
+    word ("Niels en"), not whenever a function word is somewhere past it.
+    With "Jan" and "Jan de Vries" both listed, the leftover of "Jan de Fries"
+    is "de Fries": the name still needs its correction (review of 8ebaf4b)."""
+    assert _read(words_from(sentence), [term(t) for t in terms]) == expected
 
 
 @pytest.mark.parametrize(

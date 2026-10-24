@@ -26,8 +26,11 @@
   or when it is a Dutch or English function word such as "door" or "maar".
   The exception is a word you listed as a variant (capitals aside). The
   cost: a short name is no longer guessed, and its capitals are not fixed
-  either. "Ari" is not corrected to *Arie*, and "ida" is not corrected to
-  *Ida*, unless you list that spelling as a variant.
+  either. "Ari" is not corrected to *Arie*, "ida" is not corrected to
+  *Ida*, and with *API*, *GPU* or *NOS* listed a lone "api", "gpu" or "nos"
+  stays lower case, unless you list that spelling as a variant. Only a
+  word that stands alone is protected: with *Isa* listed, "I saw it"
+  still becomes "Isa it".
   A word between the parts of a name is no longer deleted: "Marieke en
   Vermeulen" stays as written with *Marieke Vermeulen* listed. A function
   word next to a name now counts as part of it only when it is spelled as
@@ -35,8 +38,10 @@
   Vermeulen*, while "Linked In" still becomes *LinkedIn*.
   With both *Niels* and *Nielsen* listed, "Niels en" is no longer joined
   into *Nielsen*. With only *Nielsen* listed it still is. A listed name is
-  never joined to a function word after it, so with both *Linked* and
-  *LinkedIn* listed, "Linked In" stays as written (TASK-111).
+  never joined to function words alone after it, so with both *Linked* and
+  *LinkedIn* listed, "Linked In" stays as written. When more of a name
+  follows, it is still joined: with *Jan* and *Jan de Vries* listed, "Jan de
+  Fries" becomes *Jan de Vries* (TASK-111).
 
 ### Changed
 

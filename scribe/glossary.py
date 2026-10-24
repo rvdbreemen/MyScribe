@@ -112,16 +112,24 @@ clears a rule easily: "het" is 75 against "Hetty" and 'HT' both ways, "the"
 85.7 against "Thea", "door" 88.9 against "Doori". A spelling already right
 still claims its word; only a correction is stopped. The cost is that a
 short name is no longer guessed: "Ari" is left for "Arie", "ida" for "Ida".
+The listed term itself is not a variant, so the capitals of a short term are
+not fixed either: with "API", "GPU" or "NOS" listed, a lone "api", "gpu" or
+"nos" stays lower case unless that spelling is listed as a variant. Counting
+the term itself would bring back "Ik ben er" -> "Ik Ben er" with "Ben"
+listed. Only a lone word is guarded: "I saw it" with "Isa" listed still
+reads "Isa it", a two-word split whose pieces pass the edge test.
 
 A name followed by a word that completes a longer listed name: "Niels en"
 is 93.3 against "Nielsen", and "en" is exactly the leftover. Robert's
 decision (TASK-111, option b): when the head is itself a listed term - a
-claim - nothing reaches past it over a function word, so with "Niels" and
-"Nielsen" both listed "Niels en Peter" stays, and so do "Henk een" and
-"Henk den" with "Henk" and "Henken". With only "Nielsen" listed there is no
-claim and it is joined, as it always was: the text is the same as a split
-"Niels en", and only the audio knows. The same rule refuses "Linked In"
-when "Linked" and "LinkedIn" are both listed.
+claim - nothing reaches past it if every word past the claim is a function
+word, so with "Niels" and "Nielsen" both listed "Niels en Peter" stays, and
+so do "Henk een" and "Henk den" with "Henk" and "Henken". With only
+"Nielsen" listed there is no claim and it is joined, as it always was: the
+text is the same as a split "Niels en", and only the audio knows. The same
+rule refuses "Linked In" when "Linked" and "LinkedIn" are both listed. A
+function word followed by more of the name does not stop it: with "Jan" and
+"Jan de Vries" listed, "Jan de Fries" still reads "Jan de Vries".
 
 Known and accepted: the edge test refuses some splits the layer joined
 before TASK-110. In a sweep of 21,425 sound-alike splits (2026-10-12), 111
@@ -231,8 +239,10 @@ FUNCTION_WORD_EDGE_FLOOR = 80.0
 # 75 no more; 85 drops 20 ("Java Skript" 83.3, "Jan de Fries" 80). Kept at
 # 80 because a missed join leaves Whisper's text and a wrong one deletes a
 # word. "een", "den" and "men" are 80 against the "en" of "Henken", but
-# past a claim no function word joins any more (TASK-111, option b); they
-# join only when nothing claims the head - "Henken" listed without "Henk".
+# past a claim a leftover of only function words joins no more (TASK-111,
+# option b); they join only when nothing claims the head - "Henken" listed
+# without "Henk". "Jan de Fries" (80) still joins past a listed "Jan": its
+# leftover "de Fries" is more than a function word.
 PAST_CLAIM_FLOOR = 80.0
 
 # A lone word this short is never corrected unless it is spelled as one of
@@ -612,11 +622,14 @@ def corrections_for(
         # "Sophie a" is a fuzzy match for a listed "Sophia", and would name
         # the other person and drop "a". Not one over the same words -
         # "Janssen" is 92.3 against a listed "Jansen", and both are wanted.
-        # And never past a function word (TASK-111, Robert's option b): with
-        # "Niels" and "Nielsen" listed, "Niels en" is 93.3 against "Nielsen"
-        # and "en" is exactly the rest of it, so "Niels en Peter" read
-        # "Nielsen Peter". With only "Nielsen" listed there is no claim, and
-        # the join stays - the text of a split "Niels en" is the same.
+        # And never when all that lies past the claim is function words
+        # (TASK-111, Robert's option b): with "Niels" and "Nielsen" listed,
+        # "Niels en" is 93.3 against "Nielsen" and "en" is exactly the rest
+        # of it, so "Niels en Peter" read "Nielsen Peter". All, not any:
+        # with "Jan" and "Jan de Vries" listed, "de Fries" is past the claim
+        # and the name still needs its correction. With only "Nielsen"
+        # listed there is no claim, and the join stays - the text of a split
+        # "Niels en" is the same.
         claimed = max((c[1] for c in here if c[3] is None), default=0)
         kept = _bare(
             "".join(str(w.get("text") or "") for w in rows[index : index + claimed])
@@ -632,7 +645,7 @@ def corrections_for(
                     c[4] == RULE_FUZZY
                     and c[5] >= PAST_CLAIM_FLOOR
                     and (_bare(c[3]).startswith(kept) or _bare(c[6]).startswith(kept))
-                    and not any(
+                    and not all(
                         _is_function_word(_core(str(w.get("text") or "")))
                         for w in rows[index + claimed : index + c[1]]
                     )
