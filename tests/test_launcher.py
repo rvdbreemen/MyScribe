@@ -3359,3 +3359,21 @@ def test_a_login_problem_is_shown_in_the_window_of_the_next_start(layout, monkey
 
     assert len(seen) == 2 and seen[1] is None
     assert "At the last login" in seen[0] and f"Port {port}" in seen[0]
+
+
+def test_setup_against_a_running_myscribe_still_says_how_to_reach_the_questions(
+        layout, a_second_start, capsys):
+    """The lock sends --setup to the second-start path; the sentence
+    `first_run` gives a --setup against one that serves must survive that."""
+    port = _free_port()
+    holder = _hold_lock(a_second_start.lock)
+    server = _serve(port, {"ok": True})
+    try:
+        code = launcher.main(_argv(layout, port, "--headless", "--setup", "--no-browser"))
+    finally:
+        _let_go(holder)
+        server.shutdown()
+        server.server_close()
+
+    assert code == 0 and a_second_start.did == []
+    assert "quit it first" in capsys.readouterr().out

@@ -2604,6 +2604,10 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
         launch.watching(run_prove, launch.layout, report, launch.port)
 
 
+SETUP_WHILE_RUNNING = ("MyScribe is already running; quit it first and start again "
+                       "with --setup to answer the questions.")
+
+
 def first_run(launch: Launch, ask: Callable[[dict], dict | None] | None,
               report: Callable[[str, str], None],
               force_setup: bool = False, at_login: bool = False,
@@ -2640,8 +2644,7 @@ def first_run(launch: Launch, ask: Callable[[dict], dict | None] | None,
     if launch.serving:  # another instance answers; nothing to set up or start
         if force_setup:
             # Short on purpose: the window closes three seconds after `done`.
-            report("status", "MyScribe is already running; quit it first and start again "
-                             "with --setup to answer the questions.")
+            report("status", SETUP_WHILE_RUNNING)
         return True
     if wants_setup(launch.layout, force=force_setup, at_login=at_login):
         # `ask` is None on every door with no dialog - the console, and a build
@@ -3565,7 +3568,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         if quiet:
             console("error", ONE_JOB_LOCKED.format(home=layout.home))
             return 1
-        return another_start(args.port, not args.no_browser, console, windowed)
+        code = another_start(args.port, not args.no_browser, console, windowed)
+        if args.setup:  # as `first_run` answers --setup against one that serves
+            console("status", SETUP_WHILE_RUNNING)
+        return code
     if lock.problem:
         console("status", lock.problem)
     try:
