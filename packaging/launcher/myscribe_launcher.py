@@ -3441,14 +3441,15 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
                 leave_a_trace("in the setup window", traceback.format_exc())
                 result = None
             answer.put(result)
-        # Under `sitting`, so a turn cannot take the lock between the look and
+        # Under `turning`, so a turn cannot take the lock between the look and
         # the letting go; while one runs it lets go itself (TASK-112.07 review).
-        free = sitting.acquire(blocking=False)
+        # Not under `sitting`: a Setup click that met the pump there was dropped.
+        free = turning.acquire(blocking=False)
         try:
             stopped = after_the_app(launch, lock, busy=not free)
         finally:
             if free:
-                sitting.release()
+                turning.release()
         if stopped:
             status.set(stopped)
         root.after(200, pump)
@@ -3487,6 +3488,13 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         return bool(on_tk(waiting_then_ask))
 
     sitting = threading.Lock()
+    # A turn holds this for its whole run; the pump only looks while it is
+    # free, and never makes a turn give up - it waits a pump tick at most.
+    turning = threading.Lock()
+
+    def take_a_turn(work: Callable[[], object]) -> None:
+        with turning:
+            window_turn(lock, launch, work, launch.report)
 
     def in_a_worker(work: Callable, name: str) -> None:
         def guarded() -> None:
@@ -3511,10 +3519,8 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         model in the setup child (ADR-001, TASK-089.13).
         """
         in_a_worker(
-            lambda: window_turn(
-                lock, launch,
-                lambda: open_sitting(launch, ask, launch.report, force_setup=True, retry=retry),
-                launch.report),
+            lambda: take_a_turn(
+                lambda: open_sitting(launch, ask, launch.report, force_setup=True, retry=retry)),
             "myscribe-setup",
         )
 
@@ -3532,10 +3538,8 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         if notice:  # the last login's problem, before this start's own lines
             launch.report("status", notice)
         in_a_worker(
-            lambda: window_turn(
-                lock, launch,
-                lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry),
-                launch.report),
+            lambda: take_a_turn(
+                lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry)),
             "myscribe-launch",
         )
 

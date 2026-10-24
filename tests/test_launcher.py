@@ -3687,3 +3687,52 @@ def test_the_launcher_that_holds_the_lock_writes_its_port_where_others_can_read_
     finally:
         lock.release()
     assert launcher.held_port(tmp_path / "none.lock") is None
+
+
+def test_a_setup_click_during_the_pump_still_opens_the_sitting(layout, monkeypatch, capsys):
+    """The pump looks at the app under a gate of its own. When it took the
+    window's `sitting` lock for that, a Setup click that landed in a pump
+    tick found `sitting` taken and was dropped without a word. Made
+    deterministic: the click is invoked from inside the pump's look, which
+    then takes 0.3 s."""
+    with capsys.disabled():
+        tk = _tk_or_skip()
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: True)
+
+    def first_run(launch, *args, **kwargs):
+        launch.app = _App(alive=True)
+        return True
+
+    monkeypatch.setattr(launcher, "first_run", first_run)
+    sat: list[str] = []
+    monkeypatch.setattr(launcher, "open_sitting", lambda *a, **k: sat.append("sitting"))
+    root_of: list = []
+    clicked: list[str] = []
+    real_look = launcher.after_the_app
+
+    def look(launch, lock, busy):
+        if root_of and not clicked:
+            clicked.append("setup")
+            setup = next(widget for frame in root_of[0].winfo_children()
+                         for widget in frame.winfo_children()
+                         if isinstance(widget, tk.Button) and widget.cget("text") == "Setup")
+            setup.invoke()
+            time.sleep(0.3)
+        return real_look(launch, lock, busy)
+
+    monkeypatch.setattr(launcher, "after_the_app", look)
+
+    def mainloop(self, n=0):
+        root_of.append(self)
+        until = time.monotonic() + 2.0
+        while time.monotonic() < until:
+            self.update()
+            time.sleep(0.02)
+        self.destroy()
+
+    monkeypatch.setattr(tk.Tk, "mainloop", mainloop)
+
+    with capsys.disabled():
+        assert launcher.main(_argv(layout, _free_port(), "--no-browser")) == 0
+    assert clicked == ["setup"]
+    assert sat == ["sitting"], "the Setup click was dropped"
