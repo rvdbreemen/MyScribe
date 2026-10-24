@@ -190,8 +190,10 @@ def recording_factory(recorder: RecordingTransport):
 # --- reading a recorded answer ---------------------------------------------------------
 
 
-HINT_KEYS = tuple(openai_like.OpenRouterProvider.reasoning_off_body["extra_body"])
-"""The top-level body keys OpenRouter's hint puts on the wire (`reasoning`)."""
+HINT = dict(openai_like.OpenRouterProvider.reasoning_off_body["extra_body"])
+"""What OpenRouter's hint puts on the wire (`reasoning: {enabled: false}`).
+Compared by value: a call without the hint carries a `reasoning` key too,
+the reasoning limit (TASK-123)."""
 
 
 @dataclass
@@ -246,7 +248,9 @@ def read_call(label: str, wire: list[Wire], *, estimate: int | None = None) -> C
         content=bool(((choices[0] or {}).get("message") or {}).get("content")),
         cost=usage.get("cost"),
         estimate=estimate,
-        hint_asked=any(key in first for key in HINT_KEYS) if first is not None else None,
+        hint_asked=(
+            all(first.get(key) == value for key, value in HINT.items()) if first is not None else None
+        ),
         error=next((w.error for w in reversed(wire) if w.error), None),
     )
     native = (choices[0] or {}).get("native_finish_reason")

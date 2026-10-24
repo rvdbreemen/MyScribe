@@ -549,6 +549,7 @@ REASONING_KEYS = (
     "upstream",
     "hint_ignored",
     "cap_not_enforced",
+    "reasoning_cap",
 )
 
 
@@ -900,6 +901,17 @@ def test_a_cut_off_note_names_what_it_spent_and_whether_the_hint_went(conn, monk
     missing = [words for words in ("completion_tokens=400", "reasoning_tokens=388", "upstream='Azure'")
                if words not in message]
     assert missing == [], message
+
+
+def test_the_row_and_a_cut_off_refusal_name_the_reasoning_limit_sent():
+    """TASK-123: OpenRouter calls carry a reasoning limit, and the rerun that
+    proves it helped has to be able to show it went out - on the row
+    (`reasoning_record`) and in a refusal, which writes no row."""
+    answer = replace(spent("x", completion_tokens=6000, reasoning_tokens=2400), reasoning_cap=2400)
+
+    assert tasks.reasoning_record(answer, 6000)["reasoning_cap"] == 2400
+    assert tasks.reasoning_record(spent("x"), 6000)["reasoning_cap"] is None
+    assert "reasoning_cap=2400" in tasks._spent(answer)
 
 
 def test_a_one_call_custom_answer_cut_off_at_the_cap_is_still_stored(conn, media, monkeypatch):

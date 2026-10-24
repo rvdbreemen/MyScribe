@@ -289,14 +289,16 @@ REASONING_KEYS = ("reasoning", "reasoning_effort")
 
 
 @pytest.mark.parametrize(
-    "cls, key, value",
+    "cls, key, value, plain_body",
     [
-        (openai_like.OpenRouterProvider, "reasoning", {"enabled": False}),
-        (openai_like.OpenAIProvider, "reasoning_effort", "none"),
+        # Without the hint OpenRouter carries the reasoning limit (TASK-123).
+        (openai_like.OpenRouterProvider, "reasoning", {"enabled": False},
+         {"reasoning": {"max_tokens": 1600}}),
+        (openai_like.OpenAIProvider, "reasoning_effort", "none", {}),
     ],
     ids=["openrouter", "openai"],
 )
-def test_each_cloud_provider_says_no_reasoning_its_own_way(cls, key, value):
+def test_each_cloud_provider_says_no_reasoning_its_own_way(cls, key, value, plain_body):
     """One hint on the seam, one wire field per provider, and no caller that
     knows which. Measured 2026-09-11: OpenRouter's `reasoning: {enabled:
     false}` took deepseek-v4-flash and gpt-5.6-luna to 0 reasoning tokens;
@@ -315,7 +317,7 @@ def test_each_cloud_provider_says_no_reasoning_its_own_way(cls, key, value):
 
     plain = Recorder(completion())
     provider(cls, plain).complete(REQUEST)
-    assert [k for k in REASONING_KEYS if k in plain.body()] == []
+    assert {k: plain.body()[k] for k in REASONING_KEYS if k in plain.body()} == plain_body
 
 
 @pytest.mark.parametrize(
@@ -361,6 +363,7 @@ def test_a_refused_hint_is_retried_once_without_it(cls, refusal):
     assert answer.text == "Paris"
     assert rec.calls == 2
     assert [k for k in REASONING_KEYS if k in rec.body(0)] != []
+    # Nothing in the hint's place, not even OpenRouter's limit (ADR-030).
     assert [k for k in REASONING_KEYS if k in rec.body(1)] == []
     assert rec.body(1)["temperature"] == hinted().temperature, "only the hint was dropped"
     assert answer.hint_sent is False
@@ -389,15 +392,22 @@ def test_a_context_length_400_with_the_hint_on_is_context_too_long_after_one_cal
 
 
 @pytest.mark.parametrize(
-    "cls", [openai_like.OpenRouterProvider, openai_like.OpenAIProvider], ids=["openrouter", "openai"]
+    "cls, calls",
+    [(openai_like.OpenRouterProvider, 2), (openai_like.OpenAIProvider, 1)],
+    ids=["openrouter", "openai"],
 )
-def test_a_400_with_no_hint_on_the_wire_is_not_retried(cls):
+def test_a_400_with_no_hint_on_the_wire_is_not_retried_for_the_hint(cls, calls):
+    """No hint to drop. On OpenRouter the reasoning limit is on the wire and
+    this 400 mentions reasoning, so it costs one more call without the limit
+    (ADR-030) - a false positive here, since the wording is about the hint,
+    paid with one more unbilled 400 - and never a third."""
     rec = Recorder(error(400, "Reasoning is mandatory for this endpoint and cannot be disabled."))
 
     with pytest.raises(base.BadResponse):
         provider(cls, rec).complete(REQUEST)
 
-    assert rec.calls == 1
+    assert rec.calls == calls
+    assert [k for k in REASONING_KEYS if k in rec.body(calls - 1)] == []
 
 
 def test_a_temperature_refusal_with_the_hint_on_drops_only_temperature():
@@ -480,7 +490,8 @@ def test_the_hint_mapping_is_copied_into_the_body_never_shared(monkeypatch):
     why an earlier version of this test, asserting only that the mapping still
     compared equal, passed against a by-reference merge. Also pins that
     `extra_body` carries the hint and nothing else, since dropping the hint
-    drops the whole key."""
+    drops the whole key - and the retry carries no reasoning limit in its
+    place (ADR-030)."""
     assert openai_like.OpenRouterProvider.reasoning_off_body == {
         "extra_body": {"reasoning": {"enabled": False}}
     }
@@ -513,6 +524,170 @@ def test_the_hint_mapping_is_copied_into_the_body_never_shared(monkeypatch):
     later = Recorder(completion())
     provider(openai_like.OpenRouterProvider, later).complete(hinted())
     assert later.body()["reasoning"] == {"enabled": False}
+
+
+# --- a bounded share of the budget for reasoning (TASK-123) -----------------------
+#
+# Jobs 423, 426 and 428 on media 61, 2026-10-22, all openrouter/auto: 12,842
+# of 16,000 completion tokens reasoning and no text; 6,000 of 6,000 after the
+# hint was refused; 4,000 of 4,000. Robert's choice (2026-10-24, ADR-030):
+# every OpenRouter call that asks no hint carries OpenRouter's own reasoning
+# limit; cleanup, which asks the hint, stays as ADR-020 has it.
+
+
+def capped(max_output_tokens: int, **kw) -> base.ChatRequest:
+    return base.ChatRequest(system="s", user="u", model="m", max_output_tokens=max_output_tokens, **kw)
+
+
+@pytest.mark.parametrize(
+    "cap, reasoning",
+    [(4000, 1600), (6000, 2400), (16000, 6400), (2560, 1024)],
+    ids=["default-4000", "blog-and-cleanup-6000", "speakers-16000", "at-the-floor"],
+)
+def test_openrouter_bounds_reasoning_to_a_share_of_the_answer_budget(cap, reasoning):
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(cap))
+
+    sent = rec.body()
+    assert sent["reasoning"] == {"max_tokens": reasoning}
+    assert sent["max_tokens"] == cap, "the overall cap is unchanged"
+    assert sent["max_tokens"] - sent["reasoning"]["max_tokens"] >= cap * 0.6
+    assert "extra_body" not in sent
+    assert answer.reasoning_cap == reasoning, "the answer says which limit went on the wire"
+
+
+@pytest.mark.parametrize("cap", [2559, 512, 64])
+def test_a_share_below_openrouters_floor_is_not_sent(cap):
+    """OpenRouter clamps an Anthropic budget to at least 1,024 and wants the
+    overall cap strictly above it; a share under 1,024 would ask for a budget
+    the cap cannot hold. Such a call goes out exactly as it always did."""
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(cap))
+
+    assert [k for k in REASONING_KEYS if k in rec.body()] == []
+    assert answer.reasoning_cap is None
+
+
+@pytest.mark.parametrize("cap", [4000, 16000])
+def test_openai_sends_no_reasoning_limit(cap):
+    """api.openai.com has no `reasoning` object; its only knob is the hint's
+    `reasoning_effort`, and a plain call stays byte-for-byte what it was."""
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenAIProvider, rec).complete(capped(cap))
+
+    assert sorted(rec.body()) == ["max_completion_tokens", "messages", "model", "temperature"]
+    assert answer.reasoning_cap is None
+
+
+def test_the_hint_goes_alone_never_beside_the_limit():
+    """`enabled: false` and a budget in one object contradict each other; the
+    hint asks for none, so it goes on its own."""
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(6000, reasoning_off=True))
+
+    assert rec.body()["reasoning"] == {"enabled": False}
+    assert answer.hint_sent is True and answer.reasoning_cap is None
+
+
+def test_a_refused_hint_falls_back_to_no_reasoning_field_not_to_the_limit():
+    """ADR-030 keeps cleanup, the one kind that asks the hint, exactly as
+    ADR-020 has it: job 426's mandatory reasoner refused the hint, and the
+    call without it carries no `reasoning` object - not the limit, which an
+    effort-only model may map to `low` (ADR-020 Must Not)."""
+    refusal = error(400, "Reasoning is mandatory for this endpoint and cannot be disabled.")
+    rec = Recorder(refusal, completion("clean text"))
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(6000, reasoning_off=True))
+
+    assert rec.calls == 2
+    assert rec.body(0)["reasoning"] == {"enabled": False}
+    assert "reasoning" not in rec.body(1)
+    assert answer.hint_sent is False and answer.reasoning_cap is None
+
+
+def test_a_400_that_names_no_reasoning_field_with_only_the_limit_on_the_wire_is_not_retried():
+    """A 400 that does not name `reasoning` is not about the limit: this one
+    names the overall cap, which dropping the limit would not change."""
+    rec = Recorder(error(400, "Unsupported parameter: 'max_tokens' is not supported with this model."))
+
+    with pytest.raises(base.BadResponse):
+        provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert rec.calls == 1
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        error(400, "Invalid value for reasoning.max_tokens.", param="reasoning"),
+        error(400, "reasoning.max_tokens is not supported by this provider"),
+    ],
+    ids=["param", "wording-without-param"],
+)
+def test_a_400_naming_reasoning_with_only_the_limit_on_the_wire_is_retried_once_without_it(refusal):
+    """The limit is new on calls that used to succeed (ADR-030), so a 400 it
+    causes must not turn them into failures: one more call without it, which
+    is the request this app sent before TASK-123, and the answer says no limit
+    went with it. Read like the temperature refusal - `param` first, the
+    wording only when no param came back."""
+    rec = Recorder(refusal, completion("Paris"))
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert answer.text == "Paris"
+    assert rec.calls == 2
+    assert rec.body(0)["reasoning"] == {"max_tokens": 1600}
+    assert "reasoning" not in rec.body(1)
+    assert rec.body(1)["temperature"] == rec.body(0)["temperature"], "only the limit was dropped"
+    assert answer.reasoning_cap is None and answer.hint_sent is None
+
+
+def test_a_context_length_400_naming_reasoning_with_the_limit_on_is_context_too_long_after_one_call():
+    """The prompt does not fit; without the limit it would not fit either."""
+    rec = Recorder(error(400, "maximum context length is 128000 tokens",
+                         code="context_length_exceeded", param="reasoning"))
+
+    with pytest.raises(base.ContextTooLong):
+        provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert rec.calls == 1
+
+
+def test_a_limit_refused_twice_is_two_calls_and_a_refusal():
+    rec = Recorder(error(400, "bad reasoning", param="reasoning"))
+
+    with pytest.raises(base.BadResponse):
+        provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert rec.calls == 2
+
+
+def test_an_answer_lost_despite_the_limit_is_asked_again_with_the_hint_alone():
+    """The limit is a request, honoured where an upstream maps it; one that
+    ignores it and loses everything to thinking still gets the TASK-099
+    retry, with the hint and without the limit."""
+    rec = Recorder(lost_to_reasoning(), completion("SPEAKER_00 is Robert"))
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(16000))
+
+    assert rec.calls == 2
+    assert rec.body(0)["reasoning"] == {"max_tokens": 6400}
+    assert rec.body(1)["reasoning"] == {"enabled": False}
+    assert answer.hint_sent is True and answer.reasoning_cap is None
+
+
+def test_a_contentless_answer_names_the_limit_it_was_asked_with():
+    rec = Recorder(completion(None, completion_tokens=4000, finish="length",
+                              details={"reasoning_tokens": 0}))
+
+    with pytest.raises(base.BadResponse) as caught:
+        provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert "reasoning_cap=1600" in str(caught.value)
 
 
 def test_the_answer_carries_reasoning_tokens_and_upstream():
@@ -614,7 +789,8 @@ def test_an_answer_lost_to_reasoning_is_asked_once_more_with_the_hint(cls):
 
     assert answer.text == "SPEAKER_00 is Robert"
     assert rec.calls == 2
-    assert [k for k in REASONING_KEYS if k in rec.body(0)] == [], "the first request is as before"
+    assert "reasoning_effort" not in rec.body(0), "the first request asks no hint"
+    assert rec.body(0).get("reasoning") in (None, {"max_tokens": 1600}), "only the limit (TASK-123)"
     assert [k for k in REASONING_KEYS if k in rec.body(1)] != [], "the second carries the hint"
     assert answer.hint_sent is True, "the row says the answer was bought with the hint"
 
@@ -666,6 +842,7 @@ def test_a_retry_that_is_empty_too_names_both_attempts_and_stops():
     assert "8000" in message and "BaseTen" in message, "the first attempt"
     assert "7777" in message and "Wafer" in message, "the second attempt"
     assert "reasoning hint" in message
+    assert "reasoning_cap=1600" in message, "the limit the first call carried (TASK-123)"
 
 
 def test_a_retry_whose_hint_is_refused_stops_without_a_third_call():
@@ -681,6 +858,7 @@ def test_a_retry_whose_hint_is_refused_stops_without_a_third_call():
     assert rec.calls == 2
     assert "refused" in str(caught.value)
     assert "8000" in str(caught.value)
+    assert "reasoning_cap=1600" in str(caught.value), "the limit the first call carried"
 
 
 def test_a_refused_connection_is_unreachable_naming_the_endpoint_and_is_retried():
