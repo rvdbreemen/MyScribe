@@ -1830,7 +1830,7 @@
       "title": "An OpenRouter call that asks no reasoning hint carries a reasoning limit of two fifths of its cap",
       "path": "ADR-030-an-openrouter-call-that-asks-no-reasoning-hint-carries-a-reasoning-limit-of-two-fifths-of-its-cap.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-10-24",
       "decision_summary": "Chosen option: B, decided by Robert on 2026-10-24.",
       "topics": [

@@ -1,7 +1,7 @@
 ---
 id: "ADR-030"
 title: "An OpenRouter call that asks no reasoning hint carries a reasoning limit of two fifths of its cap"
-status: "Proposed"
+status: "Accepted"
 date: "2026-10-24"
 binding: false
 gate: null
@@ -31,7 +31,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-10-24.
+Accepted, 2026-10-24.
 
 ## Status History
 
@@ -46,6 +46,11 @@ status_history:
     status: Proposed
     changed_by: Claude (agent, session 2026-10-24)
     reason: ADR-030 amends one ADR-020 Must for OpenRouter's reasoning limit
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-24
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-24; recorded by Claude)
+    reason: Robert accepted ADR-030 in the session of 2026-10-24, with ADR-020's conflicting Must, the cleanup exclusion and the AC3 rerun in front of him
     changed_via: adr-kit lifecycle
 ```
 
@@ -133,7 +138,7 @@ rerun of jobs 423 and 428 on a copy of the library, decides whether it works.
 
 ## Open Questions
 
-- [ ] Does AC3's live rerun of jobs 423 and 428 on a library copy answer with the limit on the wire?
+- [x] Does AC3's live rerun of jobs 423 and 428 on a library copy answer with the limit on the wire? — **Answered 2026-10-24 by Claude (agent, session 2026-10-24):** Yes, 2026-10-24 on a copy of media 61 with this branch: speakers (job 430) reasoning_cap 6400, reasoning_tokens 2717, finish stop; minutes (job 431) reasoning_cap 1600, reasoning_tokens 712, finish stop; both valid JSON. Auto routed both to openai/gpt-6-luna on Azure, not the Venice, BaseTen or Fireworks upstreams of jobs 423 and 428, so whether those honour the limit is not shown.
 
 ## Related Decisions
 
