@@ -19,6 +19,21 @@
   reasoning field is sent once more without it. Each answer records the
   limit it was sent with (TASK-123, ADR-030).
 
+- **A short glossary name no longer replaces small words like "het" or
+  "the".** With *Hetty* or *Opa* in the glossary, a lone "het" or "op"
+  anywhere in a transcript was corrected to that name. A word that stands
+  alone is now left as Whisper wrote it when it has three letters or fewer,
+  or when it is a Dutch or English function word such as "door" or "maar".
+  The exception is a word you listed as a variant, in that spelling. The
+  cost: a short name is no longer guessed either. "Ari" is not corrected to
+  *Arie* unless you list "Ari" as a variant of it.
+  A middle word that is not part of the name is no longer deleted:
+  "Marieke en Vermeulen" stays as written with *Marieke Vermeulen* listed.
+  With both *Niels* and *Nielsen* listed, "Niels en" is no longer joined
+  into *Nielsen*; with only *Nielsen* listed it still is. A listed name is
+  never joined to a function word after it, so with both *Linked* and
+  *LinkedIn* listed, "Linked In" also stays as written (TASK-111).
+
 ### Changed
 
 - **The setup window is shorter.** Its first step lists each thing MyScribe
