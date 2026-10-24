@@ -210,11 +210,17 @@ anything MyScribe installed for you from somebody else, such as Ollama.
 
 **Windows** - Settings > Apps > MyScribe > Uninstall stops a running MyScribe,
 then removes
-`%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, and the login item if
-*Start at login* was on. It leaves:
+`%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, the login item if
+*Start at login* was on, and `%LOCALAPPDATA%\MyScribe.lock` and
+`%LOCALAPPDATA%\MyScribe-at-login.txt`: the launcher's lock, and the note a
+failed start at login leaves for the next start by hand, beside the default
+home. It leaves:
 
 - your home and library: `%LOCALAPPDATA%\MyScribe`, or the folder you chose.
-  Delete it by hand when you no longer want the recordings.
+  Delete it by hand when you no longer want the recordings. Beside a folder
+  you chose, say `D:\Data\MyScribe`, the two small files are
+  `D:\Data\MyScribe.lock` and `D:\Data\MyScribe-at-login.txt`; they stay too,
+  and can go with the home.
 - `%LOCALAPPDATA%\MyScribe.location`, the small file that remembers where your
   home is. Safe to delete once the home is gone.
 - Ollama and its models, if MyScribe installed them: they are an ordinary

@@ -136,3 +136,33 @@ def test_setup_always_ends_with_myscribe_open_in_the_browser():
     post = code[code.index("procedure CurStepChanged"):code.index("function InitializeUninstall")]
     assert "ssPostInstall" in post
     assert "Exec(ExpandConstant('{app}\{#MyAppExe}'), ''" in post, post
+
+
+# --- TASK-112.07: the lock and the login note beside the default home --------
+
+def _launcher():
+    import importlib.util
+
+    path = REPO / "packaging" / "launcher" / "myscribe_launcher.py"
+    spec = importlib.util.spec_from_file_location("myscribe_launcher_uninstall", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_an_uninstall_removes_the_lock_and_the_login_note_beside_the_default_home():
+    r"""Robert, 2026-10-24: the launcher keeps `<home>.lock` and
+    `<home>-at-login.txt` beside the home, and the uninstaller removes both
+    beside the default home, %LOCALAPPDATA%\MyScribe. The names come from the
+    launcher, so renaming one there turns this red. Only those two files:
+    never the home itself, and never MyScribe.location, which the
+    installation guide says stays."""
+    launcher = _launcher()
+    # The default home is {localappdata}\MyScribe; only the names are used.
+    home = Path(launcher.APP_NAME)
+    names = {launcher.instance_lock_path(home).name, launcher.login_note_path(home).name}
+    assert names == {"MyScribe.lock", "MyScribe-at-login.txt"}
+
+    entries = _section(_iss(), "UninstallDelete")
+    assert sorted(entries) == sorted(
+        rf'Type: files; Name: "{{localappdata}}\{name}"' for name in names)

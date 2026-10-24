@@ -18,6 +18,12 @@
   login or after an update, and could not start, for example because another
   program had its port, the next start you make yourself says so once
   (TASK-112.07).
+  For this MyScribe keeps two small files beside your home, not in it:
+  `MyScribe.lock`, and `MyScribe-at-login.txt` while such a problem waits to
+  be shown, next to the default `%LOCALAPPDATA%\MyScribe`. The Windows uninstaller removes those two. When
+  your home is in a folder you chose, say `D:\Data\MyScribe`, they are
+  `D:\Data\MyScribe.lock` and `D:\Data\MyScribe-at-login.txt`, and an
+  uninstall leaves them there with the home.
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget
