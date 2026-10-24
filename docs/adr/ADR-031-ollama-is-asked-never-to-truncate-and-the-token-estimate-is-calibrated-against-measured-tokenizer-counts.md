@@ -91,7 +91,7 @@ honest (ContextTooLong) but leaves local AI unable to take a long recording.
 
 ### Confirmation
 
-Unit tests pin the rules below. On a copy of the library (jobs 430-432 of
+Unit tests pin the rules below. On a first copy of the library (its jobs 430-432,
 2026-10-24), minutes on media 61 with qwen3.5:4b read four chunks whole:
 every `prompt_eval_count` (24,007, 24,691, 24,373, 1,698) at or below its
 planned estimate, none equal to 16,386, job done. Blog with qwen3.5:4b failed
@@ -137,7 +137,7 @@ spent cap, not a full window.
 
 ## Open Questions
 
-- [x] Does blog on media 61 finish with qwen3.5:9b, every chunk read whole? Robert's choice B for TASK-124 AC2, to tell a 4B limit from a prompt problem. — **Answered 2026-10-24 by Claude (agent, session 2026-10-24):** No, and not because of the window. On a fresh library copy, 2026-10-24, chunk 0 of 3 read 22,293 prompt tokens against 26,687 planned (not the 16,386 halving signature): read whole. The first call went entirely into thinking, the ADR-029 retry with think:false copied the transcript line by line until the 4,000-token note budget, and the job failed. The 4B did the same (jobs 431 and 432, also 10,708 characters). So the blog note prompt invites copying on both models; that is a prompt problem outside this decision.
+- [x] Does blog on media 61 finish with qwen3.5:9b, every chunk read whole? Robert's choice B for TASK-124 AC2, to tell a 4B limit from a prompt problem. — **Answered 2026-10-24 by Claude (agent, session 2026-10-24):** No, and not because of the window. On a second, fresh library copy (its job 430), chunk 0 of 3 read 22,293 prompt tokens against 26,687 planned (not the 16,386 halving signature): read whole. The first call went entirely into thinking, the ADR-029 retry with think:false copied the transcript line by line until the 4,000-token note budget, and the job failed. The 4B did the same (first copy, jobs 431 and 432, also 10,708 characters). So the blog note prompt invites copying on both models; that is a prompt problem outside this decision.
 
 ## Related Decisions
 
