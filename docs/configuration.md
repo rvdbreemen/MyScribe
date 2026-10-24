@@ -141,3 +141,57 @@ instance on another port:
 ```sh
 python -m scribe --port 4299 --no-supervisor --no-browser
 ```
+
+## Driving MyScribe from a script
+
+`python -m scribe.cli` is a small client for a MyScribe that is already
+running. It sends every request to the JSON API at
+`http://127.0.0.1:4242/api/v1` (`--port` for another port) and to nothing
+else; it never opens the library itself. It needs only Python's standard
+library, and ignores `HTTP_PROXY`, because a proxy cannot reach this
+computer's 127.0.0.1. The full API is described at
+`http://127.0.0.1:4242/openapi.json`.
+
+`pyproject.toml` declares it as the console script `myscribe`, but the
+environment does not install that command yet (`tool.uv.package = false`),
+so call it as `python -m scribe.cli` with the environment's Python.
+
+| Command | What it does |
+| --- | --- |
+| `status` | Whether the app answers, how many jobs run and wait, the AI provider |
+| `list` | The library. `--view`, `--folder`, `--sort`, `--q`, `--label` |
+| `search WORDS` | Transcript segments that contain every word |
+| `upload FILE` | Send a recording in and queue its transcription. `--title`, `--folder-id`, `--option language=nl` (repeatable), `--params JSON`, `--idempotency-key KEY`; `--by-path` sends the path instead of the bytes, for a file under the browse roots |
+| `transcribe ID` | Transcribe a recording again; `--option` and `--params` as for upload, none repeats the last request |
+| `jobs [ID]` | Jobs, newest first (`--status`, `--limit`); with an id, that job and its events |
+| `cancel ID` | Cancel a job |
+| `wait ID` | Wait until a job ends. `--timeout SECONDS`, `--interval SECONDS`, `--quiet` |
+| `transcript ID` | The transcript as JSON, word by word, to stdout or `--out` |
+| `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout |
+
+`--json`, before the command, prints the API's answer instead of text.
+
+```sh
+python -m scribe.cli upload talk.mp3 --option language=nl --idempotency-key talk-1 --json
+python -m scribe.cli wait 12 --timeout 3600 && python -m scribe.cli export 7 --format srt,txt
+```
+
+With `--idempotency-key`, running the same upload or transcribe again after
+a lost answer gives the first answer back and queues nothing new.
+
+### Exit codes
+
+| Code | Name | When |
+| --- | --- | --- |
+| 0 | `OK` | It worked; for `wait`, the job is done |
+| 1 | `SERVER_ERROR` | The app answered with a server error, or with something that is not the API's answer |
+| 2 | `USAGE` | A wrong command line, or a file that is not there |
+| 3 | `NOT_RUNNING` | Nothing answers on 127.0.0.1 at that port |
+| 4 | `NOT_FOUND` | No such recording or job |
+| 5 | `CONFLICT` | No transcript yet, or an idempotency key that is in use or was used for another request |
+| 6 | `REFUSED` | The app refused the request itself: a wrong option, an empty search, a path outside the browse roots |
+| 7 | `JOB_UNSUCCESSFUL` | `wait`: the job ended failed, cancelled or interrupted |
+| 8 | `TIMEOUT` | `wait`: the job had not ended when `--timeout` ran out |
+
+An error goes to stderr as the API's `code` and `detail`, for example
+`myscribe: error 409 no_transcript: media 7 has no transcript yet`.
