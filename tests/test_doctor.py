@@ -858,8 +858,8 @@ def test_the_models_check_names_the_missing_model_of_the_chosen_tier(
     monkeypatch, tmp_path, library_db_unstubbed
 ):
     """TASK-107.04 criterion 2. A machine set to Max was told about the Turbo
-    weights - which were here - and not about the 2.9 GB it would fetch inside
-    its first job."""
+    weights - which were here - and not about the larger ones it would fetch
+    inside its first job."""
     _library_set_to(monkeypatch, tmp_path, "max")
     models = _not_apple_silicon(monkeypatch, tmp_path / "weights")
     monkeypatch.setattr(models, "hub_snapshot", lambda model: None)
@@ -912,9 +912,21 @@ def test_the_read_only_models_check_reads_the_chosen_tier_without_writing(monkey
     models = _not_apple_silicon(monkeypatch, tmp_path / "weights")
     monkeypatch.setattr(models, "hub_snapshot", lambda model: None)
     before = path.stat().st_mtime_ns
+    # The file alone cannot tell: a `db.connect` that is closed again
+    # checkpoints and removes its `-wal` and `-shm`, and leaves the mtime as it
+    # was. Measured on 2026-10-24 - a twin that opened through `db.connect`
+    # passed every assertion below this one. So the open itself is watched.
+    connected = []
+
+    def no_writing_open(*args, **kwargs):
+        connected.append(args)
+        raise AssertionError("the read-only twin opened the library through db.connect")
+
+    monkeypatch.setattr(doctor.db, "connect", no_writing_open)
 
     check = doctor.check_models_read_only()
 
+    assert connected == []
     assert doctor.READ_ONLY_SUBSTITUTES[doctor.check_models] is doctor.check_models_read_only
     assert check.ok is False
     assert "faster-whisper-large-v3 (" in check.detail and "turbo" not in check.detail, check.detail

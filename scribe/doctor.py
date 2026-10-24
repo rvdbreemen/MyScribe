@@ -758,7 +758,8 @@ def check_models() -> Check:
     `credentials.library_db` and `options.read_defaults`, both already in the
     web process; it is the read-only twin below that needs `setup.read_only`,
     and that one never renders on a card. Before, a machine set to Max was told
-    about the Turbo weights it had and not the 2.9 GB its first job fetched.
+    about the Turbo weights it had and not the Max ones its first job fetched
+    (2.9 GB on a Mac, 3.1 GB on CUDA).
     """
     return _models(_chosen_tier())
 
