@@ -836,6 +836,93 @@ def test_weights_the_hub_cache_already_holds_are_present(monkeypatch, tmp_path):
     assert check.detail == "2 model(s) present"
 
 
+# --- the tier this library chose, not the default one (TASK-107.04) -------------------
+
+
+def _library_set_to(monkeypatch, tmp_path, tier):
+    """A library of this test's own whose transcribe default is `tier`, or
+    one that never chose one when `tier` is None."""
+    from scribe import options
+
+    path = _wal_library(monkeypatch, tmp_path)
+    if tier is not None:
+        conn = doctor.db.connect(path)
+        try:
+            options.save_tier(conn, tier)
+        finally:
+            conn.close()
+    return path
+
+
+def test_the_models_check_names_the_missing_model_of_the_chosen_tier(
+    monkeypatch, tmp_path, library_db_unstubbed
+):
+    """TASK-107.04 criterion 2. A machine set to Max was told about the Turbo
+    weights - which were here - and not about the 2.9 GB it would fetch inside
+    its first job."""
+    _library_set_to(monkeypatch, tmp_path, "max")
+    models = _not_apple_silicon(monkeypatch, tmp_path / "weights")
+    monkeypatch.setattr(models, "hub_snapshot", lambda model: None)
+
+    check = doctor.check_models()
+
+    assert check.ok is False
+    assert "faster-whisper-large-v3 (" in check.detail, check.detail
+    assert "turbo" not in check.detail, "the default tier's weights are not the ones this library asks for"
+    # A bare `--fetch` asks `models.ensure(None)`, which fetches the default
+    # tier: the hint has to name the repositories it is about.
+    assert "--only Systran/faster-whisper-large-v3" in check.fix_hint, check.fix_hint
+
+
+def test_the_models_check_is_satisfied_by_the_chosen_tier_alone(
+    monkeypatch, tmp_path, library_db_unstubbed
+):
+    """The other direction: Max present and Turbo absent is a machine that
+    transcribes the way it was set up to, and the card says so."""
+    _library_set_to(monkeypatch, tmp_path, "max")
+    models = _not_apple_silicon(monkeypatch, tmp_path / "weights")
+    wanted = {model.repo for model in models.wanted_here(backend="cuda", tier="max")}
+    monkeypatch.setattr(
+        models, "hub_snapshot", lambda model: tmp_path / "hub" if model.repo in wanted else None
+    )
+
+    check = doctor.check_models()
+
+    assert check.ok is True, check.detail
+
+
+def test_a_library_that_chose_no_tier_is_asked_about_the_default_one(
+    monkeypatch, tmp_path, library_db_unstubbed
+):
+    _library_set_to(monkeypatch, tmp_path, None)
+    models = _not_apple_silicon(monkeypatch, tmp_path / "weights")
+    monkeypatch.setattr(models, "hub_snapshot", lambda model: None)
+
+    check = doctor.check_models()
+
+    assert check.ok is False
+    assert "faster-whisper-large-v3-turbo (" in check.detail, check.detail
+
+
+def test_the_read_only_models_check_reads_the_chosen_tier_without_writing(monkeypatch, tmp_path):
+    """`check_models` now opens the library through `credentials.library_db`,
+    whose journal-mode pragma is a write, so `--prove` gets a twin that reads
+    the same row through the immutable open."""
+    path = _library_set_to(monkeypatch, tmp_path, "max")
+    models = _not_apple_silicon(monkeypatch, tmp_path / "weights")
+    monkeypatch.setattr(models, "hub_snapshot", lambda model: None)
+    before = path.stat().st_mtime_ns
+
+    check = doctor.check_models_read_only()
+
+    assert doctor.READ_ONLY_SUBSTITUTES[doctor.check_models] is doctor.check_models_read_only
+    assert check.ok is False
+    assert "faster-whisper-large-v3 (" in check.detail and "turbo" not in check.detail, check.detail
+    assert path.stat().st_mtime_ns == before
+    assert not path.with_name(path.name + "-wal").exists()
+    assert not path.with_name(path.name + "-shm").exists()
+
+
 def test_401_and_403_are_not_the_same_answer_about_a_token(monkeypatch):
     """They shared one sentence - "the conditions are not accepted for this
     token" - and it sent somebody with an expired token to a conditions page

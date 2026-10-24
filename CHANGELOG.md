@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Fixed
+
+- **The doctor names the weights for the quality you chose.** With *Max* set
+  as the transcription default, the models line asked about the *Turbo*
+  weights and never mentioned the larger ones *Max* loads. It now checks the
+  tier you chose, *Turbo* when you never chose one, and its fix names the
+  exact download (TASK-107.04).
+
 ## [0.9.1] - 2026-10-23
 
 Fixes found by installing the 0.9.0 release on Windows and running its

@@ -749,20 +749,64 @@ def check_models() -> Check:
     nothing on Windows can open. `models.wanted_here` is now the one answer to
     that question and the plan reads the same one.
 
-    The tier is the stored default rather than this library's setting. Reading
-    that row *can* be done without writing - `setup.read_only()` opens the
-    library `immutable=1` and measured that it creates no `-wal` and no `-shm`
-    - but this check may not import `scribe.setup`: it renders on a settings
-    page (WEB_SAFE_CHECKS, ADR-001) and setup pulls `diarize`, `ai_ui` and
-    `transcribe_dialog` into the web process behind it. A second spelling of
-    the immutable open, here, is the duplication this task exists to remove. So
-    a machine set to the largest model is told about the default one; that is a
-    smaller error than a card that demands weights nothing here can load, and
-    it is written down in the task rather than left to be rediscovered.
+    The tier is this library's own transcribe default, the row the dialog
+    opens with, and the stored default only where none was chosen
+    (TASK-107.04). Until then it was always the stored default, on the ground
+    that reading the row meant `scribe.setup`, which this check may not import:
+    it renders on a settings page (WEB_SAFE_CHECKS, ADR-001). It never did. The
+    row is read the way `check_diarization` reads its token, through
+    `credentials.library_db` and `options.read_defaults`, both already in the
+    web process; it is the read-only twin below that needs `setup.read_only`,
+    and that one never renders on a card. Before, a machine set to Max was told
+    about the Turbo weights it had and not the 2.9 GB its first job fetched.
     """
+    return _models(_chosen_tier())
+
+
+def check_models_read_only() -> Check:
+    """`check_models` with the tier row read through the immutable open.
+
+    `credentials.library_db` opens with `db.connect`, whose `journal_mode`
+    pragma is a write, on a library `--prove` promised not to touch.
+    """
+    return _models(_chosen_tier_read_only())
+
+
+def _chosen_tier() -> str:
+    """The tier this library transcribes with, or the default one.
+
+    No database, or one that will not open, is the default and never an
+    error: this is a question about weights, not about the database.
+    """
+    from scribe import models, options
+
+    try:
+        with credentials.library_db() as conn:
+            if conn is not None:
+                return options.read_defaults(conn).tier
+    except Exception:  # noqa: BLE001 - a settings lookup never fails a check
+        pass
+    return models.DEFAULT_TIER
+
+
+def _chosen_tier_read_only() -> str:
+    """`_chosen_tier` through `setup.read_only`; see check_database_read_only
+    for why setup is imported here and not at the top."""
+    from scribe import models, options, setup
+
+    try:
+        with setup.read_only(paths.DB_PATH) as conn:
+            if conn is not None:
+                return options.read_defaults(conn).tier
+    except Exception:  # noqa: BLE001 - nor does the lookup without writing
+        pass
+    return models.DEFAULT_TIER
+
+
+def _models(tier: str) -> Check:
     from scribe import models
 
-    rows = [row for row in models.status() if row["wanted"]]
+    rows = [row for row in models.status(tier=tier) if row["wanted"]]
     absent = [row for row in rows if not row["here"]]
     if not absent:
         return Check(name="models", ok=True, detail=f"{len(rows)} model(s) present")
@@ -774,13 +818,16 @@ def check_models() -> Check:
     # `mlx-community/` that was the only clue it was the wrong platform.
     names = ", ".join(f"{row['repo'].split('/')[-1]} ({models.human(row['bytes'])})" for row in absent)
     gated = any(row["gated"] for row in absent)
+    # A bare `--fetch` is `models.ensure(None)`, which fetches the default
+    # tier's weights, so another tier's hint names its repositories.
+    only = "" if tier == models.DEFAULT_TIER else "".join(f" --only {row['repo']}" for row in absent)
     return Check(
         name="models",
         ok=False,
         optional=True,
         detail=f"{models.human(outstanding)} still to download: {names}",
         fix_hint=(
-            "Run `python -m scribe.models --fetch`"
+            f"Run `python -m scribe.models --fetch{only}`"
             + (", after saving a Hugging Face token (Settings) for the gated one." if gated else ".")
         ),
     )
@@ -832,11 +879,13 @@ def check_ollama() -> Check:
 #
 # `python -m scribe.setup --prove` reports on a library that may be live, and a
 # proof that migrates it under an older app that is still serving is what
-# TASK-089.13 criterion 2 forbids. Four checks write, so four have a twin here.
+# TASK-089.13 criterion 2 forbids. Five checks write, so five have a twin.
 # Three were expected - the data-dir probe, the database and the smoke's
 # `stage_perf` row - and the fourth was found by running them: `check_diarization`
 # reads its token from the settings row through `credentials.library_db`, which
-# opens with `db.connect` and sets `journal_mode`. They are plain zero-argument
+# opens with `db.connect` and sets `journal_mode`. `check_models` joined it when
+# it began reading the chosen tier the same way (TASK-107.04); its twin sits
+# beside it above. They are plain zero-argument
 # functions and not
 # `functools.partial`: `CHECK_LABELS` is keyed on the function object, and a
 # partial has no identity to key on.
@@ -1037,6 +1086,7 @@ CHECK_LABELS = {
     check_scratch_dir_writable: "data-dir",
     check_database_read_only: "database",
     check_diarization_read_only: "diarization",
+    check_models_read_only: "models",
     check_gpu_smoke_read_only: "gpu-smoke",
 }
 """The name each registered check will report, known *before* it runs.
@@ -1051,9 +1101,10 @@ READ_ONLY_SUBSTITUTES = {
     check_data_dir_writable: check_scratch_dir_writable,
     check_database: check_database_read_only,
     check_diarization: check_diarization_read_only,
+    check_models: check_models_read_only,
     check_gpu_smoke: check_gpu_smoke_read_only,
 }
-"""The four checks that write, each beside the twin that asks the same
+"""The five checks that write, each beside the twin that asks the same
 question without writing. `checks(read_only=True)` swaps them in place, so
 neither the order of the report nor the name of a line changes with the mode -
 what changes is only where the writing happened."""
