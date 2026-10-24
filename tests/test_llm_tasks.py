@@ -2158,6 +2158,48 @@ def test_an_answer_that_spent_its_cap_still_says_the_cap_even_past_the_planned_w
     assert f"{plan_cap}-token cap" in str(caught.value), str(caught.value)
 
 
+def test_a_cloud_answer_cut_short_past_the_planning_floor_is_not_called_a_full_window(
+    conn, media, monkeypatch
+):
+    """Review of TASK-124: on a cloud provider the plan's 128k is a planning
+    floor, not the model's window, so prompt + answer past it proves nothing
+    about a window. A routed model whose own output limit is below our cap
+    stops at `length` with the cap unspent; saying 'the window was full' would
+    send Robert to shorten a prompt the model never refused, and saying 'the
+    4000-token cap' names a number it never reached."""
+    plan_cap = tasks.task_spec("blog").max_output_tokens
+    provider, _ = fake_provider(
+        [window_full('{"title": "x", "body": "y', prompt=127_000, completion=2_000)]
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1")
+
+    message = str(caught.value)
+    assert "window was full" not in message, message
+    assert f"stopped at the {plan_cap}-token cap" not in message, message
+    assert "2000" in message and str(plan_cap) in message, message
+
+
+def test_a_local_answer_past_the_floor_window_still_says_the_window(conn, media, monkeypatch):
+    """The other side: a local provider runs the window it was planned for, so
+    there a full window is a fact and is named as one."""
+    window = tasks.LOCAL_CONTEXT_TOKENS
+    provider, _ = fake_provider(
+        [window_full('{"title": "x", "body": "y', prompt=window - 500, completion=500)],
+        name="localfake",
+        is_local=True,
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="localfake",
+                       model="fake-1")
+
+    assert_says_window(str(caught.value), window, window - 500, 500)
+
+
 def test_repair_json_accepts_a_raw_newline_inside_a_string():
     """Models write real line breaks inside a JSON string more often than the
     escaped kind; strict parsing stopped job 427's reply at char 700."""

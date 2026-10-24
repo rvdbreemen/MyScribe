@@ -1065,10 +1065,10 @@ class TaskPlan:
     through the combine call is provably the number that gets spent. Zero for
     a task that is not chunked, which makes no note call at all."""
     context_tokens: int = 0
-    """The window this plan was cut for (`context_tokens_for`, or the caller's).
-    Read back when an answer stops at `length`, to tell a full window from a
-    spent cap (`_ran_out_of`). Zero means unknown, and then only the cap is
-    ever named."""
+    """The model's window, when it is known (`_known_window`). Read back when
+    an answer stops at `length`, to tell a full window from a spent cap
+    (`_ran_out_of`). Zero means unknown - a cloud plan cut against the 128k
+    planning floor - and then no window is ever named."""
 
     @property
     def kind(self) -> str:
@@ -1222,8 +1222,24 @@ def plan_task(
         language=answer_language(doc.run),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
         note_budget=note_budget,
-        context_tokens=window,
+        context_tokens=_known_window(provider_cls, chosen_model, window, given=context_tokens),
     )
+
+
+def _known_window(
+    provider_cls: type[base.Provider], model: str, window: int, *, given: int | None
+) -> int:
+    """`window` if it is the model's real window, else 0.
+
+    A caller's number, a local runtime's (the window the daemon is asked to
+    run) and a provider's own answer (`window_for_model`) are windows. The
+    cloud fallback `CLOUD_CONTEXT_TOKENS` is a planning floor: the routed model
+    may hold more or less, so a `length` stop past it says nothing about a
+    window (review of TASK-124).
+    """
+    if given or provider_cls.is_local or provider_cls.window_for_model(model):
+        return window
+    return 0
 
 
 def plan_notes(
@@ -2103,10 +2119,12 @@ def _ran_out_of(plan: TaskPlan, response: ChatResponse, cap: int) -> str:
     4000-token cap', which it never reached. The cap is a number to raise; a
     full window is a prompt to shorten, so the two must not share a sentence.
 
-    The cap is checked first: a cloud plan's window is the 128k planning floor
-    (`CLOUD_CONTEXT_TOKENS`), not the model's, and a call that spent its whole
-    cap past that floor hit the cap. Counts a provider did not report leave the
-    cap wording, which is what was said before this could tell.
+    The cap is checked first: a call that spent its whole cap hit the cap,
+    whatever the window. A full window is named only when the window is known
+    (`_known_window`); a cloud plan's 128k is a planning floor, so there a stop
+    below the cap is a limit of the model or provider that MyScribe cannot
+    see, and is called that. Counts a provider did not report leave the cap
+    wording, which is what was said before this could tell.
     """
     prompt, completion = response.prompt_tokens, response.completion_tokens
     spent_cap = isinstance(completion, int) and completion >= cap
@@ -2122,6 +2140,12 @@ def _ran_out_of(plan: TaskPlan, response: ChatResponse, cap: int) -> str:
             f"the {window}-token window was full - {prompt} tokens of prompt and {completion} "
             f"of answer - before it reached its {cap}-token answer budget, so a bigger budget "
             f"would not help: the prompt has to be shorter (smaller chunks) or the window larger"
+        )
+    if not spent_cap and isinstance(completion, int):
+        return (
+            f"it stopped after {completion} tokens of answer, short of its {cap}-token answer "
+            f"budget, at a limit of the model or provider (an output limit or a window smaller "
+            f"than MyScribe can see)"
         )
     return f"it stopped at the {cap}-token cap"
 

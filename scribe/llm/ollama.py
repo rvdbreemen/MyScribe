@@ -75,10 +75,9 @@ http://127.0.0.1:11434, `qwen3.5:4b` / `qwen3.5:9b` / `gemma4:12b` pulled):
   (7909 tokens) exceeds the available context size (2048 tokens), try
   increasing it` - which `_raise_for_status` turns into `ContextTooLong`. The
   two checks above stay, and `_answer` adds the halving signature itself
-  (`prompt_eval_count == window / 2 + 2`), for a daemon too old to know the
-  key: an unknown field is ignored, and such a daemon halves as before. Both
-  compare against the window `_body` asks for (`context_tokens(model)`), not
-  the 8192 floor. `shift` is not sent: a generation that fills the window
+  (`halved_prompt_tokens`), for a daemon too old to know the key: an unknown
+  field is ignored, and such a daemon halves as before. Both compare against
+  the window `_body` asks for (`context_tokens(model)`), not the 8192 floor. `shift` is not sent: a generation that fills the window
   stopped at prompt + answer == window with `done_reason: "length"` whether it
   was true, false or absent.
 
@@ -192,6 +191,14 @@ CONTEXT_REFUSAL = "exceeds the available context size"
 """The words of the 400 a `truncate: false` request gets when the prompt does
 not fit (Ollama 0.40.8, 2026-10-24): `request (7909 tokens) exceeds the
 available context size (2048 tokens), try increasing it`."""
+
+MIN_RUN_NUM_CTX = 2048
+"""The smallest window the daemon runs, whatever `num_ctx` asks for.
+
+Measured 2026-10-24 on Ollama 0.40.8 with a 7,909-token prompt and no
+`truncate` key: `num_ctx` 512, 1000, 1500 and 2047 all read
+`prompt_eval_count: 1026` = 2048 / 2 + 2, and the 400 a `truncate: false`
+request gets at 512 names a 2048 context."""
 
 MAX_NUM_CTX = 32768
 """The ceiling a *measured* window is planned against.
@@ -341,6 +348,22 @@ def _capabilities_in(rows: list[dict], model: str) -> list[str] | None:
             found = row.get("capabilities")
             return found if isinstance(found, list) else None
     return None
+
+
+def halved_prompt_tokens(window: int) -> int:
+    """The `prompt_eval_count` of a prompt the daemon cut in half to fit `window`.
+
+    Measured 2026-10-24 on Ollama 0.40.8 (qwen3.5:4b, a 7,909-token prompt, no
+    `truncate` key): 4096 read 2050 and 3000 read 1502, so half plus two; 2049
+    read 1027 and 6001 read 3003, so the half rounds up; and everything below
+    2048 read 1026, the daemon's own minimum (`MIN_RUN_NUM_CTX`). Above the
+    minimum the cut follows the window asked for even where the cache is padded
+    larger: 5000 asked read 2502, while the 400 for the same request named a
+    5120-token context. Review of TASK-124: `window // 2 + 2` was right only for
+    an even window of 2048 or more.
+    """
+    ran = max(window, MIN_RUN_NUM_CTX)
+    return (ran + 1) // 2 + 2
 
 
 class OllamaProvider(base.Provider):
@@ -870,14 +893,16 @@ class OllamaProvider(base.Provider):
             )
         # The halving signature (TASK-124): a daemon that ignores `truncate`
         # keeps the second half of an overflowing prompt and reports exactly
-        # half the window plus two - 4098 at 8192, 16386 at 32768, measured.
+        # half the window it ran plus two - 4098 at 8192, 16386 at 32768,
+        # 3003 at 6001, 1026 at anything under 2048, measured.
         # A prompt that really is that long is refused too; one exact count in
         # half a window is the price of never storing an answer to half a
         # transcript.
-        if isinstance(prompt_tokens, int) and prompt_tokens == window // 2 + 2:
+        if isinstance(prompt_tokens, int) and prompt_tokens == halved_prompt_tokens(window):
             raise base.ContextTooLong(
-                f"ollama read exactly {prompt_tokens} prompt tokens = half the {window}-token "
-                f"window plus two, which is how it reports a prompt it cut in half to fit; "
+                f"ollama read exactly {prompt_tokens} prompt tokens = half the "
+                f"{max(window, MIN_RUN_NUM_CTX)}-token window it ran (for {window} asked) plus "
+                f"two, which is how it reports a prompt it cut in half to fit; "
                 f"the answer would be about the second half only. Send less text (chunk it) "
                 f"or raise num_ctx"
             )

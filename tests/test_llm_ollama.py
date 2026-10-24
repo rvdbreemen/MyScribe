@@ -466,6 +466,41 @@ def test_a_prompt_halved_in_a_measured_window_is_refused_against_that_window():
     assert "half" in str(exc.value), str(exc.value)
 
 
+@pytest.mark.parametrize(
+    ("num_ctx", "prompt_eval"),
+    [
+        # Measured 2026-10-24, Ollama 0.40.8, qwen3.5:4b, a 7,909-token prompt
+        # and no `truncate` key: an odd window keeps the rounded-up half.
+        (6001, 3003),
+        (2049, 1027),
+        # Below 2048 the daemon runs a 2048 window whatever was asked and
+        # halves into that: 1500 asked read 1026, which is under 1500.
+        (1500, 1026),
+    ],
+)
+def test_the_halving_signature_is_the_window_the_daemon_really_ran(num_ctx, prompt_eval):
+    """Review of TASK-124: `window // 2 + 2` of the window asked for is the
+    signature only for an even window of 2048 or more. Measured: 2049 read
+    1027 and 6001 read 3003 (the half rounds up), and 1000, 1500 and 2047 all
+    read 1026 (the daemon's 2048 minimum). Above the minimum the cut follows
+    the window asked for even when the cache is padded larger - 5000 asked
+    read 2502 while the 400 named 5120 - so the asked window is the one."""
+    rec = Recorder(chat_answer("a summary of the second half", prompt_eval=prompt_eval))
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec, num_ctx=num_ctx).complete(REQUEST)
+
+    assert str(prompt_eval) in str(exc.value) and "half" in str(exc.value), str(exc.value)
+
+
+def test_a_count_next_to_the_signature_is_not_refused():
+    """The check is one exact number, not a band: a prompt one token either
+    side of half the window is a prompt that fitted."""
+    for prompt_eval in (3002, 3004):
+        rec = Recorder(chat_answer("a summary", prompt_eval=prompt_eval))
+        assert provider(rec, num_ctx=6001).complete(REQUEST).text == "a summary"
+
+
 def test_the_window_guards_use_the_window_that_was_asked_for_not_the_floor():
     """The body asks the daemon for `context_tokens(model)` - up to 32768 on
     this machine - and both overflow checks have to compare against that, not
