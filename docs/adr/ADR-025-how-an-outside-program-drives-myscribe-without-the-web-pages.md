@@ -109,7 +109,7 @@ For option B, as built in `scribe/api_v1.py`.
 
 * Each `/api/v1` route calls the same helper its HTML route calls; neither holds logic of its own.
 * Errors under `/api/v1` are JSON with a stable `code` and the `detail` the pages already show; other paths keep `{"detail": ...}`.
-* `POST /api/v1/media` honours an idempotency key, kept in the database, so a retried request queues no second job.
+* `POST /api/v1/media` honours an idempotency key, kept in the database, so a retried request queues no second job; the key compares content and options, and a refused reuse files nothing.
 * The routes appear in `/openapi.json`.
 
 ### Must Not

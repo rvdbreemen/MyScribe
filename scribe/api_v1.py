@@ -370,7 +370,31 @@ async def add_media(request: Request, idempotency_key: KeyHeader = None) -> Resp
     row, params = await spine.ingest_request(request)
     route = "POST /api/v1/media"
     print_ = idempotency.fingerprint(route, sha256=row["sha256"], params=params)
-    return _once(conn, key, route, print_, 201, lambda: spine.enqueue_ingested(conn, row, params))
+    try:
+        return _once(conn, key, route, print_, 201, lambda: spine.enqueue_ingested(conn, row, params))
+    except CodedError as refused:
+        if refused.code == "idempotency_key_reused" and not row.get("deduped"):
+            _unfile(conn, row)
+        raise
+
+
+def _unfile(conn, row: dict) -> None:
+    """Take back a recording this request filed and then refused.
+
+    A refusal leaves no media row behind, the rule `_ingest_options` keeps for
+    a bad params key. Only a row this request created (``deduped`` false) and
+    only while no job points at it: a second request that deduped onto it in
+    the meantime owns it as much as this one did.
+    """
+    with db.LOCK:
+        if conn.execute("SELECT 1 FROM job WHERE media_id=? LIMIT 1", (row["id"],)).fetchone():
+            return
+        conn.execute("DELETE FROM media WHERE id=?", (row["id"],))
+        conn.commit()
+    try:
+        (spine.paths.DATA_DIR / row["store_path"]).unlink(missing_ok=True)
+    except OSError:  # held open on Windows: litter for a sweep, not a 500
+        pass
 
 
 @router.post(

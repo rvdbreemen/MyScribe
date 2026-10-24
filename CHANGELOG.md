@@ -9,9 +9,11 @@
   settings (never a key or token). Every route is in `/openapi.json`, and every
   error under `/api/v1` is JSON with a stable `code` and a `detail`. An
   `Idempotency-Key` header on an upload or a re-transcribe makes a retry give
-  the first answer back without queueing a second job; the same key with
-  another request is refused with `idempotency_key_reused`. Keys are kept for
-  24 hours. There is no token: the API answers only on 127.0.0.1 and behind the
+  the first answer back without queueing a second job. The same key with
+  another recording or other transcription options is refused with
+  `idempotency_key_reused`, and a recording that refusal would have added is
+  not kept; a different title or folder alone is not compared. Keys are kept
+  for 24 hours. There is no token: the API answers only on 127.0.0.1 and behind the
   same Host and same-site checks as the pages, and the phone door does not
   reach it. The pages and the unversioned `/api/...` routes answer as before
   (TASK-108, ADR-025).

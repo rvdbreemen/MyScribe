@@ -285,10 +285,56 @@ def test_without_a_key_a_second_upload_is_a_second_job(client, conn):
     assert len(jobs_of(conn)) == 2
 
 
-def test_a_key_reused_for_other_content_is_a_coded_409(client, conn):
+def media_count(conn) -> int:
+    with db.LOCK:
+        return conn.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+
+
+def test_a_key_reused_for_other_content_is_a_coded_409_and_files_nothing(client, conn, data_dir):
     upload(client, tiny_wav(tone=1), key="k")
+    stored = sorted(p.name for p in (data_dir / "media").rglob("*") if p.is_file())
     assert_coded(upload(client, tiny_wav(tone=2), key="k"), 409, "idempotency_key_reused")
     assert len(jobs_of(conn)) == 1
+    assert media_count(conn) == 1, "the refused recording stayed in the library"
+    assert sorted(p.name for p in (data_dir / "media").rglob("*") if p.is_file()) == stored
+
+
+def test_a_reused_key_never_removes_a_recording_that_was_already_there(client, conn):
+    """Known content under a reused key is refused, and the old row stays."""
+    upload(client, tiny_wav(tone=5))  # in the library, no key
+    upload(client, tiny_wav(tone=6), key="k2")
+    assert_coded(upload(client, tiny_wav(tone=5), key="k2"), 409, "idempotency_key_reused")
+    assert media_count(conn) == 2
+
+
+def test_two_racing_requests_with_one_key_queue_one_job(app, conn):
+    """`_once` looks up, queues and remembers under one lock hold."""
+    import threading
+    import time as time_
+
+    from scribe import api_v1, jobs
+
+    with TestClient(app, base_url="http://127.0.0.1"):
+        live = app.state.conn
+        media_id = seed_media(conn, title="Race")
+        print_ = api_v1.idempotency.fingerprint("race", media_id=media_id)
+
+        def work():
+            time_.sleep(0.2)
+            return {"job_id": jobs.enqueue(live, "transcribe", media_id=media_id, params={})}
+
+        answers = []
+        threads = [
+            threading.Thread(target=lambda: answers.append(
+                api_v1._once(live, "race-key", "race", print_, 201, work).body))
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert len(jobs_of(conn)) == 1
+    assert answers[0] == answers[1]
 
 
 def test_a_key_survives_a_restart(db_path, data_dir):
