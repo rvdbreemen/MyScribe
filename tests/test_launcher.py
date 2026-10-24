@@ -2431,7 +2431,8 @@ def test_stop_while_installing_reaches_neither_the_child_nor_the_app(layout):
     child = _SetupChild()
     launch.keep_setup_child(child)
     stopped: list[str] = []
-    launch.app = types.SimpleNamespace(stop=lambda timeout=None: stopped.append("app"))
+    # An app that runs and does not answer a stop route: the hard stop (TASK-112.09).
+    launch.app = types.SimpleNamespace(stop=lambda timeout=None: stopped.append("app"), alive=lambda: True)
     launch.installing = True
 
     assert launch.quit_refused() == launcher.QUIT_REFUSED
@@ -2679,7 +2680,9 @@ def test_a_sigterm_is_a_clean_stop_and_says_so(layout, monkeypatch):
             child.kill()
 
     assert code == 0
-    assert "MyScribe was stopped." in _launcher_log(layout)
+    # TASK-112.09: the stop says what happened to the running job; this app
+    # has no stop route to answer, so it is the hard stop's sentence.
+    assert launcher.STOPPING in _launcher_log(layout) and launcher.ENDED in _launcher_log(layout)
 
 
 def _port_busy(layout, monkeypatch, held):
@@ -2786,7 +2789,8 @@ class _FakeServer:
     the way the real one does - or, with ``obeys=False``, answers and ignores
     the ask, the server the hard stop is for."""
 
-    def __init__(self, app_pid: int, on_stop, obeys: bool = True, launcher_pid: int | None = None):
+    def __init__(self, app_pid: int, on_stop, obeys: bool = True, launcher_pid: int | None = None,
+                 running_job: int | None = None, port: int = 0):
         self.posted: list[str] = []
         fake = self
 
@@ -2804,14 +2808,14 @@ class _FakeServer:
 
             def do_POST(self):
                 fake.posted.append(self.path)
-                self._answer(202, {"stopping": True, "pid": app_pid, "running_job": None})
+                self._answer(202, {"stopping": True, "pid": app_pid, "running_job": running_job})
                 if obeys:
                     threading.Thread(target=on_stop, daemon=True).start()
 
             def log_message(self, *args):
                 pass
 
-        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.server = http.server.HTTPServer(("127.0.0.1", port), Handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -2999,3 +3003,235 @@ def test_a_group_of_only_zombies_does_not_make_stop_raise(layout, monkeypatch):
     app.stop(timeout=10)
 
     assert child.poll() is not None
+
+
+# --- TASK-112.09: Quit, Ctrl+C and SIGTERM stop through the stop route --------------
+#
+# ADR-028: every stop goes through the stop route, because only it puts the
+# running job back at the front of the queue. Before this, Quit and a signal to
+# the launcher went straight to `AppProcess.stop`: on Windows taskkill, which
+# leaves the job to reconcile as interrupted; on POSIX a signal to the app's
+# group, which the runner - in a session of its own - outlives.
+
+
+def _route_over(layout, monkeypatch, running_job=7, obeys=True, delay=0.0):
+    """A real Launch whose app is a sleeping child, behind a stop route that
+    ends that child the way the real one ends the app - after ``delay``,
+    which stands in for the supervisor's requeue join."""
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+    said: list[tuple[str, str]] = []
+    launch.say = lambda state, text: said.append((state, text))
+
+    def the_route_stops_the_app():
+        time.sleep(delay)
+        child.terminate()
+
+    fake = _FakeServer(child.pid, the_route_stops_the_app, obeys=obeys, running_job=running_job,
+                       port=launch.port)
+    hard: list = []
+    real_stop = launcher.AppProcess.stop
+
+    def recorded(self, *args, **kwargs):
+        hard.append(self.proc.pid)
+        return real_stop(self, *args, **kwargs)
+
+    monkeypatch.setattr(launcher.AppProcess, "stop", recorded)
+    return launch, child, fake, said, hard
+
+
+def _cleanup(child, fake):
+    fake.close()
+    if child.poll() is None:
+        child.kill()
+        child.wait(10)
+
+
+def test_quit_asks_the_stop_route_first_and_waits_for_the_apps_pid(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch, delay=1.0)
+    try:
+        launch.stop()
+
+        assert fake.posted == ["/api/shutdown"], "Quit did not ask the stop route"
+        assert child.poll() is not None, "Quit returned while the app still ran"
+        assert hard == [], "the hard stop ran although the app stopped itself"
+    finally:
+        _cleanup(child, fake)
+
+
+def test_quit_says_what_happens_to_the_running_job_before_and_after(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch, running_job=7)
+    try:
+        launch.stop()
+    finally:
+        _cleanup(child, fake)
+
+    texts = [text for _state, text in said]
+    before = [i for i, text in enumerate(texts) if "Job 7 goes back to the front of the queue" in text]
+    after = [i for i, text in enumerate(texts) if text.startswith("MyScribe stopped. Job 7 is back")]
+    assert before and after and before[0] < after[0], texts
+    assert said[-1][0] == "status", "the last word is a headline, so the window shows it"
+    assert "Job 7 goes back" in _launcher_log(layout), "the console's lines are kept in launcher.log"
+
+
+def test_quit_with_no_job_running_says_so(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch, running_job=None)
+    try:
+        launch.stop()
+    finally:
+        _cleanup(child, fake)
+
+    assert said[-1] == ("status", launcher.STOPPED_IDLE)
+
+
+def test_quit_falls_back_to_the_hard_stop_when_the_app_outlives_the_wait(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch, obeys=False)
+    launch.stop_wait = 0.5
+    try:
+        launch.stop()
+
+        assert fake.posted == ["/api/shutdown"]
+        assert hard == [child.pid], "an app that did not stop through its route was left running"
+        assert child.poll() is not None
+        assert said[-1] == ("status", launcher.ENDED)
+    finally:
+        _cleanup(child, fake)
+
+
+def test_quit_falls_back_to_the_hard_stop_when_the_route_does_not_answer(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch)
+    fake.close()  # an app that does not answer: hung, or still starting
+    try:
+        launch.stop()
+
+        assert fake.posted == []
+        assert hard == [child.pid]
+        assert child.poll() is not None
+        assert said[-1] == ("status", launcher.ENDED)
+    finally:
+        _cleanup(child, fake)
+
+
+def test_quit_on_an_app_that_already_ended_says_nothing_and_asks_nothing(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch)
+    child.kill()
+    child.wait(10)
+    try:
+        launch.stop()
+    finally:
+        _cleanup(child, fake)
+
+    assert fake.posted == [] and said == []
+
+
+def test_a_sigterm_to_the_headless_launcher_goes_through_the_stop_route(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch)
+    unhandled = []
+    previous = _signal.signal(_signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    try:
+        threading.Timer(0.3, _signal.raise_signal, args=(_signal.SIGTERM,)).start()
+        code = launcher.run_headless(launch)
+    finally:
+        _signal.signal(_signal.SIGTERM, previous)
+        _cleanup(child, fake)
+
+    assert code == 0
+    assert fake.posted == ["/api/shutdown"] and hard == []
+    assert "Job 7 is back at the front of the queue" in _launcher_log(layout)
+
+
+def test_ctrl_c_on_the_headless_launcher_goes_through_the_stop_route(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch)
+    previous = _signal.signal(_signal.SIGINT, _signal.default_int_handler)
+    try:
+        threading.Timer(0.3, _signal.raise_signal, args=(_signal.SIGINT,)).start()
+        code = launcher.run_headless(launch)
+    finally:
+        _signal.signal(_signal.SIGINT, previous)
+        _cleanup(child, fake)
+
+    assert code == 0
+    assert fake.posted == ["/api/shutdown"] and hard == []
+    assert "Job 7 is back at the front of the queue" in _launcher_log(layout)
+
+
+def test_a_second_signal_while_the_stop_runs_does_not_cut_it_short(layout, monkeypatch):
+    """The stop now waits for the requeue - seconds, not milliseconds - and a
+    second Ctrl+C or SIGTERM in that time (an impatient person, a service
+    manager) must neither end the launcher on whatever handler was there
+    before nor break the wait and leave the app running."""
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch, delay=1.5)
+    unhandled = []
+    previous = _signal.signal(_signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    timers = [threading.Timer(0.3, _signal.raise_signal, args=(_signal.SIGTERM,)),
+              threading.Timer(1.0, _signal.raise_signal, args=(_signal.SIGTERM,))]
+    try:
+        for timer in timers:
+            timer.start()
+        code = launcher.run_headless(launch)
+        time.sleep(0.2)
+    finally:
+        for timer in timers:  # a stop that returned early must not leave a signal for pytest
+            timer.cancel()
+            timer.join()
+        _signal.signal(_signal.SIGTERM, previous)
+        _cleanup(child, fake)
+
+    assert code == 0
+    assert unhandled == [], "the second SIGTERM fell through to whoever handled it before"
+    assert fake.posted == ["/api/shutdown"] and hard == []
+    assert "Job 7 is back at the front of the queue" in _launcher_log(layout)
+
+
+REPO = LAUNCHER_PATH.parents[2]
+
+
+def test_quit_requeues_a_running_job_and_leaves_no_runner(layout, monkeypatch):
+    """Criteria 2 and 3 end to end: a real `python -m scribe`, its real
+    supervisor and a real runner in a session of its own, running the slow
+    fake job, and the launcher's own stop. Before TASK-112.09 the row stayed
+    `running` for reconcile to mark interrupted (Windows) and the runner ran
+    on as an orphan (POSIX). Not skipped anywhere: macOS is shown by CI."""
+    from scribe import db as scribe_db
+    from scribe import jobs as scribe_jobs
+
+    monkeypatch.setattr(launcher.Layout, "app_dir", property(lambda self: REPO))
+    monkeypatch.setattr(launcher.Layout, "env_python", property(lambda self: Path(sys.executable)))
+    launcher.prepare_home(layout)
+    port = _free_port()
+    said: list[tuple[str, str]] = []
+    launch = launcher.Launch(layout, port, False, lambda state, text: said.append((state, text)))
+    launch.app = launcher.AppProcess(layout, port, base=dict(os.environ, SCRIBE_FAKE_STAGES="1"))
+    launch.app.start()
+    conn = None
+    try:
+        assert launch.app.wait_ready(timeout=180), "the app did not start"
+        app_pid = launcher.read_health(port)["pid"]
+        conn = scribe_db.connect(layout.data_dir / "myscribe.db")
+        slow = scribe_jobs.enqueue(conn, "fake", params={"scenario": "slow"})
+        behind = scribe_jobs.enqueue(conn, "fake", params={"scenario": "ok"})
+        deadline = time.monotonic() + 60
+        row = None
+        while time.monotonic() < deadline:
+            row = conn.execute("SELECT status, pid FROM job WHERE id=?", (slow,)).fetchone()
+            if row["status"] == "running" and row["pid"]:
+                break
+            time.sleep(0.1)
+        assert row["status"] == "running" and row["pid"], "the slow job never started"
+        runner = row["pid"]
+
+        launch.stop()
+
+        assert not launcher.pid_alive(app_pid), "the stop returned while the app still ran"
+        assert not _pid_alive(runner), "the runner outlived the app"
+        rows = {r["id"]: r for r in conn.execute(
+            "SELECT id, status, queue_seq FROM job WHERE id IN (?, ?)", (slow, behind))}
+        assert rows[slow]["status"] == "queued", f"the stopped job is {rows[slow]['status']}"
+        assert rows[slow]["queue_seq"] < rows[behind]["queue_seq"], "not back at the front"
+        assert any(f"Job {slow} is back" in text for _state, text in said), said
+        time.sleep(3)
+        assert not _pid_alive(runner), "the runner outlived the app"
+    finally:
+        if conn is not None:
+            conn.close()
+        launch.app.stop(timeout=10)

@@ -1340,6 +1340,20 @@ runner's tree and requeues its job, joining for `REQUEUE_STOP_SECONDS` (20 s,
 STOPPED = ("MyScribe stopped. A job that was running is back at the front of the queue and "
            "starts over the next time MyScribe starts.")
 
+STOPPING = "Stopping MyScribe..."
+STOPPING_JOB = ("Stopping MyScribe. Job {job} goes back to the front of the queue and starts over "
+                "the next time MyScribe starts.")
+STOPPING_IDLE = "Stopping MyScribe. No job is running."
+STOPPED_JOB = ("MyScribe stopped. Job {job} is back at the front of the queue and starts over the "
+               "next time MyScribe starts.")
+STOPPED_IDLE = "MyScribe stopped. No job was running."
+ENDED = ("MyScribe was ended. A job that was running is marked interrupted; Retry on the jobs page "
+         "starts it over.")
+"""What Quit, Ctrl+C, a SIGTERM and `--stop` say before and after a stop
+(TASK-112.09, criterion 4): the route's answer names the running job, so the
+sentence before the stop can name it too. `ENDED` is the hard stop's, which
+leaves that job to reconcile."""
+
 
 def read_health(port: int, timeout: float = 2.0) -> dict | None:
     """What /health says, or None when nothing that is MyScribe answers."""
@@ -1439,10 +1453,8 @@ def stop_running(port: int, report: Callable[[str, str], None], wait: float = ST
         report("error", "This MyScribe is older than --stop. Quit it from its window, or end "
                         "MyScribe in Task Manager or Activity Monitor.")
         return 1
-    request = urllib.request.Request(f"http://{HOST}:{port}/api/shutdown", data=b"", method="POST")
     try:
-        with loopback_opener().open(request, timeout=10) as response:
-            response.read()
+        ask_to_stop(port)
     except (OSError, ValueError) as error:
         report("busy", f"The stop route did not answer ({error}); ending MyScribe instead.")
     else:
@@ -1457,11 +1469,23 @@ def stop_running(port: int, report: Callable[[str, str], None], wait: float = ST
     if pid_alive(pid):  # no launcher, or one that went without its app
         end_tree(pid)
     if wait_gone(pid, STOP_TIMEOUT):
-        report("status", "MyScribe was ended. A job that was running is marked interrupted; "
-                         "Retry on the jobs page starts it over.")
+        report("status", ENDED)
         return 0
     report("error", f"MyScribe (process {pid}) is still running and could not be ended.")
     return 1
+
+
+def ask_to_stop(port: int) -> dict:
+    """POST the stop route of the MyScribe on ``port`` and give back its
+    answer: ``{"stopping", "pid", "running_job"}`` (`scribe/shutdown.py`).
+    Raises OSError or ValueError when the route does not answer.
+
+    The half of a stop that `--stop` and the launcher's own Quit share; what
+    each does when it fails is its own (TASK-112.09)."""
+    request = urllib.request.Request(f"http://{HOST}:{port}/api/shutdown", data=b"", method="POST")
+    with loopback_opener().open(request, timeout=10) as response:
+        body = json.loads(response.read().decode("utf-8") or "{}")
+    return body if isinstance(body, dict) else {}
 
 
 def port_taken(port: int) -> bool:
@@ -1774,6 +1798,9 @@ class Launch:
         # (TASK-089.19): `data_dir` after an adoption, `library` for a folder
         # somebody named that the engine has looked at.
         self.result: dict = {}
+        # How long Quit waits for the app to end through its stop route before
+        # the hard stop (TASK-112.09); `STOP_WAIT`, as for `--stop`.
+        self.stop_wait = STOP_WAIT
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -1923,12 +1950,56 @@ class Launch:
         return QUIT_REFUSED if self.installing else ""
 
     def stop(self) -> None:
+        """Quit, Ctrl+C and a SIGTERM to the launcher: the setup child, then
+        the app - through its stop route first (ADR-028, TASK-112.09).
+
+        Only the route puts a running job back at the front of the queue; the
+        hard stop leaves it to reconcile, which marks it interrupted, and on
+        macOS and Linux it never reached the runner at all, which has a
+        session of its own. So the route is asked, and the launcher waits for
+        the pid /health names - on Windows the venv's python.exe is a
+        redirector, so that is not ``proc.pid``. `AppProcess.stop` is the
+        fallback when the route does not answer or the app outlives
+        `stop_wait`. What happens to the job is said before and after.
+        """
         if self.installing:
             self.report("status", QUIT_REFUSED)
             return
         self.stop_setup()
-        if self.app is not None:
-            self.app.stop()
+        app = self.app
+        if app is None or not app.alive():
+            return
+        self.report("status", STOPPING)
+        if self.stop_through_route(app):
+            return
+        app.stop()
+        self.report("status", ENDED)
+
+    def stop_through_route(self, app: "AppProcess") -> bool:
+        """Ask the app's stop route and wait for it; True when it has ended."""
+        health = read_health(self.port)
+        pid = health.get("pid") if health else None
+        if not isinstance(pid, int):
+            self.report("busy", "MyScribe does not answer its stop route; ending it instead.")
+            return False
+        try:
+            answer = ask_to_stop(self.port)
+        except (OSError, ValueError) as error:
+            self.report("busy", f"The stop route did not answer ({error}); ending MyScribe instead.")
+            return False
+        job = answer.get("running_job")
+        self.report("status", STOPPING_JOB.format(job=job) if job is not None else STOPPING_IDLE)
+        self.report("busy", f"Waiting up to {self.stop_wait:g} s for MyScribe to stop.")
+        deadline = time.monotonic() + self.stop_wait
+        while time.monotonic() < deadline:
+            # `alive()` reaps our own child, so a POSIX app that has ended is
+            # not a zombie that `pid_alive` still counts.
+            if not app.alive() and not pid_alive(pid):
+                self.report("status", STOPPED_JOB.format(job=job) if job is not None else STOPPED_IDLE)
+                return True
+            time.sleep(0.2)
+        self.report("busy", f"MyScribe did not stop within {self.stop_wait:g} s; ending it.")
+        return False
 
     def adopt(self, data: str) -> None:
         """The engine adopted a library: record it in the pointer file - the
@@ -2538,9 +2609,9 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
     except KeyboardInterrupt:
         interrupted = True
     finally:
-        launch.stop()
+        with signals_held():
+            launch.stop()  # says what happened to the running job (TASK-112.09)
     if interrupted:
-        launch.report("status", "MyScribe was stopped.")
         return 0
     code = launch.app.exit_code()
     if code:
@@ -2578,6 +2649,32 @@ def stop_on_sigterm(then: Callable[[], None] | None = None):
         yield
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+@contextlib.contextmanager
+def signals_held():
+    """While a stop runs, a second Ctrl+C or SIGTERM does nothing.
+
+    The stop waits for the route's requeue, which takes seconds and not the
+    milliseconds the hard stop did (TASK-112.09). A second signal in that time
+    - somebody pressing Ctrl+C again, a supervisor repeating itself - used to
+    land on the default handler, which ends the launcher with the app halfway
+    through its stop, or as a KeyboardInterrupt that broke the wait and
+    skipped the fallback. The stop has its own deadline and its own hard stop
+    after it; SIGKILL is still there for whoever cannot wait. The handlers
+    that were there are put back on the way out.
+    """
+    held = {}
+    for number in (signal.SIGTERM, signal.SIGINT):
+        try:
+            held[number] = signal.signal(number, lambda _signum, _frame: None)
+        except ValueError:  # not the main thread: nothing to install
+            pass
+    try:
+        yield
+    finally:
+        for number, previous in held.items():
+            signal.signal(number, previous)
 
 
 def ask_location(message: str) -> str | None:
@@ -3084,24 +3181,53 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
     open_button.pack(side="left")
     tk.Button(buttons, text="Open data folder", command=lambda: open_folder(layout.home)).pack(side="left", padx=8)
 
+    stopping = threading.Event()
+
     def quit_app() -> None:
         """Quit stops the setup child too, and that one process only.
 
-        `launch.stop()` terminates the setup child and tree-kills the app; the
-        two are deliberately different, so that no tree kill can pass over an
-        Ollama a third-party installer has just started (ADR-017's M10). While
-        that installer runs, Quit is refused with a sentence and the window
-        stays (TASK-089.18, criterion 14).
+        `launch.stop()` terminates the setup child and stops the app through
+        its stop route, the hard stop after (TASK-112.09); the two are
+        deliberately different, so that no tree kill can pass over an Ollama
+        a third-party installer has just started (ADR-017's M10). While that
+        installer runs, Quit is refused with a sentence and the window stays
+        (TASK-089.18, criterion 14).
+
+        The stop runs on a worker, because it waits for the running job to be
+        put back in the queue - seconds - and the window has to keep saying
+        what happens meanwhile. The worker calls nothing in Tk (TASK-101):
+        what it says reaches the window through `events`, and the window
+        closes from here once it is done. A second Quit, or a SIGTERM, while
+        it runs starts nothing.
         """
+        if stopping.is_set():
+            return
         why = launch.quit_refused()
         if why:
             status.set(why)
             append(why)
             return
-        status.set("Stopping MyScribe...")
-        root.update_idletasks()
-        launch.stop()
-        root.destroy()
+        stopping.set()
+        status.set(STOPPING)
+        stopped = threading.Event()
+
+        def stop_in_a_worker() -> None:
+            try:
+                launch.stop()
+            except Exception:
+                leave_a_trace("while stopping", traceback.format_exc())
+            finally:
+                stopped.set()
+
+        threading.Thread(target=stop_in_a_worker, name="myscribe-stop", daemon=True).start()
+
+        def close_when_stopped() -> None:
+            if stopped.is_set():
+                root.after(1500, root.destroy)  # long enough to read the last line
+            else:
+                root.after(200, close_when_stopped)
+
+        root.after(200, close_when_stopped)
 
     tk.Button(buttons, text="Quit", command=quit_app).pack(side="right")
     root.protocol("WM_DELETE_WINDOW", quit_app)
@@ -3173,7 +3299,8 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
                 leave_a_trace("in the setup window", traceback.format_exc())
                 result = None
             answer.put(result)
-        if launch.app is not None and launch.app.proc is not None and not launch.app.alive():
+        if (launch.app is not None and launch.app.proc is not None and not launch.app.alive()
+                and not stopping.is_set()):
             # 0 is a stop somebody asked for, from Settings or --stop
             # (TASK-112.03): not a crash, and app.log has nothing to say.
             status.set(STOPPED if launch.app.exit_code() == 0

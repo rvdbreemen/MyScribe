@@ -7,6 +7,14 @@
   weights and never mentioned the larger ones *Max* loads. It now checks the
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
+- **Quit no longer costs you the running job.** Quit in the MyScribe window,
+  Ctrl+C in a console and a stop signal (on macOS and Linux) now stop MyScribe
+  the way the Stop button in Settings does. A job that was running goes back to
+  the front of the queue and starts over at the next start. Before, it came
+  back as *interrupted* and waited for you to press Retry. On macOS and Linux
+  its transcription even kept running after MyScribe had closed. The window
+  and the console say which job goes back, before and after the stop
+  (TASK-112.09).
 
 ### Changed
 
