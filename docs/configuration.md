@@ -152,9 +152,9 @@ library, and ignores `HTTP_PROXY`, because a proxy cannot reach this
 computer's 127.0.0.1. The full API is described at
 `http://127.0.0.1:4242/openapi.json`.
 
-`pyproject.toml` declares it as the console script `myscribe`, but the
-environment does not install that command yet (`tool.uv.package = false`),
-so call it as `python -m scribe.cli` with the environment's Python.
+There is no `myscribe` command yet: the project is not packaged
+(`tool.uv.package = false`), so the environment installs no console script.
+Call it as `python -m scribe.cli` with the environment's Python.
 
 | Command | What it does |
 | --- | --- |
@@ -167,7 +167,7 @@ so call it as `python -m scribe.cli` with the environment's Python.
 | `cancel ID` | Cancel a job |
 | `wait ID` | Wait until a job ends. `--timeout SECONDS`, `--interval SECONDS`, `--quiet` |
 | `transcript ID` | The transcript as JSON, word by word, to stdout or `--out` |
-| `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout |
+| `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout. In a folder the file gets the app's name for it; a file that is already there is replaced, with a `replaced` line on stderr |
 
 `--json`, before the command, prints the API's answer instead of text.
 
@@ -184,8 +184,8 @@ a lost answer gives the first answer back and queues nothing new.
 | Code | Name | When |
 | --- | --- | --- |
 | 0 | `OK` | It worked; for `wait`, the job is done |
-| 1 | `SERVER_ERROR` | The app answered with a server error, or with something that is not the API's answer |
-| 2 | `USAGE` | A wrong command line, or a file that is not there |
+| 1 | `SERVER_ERROR` | The app answered with a server error, with something that is not the API's answer, or with an answer that broke off |
+| 2 | `USAGE` | A wrong command line (a negative `--timeout`, say), a file that is not there, or an `--out` that cannot be written |
 | 3 | `NOT_RUNNING` | Nothing answers on 127.0.0.1 at that port |
 | 4 | `NOT_FOUND` | No such recording or job |
 | 5 | `CONFLICT` | No transcript yet, or an idempotency key that is in use or was used for another request |

@@ -29,11 +29,12 @@
   (the file's bytes, or `--by-path` for a file under the browse roots),
   `transcribe`, `jobs`, `cancel`, `wait`, `transcript` and `export`;
   `--idempotency-key` on `upload` and `transcribe`, `--json` for the API's
-  own answer. Each outcome has its own exit code (not running, not found,
-  conflict, refused, job not done, wait timed out), listed in
-  [Configuration](docs/configuration.md). `pyproject.toml` declares it as the
-  console script `myscribe`, but the environment does not install that
-  command yet, because the project is not packaged (TASK-108).
+  own answer. `export` and `transcript --out` replace a file that is
+  already there and say so on stderr. Each outcome has its own exit code
+  (not running, not found, conflict, refused, job not done, wait timed
+  out), listed in [Configuration](docs/configuration.md). There is no `myscribe` command
+  yet: the project is not packaged, so the environment installs no console
+  script (TASK-108).
 - The library database moves to schema version 19 for the idempotency keys;
   an older MyScribe refuses a library this version has opened.
 

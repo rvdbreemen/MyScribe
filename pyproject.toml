@@ -60,11 +60,10 @@ dependencies = [
     "zeroconf==0.151.3",
 ]
 
-# `myscribe`, the command-line client on the JSON API (TASK-108). With
-# `package = false` below, uv installs no entry point: until the project is
-# packaged this is a declaration, and `python -m scribe.cli` is the command.
-[project.scripts]
-myscribe = "scribe.cli:main"
+# No [project.scripts]: with `package = false` below uv installs no entry
+# point and warns about it on every sync, a line the launcher shows in its
+# setup window. The CLI is `python -m scribe.cli` until the project is
+# packaged (TASK-108; tests/test_cli.py keeps the two apart).
 
 [dependency-groups]
 dev = [

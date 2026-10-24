@@ -155,11 +155,17 @@ def test_the_cli_loads_nothing_but_the_standard_library():
     assert ours == ["scribe", "scribe.cli"]
 
 
-def test_pyproject_declares_the_console_script():
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert project["scripts"]["myscribe"] == "scribe.cli:main"
-    module, _, name = project["scripts"]["myscribe"].partition(":")
-    assert callable(getattr(__import__(module, fromlist=[name]), name))
+def test_an_unpackaged_project_declares_no_entry_point():
+    """With ``tool.uv.package = false`` uv installs no ``[project.scripts]``
+    and says so on every sync: "warning: Skipping installation of entry
+    points (`project.scripts`) ... because this project is not packaged"
+    (uv 0.12.18), a line the launcher streams into its setup window and log.
+    Until the project is packaged, the command is ``python -m scribe.cli``."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    if pyproject["tool"]["uv"].get("package", True) is False:
+        assert "scripts" not in pyproject["project"]
+        assert "gui-scripts" not in pyproject["project"]
+    assert callable(cli.main)
 
 
 def test_the_documented_exit_codes_are_the_codes():
@@ -525,6 +531,141 @@ def test_a_success_that_is_not_json_is_a_server_error():
     assert result.code == E.SERVER_ERROR and "Traceback" not in result.err
 
 
+# --- saving a download (review of a5990b9) ------------------------------------------------------
+
+
+def test_a_title_with_a_semicolon_keeps_its_whole_name(transport, conn, tmp_path):
+    """The server quotes an ASCII name and keeps its ';': `Episode 3; the
+    return.srt`, not `Episode 3`. Two formats into one folder are two files."""
+    media_id = seed_media(conn, title="Episode 3; the return", duration=20.0)
+    seed_run(conn, media_id)
+    out = tmp_path / "out"  # tmp_path also holds the test's database
+    out.mkdir()
+    for fmt in ("srt", "txt"):
+        result = run(transport, "export", str(media_id), "--format", fmt, "--out", str(out))
+        assert result.code == E.OK, result.err
+    assert sorted(p.name for p in out.iterdir()) == [
+        "Episode 3; the return.srt", "Episode 3; the return.txt"]
+
+
+def test_the_utf8_name_wins_over_the_ascii_fallback(transport, conn, tmp_path):
+    media_id = seed_media(conn, title="Café; deel 2", duration=20.0)
+    seed_run(conn, media_id)
+    out = tmp_path / "out"
+    out.mkdir()
+    result = run(transport, "export", str(media_id), "--format", "srt", "--out", str(out))
+    assert result.code == E.OK, result.err
+    assert [p.name for p in out.iterdir()] == ["Café; deel 2.srt"]
+
+
+@pytest.mark.parametrize("disposition", [
+    'attachment; filename="../../x.srt"',
+    'attachment; filename="..\\..\\x.srt"',
+    'attachment; filename="/abs/x.srt"',
+    'attachment; filename="C:\\x.srt"',
+    'attachment; filename="C:x.srt"',
+    "attachment; filename*=utf-8''..%2F..%2Fx.srt",
+    "attachment; filename*=utf-8''..%5C..%5Cx.srt",
+])
+def test_the_servers_name_is_never_a_path(disposition):
+    name = cli._filename({"content-disposition": disposition})
+    assert name, disposition
+    assert "/" not in name and "\\" not in name and name not in (".", "..")
+    if os.name == "nt":  # a drive, even without a separator, is a path there
+        assert ":" not in name
+
+
+@pytest.mark.parametrize("disposition", ['attachment; filename=".."', 'attachment; filename="../"',
+                                         "attachment", ""])
+def test_no_usable_name_falls_back(disposition, tmp_path):
+    def answer(method, path, headers, body):
+        return 200, {"content-disposition": disposition}, b"data"
+
+    result = run(answer, "export", "1", "--out", str(tmp_path))
+    assert result.code == E.OK, result.err
+    assert [p.name for p in tmp_path.iterdir()] == ["media-1.export"]
+
+
+def test_a_name_that_climbs_stays_in_the_out_folder(tmp_path):
+    out = tmp_path / "a" / "b" / "c"
+    out.mkdir(parents=True)
+
+    def climbing(method, path, headers, body):
+        return 200, {"content-disposition": 'attachment; filename="../../../x.srt"'}, b"data"
+
+    result = run(climbing, "export", "1", "--out", str(out))
+    assert result.code == E.OK, result.err
+    assert [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()] \
+        == ["a/b/c/x.srt"]
+
+
+def test_an_out_folder_that_is_not_there_is_a_usage_error(tmp_path):
+    def answer(method, path, headers, body):
+        return 200, {"content-disposition": 'attachment; filename="x.srt"'}, b"data"
+
+    result = run(answer, "export", "1", "--out", str(tmp_path / "no" / "such" / "x.srt"))
+    assert result.code == E.USAGE
+    assert "Traceback" not in result.err and "x.srt" in result.err
+
+
+def test_a_file_that_is_there_is_replaced_and_said_so(tmp_path):
+    target = tmp_path / "x.srt"
+    target.write_bytes(b"old")
+
+    def answer(method, path, headers, body):
+        return 200, {}, b"new"
+
+    result = run(answer, "export", "1", "--out", str(target))
+    assert result.code == E.OK, result.err
+    assert target.read_bytes() == b"new"
+    assert "replaced" in result.err and str(target) in result.err
+    assert "replaced" not in run(answer, "export", "1", "--out", str(tmp_path / "y.srt")).err
+
+
+# --- numbers and answers the CLI cannot use -----------------------------------------------------
+
+
+@pytest.mark.parametrize("argv", [
+    ["wait", "1", "--interval", "-1"],
+    ["wait", "1", "--interval", "nan"],
+    ["wait", "1", "--interval", "0"],
+    ["wait", "1", "--timeout", "-1"],
+    ["--http-timeout", "0", "status"],
+    ["--http-timeout", "-5", "status"],
+])
+def test_a_number_that_cannot_be_is_a_usage_error(argv):
+    asked = []
+
+    def answer(method, path, headers, body):
+        asked.append(path)
+        return 200, {}, b'{"id": 1, "status": "done"}'
+
+    result = run(answer, *argv)
+    assert result.code == E.USAGE
+    assert asked == [] and "Traceback" not in result.err
+
+
+@pytest.mark.parametrize("argv, body", [
+    (["wait", "1"], b"{}"),
+    (["wait", "1"], b"[]"),
+    (["upload", "{clip}"], b'{"title": "x"}'),
+    (["list"], b'{"media": [{"title": "no id"}]}'),
+    (["jobs"], b'{"jobs": "not a list of jobs"}'),
+])
+def test_an_answer_without_what_the_api_promises_is_a_server_error(argv, body, tmp_path):
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"RIFF")
+
+    def answer(method, path, headers, data):
+        if data is not None and not isinstance(data, bytes):
+            b"".join(data)  # the upload's streamed body, read as a server would
+        return 200, {"content-type": "application/json"}, body
+
+    result = run(answer, *[a.format(clip=clip) for a in argv])
+    assert result.code == E.SERVER_ERROR, result.err
+    assert "Traceback" not in result.err and "not what the API promises" in result.err
+
+
 # --- the real urllib path ------------------------------------------------------------------------
 
 
@@ -601,3 +742,48 @@ def test_a_title_a_cp1252_console_cannot_show(live, conn):
     assert done.returncode == E.OK, done.stderr
     assert b"Traceback" not in done.stderr
     assert b"Snow" in done.stdout
+
+
+@pytest.fixture
+def raw_server():
+    """A 127.0.0.1 port that answers every connection with fixed bytes."""
+    servers = []
+
+    def start(reply: bytes) -> int:
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        sock.listen()
+
+        def serve():
+            while True:
+                try:
+                    conn_, _ = sock.accept()
+                except OSError:
+                    return
+                with conn_:
+                    conn_.settimeout(5)
+                    try:
+                        conn_.recv(65536)
+                        conn_.sendall(reply)
+                    except OSError:
+                        pass
+
+        threading.Thread(target=serve, daemon=True).start()
+        servers.append(sock)
+        return sock.getsockname()[1]
+
+    yield start
+    for sock in servers:
+        sock.close()
+
+
+@pytest.mark.parametrize("reply", [
+    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"jobs\"",
+    b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"co",
+    b"NOT HTTP AT ALL\r\n\r\n",
+], ids=["short-body", "short-error-body", "bad-status-line"])
+def test_an_answer_that_breaks_off_is_a_server_error(raw_server, reply):
+    port = raw_server(reply)
+    result = run(None, "--port", str(port), "jobs")
+    assert result.code == E.SERVER_ERROR, result.err
+    assert "Traceback" not in result.err and f"127.0.0.1:{port}" in result.err

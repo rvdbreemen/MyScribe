@@ -27,8 +27,12 @@ is in docs/configuration.md, and a test keeps the two equal.
 from __future__ import annotations
 
 import argparse
+import email.message
+import email.utils
 import enum
+import http.client
 import json
+import math
 import mimetypes
 import secrets
 import socket
@@ -88,21 +92,30 @@ class UrllibTransport:
     """The real transport: urllib to 127.0.0.1, with no proxy."""
 
     def __init__(self, port: int, timeout: float) -> None:
-        self.base = f"http://{HOST}:{port}"
+        self.where = f"{HOST}:{port}"
+        self.base = f"http://{self.where}"
         self.timeout = timeout
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def __call__(self, method: str, path: str, headers: dict, body: Any) -> tuple[int, dict, bytes]:
         request = urllib.request.Request(self.base + path, data=body, headers=headers, method=method)
         try:
-            with self.opener.open(request, timeout=self.timeout) as resp:
-                return resp.status, _lower(resp.headers), resp.read()
-        except urllib.error.HTTPError as exc:
-            with exc:
-                return exc.code, _lower(exc.headers), exc.read()
-        except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as exc:
-            reason = getattr(exc, "reason", exc)
-            raise NotRunning(str(reason)) from None
+            try:
+                with self.opener.open(request, timeout=self.timeout) as resp:
+                    return resp.status, _lower(resp.headers), resp.read()
+            except urllib.error.HTTPError as exc:
+                with exc:
+                    return exc.code, _lower(exc.headers), exc.read()
+            except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as exc:
+                reason = getattr(exc, "reason", exc)
+                raise NotRunning(str(reason)) from None
+        except http.client.HTTPException as exc:
+            # Something answered, but not with whole HTTP: a body shorter than
+            # its Content-Length, a status line that is not one. Checked after
+            # the inner clauses, because RemoteDisconnected is both an
+            # HTTPException and a ConnectionError, and stays "not running".
+            raise Failed(Exit.SERVER_ERROR, f"the answer from {self.where} "
+                         f"broke off or is not HTTP ({type(exc).__name__}: {exc})") from None
 
 
 def _lower(headers) -> dict:
@@ -238,16 +251,25 @@ def _quote(text: str) -> str:
 
 
 def _filename(headers: dict) -> str | None:
-    """The name in a Content-Disposition, its RFC 5987 form first; no path."""
+    """The name in a Content-Disposition, its RFC 5987 ``filename*`` first; no path.
+
+    The stdlib's header parser splits the parameters, so a ``;`` inside the
+    quoted name (``filename="Episode 3; the return.srt"``, which the server
+    sends as it is) stays in the name. Its ``get_filename`` is not used: it
+    answers the ASCII fallback before ``filename*``.
+    """
     disposition = headers.get("content-disposition", "")
-    name = None
-    for part in disposition.split(";"):
-        key, _, value = part.strip().partition("=")
-        if key.lower() == "filename*" and value.lower().startswith("utf-8''"):
-            name = urllib.parse.unquote(value[7:])
-            break
-        if key.lower() == "filename" and name is None:
-            name = value.strip().strip('"')
+    if not disposition:
+        return None
+    parsed = email.message.Message()
+    parsed["content-disposition"] = disposition
+    params = (parsed.get_params(header="content-disposition") or [])[1:]  # [0] is the type
+    names = [value for key, value in params if key.lower() == "filename"]
+    encoded = [value for value in names if isinstance(value, tuple)]  # filename*, decoded below
+    if encoded:
+        name = email.utils.collapse_rfc2231_value(encoded[0])
+    else:
+        name = next((value for value in names if isinstance(value, str)), None)
     if not name:
         return None
     name = Path(name.replace("\\", "/")).name
@@ -471,7 +493,13 @@ def _save(data: bytes, target: str, headers: dict, fallback: str, out: Out) -> N
     path = Path(target).expanduser()
     if path.is_dir():
         path = path / (_filename(headers) or fallback)
-    path.write_bytes(data)
+    existed = path.is_file()
+    try:
+        path.write_bytes(data)
+    except OSError as exc:  # a folder that is not there, no permission, a full disk
+        raise Failed(Exit.USAGE, f"cannot write {path}: {exc.strerror or exc}") from None
+    if existed:
+        out.note(f"replaced {path}")
     out.line(f"saved {path}")
 
 
@@ -496,6 +524,23 @@ def cmd_export(api: Api, args, out: Out) -> Exit:
 # --- the parser --------------------------------------------------------------------------------
 
 
+def _seconds(*, zero: bool):
+    """An argparse type: a finite number of seconds, not negative, and above
+    zero unless ``zero``. ``time.sleep(-1)`` raises, a socket timeout of 0 is
+    non-blocking and a poll interval of 0 asks the app without pause, so all
+    three are refused on the command line (exit 2)."""
+    def parse(text: str) -> float:
+        try:
+            value = float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a number of seconds") from None
+        if not math.isfinite(value) or value < 0 or (value == 0 and not zero):
+            raise argparse.ArgumentTypeError(
+                f"{text!r}: give a number of seconds {'of 0 or more' if zero else 'above 0'}")
+        return value
+    return parse
+
+
 def _with_options(parser: argparse.ArgumentParser, what: str) -> None:
     parser.add_argument("--option", action="append", metavar="NAME=VALUE",
                         help=f"{what}; repeat for more. VALUE is read as JSON when it is a "
@@ -517,7 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"the app's port on {HOST} (default {DEFAULT_PORT})")
     parser.add_argument("--json", action="store_true", help="print the API's JSON instead of text")
-    parser.add_argument("--http-timeout", type=float, default=60.0, metavar="SECONDS",
+    parser.add_argument("--http-timeout", type=_seconds(zero=False), default=60.0, metavar="SECONDS",
                         help="how long one request may wait for an answer (default 60)")
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
@@ -567,8 +612,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("wait", help="wait until a job ends; exit 0 only when it is done")
     p.add_argument("job_id", type=int)
-    p.add_argument("--timeout", type=float, metavar="SECONDS", help="give up after this long (exit 8)")
-    p.add_argument("--interval", type=float, default=2.0, metavar="SECONDS",
+    p.add_argument("--timeout", type=_seconds(zero=True), metavar="SECONDS", help="give up after this long (exit 8)")
+    p.add_argument("--interval", type=_seconds(zero=False), default=2.0, metavar="SECONDS",
                    help="how often to ask (default 2)")
     p.add_argument("--quiet", action="store_true", help="no progress lines on stderr")
     p.set_defaults(run=cmd_wait)
@@ -612,7 +657,14 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None,
         args.parser = parser
         out = Out(stdout, stderr, args.json)
         api = Api(transport or UrllibTransport(args.port, args.http_timeout), args.port)
-        return int(args.run(api, args, out))
+        try:
+            return int(args.run(api, args, out))
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            # A 2xx JSON answer the commands cannot read (a field missing, a
+            # list where an object belongs): exit 1 with what was wrong, not
+            # a traceback. The API's own answers always have these fields.
+            raise Failed(Exit.SERVER_ERROR, "an answer from the app is not what the API promises "
+                         f"({type(exc).__name__}: {exc})") from None
     except SystemExit as exc:  # argparse: --help is 0, a usage error 2
         return exc.code if isinstance(exc.code, int) else Exit.USAGE
     except Failed as exc:
