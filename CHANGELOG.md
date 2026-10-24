@@ -5,12 +5,13 @@
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget
   thinking and returned nothing (speakers and minutes on a long recording).
-  Every OpenRouter call except cleanup now asks for at most two fifths of
-  that budget for thinking, when that comes to 1,024 tokens or more.
-  Per OpenRouter's documentation a provider may ignore it or turn it into an
-  effort level. A request refused with an error that names the reasoning
-  field is sent once more without it. Cleanup is unchanged. Each answer records the limit it was
-  sent with (TASK-123, ADR-030).
+  An OpenRouter call that does not already ask the model not to think now
+  asks it to keep its thinking to two fifths of that budget, when that comes
+  to 1,024 tokens or more. Cleanup, which asks for no thinking, is unchanged.
+  Per OpenRouter's documentation a provider may ignore the limit or turn it
+  into an effort level. A request refused with an error that names the
+  reasoning field is sent once more without it. Each answer records the
+  limit it was sent with (TASK-123, ADR-030).
 
 ## [0.9.1] - 2026-10-23
 
