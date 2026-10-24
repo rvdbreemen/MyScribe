@@ -7,7 +7,7 @@
   weights and never mentioned the larger ones *Max* loads. It now checks the
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
-- **Local AI can take a long recording, and never answers from half of it.**
+- **Local AI reads all of a long recording, or says it cannot.**
   MyScribe under-counted how much of a model's window a transcript fills: each
   timestamp and speaker name costs more than it allowed for. So a local model
   could get a part of a long recording too big for its window, read only the
