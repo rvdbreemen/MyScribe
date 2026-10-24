@@ -1884,6 +1884,63 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-031",
+      "title": "The MCP server is hand-written JSON-RPC on the standard library, not the official SDK",
+      "path": "ADR-031-the-mcp-server-is-hand-written-json-rpc-on-the-standard-library-not-the-official-sdk.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "automation",
+        "dependencies",
+        "mcp"
+      ],
+      "aliases": [
+        "mcp server",
+        "model context protocol"
+      ],
+      "components": [
+        "scribe.mcp_server"
+      ],
+      "symbols": [
+        "PROTOCOL_VERSIONS",
+        "serve"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "scribe/mcpserver.py imports only the standard library and scribe.cli.",
+          "Every tool is one or a few /api/v1 requests through scribe.cli.Api.",
+          "An unknown method is answered with -32601, never with silence."
+        ],
+        "must_not": [
+          "Import mcp, fastmcp or any other protocol library at runtime.",
+          "Open the database or the library; the app stays the only writer (ADR-013)."
+        ],
+        "exceptions": [
+          "None. (A scratch venv with the SDK, to check interop, is not shipped.)"
+        ],
+        "verification": [
+          "tests/testmcpserver.py: testtheserverloadsnothingbutthestandardlibrary, testanunknownmethodismethodnotfound."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**",
+          "scribe/mcp_server.py"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -2490,6 +2547,18 @@
     {
       "source": "ADR-030",
       "target": "ADR-023",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-031",
+      "target": "ADR-013",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-031",
+      "target": "ADR-025",
       "type": "related",
       "resolved": true
     }

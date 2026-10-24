@@ -35,6 +35,22 @@
   out), listed in [Configuration](docs/configuration.md). There is no `myscribe` command
   yet: the project is not packaged, so the environment installs no console
   script (TASK-108).
+- **An MCP server for AI agents: `python -m scribe.cli mcp`.** An agent such
+  as Claude Code or Claude Desktop starts it and talks MCP to it over stdin
+  and stdout. It offers twelve tools, each one or a few requests to a running
+  MyScribe's `/api/v1`: `list_recordings`, `get_recording`,
+  `search_transcripts`, `get_transcript`, `export_transcript`,
+  `add_recording`, `transcribe_again`, `ask_ai`, `list_jobs`, `get_job`,
+  `cancel_job` and `get_settings`. Like the CLI it reaches only 127.0.0.1 and
+  never opens the library itself. A failed action, or arguments that do not
+  fit a tool, come back as a tool result marked as an error, with the API's
+  code and detail. `export_transcript` returns one text format as text, and
+  writes a docx or a ZIP to `save_to`. `add_recording` sends the file's bytes,
+  or its path with `by_path`, and takes an `idempotency_key`; a replayed
+  answer is marked `myscribe/replayed`. The server is written on Python's
+  standard library and adds no package to the install (ADR-031, Proposed).
+  How to register it is in [Configuration](docs/configuration.md)
+  (TASK-108).
 - The library database moves to schema version 19 for the idempotency keys;
   an older MyScribe refuses a library this version has opened.
 

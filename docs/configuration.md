@@ -168,6 +168,7 @@ Call it as `python -m scribe.cli` with the environment's Python.
 | `wait ID` | Wait until a job ends. `--timeout SECONDS`, `--interval SECONDS`, `--quiet` |
 | `transcript ID` | The transcript as JSON, word by word, to stdout or `--out` |
 | `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout. In a folder the file gets the app's name for it; a file that is already there is replaced, with a `replaced` line on stderr |
+| `mcp` | Serve these actions as MCP tools on stdin and stdout, for an AI agent; see [below](#letting-an-ai-agent-use-myscribe-mcp) |
 
 `--json`, before the command, prints the API's answer instead of text.
 
@@ -195,3 +196,62 @@ a lost answer gives the first answer back and queues nothing new.
 
 An error goes to stderr as the API's `code` and `detail`, for example
 `myscribe: error 409 no_transcript: media 7 has no transcript yet`.
+
+## Letting an AI agent use MyScribe (MCP)
+
+`python -m scribe.cli mcp` is an MCP (Model Context Protocol) server for an
+agent such as Claude Code or Claude Desktop. The agent starts it and talks
+to it over stdin and stdout. Each tool is one request to the JSON API of a
+MyScribe that is already running. Like the other commands it reaches only
+127.0.0.1 and never opens the library itself. `--port`, before `mcp`, picks
+another port.
+
+| Tool | What it does |
+| --- | --- |
+| `list_recordings` | The library: `view`, `folder`, `sort`, `q`, `label` |
+| `get_recording` | One recording, whether it has a transcript, its latest job |
+| `search_transcripts` | Transcript segments that contain every word of `query` |
+| `get_transcript` | The transcript as the JSON export, word by word |
+| `export_transcript` | `formats` (default `["srt"]`) and `options`. One text format comes back as text. A docx, or several formats (a ZIP), needs `save_to`, a file or folder on this computer |
+| `add_recording` | Send the file at `path` in and queue its transcription: the bytes, or with `by_path` the path, for a file under the browse roots. Takes the transcription options, `title`, `folder_id` and `idempotency_key` |
+| `transcribe_again` | Queue a new transcription of a recording. No options repeats the last request |
+| `ask_ai` | Queue an AI job (`kind` summary, chapters, ... or custom with a `prompt`) |
+| `list_jobs`, `get_job`, `cancel_job` | Follow and cancel jobs |
+| `get_settings` | The transcription defaults, browse roots, watch folders and AI provider. Never a key |
+
+A failed action comes back as a tool result marked as an error. The text is
+the API's error, for example `error 404 not_found: no job with id 999`, so
+the agent can read it and try again. A tool's read-only flag is set for the
+seven tools that change nothing. An agent can use the flag to call those
+tools without asking first. A repeated `add_recording` or `transcribe_again`
+with the same `idempotency_key` returns the first answer. Its result carries
+`"_meta": {"myscribe/replayed": true}`.
+
+To register the server, give the client the Python of MyScribe's
+environment, the arguments `-m scribe.cli mcp`, and `PYTHONPATH` set to the
+folder that holds `scribe`. In a source checkout on Windows, Claude Code
+takes it as:
+
+```sh
+claude mcp add myscribe --env PYTHONPATH=C:/src/myscribe -- C:/src/myscribe/.venv/Scripts/python.exe -m scribe.cli mcp
+```
+
+Claude Desktop, and most other clients, read the same thing from their JSON
+configuration (`claude_desktop_config.json` for Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "myscribe": {
+      "command": "C:/src/myscribe/.venv/Scripts/python.exe",
+      "args": ["-m", "scribe.cli", "mcp"],
+      "env": {"PYTHONPATH": "C:/src/myscribe"}
+    }
+  }
+}
+```
+
+On macOS and Linux the Python is `.venv/bin/python`. Pass `PYTHONPATH`
+through `env` rather than relying on a working directory, because not every
+client sets one. MyScribe itself must be running: when it is not, every
+tool answers `MyScribe is not answering on 127.0.0.1:4242`.

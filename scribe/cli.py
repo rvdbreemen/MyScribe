@@ -486,10 +486,10 @@ def cmd_wait(api: Api, args, out: Out) -> Exit:
     return Exit.JOB_UNSUCCESSFUL
 
 
-def _save(data: bytes, target: str, headers: dict, fallback: str, out: Out) -> None:
-    if target == "-":
-        out.raw(data)
-        return
+def write_file(data: bytes, target: str, headers: dict, fallback: str) -> tuple[Path, bool]:
+    """Write ``data`` to the file ``target``, or into the folder ``target``
+    under the server's name (or ``fallback``): (the path, whether it replaced
+    a file). Shared with `scribe.mcp_server`."""
     path = Path(target).expanduser()
     if path.is_dir():
         path = path / (_filename(headers) or fallback)
@@ -498,6 +498,14 @@ def _save(data: bytes, target: str, headers: dict, fallback: str, out: Out) -> N
         path.write_bytes(data)
     except OSError as exc:  # a folder that is not there, no permission, a full disk
         raise Failed(Exit.USAGE, f"cannot write {path}: {exc.strerror or exc}") from None
+    return path, existed
+
+
+def _save(data: bytes, target: str, headers: dict, fallback: str, out: Out) -> None:
+    if target == "-":
+        out.raw(data)
+        return
+    path, existed = write_file(data, target, headers, fallback)
     if existed:
         out.note(f"replaced {path}")
     out.line(f"saved {path}")
@@ -630,7 +638,18 @@ def build_parser() -> argparse.ArgumentParser:
     _with_options(p, "an export option, e.g. speakers=false or timestamps=turn")
     p.add_argument("--out", default=".", help="a file or folder (default .); - is stdout")
     p.set_defaults(run=cmd_export)
+
+    p = sub.add_parser("mcp", help="serve these actions as MCP tools on stdin/stdout, "
+                                   "for an AI agent (see docs/configuration.md)")
+    p.set_defaults(run=cmd_mcp)
     return parser
+
+
+def cmd_mcp(api: Api, args, out: Out) -> Exit:
+    # Imported here, so that every other command loads nothing it does not use.
+    from scribe import mcp_server
+
+    return mcp_server.main(api, stdout=out.stdout, stderr=out.stderr)
 
 
 def _console(stream) -> None:
@@ -675,4 +694,10 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None,
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Run as `python -m scribe.cli`, this file is `__main__`, and anything
+    # that imports `scribe.cli` (the mcp command does) gets a second copy with
+    # its own `Failed`: an `except Failed` there misses this copy's errors.
+    # Running the imported module's `main` leaves one copy in play.
+    from scribe import cli as _cli
+
+    sys.exit(_cli.main())
