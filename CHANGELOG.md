@@ -1,5 +1,23 @@
 ## [Unreleased]
 
+### Added
+
+- **A JSON API for programs, under `/api/v1`.** A script or an agent can list
+  and search the library, read a transcript as JSON, send a recording in
+  (multipart, or a path under the browse roots), transcribe a recording again,
+  queue an AI question, read and cancel jobs, download an export, and read the
+  settings (never a key or token). Every route is in `/openapi.json`, and every
+  error under `/api/v1` is JSON with a stable `code` and a `detail`. An
+  `Idempotency-Key` header on an upload or a re-transcribe makes a retry give
+  the first answer back without queueing a second job; the same key with
+  another request is refused with `idempotency_key_reused`. Keys are kept for
+  24 hours. There is no token: the API answers only on 127.0.0.1 and behind the
+  same Host and same-site checks as the pages, and the phone door does not
+  reach it. The pages and the unversioned `/api/...` routes answer as before
+  (TASK-108, ADR-025).
+- The library database moves to schema version 19 for the idempotency keys;
+  an older MyScribe refuses a library this version has opened.
+
 ### Fixed
 
 - **The doctor names the weights for the quality you chose.** With *Max* set

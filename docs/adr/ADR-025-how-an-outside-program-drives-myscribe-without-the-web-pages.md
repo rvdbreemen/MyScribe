@@ -34,7 +34,8 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-10-06.
+Proposed, 2026-10-06. Option B chosen by Robert on 2026-10-24 and built
+(TASK-108 phase 0); not yet accepted.
 
 ## Status History
 
@@ -56,18 +57,19 @@ Object Notation) twins under `/api/v1/*` with a bearer token, coded errors and
 idempotency keys. Phases 1 and 2 (a `myscribe` command, an agent tool server)
 would be thin clients on it; they are not decided here.
 
-What exists, checked on 2026-10-06:
+What existed before `/api/v1`, checked on 2026-10-24:
 
-* 80 of the 90 route decorators in `scribe/` carry `include_in_schema=False`.
-* The ten others are `/health` (`scribe/app.py:302`), `POST /api/media` (`:318`),
-  six job routes (`:339`-`:462`) and the job log stream (`scribe/web/jobs_ui.py:534`).
+* 81 of the 92 route decorators in `scribe/` carry `include_in_schema=False`.
+* The others are `/health`, `POST /api/shutdown` (ADR-028), `POST /api/media`,
+  six job routes in `scribe/app.py` and the job log stream (`scribe/web/jobs_ui.py:557`).
 * The pages post forms to those job routes (`scribe/templates/_macros.html:95`);
-  `priority` and `move` take form fields (`scribe/app.py:421`, `:445`). Errors are JSON `{"detail": ...}`, without a code.
-* `FastAPI(...)` (`scribe/app.py:300`) keeps the default `/openapi.json` and `/docs`.
-* `POST /api/media` queues a new job even for known content (`scribe/app.py:320`):
+  `priority` and `move` take form fields. Errors are JSON `{"detail": ...}`, without a code.
+* `FastAPI(...)` in `create_app` keeps the default `/openapi.json` and `/docs`.
+* `POST /api/media` queues a new job even for known content:
   a client that retries pays the GPU (graphics processing unit) work twice.
 * `scribe.guard` passes a request with neither `Origin` nor `Sec-Fetch-Site`
-  (`cross_site_reason`), so any local process can already drive every route.
+  (`cross_site_reason`), so any local process can already drive every route,
+  `POST /api/shutdown` included.
 
 The question is whether to finish and version the surface that half exists.
 
@@ -86,7 +88,7 @@ The question is whether to finish and version the surface that half exists.
 
 ## Decision Outcome
 
-Not decided; Robert decides. Recommended: **B**, because the token in A
+Chosen: **B** (Robert, 2026-10-24), as recommended, because the token in A
 stops no one the guard does not already stop. Every process the user runs can
 read a 0600 file, and another account on the machine could still use the form
 routes. A token for every mutating route is a separate decision, best taken
@@ -94,19 +96,20 @@ once.
 
 ### Confirmation
 
-A contract test per endpoint pins its shape and error codes. The door walk
-(`tests/test_web_phone.py:283`) iterates every route of `create_app()`, so it
-covers new routes unchanged.
+`tests/test_api_v1.py` pins each endpoint's shape and error codes against
+the page or route it twins, and walks every `/api/v1` path through the phone
+door. The guard's own refusals answer before any route, in their own shape:
+a plain-text 400 for a foreign Host, the guard's JSON 403 for another site.
 
 ## Decision Contract
 
-For the recommended option.
+For option B, as built in `scribe/api_v1.py`.
 
 ### Must
 
 * Each `/api/v1` route calls the same helper its HTML route calls; neither holds logic of its own.
-* Errors are JSON with a stable `code` and the `detail` the pages already show.
-* `POST /api/v1/media` honours an idempotency key, so a retried request queues no second job.
+* Errors under `/api/v1` are JSON with a stable `code` and the `detail` the pages already show; other paths keep `{"detail": ...}`.
+* `POST /api/v1/media` honours an idempotency key, kept in the database, so a retried request queues no second job.
 * The routes appear in `/openapi.json`.
 
 ### Must Not
@@ -122,6 +125,7 @@ For the recommended option.
 ### Verification
 
 * `tests/test_web_phone.py::test_no_route_of_the_main_app_answers_through_the_door`.
+* `tests/test_api_v1.py`.
 
 ## Consequences
 
@@ -160,9 +164,9 @@ For the recommended option.
 
 ## Open Questions
 
-- [ ] Which option: A, B, C or D?
-- [ ] If a token: does it guard every mutating route, or only `/api/v1`?
-- [ ] Are phases 1 and 2 (the `myscribe` command and the agent tool server) wanted, which decides whether phase 0 is worth its upkeep?
+- [x] Which option: A, B, C or D? B (Robert, 2026-10-24).
+- [x] If a token: does it guard every mutating route, or only `/api/v1`? No token.
+- [x] Are phases 1 and 2 (the `myscribe` command and the agent tool server) wanted? Yes, both on this API.
 
 ## Related Decisions
 
@@ -175,6 +179,6 @@ For the recommended option.
 ## References
 
 * Backlog TASK-108 (Hermes's proposal, 2026-10-05).
-* `scribe/app.py:300-472`, `scribe/guard.py`, `scribe/web/jobs_ui.py:534`.
+* `scribe/api_v1.py`, `scribe/idempotency.py`, `scribe/app.py`, `scribe/guard.py`.
 
-Enforcement: none yet; the rules depend on the option chosen.
+Enforcement: tests/test_api_v1.py and the door walk; no gate until accepted.

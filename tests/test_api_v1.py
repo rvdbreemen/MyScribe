@@ -1,0 +1,513 @@
+"""TASK-108 phase 0, ADR-025 option B: the versioned JSON surface under /api/v1.
+
+What an outside program needs, without reading source: list and search the
+library, read a transcript, send a recording in (with an idempotency key, so a
+retry queues no second GPU job), queue a transcription or an AI question, poll
+a job, export, and read the settings - all from a published schema, every
+error JSON with a stable ``code``.
+
+No token (Robert, 2026-10-24): the routes sit behind what the pages sit
+behind - the 127.0.0.1 bind and `scribe.guard`. So this file also pins that the
+guard covers them (a foreign Host, a foreign Origin), that the phone door
+cannot reach any of them, and that the coded error shape stays on /api/v1 and
+does not leak into the pages' own ``{"detail": ...}`` answers.
+
+Each route calls the helper its page calls (ADR-025's first Must); the twin
+tests below compare the two doors' answers rather than restating them.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import wave
+
+import pytest
+from fastapi.testclient import TestClient
+
+from scribe import db, paths
+from scribe.app import create_app
+from scribe.llm import ollama
+from seed import seed_media, seed_run
+from test_web_phone import _app_paths, door_of, http, install_door
+from test_phone_door import FakeClock, FakePublisher
+
+V1 = "/api/v1"
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    monkeypatch.setattr(paths, "DATA_DIR", data)
+    monkeypatch.setattr(paths, "DB_PATH", data / "myscribe.db")
+    monkeypatch.setattr(paths, "MEDIA_DIR", data / "media")
+    monkeypatch.setattr(paths, "LOGS_DIR", data / "logs")
+    monkeypatch.setattr(paths, "WORK_DIR", data / "work")
+    monkeypatch.setattr(paths, "MODELS_DIR", data / "models")
+    return data
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    path = tmp_path / "test.db"
+    c = db.connect(path)
+    db.migrate(c)
+    c.close()
+    return path
+
+
+@pytest.fixture
+def conn(db_path):
+    c = db.connect(db_path)
+    yield c
+    c.close()
+
+
+@pytest.fixture
+def app(db_path, data_dir):
+    return create_app(db_path=db_path, start_supervisor=False)
+
+
+@pytest.fixture
+def client(app):
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        yield client
+
+
+@pytest.fixture
+def transcribed(conn):
+    media_id = seed_media(conn, title="Guide", duration=20.0)
+    seed_run(conn, media_id)
+    return media_id
+
+
+def tiny_wav(seconds: float = 0.25, rate: int = 8000, tone: int = 0) -> bytes:
+    """A real, very small WAV; ``tone`` changes the bytes and so the hash."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        frames = int(seconds * rate)
+        out.writeframes(bytes([tone % 256, 0]) * frames)
+    return buffer.getvalue()
+
+
+def upload(client, data: bytes, *, key: str | None = None, name: str = "clip.wav", **fields):
+    headers = {"Idempotency-Key": key} if key else {}
+    return client.post(
+        f"{V1}/media", files={"file": (name, data, "audio/wav")}, data=fields, headers=headers
+    )
+
+
+def jobs_of(conn):
+    with db.LOCK:
+        return conn.execute("SELECT * FROM job ORDER BY id").fetchall()
+
+
+def v1_paths(app) -> list[str]:
+    return [path for path in _app_paths(app) if path.startswith(V1 + "/")]
+
+
+def assert_coded(resp, status: int, code: str) -> dict:
+    assert resp.status_code == status, resp.text
+    body = resp.json()
+    assert body["code"] == code, body
+    assert isinstance(body["detail"], str) and body["detail"], body
+    return body
+
+
+# --- the schema --------------------------------------------------------------------------
+
+
+EXPECTED_OPERATIONS = {
+    ("get", "/api/v1/media"),
+    ("post", "/api/v1/media"),
+    ("get", "/api/v1/media/{media_id}"),
+    ("get", "/api/v1/media/{media_id}/transcript"),
+    ("post", "/api/v1/media/{media_id}/transcribe"),
+    ("post", "/api/v1/media/{media_id}/ai/{kind}"),
+    ("post", "/api/v1/media/{media_id}/export"),
+    ("get", "/api/v1/search"),
+    ("get", "/api/v1/jobs"),
+    ("get", "/api/v1/jobs/{job_id}"),
+    ("post", "/api/v1/jobs/{job_id}/cancel"),
+    ("get", "/api/v1/settings"),
+}
+
+
+def test_every_v1_operation_is_in_the_published_schema(client):
+    schema = client.get("/openapi.json").json()
+    found = {
+        (method, path)
+        for path, item in schema["paths"].items()
+        if path.startswith(V1 + "/")
+        for method in item
+    }
+    assert found == EXPECTED_OPERATIONS
+
+
+def test_every_v1_operation_documents_the_coded_error(client):
+    schema = client.get("/openapi.json").json()
+    assert set(schema["components"]["schemas"]["ApiError"]["required"]) == {"code", "detail"}
+    for path, item in schema["paths"].items():
+        if not path.startswith(V1 + "/"):
+            continue
+        for method, operation in item.items():
+            refs = json.dumps(operation.get("responses", {}))
+            assert "#/components/schemas/ApiError" in refs, (method, path)
+
+
+def test_the_upload_documents_its_idempotency_key_and_both_bodies(client):
+    operation = client.get("/openapi.json").json()["paths"][f"{V1}/media"]["post"]
+    headers = [p["name"] for p in operation.get("parameters", []) if p["in"] == "header"]
+    assert "Idempotency-Key" in headers
+    content = operation["requestBody"]["content"]
+    assert set(content) == {"multipart/form-data", "application/json"}
+
+
+def test_a_v1_route_needs_no_token(client, transcribed):
+    resp = client.get(f"{V1}/media")
+    assert resp.status_code == 200
+    assert "authorization" not in {k.lower() for k in resp.request.headers}
+
+
+# --- coded errors, and only here ------------------------------------------------------------
+
+
+def test_an_unknown_media_is_a_coded_404(client):
+    assert_coded(client.get(f"{V1}/media/999"), 404, "not_found")
+
+
+def test_an_unknown_v1_path_is_a_coded_404(client):
+    assert_coded(client.get(f"{V1}/nothing-here"), 404, "not_found")
+
+
+def test_a_wrong_method_is_a_coded_405(client):
+    assert_coded(client.delete(f"{V1}/jobs"), 405, "method_not_allowed")
+
+
+def test_a_malformed_parameter_is_a_coded_422(client):
+    body = assert_coded(client.get(f"{V1}/jobs/not-a-number"), 422, "invalid_request")
+    assert "job_id" in body["detail"]
+
+
+def test_the_pages_errors_keep_their_old_shape(client):
+    """app.js reads ``detail``; the pages' answers must not gain or lose a key."""
+    assert client.get("/api/jobs/999").json() == {"detail": "no job with id 999"}
+    assert "code" not in client.get("/api/jobs/not-a-number").json()
+
+
+# --- the library ---------------------------------------------------------------------------------
+
+
+def test_media_list_is_the_library_tables_rows(client, conn, transcribed):
+    other = seed_media(conn, title="Other", duration=5.0)
+    listed = client.get(f"{V1}/media").json()["media"]
+    assert [row["id"] for row in listed] == [other, transcribed]
+    assert {"title", "duration", "labels", "job_status", "folder_name"} <= set(listed[0])
+
+
+def test_media_list_takes_the_librarys_filters(client, conn, transcribed):
+    seed_media(conn, title="Other", duration=5.0)
+    listed = client.get(f"{V1}/media", params={"q": "gui"}).json()["media"]
+    assert [row["id"] for row in listed] == [transcribed]
+    assert_coded(client.get(f"{V1}/media", params={"sort": "nonsense"}), 400, "bad_request")
+
+
+def test_search_finds_words_and_marks_the_match(client, transcribed):
+    hits = client.get(f"{V1}/search", params={"q": "towel"}).json()["hits"]
+    assert hits and hits[0]["media_id"] == transcribed
+    assert any(part["match"] for part in hits[0]["parts"])
+    assert "towel" in "".join(part["text"] for part in hits[0]["parts"]).lower()
+
+
+def test_one_media_says_whether_it_has_a_transcript(client, conn, transcribed):
+    bare = seed_media(conn, title="Bare")
+    assert client.get(f"{V1}/media/{transcribed}").json()["has_transcript"] is True
+    assert client.get(f"{V1}/media/{bare}").json()["has_transcript"] is False
+
+
+def test_the_transcript_is_the_json_export(client, transcribed):
+    body = client.get(f"{V1}/media/{transcribed}/transcript").json()
+    exported = client.post(f"/media/{transcribed}/export", data={"formats": "json"})
+    assert body == json.loads(exported.content)
+    assert body["schema_version"] == 1 and body["words"]
+
+
+def test_a_media_without_a_transcript_is_a_coded_409(client, conn):
+    bare = seed_media(conn, title="Bare")
+    assert_coded(client.get(f"{V1}/media/{bare}/transcript"), 409, "no_transcript")
+
+
+def test_export_returns_the_bytes_the_page_returns(client, transcribed):
+    page = client.post(f"/media/{transcribed}/export", data={"formats": "srt"})
+    api = client.post(f"{V1}/media/{transcribed}/export", json={"formats": ["srt"]})
+    assert api.status_code == 200
+    assert api.content == page.content
+    assert api.headers["content-disposition"] == page.headers["content-disposition"]
+
+
+def test_export_refuses_options_the_dialog_refuses(client, transcribed):
+    body = assert_coded(
+        client.post(f"{V1}/media/{transcribed}/export", json={"formats": ["pdf"]}), 400, "bad_request"
+    )
+    assert "pdf" in body["detail"]
+
+
+# --- sending a recording in -----------------------------------------------------------------
+
+
+def test_an_upload_files_the_recording_and_queues_its_job(client, conn):
+    resp = upload(client, tiny_wav(), title="Synthetic")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["title"] == "Synthetic" and body["deduped"] is False
+    (job,) = jobs_of(conn)
+    assert job["id"] == body["job_id"] and job["type"] == "transcribe"
+    assert job["media_id"] == body["id"]
+
+
+def test_the_same_idempotency_key_twice_queues_one_job(client, conn):
+    first = upload(client, tiny_wav(), key="retry-1")
+    again = upload(client, tiny_wav(), key="retry-1")
+    assert first.status_code == again.status_code == 201
+    assert again.json() == first.json()
+    assert again.headers.get("idempotent-replayed") == "true"
+    assert len(jobs_of(conn)) == 1
+
+
+def test_without_a_key_a_second_upload_is_a_second_job(client, conn):
+    """The old door's behaviour, unchanged: asking twice is asking twice."""
+    upload(client, tiny_wav())
+    again = upload(client, tiny_wav())
+    assert again.json()["deduped"] is True
+    assert len(jobs_of(conn)) == 2
+
+
+def test_a_key_reused_for_other_content_is_a_coded_409(client, conn):
+    upload(client, tiny_wav(tone=1), key="k")
+    assert_coded(upload(client, tiny_wav(tone=2), key="k"), 409, "idempotency_key_reused")
+    assert len(jobs_of(conn)) == 1
+
+
+def test_a_key_survives_a_restart(db_path, data_dir):
+    """A client that retries across an app restart is the case a key exists for."""
+    for _ in range(2):
+        with TestClient(create_app(db_path=db_path, start_supervisor=False),
+                        base_url="http://127.0.0.1") as c:
+            assert upload(c, tiny_wav(), key="across").status_code == 201
+    check = db.connect(db_path)
+    try:
+        assert len(jobs_of(check)) == 1
+    finally:
+        check.close()
+
+
+def test_an_upload_without_a_file_part_is_a_coded_400(client, conn):
+    resp = client.post(f"{V1}/media", files={"other": ("x.wav", b"x")})
+    assert_coded(resp, 400, "bad_request")
+    assert jobs_of(conn) == []
+
+
+def test_a_path_outside_the_roots_is_a_coded_403(client, tmp_path, monkeypatch):
+    monkeypatch.setattr("scribe.fsbrowse.allowed_roots", lambda conn: (tmp_path / "allowed",))
+    resp = client.post(f"{V1}/media", json={"path": str(tmp_path / "elsewhere.wav")})
+    assert_coded(resp, 403, "forbidden")
+
+
+def test_a_foreign_param_key_is_refused_as_the_old_door_refuses_it(client, conn):
+    resp = upload(client, tiny_wav(), params=json.dumps({"diarization_model": "evil/pipe"}))
+    body = assert_coded(resp, 400, "bad_request")
+    assert "diarization_model" in body["detail"]
+    assert jobs_of(conn) == []
+
+
+# --- queueing work on what is there --------------------------------------------------------
+
+
+def test_transcribe_again_reuses_the_last_request(client, conn, transcribed):
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO job(type, media_id, params_json, status, created_at, queue_seq)"
+            " VALUES ('transcribe', ?, ?, 'done', 0, 1)",
+            (transcribed, json.dumps({"language": "nl"})),
+        )
+        conn.commit()
+    resp = client.post(f"{V1}/media/{transcribed}/transcribe")
+    assert resp.status_code == 201, resp.text
+    job = jobs_of(conn)[-1]
+    assert resp.json()["id"] == job["id"]
+    assert json.loads(job["params_json"]) == {"language": "nl"}
+
+
+def test_transcribe_takes_the_dialogs_options(client, conn, transcribed):
+    resp = client.post(f"{V1}/media/{transcribed}/transcribe", json={"language": "en", "diarize": False})
+    assert resp.status_code == 201, resp.text
+    params = json.loads(jobs_of(conn)[-1]["params_json"])
+    assert params["language"] == "en" and params["diarize"] is False
+
+
+def test_transcribe_with_the_same_key_queues_once(client, conn, transcribed):
+    for _ in range(2):
+        resp = client.post(
+            f"{V1}/media/{transcribed}/transcribe", json={"language": "en"},
+            headers={"Idempotency-Key": "t-1"},
+        )
+        assert resp.status_code == 201
+    assert len(jobs_of(conn)) == 1
+    other = client.post(
+        f"{V1}/media/{transcribed}/transcribe", json={"language": "nl"},
+        headers={"Idempotency-Key": "t-1"},
+    )
+    assert_coded(other, 409, "idempotency_key_reused")
+
+
+def test_transcribe_refuses_a_title(client, transcribed):
+    assert_coded(
+        client.post(f"{V1}/media/{transcribed}/transcribe", json={"title": "x"}), 400, "bad_request"
+    )
+
+
+@pytest.fixture
+def ollama_ready(monkeypatch):
+    monkeypatch.setattr(
+        ollama.OllamaProvider, "tags",
+        lambda self: [{"name": "qwen3.5:4b", "model": "qwen3.5:4b", "capabilities": ["completion"]}],
+    )
+
+
+def test_an_ai_question_queues_the_job_the_panel_queues(client, conn, transcribed, ollama_ready):
+    resp = client.post(f"{V1}/media/{transcribed}/ai/summary", json={"provider": "ollama", "model": "qwen3.5:4b"})
+    assert resp.status_code == 201, resp.text
+    (job,) = jobs_of(conn)
+    assert resp.json()["job"]["id"] == job["id"] and resp.json()["already_queued"] is False
+    assert json.loads(job["params_json"]) == {
+        "media_id": transcribed, "kind": "summary", "provider": "ollama", "model": "qwen3.5:4b",
+    }
+    again = client.post(f"{V1}/media/{transcribed}/ai/summary", json={"provider": "ollama", "model": "qwen3.5:4b"})
+    assert again.status_code == 200
+    assert again.json() == {**again.json(), "already_queued": True}
+    assert again.json()["job"]["id"] == job["id"]
+    assert len(jobs_of(conn)) == 1
+
+
+def test_an_ai_question_with_nobody_chosen_is_a_coded_409(client, conn, transcribed):
+    assert_coded(client.post(f"{V1}/media/{transcribed}/ai/summary", json={}), 409, "no_provider")
+    assert jobs_of(conn) == []
+
+
+def test_an_ai_question_to_a_provider_that_cannot_answer_is_a_coded_409(
+    client, conn, transcribed, monkeypatch
+):
+    def down(self):
+        from scribe.llm import base
+        raise base.NothingAnswered("Ollama is not running")
+
+    monkeypatch.setattr(ollama.OllamaProvider, "tags", down)
+    resp = client.post(f"{V1}/media/{transcribed}/ai/summary", json={"provider": "ollama"})
+    assert_coded(resp, 409, "provider_unavailable")
+    assert jobs_of(conn) == []
+
+
+def test_an_unknown_ai_kind_is_a_coded_404(client, transcribed):
+    assert_coded(client.post(f"{V1}/media/{transcribed}/ai/poetry", json={}), 404, "not_found")
+
+
+# --- jobs ------------------------------------------------------------------------------------------
+
+
+def test_jobs_list_matches_the_pages_poll(client, conn):
+    upload(client, tiny_wav(tone=3))
+    upload(client, tiny_wav(tone=4))
+    assert client.get(f"{V1}/jobs").json()["jobs"] == client.get("/api/jobs").json()
+    assert client.get(f"{V1}/jobs", params={"status": "done"}).json()["jobs"] == []
+
+
+def test_job_status_carries_its_events(client, conn):
+    job_id = upload(client, tiny_wav()).json()["job_id"]
+    body = client.get(f"{V1}/jobs/{job_id}").json()
+    assert body == client.get(f"/api/jobs/{job_id}").json()
+    assert body["status"] == "queued" and "events" in body
+
+
+def test_cancel_cancels_a_queued_job(client, conn):
+    job_id = upload(client, tiny_wav()).json()["job_id"]
+    assert client.post(f"{V1}/jobs/{job_id}/cancel").json()["status"] == "cancelled"
+
+
+def test_an_unknown_job_is_a_coded_404(client):
+    assert_coded(client.get(f"{V1}/jobs/999"), 404, "not_found")
+
+
+# --- settings, read only and without secrets ----------------------------------------------------
+
+
+def test_settings_read_says_what_the_next_job_gets(client, conn, tmp_path):
+    folder = tmp_path / "watched"
+    folder.mkdir()
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO watch_folder(path, enabled, options_json) VALUES (?, 1, '{}')",
+            (str(folder),),
+        )
+        conn.commit()
+    body = client.get(f"{V1}/settings").json()
+    assert set(body) == {"transcribe_defaults", "browse_roots", "watch_folders", "ai", "cpu_fallback"}
+    assert {"language", "tier", "diarize"} <= set(body["transcribe_defaults"])
+    assert [f["path"] for f in body["watch_folders"]] == [str(folder)]
+    assert body["ai"]["provider"] == ""
+
+
+def test_settings_read_never_carries_a_secret(client, conn):
+    secrets = {"hf_token": "hf_SECRETsecret42", "llm_key_openrouter": "sk-or-SECRET-42"}
+    with db.LOCK:
+        for key, value in secrets.items():
+            conn.execute("INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+    text = client.get(f"{V1}/settings").text
+    for value in secrets.values():
+        assert value not in text
+
+
+# --- the guard covers it, and the phone door does not reach it -------------------------------------
+
+
+def test_a_foreign_host_is_refused_before_any_v1_route_runs(app, conn):
+    with TestClient(app, base_url="http://evil.example") as foreign:
+        assert foreign.get(f"{V1}/media").status_code == 400
+        assert upload(foreign, tiny_wav(), key="h").status_code == 400
+    assert jobs_of(conn) == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{"Origin": "http://evil.example"}, {"Sec-Fetch-Site": "cross-site"}],
+)
+def test_a_post_from_another_site_is_refused(client, conn, headers):
+    resp = client.post(
+        f"{V1}/media", files={"file": ("clip.wav", tiny_wav(), "audio/wav")}, headers=headers
+    )
+    assert resp.status_code == 403
+    assert jobs_of(conn) == []
+
+
+def test_the_phone_door_reaches_no_v1_route(app):
+    found = v1_paths(app)
+    for known in ("/api/v1/media", "/api/v1/jobs/1", "/api/v1/media/1/transcript", "/api/v1/settings"):
+        assert known in found, known
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        install_door(app, FakeClock(), FakePublisher())
+        try:
+            client.post("/phone/open", headers={"HX-Request": "true"})
+            opening = door_of(client).opening
+            base = f"http://127.0.0.1:{opening.port}"
+            with http() as c:
+                for path in found:
+                    for prefix in ("", f"/{opening.secret}"):
+                        for method in ("GET", "POST"):
+                            answer = c.request(method, base + prefix + path)
+                            assert answer.status_code == 404, (method, prefix and "<secret>", path)
+            assert door_of(client).is_open() is True
+        finally:
+            app.state.phone_door.close()

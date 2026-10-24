@@ -47,6 +47,7 @@ import json
 import math
 import re
 import sqlite3
+from dataclasses import dataclass
 from typing import Annotated, Any, Iterable
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -984,14 +985,49 @@ def ai_run(
     `textContent` cannot carry the link to where (TASK-089.10).
     """
     conn = request.app.state.conn
+    asked = ask(conn, media_id, kind, provider=provider, model=model, prompt=prompt)
+    if asked.blocked is not None:
+        return _blocked_panel(request, conn, media_id, kind, asked.blocked)
+    if not library._is_htmx(request):
+        return RedirectResponse(f"/media/{media_id}#ai-{kind}", status_code=303)
+    response = _one_panel(request, conn, media_id, kind)
+    response.headers["HX-Trigger"] = "jobs-changed"
+    return response
+
+
+@dataclass(frozen=True)
+class Asked:
+    """What `ask` did: queued a job, found the same one on its way, or neither.
+
+    ``blocked`` is the card when nothing was queued because nobody has chosen
+    a provider (``nobody_chose``) or the chosen one cannot answer. Every other
+    refusal is an HTTPException, raised before a row exists.
+    """
+
+    job_id: int | None
+    already_queued: bool = False
+    blocked: dict | None = None
+    nobody_chose: bool = False
+
+
+def ask(
+    conn: sqlite3.Connection, media_id: int, kind: str, *, provider: str = "", model: str = "",
+    prompt: str = "",
+) -> Asked:
+    """The checks in front of one question's job row, and the row.
+
+    The rail's POST and `POST /api/v1/media/{id}/ai/{kind}` both come through
+    here (ADR-025: one helper per action), so the pin, the window and the
+    double-click guard hold for a program exactly as for the panel.
+    """
     library._get_media(conn, media_id)
     spec = _spec(kind)
     _require_transcript(conn, media_id)
 
     provider_name = _named_provider(conn, provider)
     if not provider_name:
-        return _blocked_panel(
-            request, conn, media_id, kind, {"why": NO_PROVIDER_IN_CARD, "anchor": SETTINGS_ANCHOR}
+        return Asked(
+            None, blocked={"why": NO_PROVIDER_IN_CARD, "anchor": SETTINGS_ANCHOR}, nobody_chose=True
         )
     _provider(provider_name)
     _refuse_if_private(conn, media_id, provider_name)
@@ -1018,7 +1054,7 @@ def ai_run(
     # blocked request asked after it would cost two calls instead of one.
     blocked = _blocked_card(conn, provider_name, params["model"])
     if blocked is not None:
-        return _blocked_panel(request, conn, media_id, kind, blocked)
+        return Asked(None, blocked=blocked)
 
     _refuse_if_window_too_small(spec, provider_name, params["model"], custom_prompt=asked)
 
@@ -1028,13 +1064,10 @@ def ai_run(
     # this way. The match is on the whole request rather than on (media, kind):
     # a user who changed the model or typed a different question pressed the
     # button on purpose, and collapsing that would discard what they asked for.
-    if not _already_queued(pending_jobs(conn, media_id).get(kind), params):
-        jobs.enqueue(conn, llm_stage.JOB_TYPE, media_id, params)
-    if not library._is_htmx(request):
-        return RedirectResponse(f"/media/{media_id}#ai-{kind}", status_code=303)
-    response = _one_panel(request, conn, media_id, kind)
-    response.headers["HX-Trigger"] = "jobs-changed"
-    return response
+    pending = pending_jobs(conn, media_id).get(kind)
+    if _already_queued(pending, params):
+        return Asked(int(pending["id"]), already_queued=True)
+    return Asked(jobs.enqueue(conn, llm_stage.JOB_TYPE, media_id, params))
 
 
 # --- the pin ------------------------------------------------------------------------------
