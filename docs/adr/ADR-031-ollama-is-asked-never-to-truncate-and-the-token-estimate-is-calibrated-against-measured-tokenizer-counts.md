@@ -47,11 +47,6 @@ status_history:
     changed_by: Claude (agent, session 2026-10-24)
     reason: Initial proposal
     changed_via: adr-kit
-  - date: 2026-10-24
-    status: Proposed
-    changed_by: Claude (agent, session 2026-10-24)
-    reason: ADR-031 bounds the Ollama window that ADR-029's retry also runs in
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
@@ -85,9 +80,12 @@ Measured 2026-10-24 on Ollama 0.40.8 (scratchpad `run-124`):
 
 ## Decision Outcome
 
-Chosen option: **A**, recorded at Robert's request on 2026-10-24. B makes the
-plan depend on a running daemon and costs a prompt evaluation per chunk. C is
-honest (ContextTooLong) but leaves local AI unable to take a long recording.
+Chosen option: **A**, proposed by the agent. On 2026-10-24 Robert asked for
+this record: Ollama never truncates, the estimate is calibrated on measured
+counts. He did not weigh A against B and C; the agent wrote those labels.
+B makes the plan depend on a running daemon and costs a prompt evaluation per
+chunk. C is honest (ContextTooLong) but leaves local AI unable to take a long
+recording.
 
 ### Confirmation
 

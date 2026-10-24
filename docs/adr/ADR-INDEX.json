@@ -1775,7 +1775,7 @@
       "path": "ADR-029-an-ollama-answer-lost-entirely-to-thinking-is-asked-once-more-with-think-false.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-10-23",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-23 with the three options and the A/B in front of him.",
       "topics": [
         "ollama",
@@ -1889,7 +1889,7 @@
       "format": "madr",
       "status": "Proposed",
       "date": "2026-10-24",
-      "decision_summary": "Chosen option: A, recorded at Robert's request on 2026-10-24.",
+      "decision_summary": "Chosen option: A, proposed by the agent.",
       "topics": [
         "chunking",
         "context-window",
