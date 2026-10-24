@@ -202,6 +202,7 @@ def _watch(ctx: "RunnerContext") -> Callable[[str, Any, Any], None]:
             model=getattr(response, "model", None),
             reasoning_tokens=getattr(response, "reasoning_tokens", None),
             upstream=getattr(response, "upstream", None),
+            reasoning_cap=getattr(response, "reasoning_cap", None),
         )
 
     return watch

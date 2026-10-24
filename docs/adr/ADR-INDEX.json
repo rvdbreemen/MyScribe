@@ -1199,7 +1199,7 @@
       "path": "ADR-020-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap-and-a-copied-part-that-skipped-the-grouping-refuses-the-cleaning.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-23",
+      "date": "2026-10-24",
       "decision_summary": "Chosen option: A.",
       "topics": [
         "llm",
@@ -1824,6 +1824,63 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-030",
+      "title": "An OpenRouter call that asks no reasoning hint carries a reasoning limit of two fifths of its cap",
+      "path": "ADR-030-an-openrouter-call-that-asks-no-reasoning-hint-carries-a-reasoning-limit-of-two-fifths-of-its-cap.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-24",
+      "decision_summary": "Chosen option: B, decided by Robert on 2026-10-24.",
+      "topics": [
+        "openrouter",
+        "reasoning"
+      ],
+      "aliases": [
+        "reasoning.max_tokens"
+      ],
+      "components": [
+        "scribe/llm/openai_like.py"
+      ],
+      "symbols": [
+        "_names_reasoning",
+        "reasoning_cap_for"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "An OpenRouter request without the hint carries reasoning: {maxtokens: N} with N = cap 2 // 5, alone in the object, when N is at least 1,024.",
+          "A request with the hint never carries the limit: not on the first call, and not after a refused hint is dropped.",
+          "A 400 that names reasoning while only the limit is on the wire is retried once without it; param decides when present, the wording otherwise; a context-length 400 is not retried.",
+          "ChatResponse.reasoningcap and the row's paramsjson record the limit the answering call carried, None when none."
+        ],
+        "must_not": [
+          "Send the limit beside the hint or beside effort.",
+          "Send the limit to any provider but OpenRouter.",
+          "Drop the limit on a 400 that does not name reasoning, or more than once."
+        ],
+        "exceptions": [
+          "A cap whose share is under 1,024 sends no limit: OpenRouter raises an Anthropic budget to 1,024 and wants the cap strictly above it."
+        ],
+        "verification": [
+          "tests/testllmproviders.py::testopenrouterboundsreasoningtoashareoftheanswerbudget, ::testasharebelowopenroutersfloorisnotsent, ::testopenaisendsnoreasoninglimit, ::testthehintgoesaloneneverbesidethelimit.",
+          "tests/testllmproviders.py::testarefusedhintfallsbacktonoreasoningfieldnottothelimit, ::testa400namingreasoningwithonlythelimitonthewireisretriedoncewithoutit, ::testa400thatnamesnoreasoningfieldwithonlythelimitonthewireisnotretried, ::te...",
+          "tests/testllmtaskproviders.py::testacleanupwhosehintopenrouterrefusesgoesagainwithnoreasoninglimit.",
+          "tests/testllmproviders.py::testacontextlength400namingreasoningwiththelimitoniscontexttoolongafteronecall; tests/testllmtasks.py::testtherowandacutoffrefusalnamethereasoninglimitsent."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -2284,6 +2341,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-020",
+      "target": "ADR-030",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-021",
       "target": "ADR-015",
       "type": "related",
@@ -2411,6 +2474,18 @@
     },
     {
       "source": "ADR-029",
+      "target": "ADR-023",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-030",
+      "target": "ADR-020",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-030",
       "target": "ADR-023",
       "type": "related",
       "resolved": true
