@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Fixed
+
+- **The doctor names the weights for the quality you chose.** With *Max* set
+  as the transcription default, the models line asked about the *Turbo*
+  weights and never mentioned the larger ones *Max* loads. It now checks the
+  tier you chose, *Turbo* when you never chose one, and its fix names the
+  exact download (TASK-107.04).
+
 ### Changed
 
 - **The setup window is shorter.** Its first step lists each thing MyScribe
