@@ -909,6 +909,19 @@ def test_a_long_choice_wraps_instead_of_widening_the_window(layout, monkeypatch)
     assert sitting.radios and all(radio.get("wraplength") for radio in sitting.radios)
 
 
+def test_a_path_with_an_initial_in_it_is_not_cut_into_two_sentences():
+    """A Windows profile named after a person can hold an initial and a space,
+    `C:\\Users\\J. Smith`, and the library's skip line is the path's sentence:
+    cut there, the step showed half a path and hid the rest behind Details."""
+    first, details = launcher.skip_texts({
+        "if_skipped": r"A new library is started at C:\Users\J. Smith\MyScribe\data. The one found stays.",
+        "answer_later": "",
+    })
+
+    assert first.endswith(r"C:\Users\J. Smith\MyScribe\data.")
+    assert details == "The one found stays."
+
+
 def test_the_summary_names_each_question_by_the_sentence_that_asks_it(layout, monkeypatch):
     """The install offer is a paragraph - the URL, the size, the sha256 and the
     command line - and the summary repeated it whole, which made that step the

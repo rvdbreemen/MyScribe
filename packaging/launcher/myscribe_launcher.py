@@ -2686,8 +2686,9 @@ def details_toggle(details) -> Callable:
 def sentences(text: str) -> list[str]:
     """A text of the engine's cut into its sentences: after a full stop, a
     question mark or an exclamation mark that white space follows. A path or
-    a version has no space after its dots and stays whole."""
-    return [sentence for sentence in re.split(r"(?<=[.?!])\s+", str(text).strip()) if sentence]
+    a version has no space after its dots and stays whole, and a full stop
+    after a lone letter is an initial, as in a profile `C:\\Users\\J. Smith`."""
+    return [sentence for sentence in re.split(r"(?<![\s\\/][A-Za-z]\.)(?<=[.?!])\s+", str(text).strip()) if sentence]
 
 
 def asking_sentence(text: str) -> str:
