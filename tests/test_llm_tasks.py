@@ -311,8 +311,8 @@ def test_editing_a_prompt_means_bumping_the_prompt_version():
     comparable. The plan states the rule; without something that fails, it is a
     rule nobody is told they broke.
 
-    If this fails and you did edit a prompt - a template, SYSTEM, a goal, the
-    source line: bump `tasks.PROMPT_VERSION`, then put the new digest above. If
+    If this fails and you did edit a prompt - a template, SYSTEM, JSON_SYSTEM,
+    LANGUAGE_SYSTEM, a goal, a note rule, the source line: bump `tasks.PROMPT_VERSION`, then put the new digest above. If
     you did not edit one, something else did.
 
     *Adding* a kind is the other case, and it has the opposite answer: record

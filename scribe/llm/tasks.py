@@ -69,7 +69,8 @@ from scribe.llm.chunking import Chunk, estimate_tokens
 
 PROMPT_VERSION = "4"
 """Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
-JSON_SYSTEM, a kind's goal or the line `source_label` writes - because it is
+JSON_SYSTEM, LANGUAGE_SYSTEM, a kind's goal or note rule (`TaskSpec.note_rule`)
+or the line `source_label` writes - because it is
 part of the stored key: answers to an edited question are not answers to the
 old one, and a panel showing both without saying so would be comparing two
 different things. tests/test_llm_tasks.py hashes all of it and fails on a
