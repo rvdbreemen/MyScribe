@@ -886,8 +886,7 @@ def check_ollama() -> Check:
 # reads its token from the settings row through `credentials.library_db`, which
 # opens with `db.connect` and sets `journal_mode`. `check_models` joined it when
 # it began reading the chosen tier the same way (TASK-107.04); its twin sits
-# beside it above. They are plain zero-argument
-# functions and not
+# beside it above. They are plain zero-argument functions and not
 # `functools.partial`: `CHECK_LABELS` is keyed on the function object, and a
 # partial has no identity to key on.
 
