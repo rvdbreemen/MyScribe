@@ -60,6 +60,15 @@ LAUNCHER_PID_VARIABLE = "MYSCRIBE_LAUNCHER_PID"
 STAMP_NAME = ".myscribe-sync.json"
 READY_TIMEOUT = 120.0
 STOP_TIMEOUT = 15.0
+APP_SIGTERM_WAIT = 50.0
+"""How long the POSIX hard stop waits after the app's SIGTERM before its
+SIGKILL (`AppProcess.stop`, `end_tree`). The app's lifespan cuts open requests
+off after 3 s, ends the runner's tree (at most 10 s, ADR-031) and then joins
+the phone door (15 s), the feeds (10 s) and the watcher (10 s): 48 s at worst.
+A shorter wait SIGKILLed an app that had already ended its runner, and the
+sentence after it said the job could keep running (TASK-112.09). The cost is
+an app that hangs, which now gets this long before its SIGKILL instead of
+`STOP_TIMEOUT`. `tests/test_launcher.py` adds the app's own timeouts up."""
 
 IS_WINDOWS = sys.platform == "win32"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -1335,7 +1344,7 @@ The route's way out nests inside this: uvicorn finishes the open requests,
 the lifespan's supervisor ends the runner's tree and requeues its job
 before the feeds and the watcher stop, joining for `STOP_JOIN_SECONDS` (20 s,
 `scribe/supervisor.py`). Past this the hard stop runs, inside which
-`AppProcess.stop` gives the app another `STOP_TIMEOUT`. The launcher's own
+`AppProcess.stop` gives the app another `APP_SIGTERM_WAIT`. The launcher's own
 Quit waits as long (`Launch.stop_wait`); `LAUNCHER_STOP_WAIT` adds up what
 that stop may take when `--stop` signals a launcher."""
 
@@ -1359,13 +1368,20 @@ ENDED = ("MyScribe was ended. A job that was running is marked interrupted; Retr
          "jobs page starts it over.")
 ENDED_KILLED = ("MyScribe was ended. A job that was running can keep running after MyScribe has closed "
                 "and finish by itself; if it does not, Retry on the jobs page starts it over.")
+ENDED_ASKED = ("MyScribe was ended after it had been asked to stop. A job that was running is back at "
+               "the front of the queue if MyScribe got that far; if not, it is marked interrupted and "
+               "Retry on the jobs page starts it over.")
+ENDED_ASKED_KILLED = ("MyScribe was ended after it had been asked to stop. A job that was running is "
+                      "back at the front of the queue if MyScribe got that far; if not, it can keep "
+                      "running after MyScribe has closed and finish by itself, and if it does not, "
+                      "Retry on the jobs page starts it over.")
 """What Quit, Ctrl+C, a SIGTERM and `--stop` say before and after a stop
 (TASK-112.09, criterion 4): the route's answer names the running job, so the
 sentence before the stop can name it too. The ENDED sentences are the hard
 stop's, see `ended`."""
 
 
-def ended(killed: bool | None = False) -> str:
+def ended(killed: bool | None = False, asked: bool = False) -> str:
     """The hard stop's sentence for this OS and this stop.
 
     On Windows the hard stop ends the app's tree, runner and all, and
@@ -1376,8 +1392,26 @@ def ended(killed: bool | None = False) -> str:
     SIGKILLed, and None when this process cannot see it (`--stop` ending a
     launcher, whose own hard stop does that): then the runner may have run on
     and written its verdict (ADR-028, measured in WSL on 2026-10-21), and
-    "marked interrupted" would not be sure to be true."""
-    return ENDED if IS_WINDOWS or killed is False else ENDED_KILLED
+    "marked interrupted" would not be sure to be true.
+
+    ``asked`` is True when the stop route may have been reached before the
+    hard stop (`route_reached`): that app may have requeued the job before it
+    hung, or not got that far, so the sentence names both outcomes."""
+    sure = IS_WINDOWS or killed is False
+    if asked:
+        return ENDED_ASKED if sure else ENDED_ASKED_KILLED
+    return ENDED if sure else ENDED_KILLED
+
+
+def route_reached(error: Exception | None) -> bool:
+    """Whether the stop route may have got the request, given what
+    `ask_to_stop` raised (None: it answered). A timeout may be a route that
+    set the app's stop flag and then answered too late (`ROUTE_TIMEOUT`); a
+    refused connection or a broken answer never got that far."""
+    if error is None:
+        return True
+    reason = getattr(error, "reason", None)  # urllib wraps what the socket raised
+    return isinstance(error, TimeoutError) or isinstance(reason, TimeoutError)
 
 
 def read_health(port: int, timeout: float = HEALTH_TIMEOUT) -> dict | None:
@@ -1433,18 +1467,18 @@ def wait_gone(pid: int, timeout: float) -> bool:
 
 LAUNCHER_STOP_WAIT = (HEALTH_TIMEOUT + ROUTE_TIMEOUT + STOP_WAIT  # Launch.stop's route, asked again
                       + STOP_TIMEOUT  # Launch.stop_setup
-                      + 2 * STOP_TIMEOUT  # AppProcess.stop: SIGTERM, wait, SIGKILL, wait
+                      + APP_SIGTERM_WAIT + STOP_TIMEOUT  # AppProcess.stop: SIGTERM, wait, SIGKILL, wait
                       + 10)
 """How long a launcher gets after SIGTERM before it is killed. Its own stop
 (`Launch.stop`, TASK-112.09) reads /health, asks the stop route again and
 waits up to `STOP_WAIT` for the app, stops a setup child, and only then runs
-`AppProcess.stop`, which may take two `STOP_TIMEOUT`s over an app that hangs -
+`AppProcess.stop`, which may take `APP_SIGTERM_WAIT` and a `STOP_TIMEOUT` over an app that hangs -
 the app the hard stop is for. Killing it sooner exits it non-zero, the restart
 signal of `APP_DIED`. A launcher that ignores SIGTERM costs `--stop` this long
 before its SIGKILL."""
 
 
-def end_tree(pid: int, grace: float = STOP_TIMEOUT) -> bool:
+def end_tree(pid: int, grace: float = APP_SIGTERM_WAIT) -> bool:
     """End a process and what it started, the way `AppProcess.stop` does.
 
     Given the launcher's pid, POSIX sends it SIGTERM alone: its own handler
@@ -1492,8 +1526,10 @@ def stop_running(port: int, report: Callable[[str, str], None], wait: float = ST
     try:
         ask_to_stop(port)
     except (OSError, ValueError) as error:
+        asked = route_reached(error)
         report("busy", f"The stop route did not answer ({error}); ending MyScribe instead.")
     else:
+        asked = True
         report("busy", f"Asked MyScribe to stop; waiting up to {wait:g} s for it.")
         if wait_gone(pid, wait):
             report("status", STOPPED)
@@ -1507,7 +1543,7 @@ def stop_running(port: int, report: Callable[[str, str], None], wait: float = ST
     if pid_alive(pid) and end_tree(pid):  # no launcher, or one that went without its app
         killed = True
     if wait_gone(pid, STOP_TIMEOUT):
-        report("status", ended(killed))
+        report("status", ended(killed, asked=asked))
         return 0
     report("error", f"MyScribe (process {pid}) is still running and could not be ended.")
     return 1
@@ -1592,9 +1628,10 @@ class AppProcess:
             time.sleep(0.25)
         return False
 
-    def stop(self, timeout: float = STOP_TIMEOUT) -> bool:
+    def stop(self, timeout: float = APP_SIGTERM_WAIT) -> bool:
         """SIGTERM to the group, so uvicorn shuts the supervisor down and the
-        supervisor ends the runner's tree (ADR-031); SIGKILL after ``timeout``.
+        supervisor ends the runner's tree (ADR-031); SIGKILL after ``timeout``,
+        which by default outlasts the app's whole shutdown (`APP_SIGTERM_WAIT`).
         The runner has a session of its own, so that SIGKILL never reaches it.
         Windows has no signal that reaches a windowless process, so there it
         is taskkill on the tree; the next start's reconcile settles an
@@ -1628,7 +1665,7 @@ class AppProcess:
             # Gone, or - macOS - a group of exited members not yet reaped,
             # which answers EPERM rather than ESRCH.
             pass
-        self.proc.wait(timeout)
+        self.proc.wait(min(timeout, STOP_TIMEOUT))  # a SIGKILL is not waited out
         return killed
 
 
@@ -1846,6 +1883,7 @@ class Launch:
         # How long Quit waits for the app to end through its stop route before
         # the hard stop (TASK-112.09); `STOP_WAIT`, as for `--stop`.
         self.stop_wait = STOP_WAIT
+        self.route_asked = False  # set by stop_through_route, read by stop
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -2016,13 +2054,16 @@ class Launch:
         if app is None or not app.alive():
             return
         self.report("status", STOPPING)
+        self.route_asked = False
         if self.stop_through_route(app):
             return
         killed = app.stop()
-        self.report("status", ended(killed is True))
+        self.report("status", ended(killed is True, asked=self.route_asked))
 
     def stop_through_route(self, app: "AppProcess") -> bool:
-        """Ask the app's stop route and wait for it; True when it has ended."""
+        """Ask the app's stop route and wait for it; True when it has ended.
+        Sets `route_asked` when the route may have got the request, so that
+        the hard stop after it says what that may have done to the job."""
         health = read_health(self.port)
         pid = health.get("pid") if health else None
         if not isinstance(pid, int):
@@ -2031,8 +2072,10 @@ class Launch:
         try:
             answer = ask_to_stop(self.port)
         except (OSError, ValueError) as error:
+            self.route_asked = route_reached(error)
             self.report("busy", f"The stop route did not answer ({error}); ending MyScribe instead.")
             return False
+        self.route_asked = True
         job = answer.get("running_job")
         self.report("status", STOPPING_JOB.format(job=job) if job is not None else STOPPING_IDLE)
         self.report("busy", f"Waiting up to {self.stop_wait:g} s for MyScribe to stop.")

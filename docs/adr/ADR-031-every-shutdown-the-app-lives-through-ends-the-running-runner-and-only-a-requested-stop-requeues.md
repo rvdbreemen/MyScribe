@@ -75,8 +75,9 @@ it running too (`tests/test_app_signal_stop.py`, red on 2026-10-24).
 An open job page's event stream ends only when the job does, and uvicorn's
 graceful shutdown waited for it before the lifespan ran: after Ctrl+Break the
 slow fake job ran to `done` (2026-10-24). The launcher's hard stop SIGKILLs
-the app's group 15 s (`STOP_TIMEOUT`) after SIGTERM, which never reaches the
-runner's session.
+the app's group `APP_SIGTERM_WAIT` (50 s) after SIGTERM, which never reaches
+the runner's session. That wait outlasts the app's whole shutdown (48 s at
+worst), so a SIGKILL means the lifespan did not finish.
 
 ## Decision Drivers
 
@@ -117,12 +118,12 @@ without its job page open: the runner goes with the app, and the row stays `runn
 
 ### Exceptions
 
-* An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after `STOP_TIMEOUT` and then says the job can keep running.
+* An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after `APP_SIGTERM_WAIT` and then says the job can keep running.
 
 ### Verification
 
 * `tests/test_app_signal_stop.py`; `tests/test_app.py::test_the_supervisor_stops_before_the_watchers`; `tests/test_supervisor.py::test_a_stop_nobody_asked_for_ends_the_runner_and_leaves_the_job_to_reconcile`.
-* `tests/test_launcher.py::test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job`, `::test_the_hard_stop_says_whether_it_had_to_kill_the_app` and `::test_the_hard_stop_leaves_no_runner_and_says_the_job_is_interrupted`.
+* `tests/test_launcher.py::test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job`, `::test_the_hard_stop_says_whether_it_had_to_kill_the_app`, `::test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills` and `::test_the_hard_stop_leaves_no_runner_and_says_the_job_is_interrupted`.
 
 ## Consequences
 

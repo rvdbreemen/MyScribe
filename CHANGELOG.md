@@ -8,28 +8,33 @@
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
 - **Quit no longer costs you the running job.** Quit in the MyScribe window,
-  Ctrl+C in a console and a stop signal (on macOS and Linux) now stop MyScribe
-  the way the Stop button in Settings does. A job that was running goes back to
-  the front of the queue and starts over at the next start. Before, on Windows
+  Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
+  (on macOS and Linux) now stop MyScribe the way the Stop button in Settings
+  does. A job that was running goes back to the front of the queue and starts
+  over at the next start. Before, on Windows
   that job came back as *interrupted* and waited for you to press Retry; on
   Linux its transcription kept running after MyScribe had closed and finished
   on its own. The window and the console say which job goes back, before and
   after the stop (TASK-112.09).
 - **No transcription keeps running after MyScribe has stopped.** A stop that
   does not go through the Stop button's way now ends the running job with
-  MyScribe: a stop signal sent to MyScribe itself, Ctrl+C or Ctrl+Break in a
-  terminal that runs it, and the hard stop used when MyScribe does not answer
-  that way or has not stopped a minute later. That job comes back as
-  *interrupted*, and Retry starts it over. Before, on Linux it kept running
-  after MyScribe had closed (macOS works the same way but was not measured),
-  and on Windows a Ctrl+Break in a terminal left it running too. On every OS a
-  MyScribe that is killed without stopping - a crash, ending its process alone,
-  a second Ctrl+C in its terminal - can still leave the job running. On Windows
-  the hard stop ends the job with MyScribe; on macOS and Linux it has to kill a
-  MyScribe that has not stopped 15 seconds after its stop signal, and its
-  message then says the job can keep running. A stop with a job's page open no
-  longer waits for that job to finish: requests still open 3 seconds into a
-  stop are cut off (TASK-112.09, ADR-031).
+  MyScribe: a stop signal sent to MyScribe's server itself, Ctrl+C or
+  Ctrl+Break in a terminal running `python -m scribe` directly, and the hard
+  stop used when MyScribe does not answer that way or has not stopped a
+  minute later. That job comes back as *interrupted*, and Retry starts it
+  over. Before, on Linux it kept running after MyScribe had closed (macOS
+  works the same way but was not measured), and on Windows a Ctrl+Break in a
+  terminal left it running too. On every OS a MyScribe that is killed without
+  stopping - a crash, ending its process alone, a second Ctrl+C in its
+  terminal - can still leave the job running. On Windows the hard stop ends
+  the job with MyScribe; on macOS and Linux it has to kill a MyScribe that has
+  not stopped 50 seconds after its stop signal, longer than MyScribe's own
+  stop can take, and its message then says the job can keep running. When
+  MyScribe had already been asked to stop before the hard stop, the message
+  says the job is back in the queue if MyScribe got that far, and otherwise
+  interrupted (or, after a kill on macOS and Linux, possibly still running).
+  A stop with a job's page open no longer waits for that job to finish:
+  requests still open 3 seconds into a stop are cut off (TASK-112.09, ADR-031).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

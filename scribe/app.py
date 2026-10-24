@@ -326,9 +326,10 @@ def create_app(
         finally:
             # The supervisor first: it ends the running runner's tree on every
             # shutdown (ADR-031), and on macOS and Linux the launcher's hard
-            # stop SIGKILLs this app's group STOP_TIMEOUT (15 s) after its
+            # stop SIGKILLs this app's group APP_SIGTERM_WAIT (50 s) after its
             # SIGTERM - a SIGKILL that never reaches the runner's own session.
-            # The watchers below may each join for 10 s; a job one of them
+            # That wait outlasts this whole block; the door below may join for
+            # 15 s and the watchers for 10 s each, and a job one of them
             # queues now simply waits for the next start.
             if sup is not None:
                 sup.stop(requeue=bool(getattr(app.state, "stop_requested", False)))

@@ -2790,7 +2790,7 @@ class _FakeServer:
     the ask, the server the hard stop is for."""
 
     def __init__(self, app_pid: int, on_stop, obeys: bool = True, launcher_pid: int | None = None,
-                 running_job: int | None = None, port: int = 0):
+                 running_job: int | None = None, port: int = 0, answer_after: float = 0.0):
         self.posted: list[str] = []
         fake = self
 
@@ -2808,6 +2808,7 @@ class _FakeServer:
 
             def do_POST(self):
                 fake.posted.append(self.path)
+                time.sleep(answer_after)  # a route that is reached but slow to answer
                 self._answer(202, {"stopping": True, "pid": app_pid, "running_job": running_job})
                 if obeys:
                     threading.Thread(target=on_stop, daemon=True).start()
@@ -2888,7 +2889,9 @@ def test_stop_ends_a_server_that_does_not_stop_and_says_what_that_costs():
 
         assert code == 0 and fake.posted == ["/api/shutdown"]
         assert _gone(pid), "the hard stop left the app running"
-        assert ("status", launcher.ended()) in said
+        # The route was reached, so the app may have requeued the job before
+        # it hung: "marked interrupted" alone would not be sure to be true.
+        assert ("status", launcher.ENDED_ASKED) in said, said
     finally:
         _end(pid)
 
@@ -2979,21 +2982,37 @@ def test_the_hard_stop_ends_the_launcher_so_it_exits_clean_and_takes_its_app(tmp
     if sys.platform != "win32":  # taskkill /F gives a Windows launcher no handler to run
         assert marker.read_text() == "0", "the launcher did not stop through its own handler"
     # --stop cannot see whether the launcher's own hard stop had to kill the
-    # app, so on macOS and Linux it says the runner may have run on.
-    assert (launcher.ENDED if sys.platform == "win32" else launcher.ENDED_KILLED) in said, said
+    # app, so on macOS and Linux it says the runner may have run on. The route
+    # answered before the app hung, so the job may be back in the queue too.
+    assert (launcher.ENDED_ASKED if sys.platform == "win32"
+            else launcher.ENDED_ASKED_KILLED) in said, said
 
 
-@pytest.mark.parametrize(("windows", "killed", "sentence"), [
-    (True, False, "ENDED"), (True, True, "ENDED"), (True, None, "ENDED"),
-    (False, False, "ENDED"), (False, True, "ENDED_KILLED"), (False, None, "ENDED_KILLED"),
+@pytest.mark.parametrize(("windows", "killed", "asked", "sentence"), [
+    (True, False, False, "ENDED"), (True, True, False, "ENDED"), (True, None, False, "ENDED"),
+    (False, False, False, "ENDED"), (False, True, False, "ENDED_KILLED"),
+    (False, None, False, "ENDED_KILLED"),
+    (True, False, True, "ENDED_ASKED"), (True, True, True, "ENDED_ASKED"),
+    (True, None, True, "ENDED_ASKED"), (False, False, True, "ENDED_ASKED"),
+    (False, True, True, "ENDED_ASKED_KILLED"), (False, None, True, "ENDED_ASKED_KILLED"),
 ])
 def test_the_hard_stops_sentence_promises_interrupted_only_where_it_is_sure(
-        monkeypatch, windows, killed, sentence):
+        monkeypatch, windows, killed, asked, sentence):
     """Windows ends the tree, runner and all. On macOS and Linux only an app
     that lived through its SIGTERM is sure to have ended its runner (ADR-031);
-    a SIGKILLed one, or one this process cannot see, may not have."""
+    a SIGKILLed one, or one this process cannot see, may not have. An app
+    whose stop route was reached may have requeued the job before it hung, so
+    then the sentence names both outcomes."""
     monkeypatch.setattr(launcher, "IS_WINDOWS", windows)
-    assert launcher.ended(killed) == getattr(launcher, sentence)
+    assert launcher.ended(killed, asked=asked) == getattr(launcher, sentence)
+
+
+def test_the_asked_sentences_name_the_requeue_and_the_interrupt():
+    for sentence in (launcher.ENDED_ASKED, launcher.ENDED_ASKED_KILLED):
+        assert "back at the front of the queue" in sentence and "Retry on the jobs page" in sentence
+    assert "marked interrupted" in launcher.ENDED_ASKED
+    assert "keep running after MyScribe has closed" in launcher.ENDED_ASKED_KILLED
+    assert "marked interrupted" not in launcher.ENDED_ASKED_KILLED
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
@@ -3137,7 +3156,8 @@ def test_quit_falls_back_to_the_hard_stop_when_the_app_outlives_the_wait(layout,
         assert fake.posted == ["/api/shutdown"]
         assert hard == [child.pid], "an app that did not stop through its route was left running"
         assert child.poll() is not None
-        assert said[-1] == ("status", launcher.ended())
+        # The route was reached: the job may be back in the queue already.
+        assert said[-1] == ("status", launcher.ENDED_ASKED), said[-1]
     finally:
         _cleanup(child, fake)
 
@@ -3152,6 +3172,27 @@ def test_quit_falls_back_to_the_hard_stop_when_the_route_does_not_answer(layout,
         assert hard == [child.pid]
         assert child.poll() is not None
         assert said[-1] == ("status", launcher.ended())
+    finally:
+        _cleanup(child, fake)
+
+
+def test_quit_on_a_route_that_is_reached_but_too_slow_to_answer_says_both_outcomes(
+        layout, monkeypatch):
+    """`ROUTE_TIMEOUT` ran out on a route that did get the request: the app may
+    have set its stop flag and requeue the job, so the sentence after the hard
+    stop must not promise *interrupted* alone."""
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+    said: list[tuple[str, str]] = []
+    launch.say = lambda state, text: said.append((state, text))
+    fake = _FakeServer(child.pid, lambda: None, obeys=False, port=launch.port, answer_after=2.0)
+    monkeypatch.setattr(launcher, "ROUTE_TIMEOUT", 0.5)
+    try:
+        launch.stop()
+
+        assert fake.posted == ["/api/shutdown"]
+        assert child.poll() is not None
+        assert said[-1] == ("status", launcher.ENDED_ASKED), said[-1]
     finally:
         _cleanup(child, fake)
 
@@ -3263,9 +3304,35 @@ def test_the_hard_stop_gives_a_launcher_longer_than_its_own_stop_can_take(layout
 
     assert fake.posted == ["/api/shutdown"] and hard == [child.pid]
     assert len(timeouts) == 2 and all(isinstance(t, (int, float)) for t in timeouts), timeouts
-    worst = sum(timeouts) + stop_wait + setup + 2 * hard_stop
+    worst = sum(timeouts) + stop_wait + setup + hard_stop + launcher.STOP_TIMEOUT  # SIGTERM, SIGKILL
     assert launcher.LAUNCHER_STOP_WAIT > worst, (
         f"--stop kills a launcher after {launcher.LAUNCHER_STOP_WAIT:g} s; its own stop may take {worst:g} s")
+
+
+def test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills():
+    """`AppProcess.stop` and `end_tree` SIGKILL an app that is still there after
+    their SIGTERM wait, and then say its runner may run on. The app's lifespan
+    ends the runner first and then joins the phone door, the feeds and the
+    watcher, so a wait shorter than that whole shutdown SIGKILLs an app that
+    has already ended its runner, and the sentence after it is not true."""
+    import inspect
+
+    from scribe import __main__ as scribe_main
+    from scribe import supervisor
+    from scribe.ingest import feeds, watching
+    from scribe.web import phone_door
+
+    def default(function, name="timeout"):
+        return inspect.signature(function).parameters[name].default
+
+    shutdown = (scribe_main.SHUTDOWN_GRACE_SECONDS  # uvicorn cuts open requests off
+                + 2 * supervisor._KILL_WAIT_SECONDS  # the supervisor ends the runner's tree
+                + default(phone_door.UvicornListener.stop)  # `Door.close` passes no timeout
+                + default(feeds.FeedWatcher.stop) + default(watching.Watcher.stop))
+    assert default(launcher.AppProcess.stop) > shutdown, (
+        f"AppProcess.stop SIGKILLs after {default(launcher.AppProcess.stop):g} s; "
+        f"the app's shutdown may take {shutdown:g} s")
+    assert default(launcher.end_tree, "grace") > shutdown
 
 
 @pytest.mark.parametrize(("windows", "killed"), [(True, False), (True, True), (False, False), (False, True)],

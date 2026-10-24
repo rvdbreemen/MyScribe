@@ -1921,11 +1921,11 @@
           "Requeue on a stop that did not come through the stop route."
         ],
         "exceptions": [
-          "An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after STOPTIMEOUT an..."
+          "An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after APPSIGTERMWAIT..."
         ],
         "verification": [
           "tests/testappsignalstop.py; tests/testapp.py::testthesupervisorstopsbeforethewatchers; tests/testsupervisor.py::testastopnobodyaskedforendstherunnerandleavesthejobtoreconcile.",
-          "tests/testlauncher.py::testthehardstopssentencesayswhatthisosdoeswiththerunningjob, ::testthehardstopsayswhetherithadtokilltheapp and ::testthehardstopleavesnorunnerandsaysthejobisinterrupted."
+          "tests/testlauncher.py::testthehardstopssentencesayswhatthisosdoeswiththerunningjob, ::testthehardstopsayswhetherithadtokilltheapp, ::testtheposixhardstopwaitsouttheappswholeshutdownbeforeitkills and ::testthehardstopleavesnorunnerandsays..."
         ]
       },
       "scope": {

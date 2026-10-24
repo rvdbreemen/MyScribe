@@ -15,8 +15,9 @@ With the job's page open, its event stream is a request that only ends when
 the job does, and uvicorn's graceful shutdown waited for it without a limit
 before the lifespan - and so the runner's end - ever ran (measured
 2026-10-24: the slow job ran to `done`, the app went 10.1 s after Ctrl+Break).
-On macOS and Linux the launcher's hard stop SIGKILLs the app 15 s after its
-SIGTERM, so an hour's job would have outlived it.
+On macOS and Linux the launcher's hard stop SIGKILLs the app
+`APP_SIGTERM_WAIT` (50 s) after its SIGTERM, so an hour's job would have
+outlived it.
 """
 from __future__ import annotations
 
