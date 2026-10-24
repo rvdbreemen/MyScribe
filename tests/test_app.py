@@ -377,6 +377,37 @@ def test_a_shutdown_nobody_asked_for_does_not_requeue(stoppable):
     assert _RecordingSupervisor.made[0].stops == [False]
 
 
+def test_the_supervisor_stops_before_the_watchers(db_path, monkeypatch):
+    """ADR-031: the runner is ended on every shutdown the app lives through.
+    On macOS and Linux the launcher's hard stop sends SIGKILL to the app's
+    group `STOP_TIMEOUT` (15 s) after its SIGTERM, and that SIGKILL never
+    reaches the runner's own session. The watchers may each join for 10 s,
+    so the supervisor - the one holding the card - goes first."""
+    from scribe import supervisor as supervisor_module
+    from scribe.ingest import feeds, watching
+
+    order: list[str] = []
+
+    class _Recording:
+        def __init__(self, name):
+            self.name = name
+
+        def start(self):
+            pass
+
+        def stop(self, *args, **kwargs):
+            order.append(self.name)
+
+    monkeypatch.setattr(supervisor_module, "Supervisor", lambda *a, **k: _Recording("supervisor"))
+    monkeypatch.setattr(watching, "Watcher", lambda *a, **k: _Recording("watcher"))
+    monkeypatch.setattr(feeds, "FeedWatcher", lambda *a, **k: _Recording("feeds"))
+    app = create_app(db_path=db_path, start_supervisor=True, start_watcher=True)
+    with _loopback(app):
+        pass
+
+    assert order and order[0] == "supervisor", order
+
+
 def test_the_stop_route_names_the_job_that_will_start_over(stoppable, conn):
     app, _asked = stoppable
     job_id = jobs.enqueue(conn, "transcribe")

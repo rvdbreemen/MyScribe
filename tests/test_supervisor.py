@@ -698,19 +698,27 @@ def test_a_deliberate_stop_ends_the_runner_and_puts_its_job_at_the_front(
     assert jobs.claim_next(conn)["id"] == first, f"job {waiting} was put ahead of the stopped one"
 
 
-def test_a_stop_nobody_asked_for_leaves_the_job_to_reconcile(conn, db_path, sleeping_runner_cmd):
-    """A crash, a hard kill or a Ctrl+C still ends `interrupted` through
-    reconcile (ADR-001); only the stop route requeues."""
+def test_a_stop_nobody_asked_for_ends_the_runner_and_leaves_the_job_to_reconcile(
+    conn, db_path, sleeping_runner_cmd
+):
+    """ADR-031 (amending ADR-028): every shutdown the app lives through ends
+    the runner's tree - a SIGTERM or Ctrl+C to the app as much as the stop
+    route - so no runner outlives the app on macOS and Linux. Only the stop
+    route requeues; this one leaves the row `running`, and the next start's
+    reconcile marks it `interrupted` (ADR-001)."""
     job_id = jobs.enqueue(conn, "fake")
     sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=sleeping_runner_cmd)
     sup.start()
     pid = _running_with_pid(conn, job_id)
     sup.stop()
     try:
+        assert not supervisor.pid_alive(pid), "the runner outlived the stop"
         assert _row(conn, job_id)["status"] == "running"
-        assert supervisor.pid_alive(pid)
+        supervisor.reconcile(conn)
+        assert _row(conn, job_id)["status"] == "interrupted"
     finally:
-        os.kill(pid, signal.SIGTERM)
+        if supervisor.pid_alive(pid):
+            os.kill(pid, signal.SIGTERM)
 
 
 def test_a_job_cancelled_before_the_stop_is_cancelled_not_requeued(

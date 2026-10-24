@@ -2978,7 +2978,51 @@ def test_the_hard_stop_ends_the_launcher_so_it_exits_clean_and_takes_its_app(tmp
     assert _gone(app_pid) and _gone(launcher_pid)
     if sys.platform != "win32":  # taskkill /F gives a Windows launcher no handler to run
         assert marker.read_text() == "0", "the launcher did not stop through its own handler"
-    assert launcher.ended() in said
+    # --stop cannot see whether the launcher's own hard stop had to kill the
+    # app, so on macOS and Linux it says the runner may have run on.
+    assert (launcher.ENDED if sys.platform == "win32" else launcher.ENDED_KILLED) in said, said
+
+
+@pytest.mark.parametrize(("windows", "killed", "sentence"), [
+    (True, False, "ENDED"), (True, True, "ENDED"), (True, None, "ENDED"),
+    (False, False, "ENDED"), (False, True, "ENDED_KILLED"), (False, None, "ENDED_KILLED"),
+])
+def test_the_hard_stops_sentence_promises_interrupted_only_where_it_is_sure(
+        monkeypatch, windows, killed, sentence):
+    """Windows ends the tree, runner and all. On macOS and Linux only an app
+    that lived through its SIGTERM is sure to have ended its runner (ADR-031);
+    a SIGKILLed one, or one this process cannot see, may not have."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", windows)
+    assert launcher.ended(killed) == getattr(launcher, sentence)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("obeys", [True, False], ids=["obeys-sigterm", "ignores-sigterm"])
+def test_the_hard_stop_says_whether_it_had_to_kill_the_app(layout, obeys):
+    """ADR-031: an app that lives through its SIGTERM ends its runner itself;
+    one that had to be SIGKILLed may not have, and its runner - a session of
+    its own - can run on. `AppProcess.stop` and `end_tree` tell the two apart
+    so that the sentence after a hard stop can (TASK-112.09)."""
+    code = "import time; time.sleep(60)" if obeys else (
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)")
+    app = launcher.AppProcess(layout, _free_port())
+    app.proc = _app_child(code)
+    time.sleep(0.5)  # the handler is in place
+    try:
+        assert app.stop(timeout=2) is (not obeys)
+    finally:
+        if app.proc.poll() is None:
+            app.proc.kill()
+    pid = _orphan_app() if obeys else int(_subprocess.run([sys.executable, "-c", (
+        "import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', " + repr(code) + "], "
+        "start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL); print(p.pid)")], capture_output=True, text=True,
+        check=True).stdout.strip())
+    time.sleep(0.5)
+    try:
+        assert launcher.end_tree(pid, grace=2) is (not obeys)
+    finally:
+        _end(pid)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -3224,16 +3268,26 @@ def test_the_hard_stop_gives_a_launcher_longer_than_its_own_stop_can_take(layout
         f"--stop kills a launcher after {launcher.LAUNCHER_STOP_WAIT:g} s; its own stop may take {worst:g} s")
 
 
-@pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
-def test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job(layout, monkeypatch, windows):
-    """The hard stop on Windows ends the runner's tree, so reconcile marks the
-    job interrupted. On macOS and Linux it signals the app's group only, and
-    the runner - a session of its own - can run on and finish the job
-    (ADR-028, measured in WSL). The sentence must not promise *interrupted*
-    there."""
+@pytest.mark.parametrize(("windows", "killed"), [(True, False), (True, True), (False, False), (False, True)],
+                         ids=["windows", "windows-killed", "posix-sigterm", "posix-sigkill"])
+def test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job(
+        layout, monkeypatch, windows, killed):
+    """The hard stop on Windows ends the app's tree, runner and all, so
+    reconcile marks the job interrupted. On macOS and Linux it signals the
+    app's group only; an app that lives through that SIGTERM ends its runner
+    itself (ADR-031), so that job is interrupted too. One that had to be
+    SIGKILLed may not have, and its runner - a session of its own - can run on
+    and finish the job (ADR-028, measured in WSL). Only that sentence leaves
+    *interrupted* out."""
     launch, child, fake, said, hard = _route_over(layout, monkeypatch)
     fake.close()  # the route does not answer: the hard stop runs
-    monkeypatch.setattr(launcher.AppProcess, "stop", lambda self, *a, **k: (child.kill(), child.wait(10)))
+
+    def hard_stop(self, *args, **kwargs):
+        child.kill()
+        child.wait(10)
+        return killed
+
+    monkeypatch.setattr(launcher.AppProcess, "stop", hard_stop)
     monkeypatch.setattr(launcher, "IS_WINDOWS", windows)
     try:
         launch.stop()
@@ -3242,11 +3296,11 @@ def test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job(lay
 
     state, text = said[-1]
     assert state == "status" and "Retry on the jobs page" in text, text
-    if windows:
-        assert "is marked interrupted" in text, text
+    if windows or not killed:
+        assert "is marked interrupted" in text and "keep running" not in text, text
     else:
         assert "keep running after MyScribe has closed" in text, text
-        assert "is marked interrupted;" not in text, text
+        assert "is marked interrupted" not in text, text
 
 
 REPO = LAUNCHER_PATH.parents[2]

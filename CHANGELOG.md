@@ -14,10 +14,19 @@
   that job came back as *interrupted* and waited for you to press Retry; on
   Linux its transcription kept running after MyScribe had closed and finished
   on its own. The window and the console say which job goes back, before and
-  after the stop. When MyScribe does not answer that stop, or has not stopped
-  a minute later, it is ended the old way and says so: on Windows the job comes
-  back as *interrupted*, and on macOS and Linux its transcription can keep
-  running after MyScribe has closed (TASK-112.09).
+  after the stop (TASK-112.09).
+- **No transcription keeps running after MyScribe has stopped.** A stop that
+  does not go through the Stop button's way now ends the running job with
+  MyScribe: a stop signal sent to MyScribe itself, Ctrl+C or Ctrl+Break in a
+  terminal that runs it, and the hard stop used when MyScribe does not answer
+  that way or has not stopped a minute later. That job comes back as
+  *interrupted*, and Retry starts it over. Before, on macOS and Linux it kept
+  running after MyScribe had closed, and on Windows a Ctrl+Break in a terminal
+  left it running too. Only a MyScribe that has to be killed - on macOS and
+  Linux, 15 seconds after the hard stop's stop signal - can still leave the job
+  running, and the hard stop's message then says so. A stop with a job's page
+  open no longer waits for that job to finish: requests still open 3 seconds
+  into a stop are cut off (TASK-112.09, ADR-031).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

@@ -8,7 +8,7 @@
       "path": "ADR-001-one-web-process-a-supervisor-thread-and-a-runner-child-per-job.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-09-26",
+      "date": "2026-10-24",
       "decision_summary": "Chosen option: one FastAPI process + supervisor thread + runner child per job, because it keeps the GPU isolation the...",
       "topics": [
         "gpu",
@@ -1718,7 +1718,7 @@
       "path": "ADR-028-a-deliberate-stop-puts-the-running-job-back-at-the-front-of-the-queue.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-21",
+      "date": "2026-10-24",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-21.",
       "topics": [
         "background",
@@ -1881,6 +1881,64 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-031",
+      "title": "Every shutdown the app lives through ends the running runner, and only a requested stop requeues",
+      "path": "ADR-031-every-shutdown-the-app-lives-through-ends-the-running-runner-and-only-a-requested-stop-requeues.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-24",
+      "decision_summary": "Chosen option: A, decided by Robert on 2026-10-24 (his option b).",
+      "topics": [
+        "background",
+        "jobs",
+        "shutdown"
+      ],
+      "aliases": [
+        "orphan runner",
+        "runner outlives the app",
+        "SIGTERM to the app"
+      ],
+      "components": [
+        "scribe.supervisor"
+      ],
+      "symbols": [
+        "SHUTDOWN_GRACE_SECONDS",
+        "STOP_JOIN_SECONDS",
+        "Supervisor.stop"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Supervisor.stop ends the running runner's tree and waits for it on every stop, and joins for at least STOPJOINSECONDS.",
+          "A stop without the route leaves the row running, for the next start's reconcile() to mark it interrupted, or cancelled when a cancel was asked.",
+          "The lifespan's end stops the supervisor before the phone door, the feeds and the watcher.",
+          "The app's server cancels open requests SHUTDOWNGRACESECONDS (3 s) after a stop begins, so no request holds off the lifespan.",
+          "The hard stop says \"marked interrupted\" only where the app lived through its SIGTERM, or on Windows."
+        ],
+        "must_not": [
+          "Requeue on a stop that did not come through the stop route."
+        ],
+        "exceptions": [
+          "An app that ends without its lifespan can still leave a runner on macOS and Linux: a SIGKILL, a crash, the hard stop's SIGKILL after STOPTIMEOUT, or uvicorn's forced exit on a second Ctrl+C. The hard stop's sentence then says the job can..."
+        ],
+        "verification": [
+          "tests/testappsignalstop.py; tests/testapp.py::testthesupervisorstopsbeforethewatchers; tests/testsupervisor.py::testastopnobodyaskedforendstherunnerandleavesthejobtoreconcile.",
+          "tests/testlauncher.py::testthehardstopssentencesayswhatthisosdoeswiththerunningjob and ::testthehardstopsayswhetherithadtokilltheapp."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -1905,6 +1963,12 @@
     {
       "source": "ADR-001",
       "target": "ADR-022",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-001",
+      "target": "ADR-031",
       "type": "related",
       "resolved": true
     },
@@ -2467,6 +2531,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-028",
+      "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-029",
       "target": "ADR-020",
       "type": "related",
@@ -2487,6 +2557,18 @@
     {
       "source": "ADR-030",
       "target": "ADR-023",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-031",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-031",
+      "target": "ADR-028",
       "type": "related",
       "resolved": true
     }

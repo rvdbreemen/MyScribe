@@ -25,6 +25,14 @@ DEFAULT_PORT = 4242
 BROWSER_WAIT_SECONDS = 30.0
 BROWSER_POLL_SECONDS = 0.05
 
+SHUTDOWN_GRACE_SECONDS = 3.0
+"""How long a stopping server lets open requests finish before it cancels
+them and runs the lifespan's end, where the supervisor ends the runner
+(ADR-031). A job page's event stream ends only when its job does, and
+without a limit uvicorn waited for it: an hour's job held the stop for an
+hour, and on macOS and Linux the launcher's hard stop SIGKILLs the app 15 s
+after its SIGTERM, leaving the runner to run on (TASK-112.09)."""
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -89,7 +97,8 @@ def main(argv: list[str] | None = None) -> None:
     from scribe.app import create_app
 
     app = create_app(start_supervisor=not args.no_supervisor)
-    server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=args.port))
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=HOST, port=args.port, timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS))
     # The stop route's way out: uvicorn's own flag, so the lifespan runs to
     # its end - the same path Ctrl+C takes (TASK-112.03).
     app.state.request_exit = lambda: setattr(server, "should_exit", True)

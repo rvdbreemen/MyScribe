@@ -324,6 +324,14 @@ def create_app(
         try:
             yield
         finally:
+            # The supervisor first: it ends the running runner's tree on every
+            # shutdown (ADR-031), and on macOS and Linux the launcher's hard
+            # stop SIGKILLs this app's group STOP_TIMEOUT (15 s) after its
+            # SIGTERM - a SIGKILL that never reaches the runner's own session.
+            # The watchers below may each join for 10 s; a job one of them
+            # queues now simply waits for the next start.
+            if sup is not None:
+                sup.stop(requeue=bool(getattr(app.state, "stop_requested", False)))
             # Receive from phone (TASK-096): a door left open closes with the
             # app, which releases its port and withdraws myscribe.local.
             # Nothing records it as open, so the next start finds it closed.
@@ -334,8 +342,6 @@ def create_app(
                 feed_watcher.stop()
             if watcher is not None:
                 watcher.stop()
-            if sup is not None:
-                sup.stop(requeue=bool(getattr(app.state, "stop_requested", False)))
             conn.close()
             applog.log("app.stop")
 

@@ -1332,8 +1332,8 @@ STOP_WAIT = 60.0
 """How long `--stop` waits for the app to end through its own stop route.
 
 The route's way out nests inside this: uvicorn finishes the open requests,
-the lifespan stops the feeds and the watcher, and the supervisor ends the
-runner's tree and requeues its job, joining for `REQUEUE_STOP_SECONDS` (20 s,
+the lifespan's supervisor ends the runner's tree and requeues its job
+before the feeds and the watcher stop, joining for `STOP_JOIN_SECONDS` (20 s,
 `scribe/supervisor.py`). Past this the hard stop runs, inside which
 `AppProcess.stop` gives the app another `STOP_TIMEOUT`. The launcher's own
 Quit waits as long (`Launch.stop_wait`); `LAUNCHER_STOP_WAIT` adds up what
@@ -1355,23 +1355,29 @@ STOPPING_IDLE = "Stopping MyScribe. No job is running."
 STOPPED_JOB = ("MyScribe stopped. Job {job} is back at the front of the queue and starts over the "
                "next time MyScribe starts.")
 STOPPED_IDLE = "MyScribe stopped. No job was running."
-ENDED_WINDOWS = ("MyScribe was ended. A job that was running is marked interrupted; Retry on the "
-                 "jobs page starts it over.")
-ENDED_POSIX = ("MyScribe was ended. A job that was running can keep running after MyScribe has closed "
-               "and finish by itself; if it does not, Retry on the jobs page starts it over.")
+ENDED = ("MyScribe was ended. A job that was running is marked interrupted; Retry on the "
+         "jobs page starts it over.")
+ENDED_KILLED = ("MyScribe was ended. A job that was running can keep running after MyScribe has closed "
+                "and finish by itself; if it does not, Retry on the jobs page starts it over.")
 """What Quit, Ctrl+C, a SIGTERM and `--stop` say before and after a stop
 (TASK-112.09, criterion 4): the route's answer names the running job, so the
 sentence before the stop can name it too. The ENDED sentences are the hard
 stop's, see `ended`."""
 
 
-def ended() -> str:
-    """The hard stop's sentence for this OS. On Windows the hard stop ends the
-    app's tree, runner and all, and reconcile marks the job interrupted. On
-    macOS and Linux it signals the app's process group only; the runner has a
-    session of its own and can run on and write its verdict (ADR-028, measured
-    in WSL on 2026-10-21), so "marked interrupted" would not be true there."""
-    return ENDED_WINDOWS if IS_WINDOWS else ENDED_POSIX
+def ended(killed: bool | None = False) -> str:
+    """The hard stop's sentence for this OS and this stop.
+
+    On Windows the hard stop ends the app's tree, runner and all, and
+    reconcile marks the job interrupted. On macOS and Linux it signals the
+    app's process group only, and the runner has a session of its own. An app
+    that lives through that SIGTERM ends the runner itself (ADR-031), so the
+    job is interrupted there too. ``killed`` is True when the app had to be
+    SIGKILLed, and None when this process cannot see it (`--stop` ending a
+    launcher, whose own hard stop does that): then the runner may have run on
+    and written its verdict (ADR-028, measured in WSL on 2026-10-21), and
+    "marked interrupted" would not be sure to be true."""
+    return ENDED if IS_WINDOWS or killed is False else ENDED_KILLED
 
 
 def read_health(port: int, timeout: float = HEALTH_TIMEOUT) -> dict | None:
@@ -1438,25 +1444,30 @@ signal of `APP_DIED`. A launcher that ignores SIGTERM costs `--stop` this long
 before its SIGKILL."""
 
 
-def end_tree(pid: int, grace: float = STOP_TIMEOUT) -> None:
+def end_tree(pid: int, grace: float = STOP_TIMEOUT) -> bool:
     """End a process and what it started, the way `AppProcess.stop` does.
 
     Given the launcher's pid, POSIX sends it SIGTERM alone: its own handler
     stops the app's process group and exits 0, so a supervisor sees a clean
     stop and does not start the server `--stop` just ended (TASK-112.02).
     Given the app's pid, its session is ended - it leads one when a launcher
-    started it - or just the process when it does not."""
+    started it - or just the process when it does not.
+
+    True when SIGTERM was not enough and SIGKILL was sent (POSIX only): an
+    app killed that way may have left its runner running (`ended`)."""
     if IS_WINDOWS:
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
-        return
+        return False
     try:
         kill, target = (os.killpg, pid) if os.getpgid(pid) == pid else (os.kill, pid)
         kill(target, signal.SIGTERM)
         if not wait_gone(pid, grace):
             kill(target, signal.SIGKILL)
+            return True
     except (ProcessLookupError, PermissionError):
         pass  # gone, or a macOS group of unreaped members (EPERM)
+    return False
 
 
 def stop_running(port: int, report: Callable[[str, str], None], wait: float = STOP_WAIT) -> int:
@@ -1489,12 +1500,14 @@ def stop_running(port: int, report: Callable[[str, str], None], wait: float = ST
             return 0
         report("busy", f"MyScribe did not stop within {wait:g} s; ending it.")
     launcher = health.get("launcher_pid")
+    killed: bool | None = False
     if isinstance(launcher, int) and pid_alive(launcher):
         end_tree(launcher, grace=LAUNCHER_STOP_WAIT)
-    if pid_alive(pid):  # no launcher, or one that went without its app
-        end_tree(pid)
+        killed = None  # the launcher's own hard stop ends the app, out of sight here
+    if pid_alive(pid) and end_tree(pid):  # no launcher, or one that went without its app
+        killed = True
     if wait_gone(pid, STOP_TIMEOUT):
-        report("status", ended())
+        report("status", ended(killed))
         return 0
     report("error", f"MyScribe (process {pid}) is still running and could not be ended.")
     return 1
@@ -1579,30 +1592,36 @@ class AppProcess:
             time.sleep(0.25)
         return False
 
-    def stop(self, timeout: float = STOP_TIMEOUT) -> None:
+    def stop(self, timeout: float = STOP_TIMEOUT) -> bool:
         """SIGTERM to the group, so uvicorn shuts the supervisor down and the
-        runners go with it; SIGKILL after ``timeout``. Windows has no signal
-        that reaches a windowless process, so there it is taskkill on the tree;
-        the next start's reconcile settles an interrupted job."""
+        supervisor ends the runner's tree (ADR-031); SIGKILL after ``timeout``.
+        The runner has a session of its own, so that SIGKILL never reaches it.
+        Windows has no signal that reaches a windowless process, so there it
+        is taskkill on the tree; the next start's reconcile settles an
+        interrupted job.
+
+        True when the app outlived its SIGTERM and was SIGKILLed (POSIX only),
+        so that `ended` can say its runner may have run on."""
         if self.proc is None or self.proc.poll() is not None:
-            return
+            return False
         if IS_WINDOWS:
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(self.proc.pid)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW,
             )
             self.proc.wait(timeout)
-            return
+            return False
         try:
             group = os.getpgid(self.proc.pid)
             os.killpg(group, signal.SIGTERM)
         except ProcessLookupError:
             self.proc.wait(timeout)
-            return
+            return False
+        killed = False
         try:
             self.proc.wait(timeout)
         except subprocess.TimeoutExpired:
-            pass
+            killed = True
         try:
             os.killpg(group, signal.SIGKILL)  # stragglers: a runner mid-model-load
         except (ProcessLookupError, PermissionError):
@@ -1610,6 +1629,7 @@ class AppProcess:
             # which answers EPERM rather than ESRCH.
             pass
         self.proc.wait(timeout)
+        return killed
 
 
 # --- what the launcher says, and where it is kept ---------------------------------
@@ -1979,9 +1999,10 @@ class Launch:
         the app - through its stop route first (ADR-028, TASK-112.09).
 
         Only the route puts a running job back at the front of the queue; the
-        hard stop leaves it to reconcile, which marks it interrupted, and on
-        macOS and Linux it never reached the runner at all, which has a
-        session of its own. So the route is asked, and the launcher waits for
+        hard stop leaves it to reconcile, which marks it interrupted. On
+        macOS and Linux the hard stop reaches the runner, which has a session
+        of its own, only through the app's SIGTERM (ADR-031); an app it has to
+        SIGKILL may leave it running. So the route is asked, and the launcher waits for
         the pid /health names - on Windows the venv's python.exe is a
         redirector, so that is not ``proc.pid``. `AppProcess.stop` is the
         fallback when the route does not answer or the app outlives
@@ -1997,8 +2018,8 @@ class Launch:
         self.report("status", STOPPING)
         if self.stop_through_route(app):
             return
-        app.stop()
-        self.report("status", ended())
+        killed = app.stop()
+        self.report("status", ended(killed is True))
 
     def stop_through_route(self, app: "AppProcess") -> bool:
         """Ask the app's stop route and wait for it; True when it has ended."""

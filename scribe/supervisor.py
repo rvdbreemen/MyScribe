@@ -41,10 +41,11 @@ _WATCH_POLL_SECONDS = 0.1
 
 # Seconds to wait after terminate()/kill() for the process to go away.
 _KILL_WAIT_SECONDS = 5.0
-REQUEUE_STOP_SECONDS = 4 * _KILL_WAIT_SECONDS
-"""How long a requeueing stop joins the loop: `_kill_tree` waits at most
-twice `_KILL_WAIT_SECONDS`, and the join must outlast it with room to spare
-for the requeue itself (TASK-112.03)."""
+STOP_JOIN_SECONDS = 4 * _KILL_WAIT_SECONDS
+"""How long a stop joins the loop: every stop ends the running runner's tree
+(ADR-028, ADR-031), `_kill_tree` waits at most twice `_KILL_WAIT_SECONDS`,
+and the join must outlast it with room to spare for the requeue or the exit
+report (TASK-112.03, TASK-112.09)."""
 
 if sys.platform == "win32":
     import ctypes
@@ -528,14 +529,17 @@ class Supervisor:
         return self._watching == job_id
 
     def stop(self, timeout: float = 10.0, requeue: bool = False) -> None:
-        """Ask the loop to exit and join it. A still-running child is left
-        alone; the next startup's reconcile() marks its job interrupted.
+        """Ask the loop to exit and join it. A still-running child's tree is
+        ended and waited for first, on every stop (ADR-031): a runner left
+        alone ran on as an orphan on macOS and Linux, where it has a session
+        of its own, holding the card with no app to show it (TASK-112.09).
 
-        With ``requeue`` - a stop somebody asked for, through the stop route
-        (ADR-028) - the loop ends the runner's tree first, waits for it and
-        puts the job back at the front of the queue. That kill can take two
-        waits of `_KILL_WAIT_SECONDS`, so the join waits at least
-        `REQUEUE_STOP_SECONDS`.
+        Without ``requeue`` the row stays `running`, and the next start's
+        reconcile() marks it interrupted (ADR-001). With ``requeue`` - a stop
+        somebody asked for, through the stop route (ADR-028) - the job goes
+        back to the front of the queue once the runner is gone. The kill can
+        take two waits of `_KILL_WAIT_SECONDS`, so the join waits at least
+        `STOP_JOIN_SECONDS`.
 
         A join that runs out of time is said on stderr and the thread is
         *kept*, the way `watching.Watcher.stop` keeps its own (TASK-073).
@@ -551,7 +555,7 @@ class Supervisor:
         thread = self._thread
         if thread is None:
             return
-        thread.join(max(timeout, REQUEUE_STOP_SECONDS) if requeue else timeout)
+        thread.join(max(timeout, STOP_JOIN_SECONDS))
         if thread.is_alive():
             print(
                 f"scribe: the supervisor thread is still running {timeout:g}s after"
@@ -667,10 +671,10 @@ class Supervisor:
         stderr_tail = _read_tail(_runner_stderr_path(job_id))
         applog.log(
             "runner.exited",
-            # A runner ended by a stop somebody asked for is not a failure:
-            # its row is queued again (ADR-028).
-            level="error" if proc.returncode not in (0, 2) and not (
-                row and row["status"] == "queued") else "info",
+            # A runner ended by a stop is not a failure: its row is queued
+            # again (ADR-028) or left for reconcile (ADR-031).
+            level="error" if proc.returncode not in (0, 2)
+            and not self._stop_event.is_set() else "info",
             job=job_id, pid=proc.pid, code=proc.returncode, seconds=round(seconds, 1),
             status=row["status"] if row else None,
             error_code=row["error_code"] if row else None,
@@ -693,11 +697,13 @@ class Supervisor:
         cancel_seen: float | None = None
         while proc.poll() is None:
             if self._stop_event.is_set():
-                if self._requeue:  # a stop somebody asked for (ADR-028)
-                    _kill_tree(proc)
+                # Every stop ends the runner (ADR-031), so none outlives the
+                # app; only a stop somebody asked for requeues (ADR-028).
+                _kill_tree(proc)
+                if self._requeue:
                     paths.remove_job_work_dir(job_id)
                     jobs.requeue_running(conn, job_id)
-                return  # app shutting down; reconcile() cleans up next boot
+                return  # otherwise the row stays running: reconcile() marks it next boot
             if cancel_seen is None and self._cancel_requested(conn, job_id):
                 cancel_seen = time.monotonic()
             if (
