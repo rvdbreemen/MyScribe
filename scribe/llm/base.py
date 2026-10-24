@@ -59,9 +59,11 @@ class ChatRequest:
     (`Provider.reasoning_off_body`); an endpoint that refuses it with a 400 gets
     one more call without it; and a model that ignores it is recorded on the
     answer (`ChatResponse.hint_sent`, `reasoning_tokens`) and bounded only
-    where the endpoint enforces `max_output_tokens`. False sends nothing, so a
-    request without the hint is byte-for-byte the request this app always
-    sent."""
+    where the endpoint enforces `max_output_tokens`. False sends no hint; on
+    OpenRouter such a call carries a reasoning limit instead
+    (`openai_like.reasoning_cap_for`, ADR-030), and on every other provider
+    it is the request this app always sent. True never carries that limit,
+    not even after a refused hint is dropped."""
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,9 @@ class ChatResponse:
     400 and dropped - so a dropped hint and an ignored one look different on
     the row. `reasoning_tokens` is the cloud count; `reasoning_chars` is the
     length of Ollama's `thinking`, the only measure it gives; `upstream` is
-    who OpenRouter forwarded the call to.
+    who OpenRouter forwarded the call to. `reasoning_cap` is the reasoning
+    limit the answering call carried (OpenRouter's `reasoning.max_tokens`,
+    TASK-123), None when it carried none.
     """
 
     text: str
@@ -92,6 +96,7 @@ class ChatResponse:
     reasoning_tokens: int | None = None
     reasoning_chars: int | None = None
     upstream: str | None = None
+    reasoning_cap: int | None = None
 
 
 def hint_words(hint_sent: bool | None) -> str:

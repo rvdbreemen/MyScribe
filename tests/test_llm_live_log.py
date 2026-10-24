@@ -256,6 +256,7 @@ def test_the_reply_event_names_the_model_that_answered(monkeypatch):
         reasoning_tokens = 5400
         upstream = "BaseTen"
         hint_sent = None
+        reasoning_cap = 2400
         raw_finish_reason = "length"
 
     llm_stage._watch(Ctx())("single", Request(), Reply())
@@ -263,3 +264,6 @@ def test_the_reply_event_names_the_model_that_answered(monkeypatch):
     reply = dict(emitted[0][1])
     assert reply["model"] == "deepseek/deepseek-v4-flash-0731"
     assert reply["reasoning_tokens"] == 5400 and reply["upstream"] == "BaseTen"
+    # The limit OpenRouter was asked to hold reasoning to, so a rerun can show
+    # it was on the wire (TASK-123).
+    assert reply["reasoning_cap"] == 2400
