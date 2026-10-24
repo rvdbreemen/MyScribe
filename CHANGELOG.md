@@ -26,8 +26,8 @@
   post, local models wrote a part's transcript back line by line until they
   ran out of room, and the job failed. A blog note is now asked as at most 30
   points in the model's own words, each with its timestamp, quoting only a few
-  words where they matter. A note that runs out of room while copying the
-  transcript now says so. The prompts changed, so notes stored by an earlier
+  words where they matter. A blog note that runs out of room with most of its
+  lines copied from the transcript now says so. The prompts changed, so notes stored by an earlier
   version are not reused: the next run of any AI task on a long recording
   (summary, minutes, blog and the others; chat is not affected) asks every
   part again. Earlier results are kept (TASK-124).

@@ -308,7 +308,7 @@ class TaskSpec:
     Empty for the kinds whose notes come back as notes. Set for `blog` by
     TASK-124 (Robert's option A, 2026-10-25): on media 61 qwen3.5:4b and :9b
     wrote the excerpt back line for line until the note budget ran out (jobs
-    430-432), so a blog note is asked as a bounded number of points in the
+    430-432 on the 2026-10-24 library copy), so a blog note is asked as a bounded number of points in the
     model's own words. Not shared through `map_chunk.md` itself, because
     `speakers` asks for 'the quote and its time' and must keep its quotes."""
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
@@ -2039,7 +2039,9 @@ def _collect_notes(
                 f"{plan.kind!r} task {where}: {_ran_out_of(plan, response, note_budget)} "
                 f"({_spent(response)}) rather than finishing, so the "
                 "notes are cut off mid-sentence and have not been stored."
-                f"{_copying(copied, counted)} What it managed: "
+                # Named a fault only where the note rule forbade copying:
+                # `speakers` is asked for quotes, and its notes are lines.
+                f"{_copying(copied, counted) if plan.spec.note_rule else ''} What it managed: "
                 + clip(text)
             )
         chunk_ids.append(

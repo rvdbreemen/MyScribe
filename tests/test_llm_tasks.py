@@ -2138,6 +2138,30 @@ def test_a_note_cut_off_in_its_own_words_does_not_say_copying(conn, monkeypatch)
     assert "copied" not in str(caught.value), str(caught.value)
 
 
+def test_a_speaker_note_cut_off_on_its_quotes_is_not_called_copying(conn, monkeypatch):
+    """Only blog's note rule forbids copying. `speakers` is asked for 'the
+    quote and its time', so its notes are transcript lines by design, and a
+    refusal saying it 'was writing the transcript back' would blame it for
+    doing what it was asked."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+
+    def answer(req: base.ChatRequest):
+        excerpt = req.user.split("Excerpt:", 1)[1]
+        lines = [line for line in excerpt.splitlines() if line.startswith("[")]
+        return truncated(chr(10).join(lines))
+
+    provider, _ = fake_provider(answer)
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="speakers", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "ran out of room writing its notes" in str(caught.value), str(caught.value)
+    assert "copied word for word" not in str(caught.value), str(caught.value)
+
+
 def test_a_finished_note_records_how_much_of_it_was_copied(conn, monkeypatch):
     """Reported, not refused: a copied note that finished is the excerpt's own
     words, which the combine can still use, and refusing it would fail a job
