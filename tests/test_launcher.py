@@ -49,6 +49,12 @@ def _no_pointer_from_this_machine(tmp_path, monkeypatch):
     own and wins, because monkeypatch applies in order.
     """
     monkeypatch.setattr(launcher, "pointer_path", lambda *a, **k: tmp_path / "no-pointer.location")
+    # TASK-112.07: the instance lock and the login note sit beside the home,
+    # and a `main()` without --home lands on the default one. Under the real
+    # LOCALAPPDATA that is beside the MyScribe of whoever runs the tests, whose
+    # launcher holds that lock: the result would depend on whether it runs.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
 
 @pytest.fixture
@@ -2999,3 +3005,357 @@ def test_a_group_of_only_zombies_does_not_make_stop_raise(layout, monkeypatch):
     app.stop(timeout=10)
 
     assert child.poll() is not None
+
+
+# --- TASK-112.07: one MyScribe per user -------------------------------------------
+#
+# The lock is written out in plain stdlib here, not taken through the
+# launcher: what is pinned is the contract a second process sees - a lock on
+# byte 0 of `<home>.lock`, beside the home - and not the launcher's own word
+# for it.
+
+_HOLD_LOCK = textwrap.dedent("""
+    import os, sys, time
+    handle = open(sys.argv[1], "a+b")
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("busy", flush=True)
+        sys.exit(0)
+    print("held", flush=True)
+    time.sleep(float(sys.argv[2]) if len(sys.argv) > 2 else 60)
+""")
+
+
+def _hold_lock(path: Path):
+    """Another process that holds the lock at `path` until it is killed."""
+    child = _subprocess.Popen([sys.executable, "-c", _HOLD_LOCK, str(path)],
+                              stdout=_subprocess.PIPE, text=True)
+    assert child.stdout.readline().strip() == "held"
+    return child
+
+
+def _let_go(child) -> None:
+    child.kill()
+    child.wait()
+    child.stdout.close()
+
+
+def _try_lock(path: Path) -> str:
+    """Whether a fresh process can take the lock at `path` right now."""
+    done = _subprocess.run([sys.executable, "-c", _HOLD_LOCK, str(path), "0"],
+                           capture_output=True, text=True, timeout=30)
+    return done.stdout.strip()
+
+
+@pytest.fixture
+def a_second_start(layout, monkeypatch):
+    """A start that must not get as far as the install: the sync, the tools
+    and the app are recorded, never run."""
+    did: list[str] = []
+    monkeypatch.setattr(launcher, "enough_disk", lambda *a, **k: True)
+    monkeypatch.setattr(launcher, "install_tools", lambda _layout: did.append("tools"))
+    monkeypatch.setattr(launcher, "sync", lambda _layout, line: did.append("sync") or False)
+    monkeypatch.setattr(launcher.AppProcess, "start", lambda self: did.append("app"))
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    opened: list[str] = []
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: opened.append(url) or True)
+    return types.SimpleNamespace(did=did, opened=opened, lock=layout.home.with_name("home.lock"))
+
+
+def _argv(layout, port, *extra) -> list[str]:
+    return [*extra, "--home", str(layout.home), "--payload", str(layout.payload), "--port", str(port)]
+
+
+def test_a_second_start_while_the_first_still_installs_waits_and_opens_the_browser(
+        layout, a_second_start, capsys):
+    """AC #1, and the race the research named: the login entry is syncing,
+    nothing answers yet, and a start by hand used to pass the probe and run a
+    second `uv sync` into the same environment."""
+    port = _free_port()
+    holder = _hold_lock(a_second_start.lock)
+    server: list = []
+    later = threading.Timer(1.0, lambda: server.append(_serve(port, {"ok": True})))
+    later.start()
+    try:
+        code = launcher.main(_argv(layout, port, "--headless"))
+    finally:
+        later.cancel()
+        later.join()
+        _let_go(holder)
+        for each in server:
+            each.shutdown()
+            each.server_close()
+
+    assert code == 0
+    assert a_second_start.did == [], "a second start installed or started something"
+    assert a_second_start.opened == [f"http://127.0.0.1:{port}/"]
+    said = capsys.readouterr().out
+    assert "already starting" in said and "already running" in said
+    assert not layout.home.exists()
+
+
+def test_a_second_start_that_finds_it_serving_opens_the_browser_at_once(layout, a_second_start):
+    port = _free_port()
+    holder = _hold_lock(a_second_start.lock)
+    server = _serve(port, {"ok": True})
+    try:
+        started = time.monotonic()
+        code = launcher.main(_argv(layout, port, "--headless"))
+        took = time.monotonic() - started
+    finally:
+        _let_go(holder)
+        server.shutdown()
+        server.server_close()
+
+    assert code == 0 and a_second_start.did == []
+    assert a_second_start.opened == [f"http://127.0.0.1:{port}/"]
+    assert took < 5
+
+
+def test_a_second_start_gives_up_waiting_with_zero_and_says_where_to_look(
+        layout, a_second_start, monkeypatch, capsys):
+    """Exit 0 either way, `APP_DIED`'s contract: a restart would only find
+    the same lock again."""
+    monkeypatch.setattr(launcher, "READY_TIMEOUT", 1.0)
+    port = _free_port()
+    holder = _hold_lock(a_second_start.lock)
+    try:
+        code = launcher.main(_argv(layout, port, "--headless"))
+    finally:
+        _let_go(holder)
+
+    assert code == 0 and a_second_start.did == [] and a_second_start.opened == []
+    said = capsys.readouterr().out
+    assert "already starting" in said and f"http://127.0.0.1:{port}/" in said
+
+
+def test_a_second_start_with_a_window_says_so_in_a_window(layout, a_second_start, monkeypatch):
+    """Behind --windowed there is no console: the sentence gets a window of
+    its own, at once, instead of a double-click that does nothing for two
+    minutes."""
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: True)
+    monkeypatch.setattr(launcher, "run_window", lambda *a, **k: pytest.fail("a second window opened"))
+    shown: list[str] = []
+    monkeypatch.setattr(launcher, "show_error", shown.append)
+    holder = _hold_lock(a_second_start.lock)
+    try:
+        code = launcher.main(_argv(layout, _free_port()))
+    finally:
+        _let_go(holder)
+
+    assert code == 0 and a_second_start.did == []
+    assert len(shown) == 1 and "already starting" in shown[0]
+
+
+@pytest.mark.parametrize("door", ["--sync-only", "--smoke"])
+def test_a_one_job_door_that_finds_the_lock_fails_without_syncing(layout, a_second_start, door, capsys):
+    """Two `uv sync` runs into one environment is the damage the lock is for;
+    these doors are read as pass or fail, so they say 1."""
+    holder = _hold_lock(a_second_start.lock)
+    try:
+        code = launcher.main(_argv(layout, _free_port(), door))
+    finally:
+        _let_go(holder)
+
+    assert code == 1 and a_second_start.did == []
+    assert "already" in capsys.readouterr().out
+
+
+def test_the_doctor_takes_no_lock(layout, a_second_start, monkeypatch):
+    """The doctor is what you run while MyScribe runs, to ask why."""
+    _fake_env_python(layout)
+    launcher.write_stamp(layout)
+    called: list = []
+    monkeypatch.setattr(launcher.subprocess, "call", lambda *a, **k: called.append(a) or 0)
+    holder = _hold_lock(a_second_start.lock)
+    try:
+        # Last: --doctor takes everything after it as the doctor's own arguments.
+        assert launcher.main([*_argv(layout, _free_port()), "--doctor"]) == 0
+    finally:
+        _let_go(holder)
+    assert called
+
+
+def test_the_lock_is_held_while_the_launcher_runs_and_free_after(layout, monkeypatch):
+    """Released on every way out, so a second `main()` in this process - and
+    the next start after a stop - does not find its own lock."""
+    seen: list[str] = []
+
+    def headless(launch, force_setup=False, at_login=False):
+        seen.append(_try_lock(launch.layout.home.with_name("home.lock")))
+        return 0
+
+    monkeypatch.setattr(launcher, "run_headless", headless)
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+
+    assert launcher.main(_argv(layout, _free_port(), "--headless")) == 0
+    assert launcher.main(_argv(layout, _free_port(), "--headless")) == 0
+    assert seen == ["busy", "busy"]
+    assert _try_lock(layout.home.with_name("home.lock")) == "held"
+
+
+def test_the_app_child_does_not_keep_the_lock(layout, monkeypatch, tmp_path):
+    """The app outlives a launcher killed hard (its own process group). If it
+    inherited the lock, the next start would wait on an orphan for good; it
+    has to find it through /health instead."""
+    path = tmp_path / "instance.lock"
+    lock = launcher.InstanceLock(path)
+    assert lock.acquire()
+    layout.logs_dir.mkdir(parents=True)
+    app = launcher.AppProcess(layout, _free_port())
+    monkeypatch.setattr(app, "command", lambda: [sys.executable, "-c", "import time; time.sleep(30)"])
+    app.start()
+    try:
+        assert _try_lock(path) == "busy"
+        lock.release()
+        assert _try_lock(path) == "held", "the app child kept the launcher's lock"
+    finally:
+        lock.release()
+        app.proc.kill()
+        app.proc.wait()
+
+
+_FAKE_APP = textwrap.dedent("""
+    # `python -m scribe` as the launcher starts it, and nothing more: it notes
+    # that it was started, takes a second, then binds the port, answers
+    # /health for a few seconds and ends with 0.
+    import http.server, json, os, sys, threading, time
+    from pathlib import Path
+
+    port = int(sys.argv[sys.argv.index("--port") + 1])
+    with open(Path(__file__).resolve().parents[3] / "app-starts.txt", "a") as marker:
+        marker.write(str(os.getpid()) + chr(10))
+    time.sleep(1.0)
+
+    class Health(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    http.server.HTTPServer.allow_reuse_address = False  # a taken port refuses it, as uvicorn
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", port), Health)
+    except OSError:
+        sys.exit(3)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    time.sleep(4)
+""")
+
+_RUN_LAUNCHER = textwrap.dedent("""
+    # The launcher file itself, with one seam: the environment's python is
+    # this python, so no uv sync is needed to start the stand-in app.
+    import importlib.util, sys, time
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("myscribe_launcher", sys.argv[1])
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    launcher.Layout.env_python = property(lambda self: Path(sys.executable))
+    go = Path(sys.argv[2])
+    while not go.exists():
+        time.sleep(0.005)
+    sys.exit(launcher.main(sys.argv[3:]))
+""")
+
+
+def test_two_launchers_started_at_once_start_one_app(layout, tmp_path, monkeypatch):
+    """AC #2: a login entry and a start by hand in the same instant. Before the
+    lock both passed the probe, and both went on to the sync and the app."""
+    (layout.app_dir / "scribe" / "__main__.py").write_text(_FAKE_APP, encoding="utf-8")
+    # The stamp the sync would write, so neither launcher syncs: the sync is
+    # not the subject, and `env_python` is this python in both children.
+    layout.stamp_file.parent.mkdir(parents=True)
+    layout.stamp_file.write_text(json.dumps({"lock_sha256": launcher.lock_digest(layout)}),
+                                 encoding="utf-8")
+    runner = tmp_path / "run_launcher.py"
+    runner.write_text(_RUN_LAUNCHER, encoding="utf-8")
+    go = tmp_path / "go"
+    port = _free_port()
+    monkeypatch.delenv(launcher.HOME_VARIABLE, raising=False)
+    argv = [sys.executable, str(runner), str(LAUNCHER_PATH), str(go),
+            *_argv(layout, port, "--headless", "--at-login", "--no-browser")]
+    both = [_subprocess.Popen(argv, stdout=_subprocess.PIPE, stderr=_subprocess.STDOUT, text=True)
+            for _ in range(2)]
+    try:
+        time.sleep(1.5)  # both imported and waiting at the line
+        go.write_text("")
+        outputs = [child.communicate(timeout=90)[0] for child in both]
+    finally:
+        for child in both:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+
+    starts = (tmp_path / "app-starts.txt").read_text().split()
+    assert len(starts) == 1, f"{len(starts)} apps were started:\n" + "\n---\n".join(outputs)
+    assert [child.returncode for child in both] == [0, 0], outputs
+    assert sum("is running at" in out for out in outputs) == 1, outputs
+    assert sum("already" in out for out in outputs) == 1, outputs
+
+
+def _busy_port():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind((launcher.HOST, 0))
+    sock.listen(1)
+    return sock, sock.getsockname()[1]
+
+
+def test_a_busy_port_at_login_is_in_the_log_and_shown_once_at_the_next_start_by_hand(
+        layout, monkeypatch, capsys):
+    """AC #3. The login entry is headless and nobody reads its log; the next
+    start somebody makes by hand says what went wrong, once. A second start at
+    login does not use the note up: nobody saw that one either."""
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    layout.logs_dir.mkdir(parents=True)  # a home that has started before
+    sock, port = _busy_port()
+    try:
+        assert launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser")) == 0
+        logged = (layout.logs_dir / launcher.INSTALL_LOG).read_text(encoding="utf-8")
+        assert f"Port {port} is used by another program" in logged
+        assert launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser")) == 0
+        capsys.readouterr()
+
+        launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+        first = capsys.readouterr().out
+        launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+        second = capsys.readouterr().out
+    finally:
+        sock.close()
+
+    assert "At the last login MyScribe could not start" in first
+    assert f"Port {port} is used by another program" in first.split("At the last login")[1]
+    assert "At the last login" not in second, "the note was shown twice"
+    assert f"Port {port} is used by another program" in second  # today's problem, said as today
+    assert (layout.logs_dir / launcher.INSTALL_LOG).read_text(encoding="utf-8").count(
+        "At the last login") == 1
+
+
+def test_a_login_problem_is_shown_in_the_window_of_the_next_start(layout, monkeypatch):
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    sock, port = _busy_port()
+    try:
+        assert launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser")) == 0
+    finally:
+        sock.close()
+    seen: list = []
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: True)
+    monkeypatch.setattr(launcher, "run_window", lambda *a, **k: seen.append(k.get("notice")) or 0)
+
+    assert launcher.main(_argv(layout, port, "--no-browser")) == 0
+    assert launcher.main(_argv(layout, port, "--no-browser")) == 0
+
+    assert len(seen) == 2 and seen[1] is None
+    assert "At the last login" in seen[0] and f"Port {port}" in seen[0]

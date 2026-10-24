@@ -1325,6 +1325,158 @@ def running_instance(port: int, timeout: float = 1.0) -> bool:
         return False
 
 
+# TASK-112.07: the /health probe and the bind test below leave a window
+# between them and the app's own bind. A login entry and a start by hand in the
+# same seconds both passed the probe, both ran `uv sync` into one environment
+# and both started the app. One lock per home closes that window; the probe
+# still runs after it, because an app whose launcher was killed outlives it.
+
+
+def instance_lock_path(home: Path) -> Path:
+    """``<home>.lock``, beside the home and not in it.
+
+    Not in it, because on a first start the home does not exist yet and must
+    not be made before the disk and the location are checked - and the lock
+    has to be taken before any of that. Beside the default home that is next
+    to ``MyScribe.location``; beside a home given with ``--home X`` it is
+    ``X.lock``, so a test or a second install never waits on the one the
+    login entry started.
+    """
+    home = Path(home)
+    return home.with_name(home.name + ".lock")
+
+
+class InstanceLock:
+    """An exclusive, non-blocking lock on byte 0 of one file, held for the
+    launcher's whole life and released by the OS if it dies.
+
+    Never unlinked: on POSIX a second launcher that opened the old file and a
+    third that made a new one would each hold a lock of their own. The handle
+    is not inheritable (PEP 446), so the app child never keeps it.
+    """
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.handle = None
+        self.problem = ""
+
+    def acquire(self) -> bool:
+        """True when this launcher holds the lock - or could not take one at
+        all, which starts as before the lock existed rather than not at all;
+        False when another process holds it."""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(self.path, "a+b")
+        except OSError as error:
+            self.problem = f"{self.path} could not be opened ({error}); starting without the lock."
+            return True
+        try:
+            handle.seek(0)
+            if IS_WINDOWS:
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)  # never LK_LOCK: it retries 10 s
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return False
+        except OSError as error:
+            handle.close()
+            if IS_WINDOWS:  # msvcrt says "held" as a plain OSError (EACCES or EDEADLOCK)
+                return False
+            self.problem = f"{self.path} could not be locked ({error}); starting without the lock."
+            return True
+        self.handle = handle
+        return True
+
+    def release(self) -> None:
+        """Explicitly, and not by closing alone: Windows does not promise when
+        a lock goes on close, and `main()` may run again in the same process."""
+        handle, self.handle = self.handle, None
+        if handle is None:
+            return
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            handle.close()
+
+
+ALREADY_STARTING = ("MyScribe is already starting; installing or updating can take a few minutes. "
+                    "It will be at {url} when it is ready.")
+STILL_STARTING = "MyScribe is still starting and has not answered yet. Go to {url} in a few minutes."
+ONE_JOB_LOCKED = ("Another MyScribe is already running or installing in {home}; "
+                  "quit it first, then try again.")
+
+
+def another_start(port: int, open_browser: bool, report: Callable[[str, str], None],
+                  windowed: bool) -> int:
+    """A start that found the lock held: open what the other one serves.
+
+    Exit 0 on every path, `APP_DIED`'s contract: a restart would find the same
+    lock. Behind a window there is no console, so a first start that is still
+    installing is answered at once with a window of its own - not with a
+    double-click that does nothing for minutes.
+    """
+    url = f"http://{HOST}:{port}/"
+    if not running_instance(port):
+        sentence = ALREADY_STARTING.format(url=url)
+        if windowed:
+            report("status", sentence)
+            show_error(sentence)
+            return 0
+        report("status", sentence)
+        deadline = time.monotonic() + READY_TIMEOUT
+        while not running_instance(port, timeout=0.5):
+            if time.monotonic() >= deadline:
+                report("status", STILL_STARTING.format(url=url))
+                return 0
+            time.sleep(0.5)
+    if open_browser:
+        open_in_browser(url, report)
+    report("done", f"MyScribe is already running at {url}")
+    return 0
+
+
+# AC 3 of TASK-112.07: a start at login has nobody at the screen, and the
+# sentence it ends on is a line in a log nobody reads. It is kept in a note
+# beside the home, which the next start somebody makes by hand says once and
+# removes. A note and not the log read back: ADR-014 keeps logs observation.
+
+LOGIN_PROBLEM = "At the last login MyScribe could not start: {problem}"
+
+
+def login_note_path(home: Path) -> Path:
+    home = Path(home)
+    return home.with_name(home.name + "-at-login.txt")
+
+
+def keep_login_problem(home: Path, problem: str) -> None:
+    try:
+        login_note_path(home).write_text(problem, encoding="utf-8")
+    except OSError:
+        pass  # the log has it too; a note that cannot be written stops nothing
+
+
+def take_login_problem(home: Path) -> str:
+    """The sentence for the last login's problem, once; "" when there was none."""
+    note = login_note_path(home)
+    try:
+        problem = note.read_text(encoding="utf-8").strip()
+        note.unlink()
+    except OSError:
+        return ""
+    return LOGIN_PROBLEM.format(problem=problem) if problem else ""
+
+
 # --- stopping the one that runs (TASK-112.03) ----------------------------------
 
 
@@ -1774,6 +1926,8 @@ class Launch:
         # (TASK-089.19): `data_dir` after an adoption, `library` for a folder
         # somebody named that the engine has looked at.
         self.result: dict = {}
+        # The last error said, for the note a start at login leaves (TASK-112.07).
+        self.problem = ""
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -1788,6 +1942,8 @@ class Launch:
         build a path from.
         """
         text = self.log.redact(text)
+        if state == "error":
+            self.problem = text
         if state != "progress":
             self.log.write(text)
         self.say(state, text)
@@ -2529,6 +2685,9 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
         # on a fresh machine launcher.log has no folder yet to hold the line.
         if launch.log.pending:
             write_early(launch.log.pending)
+        if at_login and launch.problem and not launch.serving:
+            # Nobody reads that log; the next start by hand says it (TASK-112.07).
+            keep_login_problem(launch.layout.home, launch.problem)
         return 0
     interrupted = False
     try:
@@ -3058,7 +3217,7 @@ def ask_failure(root, sentence: str) -> bool:
 
 
 def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool = False,
-               at_login: bool = False) -> int:
+               at_login: bool = False, notice: str = "") -> int:
     import tkinter as tk
     from tkinter import scrolledtext, ttk
 
@@ -3253,6 +3412,8 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         children still inherit the environment the app was started with, which
         is started last either way (TASK-089.01).
         """
+        if notice:  # the last login's problem, before this start's own lines
+            launch.report("status", notice)
         in_a_worker(
             lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry),
             "myscribe-launch",
@@ -3396,6 +3557,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         return stopped
     layout = Layout(home, payload, data=data, pointer=pointer)
     before_home[0] = False
+    # One launcher per home from here on (TASK-112.07): before the /health
+    # probe in `Launch.prepare`, before the sync, before the app. The doctor
+    # takes no lock - it is what you run while MyScribe runs, to ask why.
+    lock = InstanceLock(instance_lock_path(layout.home))
+    if args.doctor is None and not lock.acquire():
+        if quiet:
+            console("error", ONE_JOB_LOCKED.format(home=layout.home))
+            return 1
+        return another_start(args.port, not args.no_browser, console, windowed)
+    if lock.problem:
+        console("status", lock.problem)
+    try:
+        return run_doors(args, layout, console, quiet, windowed)
+    finally:
+        lock.release()
+
+
+def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, str], None],
+              quiet: bool, windowed: bool) -> int:
+    """`main` past the home and the lock: the one-job doors, the console and
+    the window."""
     if args.setup:  # where everything is, and the three ways to move it (ADR-015)
         pointer = pointer_path()
         console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer)))
@@ -3434,13 +3616,18 @@ def main(argv: Iterable[str] | None = None) -> int:
             return smoke(layout, args.port)
         return 0
 
+    # The last login's problem, said once by the first start made by hand
+    # (TASK-112.07). Taken under the lock, so two starts never both say it.
+    notice = "" if args.at_login else take_login_problem(layout.home)
     if not windowed:
-        return run_headless(
-            Launch(layout, args.port, not args.no_browser, console),
-            force_setup=args.setup, at_login=args.at_login,
-        )
+        launch = Launch(layout, args.port, not args.no_browser, console)
+        if notice:
+            launch.report("status", notice)
+        return run_headless(launch, force_setup=args.setup, at_login=args.at_login)
+    extra = {"notice": notice} if notice else {}
     return run_window(
-        layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login
+        layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login,
+        **extra,
     )
 
 

@@ -7,6 +7,13 @@
   weights and never mentioned the larger ones *Max* loads. It now checks the
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
+- **Two starts at once start one MyScribe.** When the start at login and a
+  start by hand came within the same seconds, both could install into the
+  same environment and both started the app. Now the second one waits for
+  the first and opens it in your browser; with a window it says at once that
+  MyScribe is already starting. When the start at login could not start
+  MyScribe, for example because another program had its port, the next start
+  you make yourself says so once (TASK-112.07).
 
 ### Changed
 
