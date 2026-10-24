@@ -511,8 +511,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="myscribe",
         description="Drive a running MyScribe through its JSON API on 127.0.0.1.",
-        epilog="Exit codes: 0 ok, 1 server error, 2 usage, 3 not running, 4 not found, "
-               "5 conflict, 6 refused, 7 job did not finish well, 8 wait timed out.",
+        epilog="Exit codes: " + ", ".join(f"{code.value} {code.name.lower().replace('_', ' ')}"
+                                          for code in Exit) + ".",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"the app's port on {HOST} (default {DEFAULT_PORT})")
