@@ -87,6 +87,11 @@ carries `reasoning: {max_tokens: ...}`, a share of the answer cap
   still receive the request, but will ignore unknown parameters" unless
   `require_parameters` is set, which this app never sets. That is why the
   limit is not dropped and retried on a 400 the way the hint is.
+* The same page says `enabled` is "inferred from `effort` or `max_tokens`",
+  and lists `default_enabled` per model: so a model whose thinking is off by
+  default may now think, within the limit, on calls that used to have none.
+  Not measured; the cost is reasoning tokens inside a cap that keeps three
+  fifths for the answer.
 """
 
 from __future__ import annotations
@@ -306,7 +311,9 @@ class OpenAILikeProvider(base.Provider):
 
         completion, body = self._call(key, req)
         if not req.reasoning_off and _lost_to_reasoning(completion):
-            return self._ask_again_with_the_hint(key, req, completion)
+            return self._ask_again_with_the_hint(
+                key, req, completion, reasoning_cap=self._sent_reasoning_cap(body)
+            )
         hint_sent = self._carries_hint(body) if req.reasoning_off else None
         return self._answer(
             completion, req, hint_sent=hint_sent, reasoning_cap=self._sent_reasoning_cap(body)
@@ -340,15 +347,19 @@ class OpenAILikeProvider(base.Provider):
                     # hint refused, spent 6,000 of 6,000 thinking (TASK-123).
                     body.update(self._reasoning_limit(req))
 
-    def _ask_again_with_the_hint(self, key: str, req: ChatRequest, first: Any) -> ChatResponse:
+    def _ask_again_with_the_hint(
+        self, key: str, req: ChatRequest, first: Any, *, reasoning_cap: int | None = None
+    ) -> ChatResponse:
         """A call that asked no hint came back with no text, cut off at its cap
         with reasoning tokens reported: everything went into thinking (TASK-099;
         jobs 418 and 419, 8,000 of 8,000 tokens at BaseTen on a 2h28m
         speakers pass). Asked exactly once more with the hint - the answer
         instead of nothing, and `hint_sent` True on its row so it is plain the
         hint bought it. Never a third time: a refused hint would bring back the
-        first call, and an empty second answer means the hint did not help."""
-        spent = _spend(first)
+        first call, and an empty second answer means the hint did not help.
+        `reasoning_cap` is the limit the first call carried: a failure here
+        writes no row, so the message is the only record that it went out."""
+        spent = f"{_spend(first)}, reasoning_cap={reasoning_cap}"
         retry = replace(req, reasoning_off=True)
         try:
             completion, _body = self._call(key, retry, may_drop_hint=False)

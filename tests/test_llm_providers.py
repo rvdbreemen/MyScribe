@@ -792,6 +792,7 @@ def test_a_retry_that_is_empty_too_names_both_attempts_and_stops():
     assert "8000" in message and "BaseTen" in message, "the first attempt"
     assert "7777" in message and "Wafer" in message, "the second attempt"
     assert "reasoning hint" in message
+    assert "reasoning_cap=1600" in message, "the limit the first call carried (TASK-123)"
 
 
 def test_a_retry_whose_hint_is_refused_stops_without_a_third_call():
@@ -807,6 +808,7 @@ def test_a_retry_whose_hint_is_refused_stops_without_a_third_call():
     assert rec.calls == 2
     assert "refused" in str(caught.value)
     assert "8000" in str(caught.value)
+    assert "reasoning_cap=1600" in str(caught.value), "the limit the first call carried"
 
 
 def test_a_refused_connection_is_unreachable_naming_the_endpoint_and_is_retried():
