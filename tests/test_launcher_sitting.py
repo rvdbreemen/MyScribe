@@ -133,7 +133,8 @@ def a_library(new=r"C:\Users\Example\MyScribe\data", old=r"C:\Users\Example\Old\
                     {"value": old, "label": old, "note": ""}],
         "current": "", "default": "new", "shown_if": None,
         "if_skipped": f"A new library is started at {new}. Left untouched, and still there: {old} (5 recordings).",
-        "answer_later": "Settings > Library > Change library, while the new one holds no recordings",
+        "answer_later": ("To use another library, quit MyScribe and start it with --setup, which offers "
+                         "a library found elsewhere while this one holds no recordings."),
     }
 
 
