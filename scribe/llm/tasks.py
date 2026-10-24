@@ -67,7 +67,7 @@ from scribe.llm import base, chunking, ollama, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "3"
+PROMPT_VERSION = "4"
 """Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
 JSON_SYSTEM, a kind's goal or the line `source_label` writes - because it is
 part of the stored key: answers to an edited question are not answers to the
@@ -303,6 +303,14 @@ class TaskSpec:
     goal: str
     """One line, handed to the chunk-level prompt so the notes taken from an
     excerpt are notes for *this* task rather than a generic summary."""
+    note_rule: str = ""
+    """How a note for this kind is written, added to the chunk prompt when set.
+    Empty for the kinds whose notes come back as notes. Set for `blog` by
+    TASK-124 (Robert's option A, 2026-10-25): on media 61 qwen3.5:4b and :9b
+    wrote the excerpt back line for line until the note budget ran out (jobs
+    430-432), so a blog note is asked as a bounded number of points in the
+    model's own words. Not shared through `map_chunk.md` itself, because
+    `speakers` asks for 'the quote and its time' and must keep its quotes."""
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     needs_prompt: bool = False
     with_speakers: chunking.Speakers = False
@@ -383,7 +391,16 @@ TASKS: dict[str, TaskSpec] = {
         label="Blog post",
         template="blog",
         schema=Blog,
-        goal="gather the material a blog post about this recording would be written from",
+        goal=(
+            "gather what a blog post about this recording would be written from: the subjects, "
+            "and what was said about each, in your own words"
+        ),
+        note_rule=(
+            "Write at most 30 notes. Each note is one point in your own words, starting with the "
+            "`[m:ss]` of the moment it is about. Never copy a line from the excerpt: a note that "
+            "repeats a line word for word is not a note. Where the exact words matter, quote only "
+            "those few words, in quotation marks, inside your own sentence."
+        ),
         # The one kind whose answer is meant to be long: a post is prose, not a
         # list, and the floor above only buys the thinking that precedes it.
         max_output_tokens=6000,
@@ -768,6 +785,74 @@ def chunk_goal(spec: TaskSpec, custom_prompt: str | None = None) -> str:
     if spec.needs_prompt and asked:
         return f"{spec.goal}, which is: {asked}"
     return spec.goal
+
+
+def chunk_prompt(
+    spec: TaskSpec,
+    *,
+    index: int,
+    count: int,
+    start: str,
+    end: str,
+    transcript: str,
+    note_question: str | None = None,
+) -> str:
+    """The note prompt for one excerpt: `map_chunk.md` with this kind's goal and
+    note rule. One place, so the job and anything measuring its prompt render
+    the same text. `index` is one-based: the model is reading, not indexing."""
+    return render_prompt(
+        chunking.MAP_REDUCE_PROMPTS["chunk"],
+        index=index,
+        count=count,
+        start=start,
+        end=end,
+        goal=chunk_goal(spec, note_question),
+        note_rule=spec.note_rule,
+        transcript=transcript,
+        speakers=spec.with_speakers,
+    )
+
+
+COPY_MIN_WORDS = 4
+"""A note line shorter than this ('Ja.', 'Precies.') says nothing about
+copying either way, so `copied_lines` does not count it."""
+
+_LEADING_MARK = re.compile(r"^\s*(?:[-*\u2022]\s*)?(?:\[\d+(?::\d{2}){1,2}\]\s*)?")
+
+
+def _bare_line(line: str) -> str:
+    return " ".join(_LEADING_MARK.sub("", line).split()).casefold()
+
+
+def copied_lines(note: str, transcript: str) -> tuple[int, int]:
+    """(copied, counted): how many of a note's lines are a transcript line
+    word for word, out of the lines long enough to tell.
+
+    A bullet, the `[m:ss]` stamp, spacing and case are ignored on both sides,
+    so a line written back with a dash in front is still a copy; a short
+    quoted phrase inside a sentence of the model's own is not. Jobs 430-432
+    (TASK-124): blog notes that were the excerpt written back, line for line.
+    """
+    lines = {_bare_line(line) for line in transcript.splitlines()}
+    counted = copied = 0
+    for line in note.splitlines():
+        bare = _bare_line(line)
+        if len(bare.split()) < COPY_MIN_WORDS:
+            continue
+        counted += 1
+        copied += bare in lines
+    return copied, counted
+
+
+def _copying(copied: int, counted: int) -> str:
+    """The clause a refused note adds when most of it was the excerpt itself."""
+    if counted and copied * 2 > counted:
+        return (
+            f" {copied} of its {counted} lines are lines of the excerpt copied word for word: "
+            "the model was writing the transcript back rather than taking notes, and a bigger "
+            "budget would only buy a longer copy."
+        )
+    return ""
 
 
 def source_label(title: str, duration: float, *, notes_from: int = 0) -> str:
@@ -1918,15 +2003,14 @@ def _collect_notes(
             # The language line too (TASK-105.01): notes taken in English from
             # a Dutch transcript would hand the combine an English text.
             system=SYSTEM + (LANGUAGE_SYSTEM.format(name=plan.language) if plan.language else ""),
-            user=render_prompt(
-                chunking.MAP_REDUCE_PROMPTS["chunk"],
-                index=chunk.index + 1,  # one-based: the model is reading, not indexing
+            user=chunk_prompt(
+                plan.spec,
+                index=chunk.index + 1,
                 count=len(plan.chunks),
                 start=render.format_ts(chunk.start),
                 end=render.format_ts(chunk.end),
-                goal=chunk_goal(plan.spec, plan.note_question),
                 transcript=chunk.text,
-                speakers=plan.spec.with_speakers,
+                note_question=plan.note_question,
             ),
             max_output_tokens=note_budget,
             json_schema=None,  # notes are prose; only the combine has a shape to keep
@@ -1948,12 +2032,14 @@ def _collect_notes(
         # later run of this task - including the one asked because the answer
         # looked wrong - is built from half a sentence. Refusing *before* the
         # insert is the load-bearing half; raising is how the job says so.
+        copied, counted = copied_lines(text, chunk.text)
         if response.raw_finish_reason == TRUNCATED_FINISH:
             raise base.BadResponse(
                 f"the model ran out of room writing its notes for chunk {chunk.index} of the "
                 f"{plan.kind!r} task {where}: {_ran_out_of(plan, response, note_budget)} "
                 f"({_spent(response)}) rather than finishing, so the "
-                "notes are cut off mid-sentence and have not been stored. What it managed: "
+                "notes are cut off mid-sentence and have not been stored."
+                f"{_copying(copied, counted)} What it managed: "
                 + clip(text)
             )
         chunk_ids.append(
@@ -1979,6 +2065,11 @@ def _collect_notes(
                     # one nobody looks at again, which is exactly why it needs
                     # to say how the model stopped.
                     "finish_reason": response.raw_finish_reason,
+                    # Reported, not refused: a finished copy is still the
+                    # excerpt's words, which the combine can use, and refusing
+                    # it would fail a job that can finish (TASK-124).
+                    "copied_lines": copied,
+                    "note_lines": counted,
                     # Judged against the note budget this call was asked with.
                     **reasoning_record(response, note_budget),
                 },

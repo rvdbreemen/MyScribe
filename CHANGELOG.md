@@ -21,6 +21,16 @@
   blaming the answer limit; a cloud answer that stopped before its limit says
   that too. Long recordings are split into a few more parts than before,
   locally and for cleanup in the cloud (TASK-124).
+- **Blog notes on a long recording are written, not copied.** A recording
+  too long for one call is read in parts, with notes taken on each. For a blog
+  post, local models wrote a part's transcript back line by line until they
+  ran out of room, and the job failed. A blog note is now asked as at most 30
+  points in the model's own words, each with its timestamp, quoting only a few
+  words where they matter. A note that runs out of room while copying the
+  transcript now says so. The prompts changed, so notes stored by an earlier
+  version are not reused: the next run of any AI task on a long recording
+  (summary, minutes, blog and the others; chat is not affected) asks every
+  part again. Earlier results are kept (TASK-124).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

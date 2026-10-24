@@ -266,10 +266,14 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "a310926f0070f31dbea4fd3814a19efd7eb87e8ea37a9c1e2f7a65d84a044c4e"
-"""sha256 over everything a prompt is made of, for PROMPT_VERSION "3": the
-templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal, and the
-source line `source_label` writes. Line endings are normalised first, because
+PROMPTS_DIGEST = "fe13c07f396025ef12d50ec4dd2b5efef3510a8fc16b1f63bc839e8eef9b05a1"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "4": the
+templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal and note
+rule, and the source line `source_label` writes.
+
+Version "4" (TASK-124, 2026-10-25): map_chunk.md gained the note-rule slot,
+blog got a new goal and a note rule (points in its own words, no line copied
+from the excerpt). Was a310926f... under "3". Line endings are normalised first, because
 git rewrites them on checkout here.
 
 Until TASK-105.02 (2026-10-06) only the templates were hashed, so a change to
@@ -294,6 +298,8 @@ def prompt_material() -> bytes:
     parts += ["SYSTEM", tasks.SYSTEM, "JSON_SYSTEM", tasks.JSON_SYSTEM, "LANGUAGE_SYSTEM", tasks.LANGUAGE_SYSTEM]
     for kind in sorted(tasks.TASKS):
         parts += [f"goal:{kind}", tasks.TASKS[kind].goal]
+        if tasks.TASKS[kind].note_rule:  # only set kinds, so version "3"'s material is unchanged
+            parts += [f"note_rule:{kind}", tasks.TASKS[kind].note_rule]
     parts += ["source_label", tasks.source_label("Title", 61.0),
               tasks.source_label("Title", 61.0, notes_from=3)]
     return chr(0).join(parts).encode("utf-8")
@@ -2021,9 +2027,137 @@ def test_notes_keep_the_speaker_when_the_lines_carry_one(speakers, kept):
     could drop it - and the speaker pass, which reads those notes, then has no
     SPEAKER_XX left to name."""
     text = tasks.render_prompt("map_chunk", index=1, count=2, start="0:00", end="5:00",
-                               goal="g", transcript="[0:01] x", speakers=speakers)
+                               goal="g", transcript="[0:01] x", speakers=speakers,
+                               note_rule="")
 
     assert ("speaker" in text.lower()) is kept
+
+
+# --- a blog note says it in its own words; it does not copy the excerpt (TASK-124) ------
+
+BLOG_NOTE_RULE = (
+    "Write at most 30 notes. Each note is one point in your own words, starting with the "
+    "`[m:ss]` of the moment it is about. Never copy a line from the excerpt: a note that "
+    "repeats a line word for word is not a note. Where the exact words matter, quote only "
+    "those few words, in quotation marks, inside your own sentence."
+)
+"""Pinned word for word. Jobs 430-432 on a copy of Robert's library
+(2026-10-24): qwen3.5:4b and :9b, asked for blog notes on media 61, wrote the
+excerpt back line for line from `[0:01] is deze licht en ze ligt?` until the
+4000-token note budget ran out - the shared instruction 'plain lines, each
+keeping the [m:ss] it came from' plus the goal 'gather the material' read as
+'copy the lines'. Robert's choice (option A): the blog notes are asked as a
+bounded number of points in the model's own words, with a short quote allowed
+and a whole line not."""
+
+
+def _blog_chunk_prompt(kind: str = "blog") -> str:
+    return tasks.chunk_prompt(tasks.task_spec(kind), index=1, count=3, start="0:01",
+                              end="55:37", transcript="[0:01] is deze licht en ze ligt?")
+
+
+def test_a_blog_note_is_asked_as_points_in_its_own_words_never_a_copied_line():
+    text = _blog_chunk_prompt()
+
+    assert BLOG_NOTE_RULE in text, text
+    assert "own words" in tasks.chunk_goal(tasks.task_spec("blog"))
+    assert "gather the material" not in tasks.chunk_goal(tasks.task_spec("blog"))
+
+
+def test_the_speaker_notes_keep_their_quotes():
+    """The other kinds share map_chunk. `speakers` asks for 'the quote and its
+    time', so a rule against copying words would take away what it needs."""
+    assert "Never copy a line" not in _blog_chunk_prompt("speakers")
+
+
+def test_copied_lines_counts_note_lines_that_are_transcript_lines_word_for_word():
+    """A line under four words ('Ja.') says nothing about copying, so it is not
+    counted either way; a bullet or the stamp in front of a line does not
+    disguise it."""
+    transcript = (
+        "[0:01] is deze licht en ze ligt?\n"
+        "[0:02] ik heb hem net in de signal van Terrein gegooid\n"
+        "[0:08] Ja.\n"
+    )
+    note = (
+        "[0:01] is deze licht en ze ligt?\n"
+        "- [0:02]  ik heb hem net in de signal van Terrein gegooid\n"
+        "[0:08] Ja.\n"
+        "[0:02] Iemand deelt de link naar het terrein in Signal.\n"
+    )
+
+    assert tasks.copied_lines(note, transcript) == (2, 3)
+    assert tasks.copied_lines("notes 0", transcript) == (0, 0)
+
+
+def _copying(own: int = 0, cut_off: bool = True):
+    """A note that writes the excerpt's own lines back, and `own` of its own."""
+
+    def answer(req: base.ChatRequest):
+        if CHUNK_MARKER not in req.user:
+            return ANSWERS["blog"]
+        excerpt = req.user.split("Excerpt:", 1)[1]
+        lines = [line for line in excerpt.splitlines() if line.startswith("[")]
+        text = "\n".join(lines + ["[0:00] Somebody counts to nine, twice over."] * own)
+        return truncated(text) if cut_off else replace(truncated(text), raw_finish_reason="stop")
+
+    return answer
+
+
+def test_a_note_cut_off_while_copying_the_excerpt_says_it_was_copying(conn, monkeypatch):
+    """Job 430's refusal said only 'it stopped at the 4000-token cap', which
+    reads as 'raise the budget'. The note was the transcript written back; a
+    bigger budget buys a longer copy."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(_copying(own=1))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="blog", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    message = str(caught.value)
+    # Chunk 0 of this plan is two transcript lines, both written back.
+    assert "2 of its 3 lines" in message and "copied word for word" in message, message
+
+
+def test_a_note_cut_off_in_its_own_words_does_not_say_copying(conn, monkeypatch):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(
+        map_reduce_script(ANSWERS["blog"], note=lambda i: truncated(
+            "[0:00] Somebody counts to nine, twice over, and then stops mid-"))
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="blog", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "copied" not in str(caught.value), str(caught.value)
+
+
+def test_a_finished_note_records_how_much_of_it_was_copied(conn, monkeypatch):
+    """Reported, not refused: a copied note that finished is the excerpt's own
+    words, which the combine can still use, and refusing it would fail a job
+    that can finish. The chunk row says how much was copied, so a run shows
+    whether a model follows the note instruction."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(_copying(own=1, cut_off=False))
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media_id, kind="blog", provider_name="fake", model="fake-1",
+                   budget_tokens=100)
+
+    chunk_rows = [r for r in rows(conn, media_id) if tasks.is_chunk_kind(r["kind"])]
+    assert chunk_rows
+    for row in chunk_rows:
+        params = json.loads(row["params_json"])
+        excerpt_lines = len(params["segment_ids"])
+        assert (params["copied_lines"], params["note_lines"]) == (
+            excerpt_lines, excerpt_lines + 1), params
 
 
 # --- a cut-off object answer says it was cut off, and who answered (TASK-123) ------------
