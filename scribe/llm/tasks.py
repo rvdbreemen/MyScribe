@@ -1553,6 +1553,9 @@ def reasoning_record(response: ChatResponse, cap: int) -> dict[str, Any]:
         "upstream": response.upstream,
         "hint_ignored": spent > 0 if response.hint_sent is True and spent is not None else None,
         "cap_not_enforced": completion > cap if completion is not None else None,
+        # The reasoning limit the call carried (OpenRouter only, TASK-123), so
+        # a row can show whether it was on the wire when the answer came back.
+        "reasoning_cap": response.reasoning_cap,
     }
 
 
@@ -2102,7 +2105,7 @@ def _spent(response: ChatResponse) -> str:
         f"completion_tokens={response.completion_tokens}, "
         f"reasoning_tokens={response.reasoning_tokens}, "
         f"reasoning_chars={response.reasoning_chars}, upstream={response.upstream!r}, "
-        f"{base.hint_words(response.hint_sent)}"
+        f"reasoning_cap={response.reasoning_cap}, {base.hint_words(response.hint_sent)}"
     )
 
 

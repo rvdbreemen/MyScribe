@@ -19,6 +19,17 @@
   back as *interrupted*, and on macOS and Linux its transcription can keep
   running after MyScribe has closed (TASK-112.09).
 
+- **OpenRouter calls ask the model to keep its thinking short.** With
+  `openrouter/auto`, some picked models spent the whole answer budget
+  thinking and returned nothing (speakers and minutes on a long recording).
+  An OpenRouter call that does not already ask the model not to think now
+  asks it to keep its thinking to two fifths of that budget, when that comes
+  to 1,024 tokens or more. Cleanup, which asks for no thinking, is unchanged.
+  Per OpenRouter's documentation a provider may ignore the limit or turn it
+  into an effort level. A request refused with an error that names the
+  reasoning field is sent once more without it. Each answer records the
+  limit it was sent with (TASK-123, ADR-030).
+
 ### Changed
 
 - **The setup window is shorter.** Its first step lists each thing MyScribe
