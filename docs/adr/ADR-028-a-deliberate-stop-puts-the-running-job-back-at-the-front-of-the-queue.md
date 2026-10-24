@@ -10,7 +10,7 @@ verified_in: []
 supersedes: []
 superseded_by: null
 related:
-  - "ADR-031"
+  - "ADR-032"
 topics:
   - "jobs"
   - "shutdown"
@@ -55,7 +55,7 @@ status_history:
   - date: 2026-10-24
     status: Accepted
     changed_by: Claude (agent, session 2026-10-24)
-    reason: "ADR-031 amends ADR-028: every shutdown ends the runner, only the route requeues"
+    reason: "ADR-032 amends ADR-028: every shutdown ends the runner, only the route requeues"
     changed_via: adr-kit lifecycle
 ```
 

@@ -179,7 +179,7 @@ def test_a_stop_that_could_not_join_says_so_and_keeps_the_thread(db_path, capsys
     running. Dropping the handle either way made that indistinguishable from
     a clean stop, and start() would begin a second loop beside the first.
     Same rule as watching.Watcher.stop(): say so, keep it."""
-    monkeypatch.setattr(supervisor, "STOP_JOIN_SECONDS", 0.05)  # every stop joins this long (ADR-031)
+    monkeypatch.setattr(supervisor, "STOP_JOIN_SECONDS", 0.05)  # every stop joins this long (ADR-032)
     sup = supervisor.Supervisor(db_path, poll_interval=0.05)
     stuck = threading.Thread(target=lambda: time.sleep(30), daemon=True)
     stuck.start()
@@ -702,7 +702,7 @@ def test_a_deliberate_stop_ends_the_runner_and_puts_its_job_at_the_front(
 def test_a_stop_nobody_asked_for_ends_the_runner_and_leaves_the_job_to_reconcile(
     conn, db_path, sleeping_runner_cmd
 ):
-    """ADR-031 (amending ADR-028): every shutdown the app lives through ends
+    """ADR-032 (amending ADR-028): every shutdown the app lives through ends
     the runner's tree - a SIGTERM or Ctrl+C to the app as much as the stop
     route - so no runner outlives the app on macOS and Linux. Only the stop
     route requeues; this one leaves the row `running`, and the next start's

@@ -20,21 +20,26 @@
   does not go through the Stop button's way now ends the running job with
   MyScribe: a stop signal sent to MyScribe's server itself, Ctrl+C or
   Ctrl+Break in a terminal running `python -m scribe` directly, and the hard
-  stop used when MyScribe does not answer that way or has not stopped a
-  minute later. That job comes back as *interrupted*, and Retry starts it
+  stop used when MyScribe does not answer that way or has not stopped 80
+  seconds later. That job comes back as *interrupted*, and Retry starts it
   over. Before, on Linux it kept running after MyScribe had closed (macOS
   works the same way but was not measured), and on Windows a Ctrl+Break in a
   terminal left it running too. On every OS a MyScribe that is killed without
   stopping - a crash, ending its process alone, a second Ctrl+C in its
   terminal - can still leave the job running. On Windows the hard stop ends
   the job with MyScribe; on macOS and Linux it has to kill a MyScribe that has
-  not stopped 50 seconds after its stop signal, longer than MyScribe's own
+  not stopped 75 seconds after its stop signal, longer than MyScribe's own
   stop can take, and its message then says the job can keep running. When
   MyScribe had already been asked to stop before the hard stop, the message
   says the job is back in the queue if MyScribe got that far, and otherwise
   interrupted (or, after a kill on macOS and Linux, possibly still running).
   A stop with a job's page open no longer waits for that job to finish:
-  requests still open 3 seconds into a stop are cut off (TASK-112.09, ADR-031).
+  requests still open 3 seconds into a stop are cut off. An upload still
+  arriving - from the transcribe dialog, the API, the microphone recorder or
+  a phone through *Receive from phone* - is not: it may finish for up to 30
+  seconds after the stop began, and the recording is in the library when
+  MyScribe starts again. One still arriving after those 30 seconds is cut off
+  and has to be sent again (TASK-112.09, ADR-032).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

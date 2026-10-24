@@ -2999,7 +2999,7 @@ def test_the_hard_stop_ends_the_launcher_so_it_exits_clean_and_takes_its_app(tmp
 def test_the_hard_stops_sentence_promises_interrupted_only_where_it_is_sure(
         monkeypatch, windows, killed, asked, sentence):
     """Windows ends the tree, runner and all. On macOS and Linux only an app
-    that lived through its SIGTERM is sure to have ended its runner (ADR-031);
+    that lived through its SIGTERM is sure to have ended its runner (ADR-032);
     a SIGKILLed one, or one this process cannot see, may not have. An app
     whose stop route was reached may have requeued the job before it hung, so
     then the sentence names both outcomes."""
@@ -3018,7 +3018,7 @@ def test_the_asked_sentences_name_the_requeue_and_the_interrupt():
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 @pytest.mark.parametrize("obeys", [True, False], ids=["obeys-sigterm", "ignores-sigterm"])
 def test_the_hard_stop_says_whether_it_had_to_kill_the_app(layout, obeys):
-    """ADR-031: an app that lives through its SIGTERM ends its runner itself;
+    """ADR-032: an app that lives through its SIGTERM ends its runner itself;
     one that had to be SIGKILLed may not have, and its runner - a session of
     its own - can run on. `AppProcess.stop` and `end_tree` tell the two apart
     so that the sentence after a hard stop can (TASK-112.09)."""
@@ -3314,7 +3314,8 @@ def test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills()
     their SIGTERM wait, and then say its runner may run on. The app's lifespan
     ends the runner first and then joins the phone door, the feeds and the
     watcher, so a wait shorter than that whole shutdown SIGKILLs an app that
-    has already ended its runner, and the sentence after it is not true."""
+    has already ended its runner, and the sentence after it is not true. The
+    whole shutdown includes the uploads it lets finish (TASK-112.09)."""
     import inspect
 
     from scribe import __main__ as scribe_main
@@ -3325,14 +3326,25 @@ def test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills()
     def default(function, name="timeout"):
         return inspect.signature(function).parameters[name].default
 
-    shutdown = (scribe_main.SHUTDOWN_GRACE_SECONDS  # uvicorn cuts open requests off
+    from scribe.web import stopping
+
+    # Open reads are cut after SHUTDOWN_GRACE_SECONDS, uploads at the bound,
+    # both counted from the stop (Robert, 2026-10-25). The door closes inside
+    # the lifespan with the app's deadline, so a phone upload is given what is
+    # left of it and at least the door's grace.
+    assert stopping.UPLOAD_FINISH_SECONDS >= scribe_main.SHUTDOWN_GRACE_SECONDS
+    shutdown = (stopping.UPLOAD_FINISH_SECONDS  # uploads finish; the rest was cut at the grace
                 + 2 * supervisor._KILL_WAIT_SECONDS  # the supervisor ends the runner's tree
-                + default(phone_door.UvicornListener.stop)  # `Door.close` passes no timeout
+                + phone_door.GRACE_SECONDS  # the door, its uploads' deadline passed
                 + default(feeds.FeedWatcher.stop) + default(watching.Watcher.stop))
     assert default(launcher.AppProcess.stop) > shutdown, (
         f"AppProcess.stop SIGKILLs after {default(launcher.AppProcess.stop):g} s; "
         f"the app's shutdown may take {shutdown:g} s")
     assert default(launcher.end_tree, "grace") > shutdown
+    # On Windows the hard stop after STOP_WAIT is taskkill /F: an upload
+    # still finishing inside the app's stop would be killed with it.
+    assert launcher.STOP_WAIT > shutdown, (
+        f"the route's wait ends after {launcher.STOP_WAIT:g} s; the app's shutdown may take {shutdown:g} s")
 
 
 @pytest.mark.parametrize(("windows", "killed"), [(True, False), (True, True), (False, False), (False, True)],
@@ -3342,7 +3354,7 @@ def test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job(
     """The hard stop on Windows ends the app's tree, runner and all, so
     reconcile marks the job interrupted. On macOS and Linux it signals the
     app's group only; an app that lives through that SIGTERM ends its runner
-    itself (ADR-031), so that job is interrupted too. One that had to be
+    itself (ADR-032), so that job is interrupted too. One that had to be
     SIGKILLed may not have, and its runner - a session of its own - can run on
     and finish the job (ADR-028, measured in WSL). Only that sentence leaves
     *interrupted* out."""
@@ -3425,7 +3437,7 @@ def test_quit_requeues_a_running_job_and_leaves_no_runner(layout, monkeypatch):
 
 
 def test_the_hard_stop_leaves_no_runner_and_says_the_job_is_interrupted(layout, monkeypatch):
-    """ADR-031 end to end: the launcher's hard stop, the one that runs when
+    """ADR-032 end to end: the launcher's hard stop, the one that runs when
     the stop route does not answer, on a real `python -m scribe` running the
     slow fake job. On Windows taskkill ends the tree, as before. On macOS and
     Linux it SIGTERMs the app's group only, and before TASK-112.09 the runner,

@@ -378,7 +378,7 @@ def test_a_shutdown_nobody_asked_for_does_not_requeue(stoppable):
 
 
 def test_the_supervisor_stops_before_the_watchers(db_path, monkeypatch):
-    """ADR-031: the runner is ended on every shutdown the app lives through.
+    """ADR-032: the runner is ended on every shutdown the app lives through.
     On macOS and Linux the launcher's hard stop sends SIGKILL to the app's
     group `APP_SIGTERM_WAIT` (50 s) after its SIGTERM, and that SIGKILL never
     reaches the runner's own session. The door and the watchers may join for

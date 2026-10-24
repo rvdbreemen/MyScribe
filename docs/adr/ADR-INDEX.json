@@ -1883,12 +1883,12 @@
       }
     },
     {
-      "id": "ADR-031",
+      "id": "ADR-032",
       "title": "Every shutdown the app lives through ends the running runner, and only a requested stop requeues",
-      "path": "ADR-031-every-shutdown-the-app-lives-through-ends-the-running-runner-and-only-a-requested-stop-requeues.md",
+      "path": "ADR-032-every-shutdown-the-app-lives-through-ends-the-running-runner-and-only-a-requested-stop-requeues.md",
       "format": "madr",
       "status": "Proposed",
-      "date": "2026-10-24",
+      "date": "2026-10-25",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-24.",
       "topics": [
         "background",
@@ -1901,20 +1901,26 @@
         "SIGTERM to the app"
       ],
       "components": [
-        "scribe.supervisor"
+        "scribe.supervisor",
+        "scribe.web.stopping"
       ],
       "symbols": [
         "SHUTDOWN_GRACE_SECONDS",
         "STOP_JOIN_SECONDS",
-        "Supervisor.stop"
+        "StoppingServer",
+        "Supervisor.stop",
+        "UPLOAD_FINISH_SECONDS"
       ],
       "context_scope": "selective",
       "decision_contract": {
         "must": [
           "Supervisor.stop ends the running runner's tree and waits for it on every stop, and joins for at least STOPJOINSECONDS.",
           "A stop without the route leaves the row running, for the next start's reconcile() to mark it interrupted, or cancelled when a cancel was asked.",
-          "The lifespan's end stops the supervisor before the phone door, the feeds and the watcher.",
-          "The app's server cancels open requests SHUTDOWNGRACESECONDS (3 s) after a stop begins, so no request holds off the lifespan.",
+          "The lifespan's end stops the supervisor before the phone door, the feeds and the watcher (agent addition, approved by Robert on 2026-10-25).",
+          "The app's server cancels open reads, a job page's event stream among them, SHUTDOWNGRACESECONDS (3 s) after a stop begins (agent addition, approved by Robert on 2026-10-25).",
+          "An upload in flight finishes, up to UPLOADFINISHSECONDS (30 s) after the stop began, and is cut there: POST /api/media, /transcribe/upload, /record/{session}/chunk and /finish, and the phone door's POST (agent addition, approved by Rober...",
+          "The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace.",
+          "The launcher's APPSIGTERMWAIT (75 s) and STOPWAIT (80 s) outlast the app's whole stop (62 s at worst).",
           "The hard stop says \"marked interrupted\" only where the app lived through its SIGTERM, or on Windows."
         ],
         "must_not": [
@@ -1924,7 +1930,7 @@
           "An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after APPSIGTERMWAIT..."
         ],
         "verification": [
-          "tests/testappsignalstop.py; tests/testapp.py::testthesupervisorstopsbeforethewatchers; tests/testsupervisor.py::testastopnobodyaskedforendstherunnerandleavesthejobtoreconcile.",
+          "tests/testappsignalstop.py, tests/teststopping.py, tests/testphonedoor.py::testanuploadinflightwhenthedoorclosesisallowedtofinish and ::testanuploadstillgoingatapasseddeadlineiscutafterthegrace; tests/testapp.py::testthesupervisorstopsbe...",
           "tests/testlauncher.py::testthehardstopssentencesayswhatthisosdoeswiththerunningjob, ::testthehardstopsayswhetherithadtokilltheapp, ::testtheposixhardstopwaitsouttheappswholeshutdownbeforeitkills and ::testthehardstopleavesnorunnerandsays..."
         ]
       },
@@ -1968,7 +1974,7 @@
     },
     {
       "source": "ADR-001",
-      "target": "ADR-031",
+      "target": "ADR-032",
       "type": "related",
       "resolved": true
     },
@@ -2532,7 +2538,7 @@
     },
     {
       "source": "ADR-028",
-      "target": "ADR-031",
+      "target": "ADR-032",
       "type": "related",
       "resolved": true
     },
@@ -2561,13 +2567,13 @@
       "resolved": true
     },
     {
-      "source": "ADR-031",
+      "source": "ADR-032",
       "target": "ADR-001",
       "type": "related",
       "resolved": true
     },
     {
-      "source": "ADR-031",
+      "source": "ADR-032",
       "target": "ADR-028",
       "type": "related",
       "resolved": true

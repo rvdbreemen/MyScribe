@@ -43,7 +43,7 @@ _WATCH_POLL_SECONDS = 0.1
 _KILL_WAIT_SECONDS = 5.0
 STOP_JOIN_SECONDS = 4 * _KILL_WAIT_SECONDS
 """How long a stop joins the loop: every stop ends the running runner's tree
-(ADR-028, ADR-031), `_kill_tree` waits at most twice `_KILL_WAIT_SECONDS`,
+(ADR-028, ADR-032), `_kill_tree` waits at most twice `_KILL_WAIT_SECONDS`,
 and the join must outlast it with room to spare for the requeue or the exit
 report (TASK-112.03, TASK-112.09)."""
 
@@ -530,7 +530,7 @@ class Supervisor:
 
     def stop(self, timeout: float = 10.0, requeue: bool = False) -> None:
         """Ask the loop to exit and join it. A still-running child's tree is
-        ended and waited for first, on every stop (ADR-031): a runner left
+        ended and waited for first, on every stop (ADR-032): a runner left
         alone ran on as an orphan on macOS and Linux, where it has a session
         of its own, holding the card with no app to show it (TASK-112.09).
 
@@ -673,7 +673,7 @@ class Supervisor:
         applog.log(
             "runner.exited",
             # A runner ended by a stop is not a failure: its row is queued
-            # again (ADR-028) or left for reconcile (ADR-031).
+            # again (ADR-028) or left for reconcile (ADR-032).
             level="error" if proc.returncode not in (0, 2)
             and not self._stop_event.is_set() else "info",
             job=job_id, pid=proc.pid, code=proc.returncode, seconds=round(seconds, 1),
@@ -698,7 +698,7 @@ class Supervisor:
         cancel_seen: float | None = None
         while proc.poll() is None:
             if self._stop_event.is_set():
-                # Every stop ends the runner (ADR-031), so none outlives the
+                # Every stop ends the runner (ADR-032), so none outlives the
                 # app; only a stop somebody asked for requeues (ADR-028).
                 _kill_tree(proc)
                 if self._requeue:

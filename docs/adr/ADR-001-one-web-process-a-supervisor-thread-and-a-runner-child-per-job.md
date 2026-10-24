@@ -12,7 +12,7 @@ superseded_by: null
 related:
   - "ADR-015"
   - "ADR-022"
-  - "ADR-031"
+  - "ADR-032"
 topics:
   - "process-architecture"
   - "job-orchestration"
@@ -68,7 +68,7 @@ status_history:
   - date: 2026-10-24
     status: Accepted
     changed_by: Claude (agent, session 2026-10-24)
-    reason: ADR-031 relies on ADR-001's reconcile for a shutdown nobody asked for
+    reason: ADR-032 relies on ADR-001's reconcile for a shutdown nobody asked for
     changed_via: adr-kit lifecycle
 ```
 

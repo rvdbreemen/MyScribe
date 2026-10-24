@@ -325,12 +325,13 @@ def create_app(
             yield
         finally:
             # The supervisor first: it ends the running runner's tree on every
-            # shutdown (ADR-031), and on macOS and Linux the launcher's hard
-            # stop SIGKILLs this app's group APP_SIGTERM_WAIT (50 s) after its
+            # shutdown (ADR-032), and on macOS and Linux the launcher's hard
+            # stop SIGKILLs this app's group APP_SIGTERM_WAIT (75 s) after its
             # SIGTERM - a SIGKILL that never reaches the runner's own session.
-            # That wait outlasts this whole block; the door below may join for
-            # 15 s and the watchers for 10 s each, and a job one of them
-            # queues now simply waits for the next start.
+            # That wait outlasts the whole stop: uploads may finish for 30 s
+            # before this block runs, the door below gives a phone upload what
+            # is left of those 30 s and at least its 2 s grace, and the
+            # watchers join for 10 s each. A job one of them queues now waits for the next start.
             if sup is not None:
                 sup.stop(requeue=bool(getattr(app.state, "stop_requested", False)))
             # Receive from phone (TASK-096): a door left open closes with the
@@ -338,7 +339,8 @@ def create_app(
             # Nothing records it as open, so the next start finds it closed.
             door = getattr(app.state, "phone_door", None)
             if door is not None:
-                door.close("app stopped")
+                door.close("app stopped",
+                           upload_deadline=getattr(app.state, "upload_deadline", None))
             if feed_watcher is not None:
                 feed_watcher.stop()
             if watcher is not None:

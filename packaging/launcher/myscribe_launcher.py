@@ -60,11 +60,13 @@ LAUNCHER_PID_VARIABLE = "MYSCRIBE_LAUNCHER_PID"
 STAMP_NAME = ".myscribe-sync.json"
 READY_TIMEOUT = 120.0
 STOP_TIMEOUT = 15.0
-APP_SIGTERM_WAIT = 50.0
+APP_SIGTERM_WAIT = 75.0
 """How long the POSIX hard stop waits after the app's SIGTERM before its
-SIGKILL (`AppProcess.stop`, `end_tree`). The app's lifespan cuts open requests
-off after 3 s, ends the runner's tree (at most 10 s, ADR-031) and then joins
-the phone door (15 s), the feeds (10 s) and the watcher (10 s): 48 s at worst.
+SIGKILL (`AppProcess.stop`, `end_tree`). The app's stop cuts open reads off
+after 3 s and lets an upload in flight finish for up to 30 s (Robert,
+2026-10-25); its lifespan then ends the runner's tree (at most 10 s, ADR-032)
+and joins the phone door (its 2 s grace), the feeds (10 s) and the watcher
+(10 s): 62 s at worst.
 A shorter wait SIGKILLed an app that had already ended its runner, and the
 sentence after it said the job could keep running (TASK-112.09). The cost is
 an app that hangs, which now gets this long before its SIGKILL instead of
@@ -1337,10 +1339,12 @@ def running_instance(port: int, timeout: float = 1.0) -> bool:
 # --- stopping the one that runs (TASK-112.03) ----------------------------------
 
 
-STOP_WAIT = 60.0
+STOP_WAIT = 80.0
 """How long `--stop` waits for the app to end through its own stop route.
 
-The route's way out nests inside this: uvicorn finishes the open requests,
+The route's way out nests inside this: uvicorn cuts the open reads after 3 s
+and lets an upload finish for up to 30 s (`APP_SIGTERM_WAIT` adds the whole
+stop up to 62 s; on Windows the hard stop after this wait is taskkill /F),
 the lifespan's supervisor ends the runner's tree and requeues its job
 before the feeds and the watcher stop, joining for `STOP_JOIN_SECONDS` (20 s,
 `scribe/supervisor.py`). Past this the hard stop runs, inside which
@@ -1387,7 +1391,7 @@ def ended(killed: bool | None = False, asked: bool = False) -> str:
     On Windows the hard stop ends the app's tree, runner and all, and
     reconcile marks the job interrupted. On macOS and Linux it signals the
     app's process group only, and the runner has a session of its own. An app
-    that lives through that SIGTERM ends the runner itself (ADR-031), so the
+    that lives through that SIGTERM ends the runner itself (ADR-032), so the
     job is interrupted there too. ``killed`` is True when the app had to be
     SIGKILLed, and None when this process cannot see it (`--stop` ending a
     launcher, whose own hard stop does that): then the runner may have run on
@@ -1630,7 +1634,7 @@ class AppProcess:
 
     def stop(self, timeout: float = APP_SIGTERM_WAIT) -> bool:
         """SIGTERM to the group, so uvicorn shuts the supervisor down and the
-        supervisor ends the runner's tree (ADR-031); SIGKILL after ``timeout``,
+        supervisor ends the runner's tree (ADR-032); SIGKILL after ``timeout``,
         which by default outlasts the app's whole shutdown (`APP_SIGTERM_WAIT`).
         The runner has a session of its own, so that SIGKILL never reaches it.
         Windows has no signal that reaches a windowless process, so there it
@@ -2039,7 +2043,7 @@ class Launch:
         Only the route puts a running job back at the front of the queue; the
         hard stop leaves it to reconcile, which marks it interrupted. On
         macOS and Linux the hard stop reaches the runner, which has a session
-        of its own, only through the app's SIGTERM (ADR-031); an app it has to
+        of its own, only through the app's SIGTERM (ADR-032); an app it has to
         SIGKILL may leave it running. So the route is asked, and the launcher waits for
         the pid /health names - on Windows the venv's python.exe is a
         redirector, so that is not ``proc.pid``. `AppProcess.stop` is the

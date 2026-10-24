@@ -28,10 +28,13 @@ BROWSER_POLL_SECONDS = 0.05
 SHUTDOWN_GRACE_SECONDS = 3.0
 """How long a stopping server lets open requests finish before it cancels
 them and runs the lifespan's end, where the supervisor ends the runner
-(ADR-031). A job page's event stream ends only when its job does, and
+(ADR-032). A job page's event stream ends only when its job does, and
 without a limit uvicorn waited for it: an hour's job held the stop for an
 hour, and on macOS and Linux the launcher's hard stop SIGKILLs the app 15 s
-after its SIGTERM, leaving the runner to run on (TASK-112.09)."""
+after its SIGTERM, leaving the runner to run on (TASK-112.09).
+
+An upload is not cut here: it may finish until
+`stopping.UPLOAD_FINISH_SECONDS` after the stop began (Robert, 2026-10-25)."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,8 +100,16 @@ def main(argv: list[str] | None = None) -> None:
     from scribe.app import create_app
 
     app = create_app(start_supervisor=not args.no_supervisor)
-    server = uvicorn.Server(uvicorn.Config(
-        app, host=HOST, port=args.port, timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS))
+    from scribe.web import stopping
+
+    # The stop's deadline for uploads goes to the lifespan, which hands it to
+    # the phone door it closes, so a phone upload shares the app's bound.
+    server = stopping.StoppingServer(
+        uvicorn.Config(app, host=HOST, port=args.port),
+        is_upload=stopping.is_app_upload,
+        grace=SHUTDOWN_GRACE_SECONDS,
+        on_stopping=lambda deadline: setattr(app.state, "upload_deadline", deadline),
+    )
     # The stop route's way out: uvicorn's own flag, so the lifespan runs to
     # its end - the same path Ctrl+C takes (TASK-112.03).
     app.state.request_exit = lambda: setattr(server, "should_exit", True)

@@ -725,3 +725,86 @@ def test_the_secret_appears_in_no_log(received, clock, publisher, logs, caplog, 
     log_text = "".join(p.read_text(encoding="utf-8") for p in logs.glob("*.log*"))
     assert "phone.open" in log_text, "the door logged nothing at all; this test proved nothing"
     assert secret not in log_text
+
+
+def _half_an_upload(opening, payload: bytes) -> tuple[socket.socket, bytes]:
+    """Headers and half the body of an upload on a raw socket; the rest is returned."""
+    boundary = "door-boundary"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{phone_door.FILE_FIELD}"; filename="Voice memo 42.m4a"\r\n'
+        "Content-Type: audio/mp4\r\n\r\n"
+    ).encode("ascii") + payload + f"\r\n--{boundary}--\r\n".encode("ascii")
+    head = (
+        f"POST {opening.path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{opening.port}\r\n"
+        f"Content-Type: multipart/form-data; boundary={boundary}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii")
+    sock = socket.create_connection(("127.0.0.1", opening.port), timeout=60)
+    half = len(body) // 2
+    sock.sendall(head + body[:half])
+    return sock, body[half:]
+
+
+def _rest_and_answer(sock: socket.socket, rest: bytes) -> bytes:
+    answer = b""
+    try:
+        sock.sendall(rest)
+        while chunk := sock.recv(65536):
+            answer += chunk
+    except OSError as exc:
+        answer += f"<{type(exc).__name__}>".encode()
+    finally:
+        sock.close()
+    return answer
+
+
+def test_an_upload_in_flight_when_the_door_closes_is_allowed_to_finish(received, clock, publisher, logs):
+    """Robert, 2026-10-25: "exempt uploads". A Close - the button, the
+    fifteen minutes, the app stopping - used to cut a recording still on its
+    way in after GRACE_SECONDS (2 s). It now finishes, within the stop's
+    upload bound, and the laptop has the file."""
+    import time
+
+    d = make_door(received, clock, publisher)
+    try:
+        opening = d.open()
+        payload = b"\x00audio" * 40_000
+        sock, rest = _half_an_upload(opening, payload)
+        time.sleep(0.3)  # the request has begun reading its body
+        closing = threading.Thread(target=d.close, args=("closed",))
+        closing.start()
+        time.sleep(phone_door.GRACE_SECONDS + 1.5)
+        assert closing.is_alive(), "the door closed under an upload in flight"
+        answer = _rest_and_answer(sock, rest)
+        closing.join(phone_door.UvicornListener.STOP_JOIN_SECONDS + 5)
+        assert answer.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK", answer[:200]
+        assert received.files == [("Voice memo 42.m4a", payload)]
+        assert refused("127.0.0.1", opening.port)
+    finally:
+        d.close()
+
+
+def test_an_upload_still_going_at_a_passed_deadline_is_cut_after_the_grace(received, clock, publisher, logs):
+    """The app's stop gives every upload one shared bound, counted from the
+    moment the app began to stop (`stopping.UPLOAD_FINISH_SECONDS`); the
+    door closes later in that stop, and a phone upload that had all of it
+    already is cut after the door's own grace, not given the bound again."""
+    import time
+
+    d = make_door(received, clock, publisher)
+    try:
+        opening = d.open()
+        sock, rest = _half_an_upload(opening, b"\x00audio" * 40_000)
+        time.sleep(0.3)
+        started = time.monotonic()
+        d.close("app stopped", upload_deadline=time.monotonic() - 1)
+        took = time.monotonic() - started
+        assert took < phone_door.GRACE_SECONDS + 3, f"the close took {took:.1f} s"
+        answer = _rest_and_answer(sock, rest)
+        assert not answer.startswith(b"HTTP/1.1 200"), answer[:200]
+        assert received.files == []
+    finally:
+        d.close()

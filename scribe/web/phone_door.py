@@ -65,6 +65,7 @@ from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from scribe import applog
 from scribe.stages import probe
+from scribe.web import stopping
 
 DEFAULT_PORT = 4243
 OPEN_SECONDS = 15 * 60
@@ -84,7 +85,10 @@ SHORTER_ENV = "SCRIBE_PHONE_DOOR_SECONDS"
 # address, owned by nobody, and a UDP connect sends no packet at all.
 ROUTE_PROBE = ("192.0.2.1", 9)
 
-# How long a Close waits for an upload still in flight before cutting it off.
+# How long a Close waits for a request still open before cutting it off. An
+# upload in flight is let finish, up to `stopping.UPLOAD_FINISH_SECONDS`
+# (Robert, 2026-10-25, TASK-112.09); a Close inside the app's stop shares the
+# app's deadline, and never gives an upload less than this.
 GRACE_SECONDS = 2.0
 
 Accept = Callable[[BinaryIO, str], object]
@@ -223,8 +227,16 @@ class _QuietH11(H11Protocol):
         self.access_log = False
 
 
+def _is_door_upload(scope: dict) -> bool:
+    return scope.get("type") == "http" and scope.get("method", "").upper() == "POST"
+
+
 class UvicornListener:
     """One uvicorn server on a socket the door bound, on a thread of its own."""
+
+    STOP_JOIN_SECONDS = stopping.UPLOAD_FINISH_SECONDS + 5
+    """How long `stop` waits for the server's thread: past the upload bound,
+    for a phone upload that finishes inside it to get its answer."""
 
     def __init__(self, sock: socket.socket, app, *, grace: float = GRACE_SECONDS) -> None:
         self._sock = sock
@@ -235,9 +247,9 @@ class UvicornListener:
             lifespan="off",
             log_config=None,
             server_header=False,
-            timeout_graceful_shutdown=grace,
         )
-        self._server = uvicorn.Server(config)
+        self._server = stopping.StoppingServer(
+            config, is_upload=_is_door_upload, grace=grace, name="phone_door")
         self._thread: threading.Thread | None = None
 
     def start(self, timeout: float = 10.0) -> None:
@@ -255,7 +267,10 @@ class UvicornListener:
                 raise DoorError("The door's listener did not start; the app log may say why.")
             time.sleep(0.01)
 
-    def stop(self, timeout: float = 15.0) -> None:
+    def stop(self, timeout: float = STOP_JOIN_SECONDS, *, upload_deadline: float | None = None) -> None:
+        """Stop the server and wait for its thread. ``upload_deadline``: the
+        app's, when the door closes inside the app's own stop."""
+        self._server.upload_deadline = upload_deadline
         self._server.should_exit = True
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -394,7 +409,13 @@ class Door:
                    mdns=mdns_error is None, mdns_error=mdns_error)
         return opening
 
-    def close(self, reason: str = "closed", *, only: Opening | None = None) -> None:
+    def close(
+        self,
+        reason: str = "closed",
+        *,
+        only: Opening | None = None,
+        upload_deadline: float | None = None,
+    ) -> None:
         """Stop the listener, withdraw the name, forget the secret. Idempotent.
 
         ``only``: close only if that opening is still the live one - the
@@ -404,6 +425,10 @@ class Door:
         Returns when the door is closed, also when another thread was already
         closing it (the door closes itself after a file): the listener is
         stopped and ``phone.close`` logged by then.
+
+        ``upload_deadline``: when the app is stopping, the moment its stop
+        gives uploads until (`stopping.StoppingServer`). A phone upload in
+        flight has run alongside the app's stop and gets no second bound.
         """
         with self._lock:
             opening = self._opening
@@ -423,7 +448,10 @@ class Door:
             stop.set()
         try:
             if listener is not None:
-                listener.stop()
+                if upload_deadline is None:
+                    listener.stop()
+                else:
+                    listener.stop(upload_deadline=upload_deadline)
         finally:
             try:
                 if opening.mdns_error is None:
