@@ -160,8 +160,10 @@ def test_every_v1_operation_documents_the_coded_error(client):
 
 def test_the_upload_documents_its_idempotency_key_and_both_bodies(client):
     operation = client.get("/openapi.json").json()["paths"][f"{V1}/media"]["post"]
-    headers = [p["name"] for p in operation.get("parameters", []) if p["in"] == "header"]
-    assert "Idempotency-Key" in headers
+    (key,) = [p for p in operation.get("parameters", []) if p["in"] == "header"]
+    assert key["name"] == "Idempotency-Key"
+    for promise in ("idempotency_key_reused", "idempotency_key_in_progress", "job is gone"):
+        assert promise in key["description"], promise
     content = operation["requestBody"]["content"]
     assert set(content) == {"multipart/form-data", "application/json"}
 
@@ -387,6 +389,25 @@ def test_a_replay_after_the_recording_was_deleted_files_it_again_with_a_job(clie
     assert replayed.json() == again.json()
 
 
+def test_a_replay_never_answers_with_somebody_elses_recording_that_reused_the_ids(client, conn):
+    """SQLite hands a purged row's id out again: job 1 on media 1 may be
+    another upload's by the time the client retries."""
+    import hashlib
+
+    first = upload(client, tiny_wav(tone=20), key="k-ids").json()
+    client.post(f"{V1}/jobs/{first['job_id']}/cancel")
+    client.post(f"/media/{first['id']}/trash")
+    client.post(f"/media/{first['id']}/purge")
+    other = upload(client, tiny_wav(tone=21)).json()
+    assert (other["id"], other["job_id"]) == (first["id"], first["job_id"]), "ids not reused"
+
+    again = upload(client, tiny_wav(tone=20), key="k-ids")
+    assert again.status_code == 201, again.text
+    assert "idempotent-replayed" not in again.headers
+    assert again.json()["sha256"] == hashlib.sha256(tiny_wav(tone=20)).hexdigest()
+    assert again.json()["job_id"] != other["job_id"]
+    assert len(jobs_of(conn)) == 2
+
 def _hold(conn, key: str, data: bytes, params: dict | None = None) -> None:
     """The key as a request that is still uploading leaves it."""
     import hashlib
@@ -580,6 +601,57 @@ def test_a_transcribe_replay_whose_job_is_gone_queues_a_new_one(client, conn, tr
     assert again.status_code == 201 and "idempotent-replayed" not in again.headers
     (job,) = jobs_of(conn)
     assert again.json()["id"] == job["id"]
+
+
+def test_a_transcribe_replay_never_answers_with_a_later_job_that_reused_the_id(
+    client, conn, transcribed
+):
+    headers = {"Idempotency-Key": "t-ids"}
+    first = client.post(f"{V1}/media/{transcribed}/transcribe", json={"language": "en"}, headers=headers)
+    with db.LOCK:
+        conn.execute("DELETE FROM job WHERE id=?", (first.json()["id"],))
+        conn.commit()
+    later = client.post(f"{V1}/media/{transcribed}/transcribe", json={"language": "nl"})
+    assert later.json()["id"] == first.json()["id"], "id not reused"
+    again = client.post(f"{V1}/media/{transcribed}/transcribe", json={"language": "en"}, headers=headers)
+    assert again.status_code == 201 and "idempotent-replayed" not in again.headers
+    assert again.json()["id"] != later.json()["id"]
+    assert json.loads(again.json()["params_json"])["language"] == "en"
+
+
+def test_two_racing_claims_on_one_key_hold_it_once(conn):
+    """`claim` looks up and holds under one lock: of two at once, one holds
+    the key and the other is told it is in progress."""
+    import threading
+    import time as time_
+
+    from scribe import idempotency
+
+    real = idempotency._lookup
+
+    def slow(*args, **kwargs):
+        found = real(*args, **kwargs)
+        time_.sleep(0.2)
+        return found
+
+    outcomes = []
+
+    def one():
+        try:
+            outcomes.append(idempotency.claim(conn, "race-claim", "r", "p"))
+        except idempotency.KeyInProgress:
+            outcomes.append("in progress")
+
+    idempotency._lookup = slow
+    try:
+        threads = [threading.Thread(target=one) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        idempotency._lookup = real
+    assert sorted(map(str, outcomes)) == ["None", "in progress"]
 
 
 @pytest.fixture

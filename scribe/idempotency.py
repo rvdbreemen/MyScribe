@@ -20,7 +20,9 @@ Field" as far as this app needs it:
   restart still finds its key.
 * A stored answer whose job is gone (its recording was deleted, and the
   job with it) is no answer any more: the key is forgotten and the request
-  runs as a new one, rather than replaying a job id that 404s.
+  runs as a new one, rather than replaying a job id that 404s - or, since
+  SQLite reuses a freed id, one that is now somebody else's. The caller's
+  ``alive`` check compares identity (id, hash, creation time), not existence.
 * An upload *claims* its key before it files anything (`claim`): a pending
   row, status `PENDING`, written once the content hash is known and before
   the media row is. A second request with that key while the first is still
@@ -28,9 +30,11 @@ Field" as far as this app needs it:
   as the draft says), and one with other content is refused before a media
   row or a stored file exists. Nothing is ever filed and then taken back, so no cleanup can race
   a concurrent upload that deduped onto the same row. The claim is let go
-  when the request fails (`release`) and at every start (`forget_pending`):
-  ADR-001's one process means a pending row found at start was left by a
-  life that ended mid-upload.
+  when the request fails (`release`) and at every start (`forget_pending`),
+  where a pending row was left by a life that ended mid-upload. A second
+  instance on the same library (``--no-supervisor``, a manual check) also
+  forgets at its start, which can free a key the first instance's running
+  upload holds; `db.LOCK` never coordinated across processes anyway.
 
 For a route that files nothing (a re-transcribe), looking a key up, queueing
 the job and remembering the key happen under one `db.LOCK` hold (an RLock,

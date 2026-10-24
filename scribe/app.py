@@ -365,8 +365,9 @@ def create_app(
         conn = db.connect(db_path)
         db.migrate(conn)
         # An /api/v1 upload's claimed idempotency key that never got its
-        # answer: this process is the only one (ADR-001), so the request that
-        # held it ended with the last life, and a retry must not wait on it.
+        # answer was held by a request of the last life, and a retry must not
+        # wait on it. A second instance (--no-supervisor) on the same library
+        # does this too and can free a key the first one's upload still holds.
         idempotency.forget_pending(conn)
         # Three questions about what a previous life of this process left
         # behind, asked in the order their answers cost: an orphaned job row,

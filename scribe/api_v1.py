@@ -171,7 +171,9 @@ KeyHeader = Annotated[
     str | None,
     Header(alias=idempotency.HEADER, description="Retry-safe key: the same key and request "
            "replay the first answer and queue nothing; the same key with another request is a "
-           "409 idempotency_key_reused. Kept 24 hours."),
+           "409 idempotency_key_reused, and the same key while its first request is still "
+           "running a 409 idempotency_key_in_progress. A key whose job is gone (its recording "
+           "was deleted) is forgotten and the request runs as new. Kept 24 hours."),
 ]
 
 
@@ -198,13 +200,30 @@ def _refused(exc: Exception, key: str) -> CodedError:
                       f"{idempotency.HEADER} {key!r} was used for a different request")
 
 
-def _job_alive(conn, field: str):
-    """Whether a stored answer's job still exists: a deleted recording takes
-    its jobs with it, and an answer naming one of them is stale."""
+def _upload_alive(conn):
+    """Whether a stored upload answer still names *its* recording and job.
+
+    A deleted recording takes its jobs with it, and SQLite hands the freed
+    ids out again: job 1 on media 1 may be another upload's by the time a
+    client retries. So the job must still point at a media row with the
+    answer's id, content hash and filing time, not merely exist.
+    """
     def alive(body) -> bool:
         with db.LOCK:
             return conn.execute(
-                "SELECT 1 FROM job WHERE id=?", (body.get(field),)
+                "SELECT 1 FROM job JOIN media ON media.id = job.media_id"
+                " WHERE job.id=? AND media.id=? AND media.sha256=? AND media.created_at=?",
+                (body.get("job_id"), body.get("id"), body.get("sha256"), body.get("created_at")),
+            ).fetchone() is not None
+    return alive
+
+
+def _job_alive(conn):
+    """Whether a stored job answer's job is still that job (id and creation time)."""
+    def alive(body) -> bool:
+        with db.LOCK:
+            return conn.execute(
+                "SELECT 1 FROM job WHERE id=? AND created_at=?", (body.get("id"), body.get("created_at"))
             ).fetchone() is not None
     return alive
 
@@ -402,7 +421,7 @@ async def add_media(request: Request, idempotency_key: KeyHeader = None) -> Resp
             if claim["over"]:  # the request already ended: claim nothing for it
                 raise _Gone()
             try:
-                stored = idempotency.claim(conn, key, route, print_, _job_alive(conn, "job_id"))
+                stored = idempotency.claim(conn, key, route, print_, _upload_alive(conn))
             except (idempotency.KeyReused, idempotency.KeyInProgress) as exc:
                 raise _refused(exc, key) from None
             if stored is not None:
@@ -480,7 +499,7 @@ async def transcribe(
         job_id = spine.jobs.enqueue(conn, library.TRANSCRIBE_JOB_TYPE, media_id=media_id, params=params)
         return spine._job_out(conn, spine._get_job(conn, job_id))
 
-    return _once(conn, key, route, print_, 201, queue, _job_alive(conn, "id"))
+    return _once(conn, key, route, print_, 201, queue, _job_alive(conn))
 
 
 @router.post(
@@ -604,10 +623,10 @@ async def _invalid(request: Request, exc: RequestValidationError) -> Response:
 async def _unexpected(request: Request, exc: Exception) -> Response:
     """An exception no route handled: a coded 500 here, Starlette's own text
     elsewhere. The exception itself stays out of the answer; Starlette
-    raises it on after this, so the server log still has it."""
+    raises it on after this, to the server as before."""
     if not _ours(request):
         return PlainTextResponse("Internal Server Error", status_code=500)
-    return _coded(500, CODES[500], "an unexpected error ended this request; the server log has it")
+    return _coded(500, CODES[500], "an unexpected error ended this request")
 
 
 def install(app: FastAPI) -> None:
