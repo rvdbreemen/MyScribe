@@ -69,28 +69,29 @@ class Sent:
         raise AssertionError("no chat request was ever sent")
 
 
-def cloud_wiring(sent: Sent) -> dict:
-    """Constructor kwargs putting an OpenAI-shaped provider on a fake socket."""
+def cloud_answer() -> httpx2.Response:
+    """An OpenAI-shaped completion carrying `SUMMARY`."""
+    return httpx2.Response(
+        200,
+        json={
+            "id": "cmpl-1",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "m",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": SUMMARY},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 30, "total_tokens": 70},
+        },
+    )
 
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        sent.record(request)
-        return httpx2.Response(
-            200,
-            json={
-                "id": "cmpl-1",
-                "object": "chat.completion",
-                "created": 1,
-                "model": "m",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": SUMMARY},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {"prompt_tokens": 40, "completion_tokens": 30, "total_tokens": 70},
-            },
-        )
+
+def cloud_factory(handler):
+    """An OpenAI client whose every request goes to `handler`."""
 
     def factory(*, base_url, api_key, default_headers, timeout):
         return openai.OpenAI(
@@ -101,9 +102,19 @@ def cloud_wiring(sent: Sent) -> dict:
             http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
         )
 
+    return factory
+
+
+def cloud_wiring(sent: Sent) -> dict:
+    """Constructor kwargs putting an OpenAI-shaped provider on a fake socket."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.record(request)
+        return cloud_answer()
+
     # The key is supplied here so the test never depends on the environment,
     # the setting table or the registry - those paths have their own tests.
-    return {"client_factory": factory, "api_key": "test-key"}
+    return {"client_factory": cloud_factory(handler), "api_key": "test-key"}
 
 
 def ollama_wiring(sent: Sent) -> dict:
@@ -228,3 +239,36 @@ def test_cleanup_reaches_each_real_provider_with_its_own_no_reasoning_field(
     # 4,000-token summary cap (TASK-123); the others send nothing.
     sent_plain = {k: plain.chat_body()[k] for k, _ in NO_REASONING.values() if k in plain.chat_body()}
     assert sent_plain == PLAIN_REASONING.get(provider_name, {})
+
+
+def test_a_cleanup_whose_hint_openrouter_refuses_goes_again_with_no_reasoning_limit(conn, media):
+    """ADR-030: the reasoning limit rides only on calls that ask no hint, and
+    cleanup asks the hint on every call. When an upstream refuses it with a
+    400 (job 426's mandatory reasoner), the call without it is the request
+    ADR-020 describes - no `reasoning` object at all, not the limit in its
+    place: a share near OpenRouter's effort levels may map to `low`, which on
+    media 1 dropped the [m:ss] stamps and the speaker labels."""
+    bodies: list[dict] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        if len(bodies) == 1:
+            return httpx2.Response(
+                400,
+                json={"error": {"message": "Reasoning is mandatory for this endpoint and cannot be disabled."}},
+            )
+        return cloud_answer()
+
+    tasks.run_task(
+        conn,
+        media_id=media,
+        kind="cleanup",
+        provider_name="openrouter",
+        model="m",
+        client_factory=cloud_factory(handler),
+        api_key="test-key",
+    )
+
+    assert len(bodies) == 2
+    assert bodies[0]["reasoning"] == {"enabled": False}
+    assert "reasoning" not in bodies[1], "the call without the hint carries no limit either"

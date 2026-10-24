@@ -2,14 +2,15 @@
 
 ### Fixed
 
-- **AI tasks through OpenRouter keep room to answer.** With the default
-  `openrouter/auto`, some of the models OpenRouter picked spent the whole
-  answer budget thinking and came back with nothing (speakers, cleanup and
-  minutes on a long recording). Every OpenRouter call now asks the model to
-  keep its thinking to two fifths of that budget, so at least three fifths
-  stay for the answer. Models that cannot think ignore the request; a model
-  that thinks only when asked may now think within that limit. Each reply's
-  job event and stored answer record the limit sent (TASK-123).
+- **OpenRouter calls ask the model to keep its thinking short.** With
+  `openrouter/auto`, some picked models spent the whole answer budget
+  thinking and returned nothing (speakers and minutes on a long recording).
+  Every OpenRouter call except cleanup now asks for at most two fifths of
+  that budget for thinking, when that comes to 1,024 tokens or more.
+  Per OpenRouter's documentation a provider may ignore it or turn it into an
+  effort level. A request refused with an error that names the reasoning
+  field is sent once more without it. Cleanup is unchanged. Each answer records the limit it was
+  sent with (TASK-123, ADR-030).
 
 ## [0.9.1] - 2026-10-23
 

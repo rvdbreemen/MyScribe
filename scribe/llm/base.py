@@ -61,8 +61,9 @@ class ChatRequest:
     answer (`ChatResponse.hint_sent`, `reasoning_tokens`) and bounded only
     where the endpoint enforces `max_output_tokens`. False sends no hint; on
     OpenRouter such a call carries a reasoning limit instead
-    (`openai_like.reasoning_cap_for`, TASK-123), and on every other provider
-    it is the request this app always sent."""
+    (`openai_like.reasoning_cap_for`, ADR-030), and on every other provider
+    it is the request this app always sent. True never carries that limit,
+    not even after a refused hint is dropped."""
 
 
 @dataclass(frozen=True)

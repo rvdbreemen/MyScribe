@@ -66,10 +66,12 @@ synthetic prompts unless a media is named:
 
 **The reasoning limit (TASK-123), Robert's choice on 2026-10-24.** Jobs 423,
 426 and 428 on media 61, all `openrouter/auto`, came back with no text:
-12,842 of 16,000 completion tokens reasoning; 6,000 of 6,000 after the hint
-was refused; 4,000 of 4,000. So every OpenRouter call that asks no hint
-carries `reasoning: {max_tokens: ...}`, a share of the answer cap
-(`reasoning_cap_for`). What OpenRouter documents about it - read on
+speakers 12,842 of 16,000 completion tokens reasoning; cleanup 6,000 of
+6,000 after the hint was refused; minutes 4,000 of 4,000. So every OpenRouter
+call that asks no hint carries `reasoning: {max_tokens: ...}`, a share of the
+answer cap (`reasoning_cap_for`, ADR-030). Cleanup asks the hint and never
+carries it, not even after the hint is refused: ADR-020 keeps it off any
+effort that could map to `low`. What OpenRouter documents about it - read on
 2026-10-24, not measured, no live call made:
 
 * https://openrouter.ai/docs/use-cases/reasoning-tokens: `effort` or
@@ -86,12 +88,13 @@ carries `reasoning: {max_tokens: ...}`, a share of the answer cap
   that don't support all the LLM parameters specified in your request can
   still receive the request, but will ignore unknown parameters" unless
   `require_parameters` is set, which this app never sets. That is why the
-  limit is not dropped and retried on a 400 the way the hint is.
+  limit is dropped and retried only on a 400 that names `reasoning`, not on
+  any 400 the way the hint is (`_refused_knob`).
 * The same page says `enabled` is "inferred from `effort` or `max_tokens`",
   and lists `default_enabled` per model: so a model whose thinking is off by
   default may now think, within the limit, on calls that used to have none.
-  Not measured; the cost is reasoning tokens inside a cap that keeps three
-  fifths for the answer.
+  Not measured; the cost is reasoning tokens inside the limit, where an
+  upstream honours it.
 """
 
 from __future__ import annotations
@@ -133,14 +136,14 @@ address and name - no user content, ever (Global Constraints)."""
 
 REASONING_SHARE = (2, 5)
 """The part of the answer cap OpenRouter is asked to let reasoning take: two
-fifths, so the visible answer keeps at least three.
+fifths (ADR-030).
 
-Chosen against the tightest kind, not the loosest. `cleanup` cuts a part to
-3,000 transcript tokens and needs about 3,210 back from its 6,000 cap
-(`tasks.CONCAT_CHUNK_TOKENS`), which leaves 46% for reasoning; 40% keeps
-under that, where OpenRouter's "medium" (about 50%) would not. The measured
-failures then get: speakers 6,400 of 16,000 (job 423 spent 12,842 and wrote
-nothing), blog and cleanup 2,400 of 6,000 (426), minutes 1,600 of 4,000 (428)."""
+Below OpenRouter's "medium" (about 50% of the cap) and above "low" (about
+20%), so an upstream that honours the number leaves the answer more than half
+the cap. Where it maps the number onto an effort level instead, which level is
+not documented. Cleanup never carries it (ADR-030). The measured failures
+that do carry it get: speakers 6,400 of 16,000 (job 423 spent 12,842 and
+wrote nothing), minutes 1,600 of 4,000 (428); blog's cap of 6,000 gets 2,400."""
 
 REASONING_FLOOR = 1024
 """The smallest limit worth sending. OpenRouter raises an Anthropic budget
@@ -281,6 +284,7 @@ class OpenAILikeProvider(base.Provider):
             # and dropping a refused hint pops from this body.
             body.update(copy.deepcopy(dict(self.reasoning_off_body)))
         else:
+            # Only a call that asks no hint (ADR-030): never cleanup's.
             body.update(self._reasoning_limit(req))
         return body
 
@@ -340,12 +344,14 @@ class OpenAILikeProvider(base.Provider):
                 dropped.add(knob)
                 if knob == "temperature":
                     body.pop("temperature", None)
+                elif knob == "limit":
+                    for field in self._reasoning_limit(req):
+                        body.pop(field, None)
                 else:
+                    # Nothing in the hint's place: a hinted call is cleanup,
+                    # which ADR-030 leaves exactly as ADR-020 has it.
                     for field in self.reasoning_off_body:
                         body.pop(field, None)
-                    # Not left unbounded: job 426's mandatory reasoner, its
-                    # hint refused, spent 6,000 of 6,000 thinking (TASK-123).
-                    body.update(self._reasoning_limit(req))
 
     def _ask_again_with_the_hint(
         self, key: str, req: ChatRequest, first: Any, *, reasoning_cap: int | None = None
@@ -398,19 +404,31 @@ class OpenAILikeProvider(base.Provider):
           `openrouter/auto`, which routes each request afresh, the answer may
           even come from another model than the one that refused. The row says
           so (`hint_sent` False); that is the price of not reading wording.
-          On OpenRouter the hint is all of `extra_body`, and the call
-          without it carries the reasoning limit in its place (TASK-123); a
-          test pins both
+          On OpenRouter the hint is all of `extra_body`, which carries
+          nothing else, and the call without it carries no reasoning limit
+          either (ADR-030); a test pins that
           (`test_the_hint_mapping_is_copied_into_the_body_never_shared`).
-          The limit alone is never dropped this way: OpenRouter documents
-          that a provider ignores a parameter it does not support (module
-          docstring), so a 400 with only the limit on the wire is a refusal.
+        * `"limit"` - a 400 that names `reasoning` while OpenRouter's
+          reasoning limit is on the wire (ADR-030). The limit is new on
+          calls that used to succeed without it; one more call without it is
+          the request this app sent before. Read by `param`, or by the
+          wording when no param came back, like the temperature refusal:
+          unlike the hint, a 400 that does not mention the field is not
+          worth a second call, because OpenRouter documents that a provider
+          ignores a parameter it does not support (module docstring).
         * None - a real refusal, mapped like any other.
         """
         if "temperature" not in dropped and "temperature" in body and _refuses_temperature(exc):
             return "temperature"
         if "hint" not in dropped and self._carries_hint(body) and not _refuses_context(exc):
             return "hint"
+        if (
+            "limit" not in dropped
+            and self._sent_reasoning_cap(body) is not None
+            and not _refuses_context(exc)
+            and _names_reasoning(exc)
+        ):
+            return "limit"
         return None
 
     def _create(self, key: str, body: dict, req: ChatRequest) -> Any:
@@ -575,6 +593,19 @@ def _refuses_context(exc: openai.OpenAIError) -> bool:
     )
 
 
+def _names_reasoning(exc: openai.OpenAIError) -> bool:
+    """Whether this 400 is about the `reasoning` field. `param` decides when
+    the endpoint names one, as in `_refuses_temperature`; the wording is read
+    only when no param came back. No such refusal has been measured: this
+    is the shape the SDK gives every 400, not one OpenRouter was seen to send."""
+    if not isinstance(exc, openai.BadRequestError):
+        return False
+    param = getattr(exc, "param", None)
+    if param is not None:
+        return "reasoning" in str(param)
+    return "reasoning" in str(exc).lower()
+
+
 class _HintRefused(Exception):
     """The retry's hint was refused with a 400; `complete` ends the call there."""
 
@@ -662,13 +693,13 @@ class OpenRouterProvider(OpenAILikeProvider):
     # OpenRouter's own reasoning object, which `create()` has no argument for,
     # so it rides in `extra_body` and the SDK merges it into the JSON. Not the
     # `reasoning_effort` shorthand: `enabled: false` is what was measured on
-    # both models auto has served for cleanup (module docstring). Dropping a
-    # refused hint removes `extra_body` whole and puts the limit in its place.
+    # both models auto has served for cleanup (module docstring), and dropping
+    # the hint removes `extra_body` whole - which carries nothing else.
     reasoning_off_body = {"extra_body": {"reasoning": {"enabled": False}}}
 
     def _reasoning_limit(self, req: ChatRequest) -> dict:
         """OpenRouter's `reasoning.max_tokens`, a share of the answer cap
-        (`reasoning_cap_for`, TASK-123): on every call that asks no hint, so
+        (`reasoning_cap_for`, ADR-030): on every call that asks no hint, so
         whichever model `openrouter/auto` picks keeps room to answer. Alone in
         the object - OpenRouter takes `effort` or `max_tokens`, "not both" -
         and a fresh dict each time, so nothing writes into a shared one."""
