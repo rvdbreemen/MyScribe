@@ -633,8 +633,9 @@ def test_a_rewrite_is_logged_with_what_was_written(monkeypatch):
 # ADR-026, answered by Robert on 2026-10-19: a systemd user unit where a
 # systemd user session runs, the XDG autostart file where none does. The unit
 # is what restarts a crash and logs to the journal; the desktop file nothing
-# supervises. These run against a fake `systemctl`; the real user manager was
-# driven in WSL (systemd 255), with the commands in the task notes.
+# supervises. These run against a fake `systemctl`. The real user manager
+# (systemd 255 in WSL, a scratch user, the 0.9.1 AppImage) was driven once
+# for TASK-112.06; the commit that added this section says what it showed.
 
 LAUNCHER_PATH = Path(__file__).resolve().parent.parent / "packaging" / "launcher" / "myscribe_launcher.py"
 APPIMAGE = "/home/me/Apps/MyScribe.AppImage"
