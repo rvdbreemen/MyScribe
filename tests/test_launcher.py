@@ -3328,13 +3328,17 @@ def test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills()
 
     from scribe.web import stopping
 
-    # Open reads are cut after SHUTDOWN_GRACE_SECONDS, uploads at the bound,
-    # both counted from the stop (Robert, 2026-10-25). The door closes inside
-    # the lifespan with the app's deadline, so a phone upload is given what is
-    # left of it and at least the door's grace.
+    # Open reads are cut after SHUTDOWN_GRACE_SECONDS and uploads exempt
+    # (Robert, 2026-10-25); uploads are cut at the bound (an agent choice),
+    # both counted from the stop. The door closes inside the lifespan with the
+    # app's deadline, so a phone upload is given what is left of it and at
+    # least the door's grace.
     assert stopping.UPLOAD_FINISH_SECONDS >= scribe_main.SHUTDOWN_GRACE_SECONDS
+    # The supervisor's step is its join, not the kill inside it: Supervisor.stop
+    # joins for max(timeout, STOP_JOIN_SECONDS) and the lifespan waits that out.
+    assert default(supervisor.Supervisor.stop) <= supervisor.STOP_JOIN_SECONDS
     shutdown = (stopping.UPLOAD_FINISH_SECONDS  # uploads finish; the rest was cut at the grace
-                + 2 * supervisor._KILL_WAIT_SECONDS  # the supervisor ends the runner's tree
+                + supervisor.STOP_JOIN_SECONDS  # the supervisor ends the runner's tree, joined
                 + phone_door.GRACE_SECONDS  # the door, its uploads' deadline passed
                 + default(feeds.FeedWatcher.stop) + default(watching.Watcher.stop))
     assert default(launcher.AppProcess.stop) > shutdown, (

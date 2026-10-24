@@ -329,9 +329,11 @@ def create_app(
             # stop SIGKILLs this app's group APP_SIGTERM_WAIT (75 s) after its
             # SIGTERM - a SIGKILL that never reaches the runner's own session.
             # That wait outlasts the whole stop: uploads may finish for 30 s
-            # before this block runs, the door below gives a phone upload what
+            # before this block runs, the supervisor joins for up to
+            # STOP_JOIN_SECONDS (20 s), the door below gives a phone upload what
             # is left of those 30 s and at least its 2 s grace, and the
-            # watchers join for 10 s each. A job one of them queues now waits for the next start.
+            # watchers join for 10 s each: 72 s at worst. A job one of them
+            # queues now waits for the next start.
             if sup is not None:
                 sup.stop(requeue=bool(getattr(app.state, "stop_requested", False)))
             # Receive from phone (TASK-096): a door left open closes with the

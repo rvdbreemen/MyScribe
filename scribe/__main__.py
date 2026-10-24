@@ -30,11 +30,12 @@ SHUTDOWN_GRACE_SECONDS = 3.0
 them and runs the lifespan's end, where the supervisor ends the runner
 (ADR-032). A job page's event stream ends only when its job does, and
 without a limit uvicorn waited for it: an hour's job held the stop for an
-hour, and on macOS and Linux the launcher's hard stop SIGKILLs the app 15 s
+hour, and on macOS and Linux the launcher's hard stop SIGKILLed the app 15 s
 after its SIGTERM, leaving the runner to run on (TASK-112.09).
 
-An upload is not cut here: it may finish until
-`stopping.UPLOAD_FINISH_SECONDS` after the stop began (Robert, 2026-10-25)."""
+An upload is not cut here (Robert, 2026-10-25: "exempt uploads"): it may
+finish until `stopping.UPLOAD_FINISH_SECONDS` (30 s, an agent choice) after
+the stop began."""
 
 
 def build_parser() -> argparse.ArgumentParser:

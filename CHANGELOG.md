@@ -35,11 +35,15 @@
   interrupted (or, after a kill on macOS and Linux, possibly still running).
   A stop with a job's page open no longer waits for that job to finish:
   requests still open 3 seconds into a stop are cut off. An upload still
-  arriving - from the transcribe dialog, the API, the microphone recorder or
-  a phone through *Receive from phone* - is not: it may finish for up to 30
-  seconds after the stop began, and the recording is in the library when
-  MyScribe starts again. One still arriving after those 30 seconds is cut off
-  and has to be sent again (TASK-112.09, ADR-032).
+  arriving - from the transcribe dialog (a file sent or added by its path),
+  the API or a phone through *Receive from phone* - is not: it may finish for
+  up to 30 seconds after the stop began, and the recording is in the library
+  when MyScribe starts again. One still arriving after those 30 seconds is
+  cut off and has to be sent again. From the microphone recorder only a
+  request already reaching MyScribe at the stop may finish: a five-second
+  piece of the recording, or the save that follows its Stop button. A
+  recording still in progress is not finished by the stop, and MyScribe does
+  not finish it when it starts again (TASK-112.09, ADR-032).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

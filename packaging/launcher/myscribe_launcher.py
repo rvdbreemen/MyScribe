@@ -63,10 +63,11 @@ STOP_TIMEOUT = 15.0
 APP_SIGTERM_WAIT = 75.0
 """How long the POSIX hard stop waits after the app's SIGTERM before its
 SIGKILL (`AppProcess.stop`, `end_tree`). The app's stop cuts open reads off
-after 3 s and lets an upload in flight finish for up to 30 s (Robert,
-2026-10-25); its lifespan then ends the runner's tree (at most 10 s, ADR-032)
-and joins the phone door (its 2 s grace), the feeds (10 s) and the watcher
-(10 s): 62 s at worst.
+after 3 s and lets an upload in flight finish (Robert, 2026-10-25) for up to
+30 s (an agent choice); its lifespan then ends the runner's tree and joins
+the supervisor for up to `STOP_JOIN_SECONDS` (20 s, ADR-032), the phone door
+(its 2 s grace), the feeds (10 s) and the watcher (10 s): 72 s at worst, 3 s
+inside this wait. 75 s is an agent choice still open for Robert.
 A shorter wait SIGKILLed an app that had already ended its runner, and the
 sentence after it said the job could keep running (TASK-112.09). The cost is
 an app that hangs, which now gets this long before its SIGKILL instead of
@@ -1344,7 +1345,7 @@ STOP_WAIT = 80.0
 
 The route's way out nests inside this: uvicorn cuts the open reads after 3 s
 and lets an upload finish for up to 30 s (`APP_SIGTERM_WAIT` adds the whole
-stop up to 62 s; on Windows the hard stop after this wait is taskkill /F),
+stop up to 72 s; on Windows the hard stop after this wait is taskkill /F),
 the lifespan's supervisor ends the runner's tree and requeues its job
 before the feeds and the watcher stop, joining for `STOP_JOIN_SECONDS` (20 s,
 `scribe/supervisor.py`). Past this the hard stop runs, inside which

@@ -152,3 +152,14 @@ def test_the_app_routes_that_carry_a_recording_in_are_the_uploads():
     assert not post("/api/media", "GET")
     assert not post("/api/jobs/1/stream", "GET")
     assert not post("/transcribe/url") and not post("/record/start") and not post("/record/a/b/chunk")
+
+
+def test_a_file_added_by_its_path_in_the_dialog_is_an_upload_too():
+    """`/transcribe/path` hashes and links a file that may be gigabytes, in a
+    worker thread, as `/api/media` with a JSON path does. Cut at the 3 s
+    grace, the request's task is cancelled while that thread may go on, and
+    the job it was about to queue may never be (review of TASK-112.09, found
+    by reading, not reproduced). It is one of the laptop's ways in, so it
+    gets the uploads' bound."""
+    assert stopping.is_app_upload({"type": "http", "method": "POST", "path": "/transcribe/path"})
+    assert not stopping.is_app_upload({"type": "http", "method": "GET", "path": "/transcribe/path"})

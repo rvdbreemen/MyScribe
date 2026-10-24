@@ -88,8 +88,9 @@ ROUTE_PROBE = ("192.0.2.1", 9)
 # How long a Close waits for a request still open before cutting it off. A
 # Close inside the app's stop lets an upload in flight finish until the app's
 # deadline (`stopping.UPLOAD_FINISH_SECONDS` after the app's stop began;
-# Robert, 2026-10-25, TASK-112.09), and never gives it less than this. Any
-# other Close - the button, the fifteen minutes - cuts it after this.
+# uploads exempt: Robert, 2026-10-25, TASK-112.09), and never gives it less
+# than this. Any other Close - the button, the fifteen minutes - cuts it after
+# this (an agent choice, still open for Robert).
 GRACE_SECONDS = 2.0
 
 Accept = Callable[[BinaryIO, str], object]

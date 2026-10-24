@@ -34,6 +34,9 @@ from scribe import applog
 UPLOAD_FINISH_SECONDS = 30.0
 """How long after a stop begins an upload in flight may still finish.
 
+Robert exempted uploads from the 3 s cut (2026-10-25); this bound is an
+agent choice, still open for his approval.
+
 A cap on the stop, not a promise for every file: an hour's voice memo
 (AAC at 128 kbit/s, about 58 MB) needs about 12 s at 5 MB/s on home Wi-Fi,
 and a laptop upload goes over the loopback. A phone video of a gigabyte
@@ -42,10 +45,11 @@ launcher's waits are sized on this (`APP_SIGTERM_WAIT`, `STOP_WAIT`);
 `tests/test_launcher.py` adds them up."""
 
 _RECORDING_ROUTE = re.compile(r"/record/[^/]+/(chunk|finish)")
-APP_UPLOAD_PATHS = frozenset({"/api/media", "/transcribe/upload"})
+APP_UPLOAD_PATHS = frozenset({"/api/media", "/transcribe/upload", "/transcribe/path"})
 """The app's routes that carry a recording in: the API's and the transcribe
-dialog's upload, plus the microphone's chunks and its finish, which turns
-the chunks into a media row (`_RECORDING_ROUTE`)."""
+dialog's upload, the dialog's file added by its path (hashed and linked in a
+worker thread, like the API's JSON path), plus the microphone's chunks and
+its finish, which turns the chunks into a media row (`_RECORDING_ROUTE`)."""
 
 
 def is_app_upload(scope: dict) -> bool:

@@ -1916,21 +1916,22 @@
         "must": [
           "Supervisor.stop ends the running runner's tree and waits for it on every stop, and joins for at least STOPJOINSECONDS.",
           "A stop without the route leaves the row running, for the next start's reconcile() to mark it interrupted, or cancelled when a cancel was asked.",
-          "The lifespan's end stops the supervisor before the phone door, the feeds and the watcher (agent addition, approved by Robert on 2026-10-25).",
+          "The lifespan's end stops the supervisor before the phone door, the feeds and the watcher (agent addition, awaiting Robert's approval).",
           "The app's server cancels open reads, a job page's event stream among them, SHUTDOWNGRACESECONDS (3 s) after a stop begins (agent addition, approved by Robert on 2026-10-25).",
-          "An upload in flight finishes, up to UPLOADFINISHSECONDS (30 s) after the stop began, and is cut there: POST /api/media, /transcribe/upload, /record/{session}/chunk and /finish, and the phone door's POST (agent addition, approved by Rober...",
-          "The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace. A Close of the door alone - its button, its fifteen minutes - still cuts an upload after that grace.",
-          "The launcher's APPSIGTERMWAIT (75 s) and STOPWAIT (80 s) outlast the app's whole stop (62 s at worst).",
+          "An upload in flight finishes: POST /api/media, /transcribe/upload, /transcribe/path, /record/{session}/chunk and /finish, and the phone door's POST (approved by Robert on 2026-10-25). It is cut at UPLOADFINISHSECONDS (30 s) after the sto...",
+          "The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace. A Close of the door alone - its button, its fifteen minutes - still cuts an upload after that grace (agent...",
+          "The launcher's APPSIGTERMWAIT (75 s) and STOPWAIT (80 s) outlast the app's whole stop: 72 s at worst (30 s of uploads, STOPJOINSECONDS 20 s, the door's 2 s, the feeds' and the watcher's 10 s each), so the POSIX margin is 3 s (agent addit...",
           "The hard stop says \"marked interrupted\" only where the app lived through its SIGTERM, or on Windows."
         ],
         "must_not": [
           "Requeue on a stop that did not come through the stop route."
         ],
         "exceptions": [
+          "Cancelling an upload's request task does not stop a worker thread it started (runinthreadpool). One still hashing a file when it is cut at the bound can go on past the stop, and may store a recording without its job or touch the database...",
           "An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after APPSIGTERMWAIT..."
         ],
         "verification": [
-          "tests/testappsignalstop.py, tests/teststopping.py, tests/testphonedoor.py::testanuploadinflightwhenthedoorclosesisallowedtofinish and ::testanuploadstillgoingatapasseddeadlineiscutafterthegrace; tests/testapp.py::testthesupervisorstopsbe...",
+          "tests/testappsignalstop.py, tests/teststopping.py, tests/testphonedoor.py::testanuploadinflightwhentheappstopsisallowedtofinish, ::testanuploadstillgoingatapasseddeadlineiscutafterthegrace, ::testacloseofthedooralonestillcutsanuploadafte...",
           "tests/testlauncher.py::testthehardstopssentencesayswhatthisosdoeswiththerunningjob, ::testthehardstopsayswhetherithadtokilltheapp, ::testtheposixhardstopwaitsouttheappswholeshutdownbeforeitkills and ::testthehardstopleavesnorunnerandsays..."
         ]
       },
