@@ -19,7 +19,8 @@ Three rules shape the module:
   a validation error gets a stable ``code`` (`CODES` by status, or the
   `CodedError` a route raises for a case worth its own name); anywhere else
   FastAPI's own handler answers, so the pages' ``{"detail"}`` is unchanged.
-  The guard's two refusals happen before any route and keep their own shape:
+  An exception no route handled is a coded 500 (``internal_error``) here
+  and Starlette's plain-text 500 elsewhere. The guard's two refusals happen before any route and keep their own shape:
   Starlette's plain-text "Invalid host header" (400) and the guard's JSON 403.
 * **Nothing of this reaches the phone door.** The door is its own ASGI app
   with two routes (ADR-022); tests/test_api_v1.py walks every /api/v1 path
@@ -41,7 +42,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from scribe import accel, db, fsbrowse, glossary, idempotency, llm, options
 from scribe import app as spine
@@ -186,25 +187,45 @@ def _key(raw: str | None) -> str | None:
     return raw
 
 
-def _once(conn, key: str | None, route: str, print_: str, status: int, work) -> Response:
+REPLAYED = {"Idempotent-Replayed": "true"}
+
+
+def _refused(exc: Exception, key: str) -> CodedError:
+    if isinstance(exc, idempotency.KeyInProgress):
+        return CodedError(409, "idempotency_key_in_progress",
+                          f"{idempotency.HEADER} {key!r} belongs to a request that has not answered yet")
+    return CodedError(409, "idempotency_key_reused",
+                      f"{idempotency.HEADER} {key!r} was used for a different request")
+
+
+def _job_alive(conn, field: str):
+    """Whether a stored answer's job still exists: a deleted recording takes
+    its jobs with it, and an answer naming one of them is stale."""
+    def alive(body) -> bool:
+        with db.LOCK:
+            return conn.execute(
+                "SELECT 1 FROM job WHERE id=?", (body.get(field),)
+            ).fetchone() is not None
+    return alive
+
+
+def _once(conn, key: str | None, route: str, print_: str, status: int, work, alive=None) -> Response:
     """Run ``work`` (which queues and returns the body) once per key.
 
     Looked up, queued and remembered under one `db.LOCK` hold, so two racing
-    retries cannot both queue (see `scribe.idempotency`).
+    retries cannot both queue (see `scribe.idempotency`). For a route that
+    files nothing; an upload claims its key before filing (`add_media`).
     """
     if key is None:
         return JSONResponse(work(), status_code=status)
     with db.LOCK:
         try:
-            stored = idempotency.replay(conn, key, print_)
-        except idempotency.KeyReused:
-            raise CodedError(
-                409, "idempotency_key_reused",
-                f"{idempotency.HEADER} {key!r} was used for a different request",
-            ) from None
+            stored = idempotency.replay(conn, key, print_, alive)
+        except (idempotency.KeyReused, idempotency.KeyInProgress) as exc:
+            raise _refused(exc, key) from None
         if stored is not None:
             status_, body = stored
-            return JSONResponse(body, status_code=status_, headers={"Idempotent-Replayed": "true"})
+            return JSONResponse(body, status_code=status_, headers=REPLAYED)
         body = work()
         idempotency.remember(conn, key, route, print_, status, body)
     return JSONResponse(body, status_code=status)
@@ -365,36 +386,61 @@ async def add_media(request: Request, idempotency_key: KeyHeader = None) -> Resp
     ``params`` object. Known content is not stored twice (``deduped``)."""
     key = _key(idempotency_key)
     conn = _conn(request)
-    # Filed first, outside the lock: hashing gigabytes must not hold it, and a
-    # second filing of the same bytes is a dedupe, not a second recording.
-    row, params = await spine.ingest_request(request)
+    if key is None:
+        row, params = await spine.ingest_request(request)
+        return JSONResponse(spine.enqueue_ingested(conn, row, params), status_code=201)
+
+    # The key is decided between hashing and filing (`admit`), so a refusal
+    # or a replay files nothing and nothing is ever taken back. Hashing
+    # gigabytes holds no lock; the claim, the queueing and the answer do.
     route = "POST /api/v1/media"
-    print_ = idempotency.fingerprint(route, sha256=row["sha256"], params=params)
+    claim = {"held": False, "over": False, "print": ""}
+
+    def admit(sha256: str, params: dict) -> None:
+        print_ = idempotency.fingerprint(route, sha256=sha256, params=params)
+        with db.LOCK:
+            if claim["over"]:  # the request already ended: claim nothing for it
+                raise _Gone()
+            try:
+                stored = idempotency.claim(conn, key, route, print_, _job_alive(conn, "job_id"))
+            except (idempotency.KeyReused, idempotency.KeyInProgress) as exc:
+                raise _refused(exc, key) from None
+            if stored is not None:
+                raise _Replay(*stored)
+            claim.update(held=True, print=print_)
+
     try:
-        return _once(conn, key, route, print_, 201, lambda: spine.enqueue_ingested(conn, row, params))
-    except CodedError as refused:
-        if refused.code == "idempotency_key_reused" and not row.get("deduped"):
-            _unfile(conn, row)
-        raise
+        row, params = await spine.ingest_request(request, admit=admit)
+        with db.LOCK:
+            body = spine.enqueue_ingested(conn, row, params)
+            idempotency.remember(conn, key, route, claim["print"], 201, body)
+            claim["held"] = False
+        return JSONResponse(body, status_code=201)
+    except _Replay as replayed:
+        return JSONResponse(replayed.body, status_code=replayed.status, headers=REPLAYED)
+    finally:
+        # Also on a cancelled request whose filing thread runs on: once this
+        # has run, that thread's `admit` claims nothing.
+        with db.LOCK:
+            claim["over"] = True
+            if claim["held"]:
+                idempotency.release(conn, key)
 
 
-def _unfile(conn, row: dict) -> None:
-    """Take back a recording this request filed and then refused.
+class _Replay(Exception):
+    """A stored answer, raised out of `admit` so that nothing gets filed."""
 
-    A refusal leaves no media row behind, the rule `_ingest_options` keeps for
-    a bad params key. Only a row this request created (``deduped`` false) and
-    only while no job points at it: a second request that deduped onto it in
-    the meantime owns it as much as this one did.
-    """
-    with db.LOCK:
-        if conn.execute("SELECT 1 FROM job WHERE media_id=? LIMIT 1", (row["id"],)).fetchone():
-            return
-        conn.execute("DELETE FROM media WHERE id=?", (row["id"],))
-        conn.commit()
-    try:
-        (spine.paths.DATA_DIR / row["store_path"]).unlink(missing_ok=True)
-    except OSError:  # held open on Windows: litter for a sweep, not a 500
-        pass
+    def __init__(self, status: int, body) -> None:
+        super().__init__(status)
+        self.status = status
+        self.body = body
+
+
+class _Gone(Exception):
+    """Raised in a filing thread that outlived its request."""
+
+
+TRANSCRIBE_FIELDS = frozenset((*options.OPTION_FIELDS, "params"))
 
 
 @router.post(
@@ -415,6 +461,15 @@ async def transcribe(
     for field in ("title", "folder_id", "path"):
         if field in body:
             raise CodedError(400, "bad_request", f"{field!r} belongs to an upload; this route takes options")
+    # Refused rather than dropped, the rule `_ingest_options` keeps for a
+    # params key: {"foo": 1} once queued a job with neither what was asked
+    # nor the last request.
+    unknown = sorted(set(body) - TRANSCRIBE_FIELDS)
+    if unknown:
+        raise CodedError(
+            400, "bad_request",
+            f"this route takes {', '.join(sorted(TRANSCRIBE_FIELDS))}; not {', '.join(map(repr, unknown))}",
+        )
     _, _, params = spine._ingest_options(body)
     if not body:
         params = library._last_params(conn, media_id)
@@ -425,7 +480,7 @@ async def transcribe(
         job_id = spine.jobs.enqueue(conn, library.TRANSCRIBE_JOB_TYPE, media_id=media_id, params=params)
         return spine._job_out(conn, spine._get_job(conn, job_id))
 
-    return _once(conn, key, route, print_, 201, queue)
+    return _once(conn, key, route, print_, 201, queue, _job_alive(conn, "id"))
 
 
 @router.post(
@@ -546,8 +601,18 @@ async def _invalid(request: Request, exc: RequestValidationError) -> Response:
     return _coded(422, CODES[422], detail, errors=json.loads(json.dumps(errors, default=str)))
 
 
+async def _unexpected(request: Request, exc: Exception) -> Response:
+    """An exception no route handled: a coded 500 here, Starlette's own text
+    elsewhere. The exception itself stays out of the answer; Starlette
+    raises it on after this, so the server log still has it."""
+    if not _ours(request):
+        return PlainTextResponse("Internal Server Error", status_code=500)
+    return _coded(500, CODES[500], "an unexpected error ended this request; the server log has it")
+
+
 def install(app: FastAPI) -> None:
     """Add the routes, and the coded error shape for their paths only."""
     app.include_router(router)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _invalid)
+    app.add_exception_handler(Exception, _unexpected)

@@ -198,6 +198,30 @@ def test_the_pages_errors_keep_their_old_shape(client):
     assert "code" not in client.get("/api/jobs/not-a-number").json()
 
 
+def test_an_unexpected_error_under_v1_is_a_coded_500_that_hides_the_exception(app, monkeypatch):
+    def broken(conn, state):
+        raise RuntimeError("synthetic secret detail")
+
+    monkeypatch.setattr("scribe.web.library.media_rows", broken)
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
+        resp = c.get(f"{V1}/media")
+        body = assert_coded(resp, 500, "internal_error")
+        assert "synthetic secret detail" not in resp.text
+        assert set(body) == {"code", "detail"}
+
+
+def test_an_unexpected_error_on_a_page_stays_the_plain_text_500(app, monkeypatch):
+    def broken(conn, state):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr("scribe.web.library.media_rows", broken)
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
+        resp = c.get("/")
+    assert resp.status_code == 500
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert resp.text == "Internal Server Error"
+
+
 # --- the library ---------------------------------------------------------------------------------
 
 
@@ -307,6 +331,113 @@ def test_a_reused_key_never_removes_a_recording_that_was_already_there(client, c
     assert media_count(conn) == 2
 
 
+def count_inserts(monkeypatch) -> list:
+    """Every media row an ingest creates passes `media._insert_media`."""
+    from scribe import media
+
+    calls: list = []
+    real = media._insert_media
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs.get("sha256"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(media, "_insert_media", counting)
+    return calls
+
+
+def test_a_refused_reuse_never_files_the_recording(client, conn, monkeypatch):
+    """Not filed and taken back, which a concurrent upload can race: never filed."""
+    upload(client, tiny_wav(tone=11), key="k-never")
+    inserts = count_inserts(monkeypatch)
+    assert_coded(upload(client, tiny_wav(tone=12), key="k-never"), 409, "idempotency_key_reused")
+    assert inserts == []
+
+
+def test_a_refused_reuse_of_a_local_path_never_files_it(client, conn, tmp_path, monkeypatch):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    for tone in (18, 19):
+        (root / f"t{tone}.wav").write_bytes(tiny_wav(tone=tone))
+    monkeypatch.setattr("scribe.fsbrowse.allowed_roots", lambda conn: (root,))
+    headers = {"Idempotency-Key": "k-path"}
+    assert client.post(f"{V1}/media", json={"path": str(root / "t18.wav")}, headers=headers).status_code == 201
+    inserts = count_inserts(monkeypatch)
+    resp = client.post(f"{V1}/media", json={"path": str(root / "t19.wav")}, headers=headers)
+    assert_coded(resp, 409, "idempotency_key_reused")
+    assert inserts == []
+
+def test_a_replay_after_the_recording_was_deleted_files_it_again_with_a_job(client, conn):
+    """The stored answer names a job that is gone: replaying it would hand
+    the client a job id that 404s and leave the new filing without a job."""
+    first = upload(client, tiny_wav(tone=13), key="k-gone").json()
+    assert client.post(f"{V1}/jobs/{first['job_id']}/cancel").status_code == 200
+    assert client.post(f"/media/{first['id']}/trash").status_code < 400
+    assert client.post(f"/media/{first['id']}/purge").status_code < 400
+    assert media_count(conn) == 0 and jobs_of(conn) == []
+
+    again = upload(client, tiny_wav(tone=13), key="k-gone")
+    assert again.status_code == 201, again.text
+    assert "idempotent-replayed" not in again.headers
+    (job,) = jobs_of(conn)
+    assert media_count(conn) == 1
+    assert job["id"] == again.json()["job_id"] and job["media_id"] == again.json()["id"]
+    replayed = upload(client, tiny_wav(tone=13), key="k-gone")
+    assert replayed.headers.get("idempotent-replayed") == "true"
+    assert replayed.json() == again.json()
+
+
+def _hold(conn, key: str, data: bytes, params: dict | None = None) -> None:
+    """The key as a request that is still uploading leaves it."""
+    import hashlib
+
+    from scribe import idempotency
+
+    route = "POST /api/v1/media"
+    print_ = idempotency.fingerprint(route, sha256=hashlib.sha256(data).hexdigest(), params=params or {})
+    with db.LOCK:
+        assert idempotency.claim(conn, key, route, print_) is None
+
+
+def test_the_same_key_while_its_first_request_is_still_running_is_a_coded_409(
+    client, conn, monkeypatch
+):
+    _hold(conn, "k-busy", tiny_wav(tone=14))
+    inserts = count_inserts(monkeypatch)
+    assert_coded(upload(client, tiny_wav(tone=14), key="k-busy"), 409, "idempotency_key_in_progress")
+    assert_coded(upload(client, tiny_wav(tone=15), key="k-busy"), 409, "idempotency_key_reused")
+    assert inserts == [] and jobs_of(conn) == []
+
+
+def test_an_upload_that_fails_after_taking_its_key_lets_it_go(app, conn, monkeypatch):
+    from scribe import app as spine
+
+    real = spine.enqueue_ingested
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("synthetic failure")
+
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
+        monkeypatch.setattr(spine, "enqueue_ingested", broken)
+        assert upload(c, tiny_wav(tone=16), key="k-fail").status_code == 500
+        monkeypatch.setattr(spine, "enqueue_ingested", real)
+        again = upload(c, tiny_wav(tone=16), key="k-fail")
+    assert again.status_code == 201, again.text
+    assert len(jobs_of(conn)) == 1
+
+
+def test_a_key_left_held_by_a_previous_life_is_let_go_at_start(db_path, data_dir):
+    check = db.connect(db_path)
+    try:
+        _hold(check, "k-crash", tiny_wav(tone=17))
+    finally:
+        check.close()
+    with TestClient(create_app(db_path=db_path, start_supervisor=False),
+                    base_url="http://127.0.0.1") as c:
+        resp = upload(c, tiny_wav(tone=17), key="k-crash")
+    assert resp.status_code == 201, resp.text
+
+
 def test_two_racing_requests_with_one_key_queue_one_job(app, conn):
     """`_once` looks up, queues and remembers under one lock hold."""
     import threading
@@ -413,6 +544,42 @@ def test_transcribe_refuses_a_title(client, transcribed):
     assert_coded(
         client.post(f"{V1}/media/{transcribed}/transcribe", json={"title": "x"}), 400, "bad_request"
     )
+
+
+def test_transcribe_refuses_a_field_it_does_not_take(client, conn, transcribed):
+    """Refused, not dropped: ``{"foo": 1}`` once queued a job with the
+    defaults, neither what was asked nor the last request."""
+    body = assert_coded(
+        client.post(f"{V1}/media/{transcribed}/transcribe", json={"foo": 1}), 400, "bad_request"
+    )
+    assert "foo" in body["detail"]
+    assert jobs_of(conn) == []
+
+
+def test_transcribe_with_an_empty_params_object_asks_for_the_defaults(client, conn, transcribed):
+    """An explicit ``params`` is the request; only an empty body repeats the last one."""
+    with db.LOCK:
+        conn.execute(
+            "INSERT INTO job(type, media_id, params_json, status, created_at, queue_seq)"
+            " VALUES ('transcribe', ?, ?, 'done', 0, 1)",
+            (transcribed, json.dumps({"language": "nl"})),
+        )
+        conn.commit()
+    resp = client.post(f"{V1}/media/{transcribed}/transcribe", json={"params": {}})
+    assert resp.status_code == 201, resp.text
+    assert json.loads(jobs_of(conn)[-1]["params_json"]) == {}
+
+
+def test_a_transcribe_replay_whose_job_is_gone_queues_a_new_one(client, conn, transcribed):
+    headers = {"Idempotency-Key": "t-gone"}
+    first = client.post(f"{V1}/media/{transcribed}/transcribe", json={"language": "en"}, headers=headers)
+    with db.LOCK:
+        conn.execute("DELETE FROM job WHERE id=?", (first.json()["id"],))
+        conn.commit()
+    again = client.post(f"{V1}/media/{transcribed}/transcribe", json={"language": "en"}, headers=headers)
+    assert again.status_code == 201 and "idempotent-replayed" not in again.headers
+    (job,) = jobs_of(conn)
+    assert again.json()["id"] == job["id"]
 
 
 @pytest.fixture

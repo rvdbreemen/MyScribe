@@ -7,13 +7,19 @@
   (multipart, or a path under the browse roots), transcribe a recording again,
   queue an AI question, read and cancel jobs, download an export, and read the
   settings (never a key or token). Every route is in `/openapi.json`, and every
-  error under `/api/v1` is JSON with a stable `code` and a `detail`. An
+  error under `/api/v1` is JSON with a stable `code` and a `detail`; an
+  unexpected server error is `internal_error`, without the exception's text.
+  A re-transcribe refuses a field that is not one of the dialog's options or
+  `params`; an empty body repeats the last request. An
   `Idempotency-Key` header on an upload or a re-transcribe makes a retry give
   the first answer back without queueing a second job. The same key with
   another recording or other transcription options is refused with
-  `idempotency_key_reused`, and a recording that refusal would have added is
-  not kept; a different title or folder alone is not compared. Keys are kept
-  for 24 hours. There is no token: the API answers only on 127.0.0.1 and behind the
+  `idempotency_key_reused`, and an upload is checked before the recording is
+  filed, so a refused one adds nothing to the library; a different title or
+  folder alone is not compared. The same key while its first upload is still
+  running is refused with `idempotency_key_in_progress`. When the job a key
+  answered with is gone (its recording was deleted), the key is forgotten and
+  the retry runs as a new request. Keys are kept for 24 hours. There is no token: the API answers only on 127.0.0.1 and behind the
   same Host and same-site checks as the pages, and the phone door does not
   reach it. The pages and the unversioned `/api/...` routes answer as before
   (TASK-108, ADR-025).

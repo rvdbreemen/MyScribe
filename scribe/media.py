@@ -33,7 +33,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from scribe import db, paths
 
@@ -124,6 +124,7 @@ def ingest_path(
     link: bool = True,
     source_url: str | None = None,
     source_id: str | None = None,
+    admit: Callable[[str], None] | None = None,
 ) -> dict:
     """Take a file already on disk into the store; returns the media row.
 
@@ -135,9 +136,15 @@ def ingest_path(
     ``source_url`` and ``source_id`` say where the bytes came from when they
     came over the network (the feed import writes them; an upload or a path
     passes nothing). Compared by the dialog's listing, rendered nowhere.
+
+    ``admit``, when given, is called with the content hash before anything
+    is looked up or filed; whatever it raises leaves the store and the
+    library as they were (an idempotency key's check, ADR-025).
     """
     src = Path(src)
     sha256 = hash_file(src)
+    if admit is not None:
+        admit(sha256)
     existing = _existing_row(conn, sha256)
     if existing is not None:
         return _fill_source(conn, existing, source_url, source_id)
@@ -200,6 +207,7 @@ def ingest_stream(
     *,
     title: str | None = None,
     folder_id: int | None = None,
+    admit: Callable[[str], None] | None = None,
 ) -> dict:
     """Take bytes from an upload or a recording into the store.
 
@@ -207,6 +215,7 @@ def ingest_stream(
     buffered in ``MEDIA_DIR/.incoming`` and hashed on the way through, then
     renamed into its content-addressed home. The temporary file is removed on
     every path out of here, including a connection that dies mid-upload.
+    ``admit`` is `ingest_path`'s: called with the hash before anything is filed.
     """
     incoming = paths.MEDIA_DIR / INCOMING_DIRNAME
     incoming.mkdir(parents=True, exist_ok=True)
@@ -215,6 +224,8 @@ def ingest_stream(
         with open(tmp, "wb") as out:
             sha256 = hash_stream(stream, sink=out)
         size_bytes = tmp.stat().st_size
+        if admit is not None:
+            admit(sha256)
 
         existing = _existing_row(conn, sha256)
         if existing is not None:

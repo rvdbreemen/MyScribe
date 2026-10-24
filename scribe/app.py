@@ -51,7 +51,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 import scribe
-from scribe import applog, autostart, db, env, fsbrowse, guard, jobs, media, paths, supervisor, web
+from scribe import applog, autostart, db, env, fsbrowse, guard, idempotency, jobs, media, paths, supervisor, web
 from scribe import shutdown as shutdown_module
 from scribe.ingest import feeds, recording, watching
 from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options, replayable
@@ -143,7 +143,7 @@ def _ingest_options(source: dict) -> tuple[str | None, int | None, dict]:
     return title, folder_id, params
 
 
-async def _ingest_upload(request: Request, conn: sqlite3.Connection) -> tuple[dict, dict]:
+async def _ingest_upload(request: Request, conn: sqlite3.Connection, admit=None) -> tuple[dict, dict]:
     """Multipart: the bytes are already spooled, so this only hashes and files them."""
     form = await request.form()
     upload = form.get(_UPLOAD_FIELD)
@@ -160,11 +160,12 @@ async def _ingest_upload(request: Request, conn: sqlite3.Connection) -> tuple[di
         upload.filename or "upload",
         title=title,
         folder_id=folder_id,
+        admit=_admit_with(admit, params),
     )
     return row, params
 
 
-async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> tuple[dict, dict]:
+async def _ingest_local_path(request: Request, conn: sqlite3.Connection, admit=None) -> tuple[dict, dict]:
     """JSON `{"path": ...}`: a file already on this machine, left where it is."""
     try:
         body = await request.json()
@@ -201,7 +202,8 @@ async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> tupl
     title, folder_id, params = _ingest_options(body)
     try:
         row = await run_in_threadpool(
-            media.ingest_path, conn, src, title=title, folder_id=folder_id
+            media.ingest_path, conn, src, title=title, folder_id=folder_id,
+            admit=_admit_with(admit, params),
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"no file at {src}")
@@ -224,18 +226,25 @@ def _event_out(row: sqlite3.Row) -> dict:
     }
 
 
-async def ingest_request(request: Request) -> tuple[dict, dict]:
+def _admit_with(admit, params: dict):
+    return None if admit is None else (lambda sha256: admit(sha256, params))
+
+
+async def ingest_request(request: Request, admit=None) -> tuple[dict, dict]:
     """The recording a request carries, filed, and the params its job gets.
 
     Both doors that take a recording from a program - `POST /api/media` and
     `POST /api/v1/media` - come through here, so they cannot disagree about
     what a body may say (ADR-025: one helper per action, whichever door).
+    ``admit(sha256, params)``, when given, runs once the content is hashed
+    and the body checked, before anything is filed: the v1 door's
+    idempotency key is decided there, so a refusal files nothing.
     """
     conn = request.app.state.conn
     content_type = (request.headers.get("content-type") or "").lower()
     if content_type.startswith("multipart/form-data"):
-        return await _ingest_upload(request, conn)
-    return await _ingest_local_path(request, conn)
+        return await _ingest_upload(request, conn, admit)
+    return await _ingest_local_path(request, conn, admit)
 
 
 def enqueue_ingested(conn: sqlite3.Connection, row: dict, params: dict) -> dict:
@@ -355,6 +364,10 @@ def create_app(
                    supervisor=start_supervisor, watcher=start_watcher)
         conn = db.connect(db_path)
         db.migrate(conn)
+        # An /api/v1 upload's claimed idempotency key that never got its
+        # answer: this process is the only one (ADR-001), so the request that
+        # held it ended with the last life, and a retry must not wait on it.
+        idempotency.forget_pending(conn)
         # Three questions about what a previous life of this process left
         # behind, asked in the order their answers cost: an orphaned job row,
         # an abandoned microphone session's chunks, and - inside the watcher's

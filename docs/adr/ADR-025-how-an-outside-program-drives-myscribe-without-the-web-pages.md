@@ -107,9 +107,9 @@ For option B, as built in `scribe/api_v1.py`.
 
 ### Must
 
-* Each `/api/v1` route calls the same helper its HTML route calls; neither holds logic of its own.
-* Errors under `/api/v1` are JSON with a stable `code` and the `detail` the pages already show; other paths keep `{"detail": ...}`.
-* `POST /api/v1/media` honours an idempotency key, kept in the database, so a retried request queues no second job; the key compares content and options, and a refused reuse files nothing.
+* Each `/api/v1` route calls the same helper its HTML route calls; neither holds business logic of its own (the Exceptions name what a route adds).
+* Errors under `/api/v1` are JSON with a stable `code` and the `detail` the pages already show, an unhandled exception included (`internal_error`, without its text); other paths keep `{"detail": ...}` and the plain-text 500.
+* `POST /api/v1/media` honours an idempotency key, kept in the database, so a retried request queues no second job; the key compares content and options, and is decided after hashing and before filing, so a refused reuse or a replay files nothing. A stored answer whose job is gone is forgotten, and the same key while its first request runs is a 409 `idempotency_key_in_progress`.
 * The routes appear in `/openapi.json`.
 
 ### Must Not
@@ -120,7 +120,9 @@ For option B, as built in `scribe/api_v1.py`.
 
 ### Exceptions
 
-* None.
+* The guard's refusals answer before any route, in their own shape (see Confirmation).
+* `GET /api/v1/settings` assembles its answer from the settings helpers through an allowlist: no page returns this JSON, and the `setting` table holds keys and tokens.
+* `POST /api/v1/media/{id}/transcribe` refuses a body field outside the dialog's options and `params` (400), as `_ingest_options` refuses a foreign params key; an empty body repeats the last request.
 
 ### Verification
 
