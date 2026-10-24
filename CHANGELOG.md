@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Changed
+
+- **The setup window is shorter.** Its first step lists each thing MyScribe
+  found on one line and everything it did not find on one more. Under each
+  question there is now one line about Skip, with what skipping costs and where
+  to answer it later behind a **Details** link. The summary names each question
+  by the sentence that asks it. A library at a long path no longer makes the
+  window wider than the screen. Every step fits on a 1080p screen (TASK-098).
+
 ## [0.9.1] - 2026-10-23
 
 Fixes found by installing the 0.9.0 release on Windows and running its

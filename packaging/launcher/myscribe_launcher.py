@@ -2218,22 +2218,41 @@ def found_lines(plan: dict) -> list[str]:
     Ollama says what the engine made of it. Nobody should be shown an empty
     token field for a token this machine already has and go and mint a second
     one - that is the failure this block exists to end.
+
+    One line per thing found, and one for everything that was not (TASK-098).
+    The other places a token also sits are a count: which one is used is the
+    line, and the full list is in Settings and in `--plan`. A place that
+    defines a different value is the exception and keeps its words, because
+    that is a warning. A login entry that is off is left out: it is the
+    start_at_login question, and a step that says "not found" about something
+    the next step asks reads as a contradiction.
     """
     lines: list[str] = []
+    missing: list[str] = []
     for row in plan.get("found") or []:
         label = str(row.get("label") or row.get("name") or "")
         if row.get("kind") == "proxy":
             lines.append(f"{label}: {row.get('host', '')} ({row.get('source', '')})")
             continue
-        lines.append(f"{label}: {row.get('source') if row.get('found') else 'not found'}")
-        if row.get("also_in"):
-            note = "also " + ", ".join(str(place) for place in row["also_in"])
-            if row.get("conflict"):
-                note += " - which defines a different value, not used"
-            lines.append(f"    {note}")
+        if row.get("kind") == "login":
+            if row.get("found"):
+                lines.append(f"{label}: on")
+            continue
+        if not row.get("found"):
+            missing.append(label)
+            continue
+        line = f"{label}: {row.get('source')}"
+        also = [str(place) for place in row.get("also_in") or []]
+        if also and row.get("conflict"):
+            line += f" - also in {', '.join(also)}, which defines a different value, not used"
+        elif also:
+            line += f", and {len(also)} other place{'' if len(also) == 1 else 's'}"
+        lines.append(line)
     ollama = plan.get("ollama") or {}
     if ollama.get("note"):
         lines.append(f"Ollama: {ollama['note']}")
+    if missing:
+        lines.append("Not found: " + ", ".join(missing))
     return lines
 
 
@@ -2636,12 +2655,40 @@ def link_label(parent, url: str, **kwargs):
     return label
 
 
-SITTING_INTRO = (
-    "What MyScribe already found on this machine is below. The next steps ask what is still "
-    "open, one at a time; each has a Skip that writes nothing, and everything can be changed "
-    "later in Settings."
-)
+SITTING_INTRO = "What MyScribe found here is not asked again. The next steps ask the rest, one at a time."
 NOTHING_IS_OPEN = "Nothing is open: everything MyScribe asks about is answered or already here."
+
+SKIP_LINE = "Skip writes nothing; this can be answered later."
+"""The one line under every question about Skip (TASK-098, criterion 4).
+True of every question by ADR-015's rule that a skip writes nothing; what
+skipping costs for this one, and where it is answered later, are the
+engine's own sentences behind `SKIP_DETAILS`."""
+SKIP_DETAILS = "Details"
+
+
+def details_toggle(details) -> Callable:
+    """The click on "Details": the first shows the engine's sentences under
+    the skip line, the next hides them again."""
+    shown = [False]
+
+    def toggle(_event=None) -> None:
+        if shown[0]:
+            details.pack_forget()
+        else:
+            details.pack(fill="x", pady=(4, 0))
+        shown[0] = not shown[0]
+
+    return toggle
+
+
+def asking_sentence(text: str) -> str:
+    """The sentence of a question's text that asks it: the first one ending
+    in a question mark, or else the first. The summary names a question by
+    this, because some texts are a paragraph - the Ollama offer carries a URL,
+    a size, a sha256 and a command line - and repeating all of it made the
+    summary the tallest step of the sitting (TASK-098)."""
+    sentences = re.split(r"(?<=[.?!])\s+", str(text).strip())
+    return next((sentence for sentence in sentences if sentence.endswith("?")), sentences[0])
 
 
 def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
@@ -2795,9 +2842,12 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
         elif kind != "yes-no":
             values[name] = tk.StringVar(value=opening_value(question))
             for choice in question.get("choices") or []:
+                # Wrapped: a library found at a long path is a label as wide
+                # as the path, and it made the window 1536 pixels wide.
                 tk.Radiobutton(block, text=str(choice.get("label") or choice.get("value")),
                                variable=values[name], value=str(choice.get("value")),
                                tristatevalue=not_an_answer, anchor="w", justify="left",
+                               wraplength=500,
                                command=lambda name=name: touched(name)).pack(fill="x")
             notes = [f"{choice.get('label') or choice.get('value')}: {choice['note']}"
                      for choice in question.get("choices") or [] if choice.get("note")]
@@ -2805,13 +2855,21 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
                 tk.Label(block, text="\n".join(notes), wraplength=520, justify="left",
                          anchor="w", fg="#555").pack(fill="x", pady=(6, 0))
 
-        # What Skip costs, and where the question is answered later: the
-        # engine's own sentences, smaller and under the question, where the
-        # Skip button below them is the thing they explain.
-        tk.Label(block, text=f"If you skip: {question.get('if_skipped', '')}\n"
-                             f"Later: {question.get('answer_later', '')}",
-                 wraplength=520, justify="left", anchor="w", fg="#666",
-                 font=("TkDefaultFont", 8)).pack(fill="x", pady=(10, 0))
+        # What Skip costs, and where the question is answered later: one
+        # line, with the engine's own sentences behind "Details" (TASK-098).
+        # Shown whole they were two to eight lines under every question.
+        skip_row = tk.Frame(block)
+        skip_row.pack(fill="x", pady=(10, 0))
+        tk.Label(skip_row, text=SKIP_LINE, anchor="w", fg="#666",
+                 font=("TkDefaultFont", 8)).pack(side="left")
+        details = tk.Label(block, text=f"If you skip: {question.get('if_skipped', '')}\n"
+                                       f"Later: {question.get('answer_later', '')}",
+                           wraplength=520, justify="left", anchor="w", fg="#666",
+                           font=("TkDefaultFont", 8))
+        more = tk.Label(skip_row, text=SKIP_DETAILS, fg="#0645ad", cursor="hand2",
+                        font=("TkDefaultFont", 8, "underline"))
+        more.pack(side="left", padx=(6, 0))
+        more.bind("<Button-1>", details_toggle(details))
 
     summary = tk.Frame(pages, name="summary")
     tk.Label(summary, text="Ready. This is what will be saved:", anchor="w",
@@ -2863,7 +2921,7 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
         if page == "summary":
             now = given()
             summary_lines.configure(text="\n".join(
-                f"• {question.get('text', '')}  →  {shown_answer(question, now[question['id']])}"
+                f"• {asking_sentence(question.get('text', ''))}  →  {shown_answer(question, now[question['id']])}"
                 for question, _block in blocks if shown(question, now)) or NOTHING_IS_OPEN)
         # "Ask me next time", and not "Skip for now": nothing is applied, the
         # app writes no stamp, and the sitting therefore returns at the next
