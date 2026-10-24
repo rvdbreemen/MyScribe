@@ -11,11 +11,12 @@
   MyScribe under-counted how much of a model's window a transcript fills: each
   timestamp and speaker name costs more than it allowed for. So a local model
   could get a part of a long recording too big for its window, read only the
-  second half, and report the job as done. MyScribe now counts on the safe
-  side: at least what the models count, on the Dutch transcripts it was
-  measured on. Text written without spaces, such as Chinese or Japanese, can
-  still be under-counted. It asks Ollama to refuse a prompt that does not fit
-  instead of shortening it, and it refuses one that was shortened anyway. A
+  second half, and report the job as done. MyScribe now uses a deliberately
+  pessimistic estimate, calibrated on token counts measured with qwen3.5 and
+  gemma4 on Dutch text. Text written without spaces, such as Chinese or
+  Japanese, can still be under-counted. It asks Ollama to refuse a prompt
+  that does not fit instead of shortening it, and it refuses one that was
+  shortened anyway. A
   note that stopped because the window was full now says so, instead of
   blaming the answer limit; a cloud answer that stopped before its limit says
   that too. Long recordings are split into a few more parts than before,

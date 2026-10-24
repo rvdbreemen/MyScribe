@@ -12,6 +12,7 @@ superseded_by: null
 related:
   - "ADR-020"
   - "ADR-023"
+  - "ADR-031"
 topics:
   - "ollama"
   - "reasoning"
@@ -59,6 +60,11 @@ status_history:
     status: Accepted
     changed_by: "User: Robert van den Breemen (via Claude, session 2026-10-23)"
     reason: Robert chose option A (retry with think:false) on 2026-10-23 and answered 'Ja, accepteer ADR-029'
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-24
+    status: Accepted
+    changed_by: Claude (agent, session 2026-10-24)
+    reason: ADR-031 bounds the Ollama window that ADR-029's retry also runs in
     changed_via: adr-kit lifecycle
 ```
 

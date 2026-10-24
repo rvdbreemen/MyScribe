@@ -1775,7 +1775,7 @@
       "path": "ADR-029-an-ollama-answer-lost-entirely-to-thinking-is-asked-once-more-with-think-false.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-23",
+      "date": "2026-10-24",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-23 with the three options and the A/B in front of him.",
       "topics": [
         "ollama",
@@ -1868,6 +1868,67 @@
           "tests/testllmproviders.py::testarefusedhintfallsbacktonoreasoningfieldnottothelimit, ::testa400namingreasoningwithonlythelimitonthewireisretriedoncewithoutit, ::testa400thatnamesnoreasoningfieldwithonlythelimitonthewireisnotretried, ::te...",
           "tests/testllmtaskproviders.py::testacleanupwhosehintopenrouterrefusesgoesagainwithnoreasoninglimit.",
           "tests/testllmproviders.py::testacontextlength400namingreasoningwiththelimitoniscontexttoolongafteronecall; tests/testllmtasks.py::testtherowandacutoffrefusalnamethereasoninglimitsent."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-031",
+      "title": "Ollama is asked never to truncate, and the token estimate is calibrated against measured tokenizer counts",
+      "path": "ADR-031-ollama-is-asked-never-to-truncate-and-the-token-estimate-is-calibrated-against-measured-tokenizer-counts.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-24",
+      "decision_summary": "Chosen option: A, recorded at Robert's request on 2026-10-24.",
+      "topics": [
+        "chunking",
+        "context-window",
+        "ollama"
+      ],
+      "aliases": [
+        "estimate_tokens",
+        "halving signature",
+        "truncate"
+      ],
+      "components": [
+        "scribe/llm/chunking.py",
+        "scribe/llm/ollama.py"
+      ],
+      "symbols": [
+        "CONTEXT_REFUSAL",
+        "estimate_tokens",
+        "halved_prompt_tokens"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Every Ollama /api/chat body carries \"truncate\": false.",
+          "An HTTP 400 carrying the daemon's context refusal (CONTEXTREFUSAL) is ContextTooLong.",
+          "A promptevalcount equal to halvedprompttokens(window) is ContextTooLong, with the window this call asked for.",
+          "estimatetokens prices a run of letters at three characters a token, every other character at one token, and each non-blank line at one more.",
+          "The estimate is at least the measured qwen3.5:4b count of the test fixture; a new tokenizer measurement that beats it changes the estimate, not the test."
+        ],
+        "must_not": [
+          "Send shift; it was measured to change nothing.",
+          "Store an answer whose prompt count matches the halving signature.",
+          "Ask the daemon for a token count while planning."
+        ],
+        "exceptions": [
+          "A prompt whose real count is exactly the halving signature is refused too; one count in half a window is the accepted price."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testthebodyasksthedaemonnevertotruncate, ::testadaemonthatrefusestotruncateiscontexttoolong, ::testapromptthedaemonhalvedisrefused, ::testthehalvingsignatureisthewindowthedaemonreallyran, ::testacountnexttothesign...",
+          "tests/testllmchunking.py::testestimatetokensispessimisticatthreelettersatoken, ::testtheestimateisnotbelowwhatthelocaltokenizercounted, ::testatimestampandaspeakerlabelcostatokenacharacter."
         ]
       },
       "scope": {
@@ -2479,6 +2540,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-029",
+      "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-030",
       "target": "ADR-020",
       "type": "related",
@@ -2487,6 +2554,12 @@
     {
       "source": "ADR-030",
       "target": "ADR-023",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-031",
+      "target": "ADR-029",
       "type": "related",
       "resolved": true
     }
