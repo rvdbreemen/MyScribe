@@ -277,7 +277,8 @@ TOOLS: tuple[Tool, ...] = (
                       "them, e.g. {\"speakers\": false} or {\"timestamps\": \"turn\"}"},
           "save_to": {"type": "string", "description": "A file, or a folder to write it into under "
                       "its own name; an existing file is replaced"}},
-         export_transcript, required=("media_id",), idempotent=True),
+         # destructive: save_to replaces a file that is already there.
+         export_transcript, required=("media_id",), destructive=True, idempotent=True),
     Tool("add_recording", "Transcribe a file",
          "Send an audio or video file on this computer into the library and queue its "
          "transcription. Answers the recording and its job_id; follow the job with get_job. "

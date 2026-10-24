@@ -42,10 +42,12 @@
   `search_transcripts`, `get_transcript`, `export_transcript`,
   `add_recording`, `transcribe_again`, `ask_ai`, `list_jobs`, `get_job`,
   `cancel_job` and `get_settings`. Like the CLI it reaches only 127.0.0.1 and
-  never opens the library itself. A failed action, or arguments that do not
-  fit a tool, come back as a tool result marked as an error, with the API's
-  code and detail. `export_transcript` returns one text format as text, and
-  writes a docx or a ZIP to `save_to`. `add_recording` sends the file's bytes,
+  never opens the library itself. A failed action comes back as a tool
+  result marked as an error, with the API's status, code and detail;
+  arguments that do not fit a tool's schema come back the same way, with
+  what was wrong. `export_transcript` returns one text format as text; a
+  docx or several formats (a ZIP) need `save_to`, and with `save_to` any
+  export is written to that file or folder, replacing a file already there. `add_recording` sends the file's bytes,
   or its path with `by_path`, and takes an `idempotency_key`; a replayed
   answer is marked `myscribe/replayed`. The server is written on Python's
   standard library and adds no package to the install (ADR-031, Proposed).

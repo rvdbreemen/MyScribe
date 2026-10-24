@@ -221,9 +221,9 @@ another port.
 
 A failed action comes back as a tool result marked as an error. The text is
 the API's error, for example `error 404 not_found: no job with id 999`, so
-the agent can read it and try again. A tool's read-only flag is set for the
-seven tools that change nothing. An agent can use the flag to call those
-tools without asking first. A repeated `add_recording` or `transcribe_again`
+the agent can read it and try again. The seven tools that change nothing
+carry MCP's read-only flag, which a client may use to decide what needs
+your approval. A repeated `add_recording` or `transcribe_again`
 with the same `idempotency_key` returns the first answer. Its result carries
 `"_meta": {"myscribe/replayed": true}`.
 

@@ -195,6 +195,9 @@ def test_read_tools_say_so_and_writers_do_not():
     read_only = {t["name"] for t in answer["result"]["tools"] if t["annotations"]["readOnlyHint"]}
     assert read_only == {"list_recordings", "get_recording", "search_transcripts",
                          "get_transcript", "list_jobs", "get_job", "get_settings"}
+    destructive = {t["name"] for t in answer["result"]["tools"]
+                   if t["annotations"].get("destructiveHint")}
+    assert destructive == {"export_transcript", "cancel_job"}  # save_to replaces a file
 
 
 def test_the_schemas_enums_are_the_apps():
