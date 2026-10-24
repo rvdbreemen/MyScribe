@@ -2658,11 +2658,13 @@ def link_label(parent, url: str, **kwargs):
 SITTING_INTRO = "What MyScribe found here is not asked again. The next steps ask the rest, one at a time."
 NOTHING_IS_OPEN = "Nothing is open: everything MyScribe asks about is answered or already here."
 
-SKIP_LINE = "Skip writes nothing; this can be answered later."
-"""The one line under every question about Skip (TASK-098, criterion 4).
-True of every question by ADR-015's rule that a skip writes nothing; what
-skipping costs for this one, and where it is answered later, are the
-engine's own sentences behind `SKIP_DETAILS`."""
+SKIP_PREFIX = "If you skip: "
+"""The one line under a question about Skip (TASK-098, criterion 4) is this
+and the first sentence of the engine's `if_skipped` for that question; the
+rest of it, and `answer_later`, wait behind `SKIP_DETAILS`. No sentence of
+the launcher's own: a fixed "Skip writes nothing" was false on the library
+step, where a skip starts a new library (ADR-015: the engine owns the text;
+Robert, 2026-10-24)."""
 SKIP_DETAILS = "Details"
 
 
@@ -2681,14 +2683,34 @@ def details_toggle(details) -> Callable:
     return toggle
 
 
+def sentences(text: str) -> list[str]:
+    """A text of the engine's cut into its sentences: after a full stop, a
+    question mark or an exclamation mark that white space follows. A path or
+    a version has no space after its dots and stays whole."""
+    return [sentence for sentence in re.split(r"(?<=[.?!])\s+", str(text).strip()) if sentence]
+
+
 def asking_sentence(text: str) -> str:
     """The sentence of a question's text that asks it: the first one ending
     in a question mark, or else the first. The summary names a question by
     this, because some texts are a paragraph - the Ollama offer carries a URL,
     a size, a sha256 and a command line - and repeating all of it made the
     summary the tallest step of the sitting (TASK-098)."""
-    sentences = re.split(r"(?<=[.?!])\s+", str(text).strip())
-    return next((sentence for sentence in sentences if sentence.endswith("?")), sentences[0])
+    said = sentences(text) or [""]
+    return next((sentence for sentence in said if sentence.endswith("?")), said[0])
+
+
+def skip_texts(question: dict) -> tuple[str, str]:
+    """What a step says about Skip: the line on screen, and what waits behind
+    "Details". The line is the first sentence of the question's `if_skipped`;
+    the details are the rest of it and `answer_later`. Either is "" when the
+    engine gave nothing for it, and then nothing is drawn for it."""
+    first, *rest = sentences(question.get("if_skipped") or "") or [""]
+    later = str(question.get("answer_later") or "").strip()
+    behind = [" ".join(rest)] if rest else []
+    if later:
+        behind.append(f"Later: {later}")
+    return (SKIP_PREFIX + first if first else "", "\n".join(behind))
 
 
 def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
@@ -2855,21 +2877,24 @@ def ask_setup(root, layout: Layout, plan: dict) -> dict | None:
                 tk.Label(block, text="\n".join(notes), wraplength=520, justify="left",
                          anchor="w", fg="#555").pack(fill="x", pady=(6, 0))
 
-        # What Skip costs, and where the question is answered later: one
-        # line, with the engine's own sentences behind "Details" (TASK-098).
-        # Shown whole they were two to eight lines under every question.
+        # What Skip costs, and where the question is answered later: the
+        # first sentence of the engine's own `if_skipped` on screen, the rest
+        # behind "Details" (TASK-098). Shown whole they were two to eight
+        # lines under every question.
+        line, behind = skip_texts(question)
         skip_row = tk.Frame(block)
         skip_row.pack(fill="x", pady=(10, 0))
-        tk.Label(skip_row, text=SKIP_LINE, anchor="w", fg="#666",
-                 font=("TkDefaultFont", 8)).pack(side="left")
-        details = tk.Label(block, text=f"If you skip: {question.get('if_skipped', '')}\n"
-                                       f"Later: {question.get('answer_later', '')}",
-                           wraplength=520, justify="left", anchor="w", fg="#666",
-                           font=("TkDefaultFont", 8))
-        more = tk.Label(skip_row, text=SKIP_DETAILS, fg="#0645ad", cursor="hand2",
-                        font=("TkDefaultFont", 8, "underline"))
-        more.pack(side="left", padx=(6, 0))
-        more.bind("<Button-1>", details_toggle(details))
+        if line:
+            # Wrapped: the library step's first sentence names a path.
+            tk.Label(skip_row, text=line, anchor="w", justify="left", fg="#666", wraplength=440,
+                     font=("TkDefaultFont", 8)).pack(side="left")
+        if behind:
+            details = tk.Label(block, text=behind, wraplength=520, justify="left", anchor="w",
+                               fg="#666", font=("TkDefaultFont", 8))
+            more = tk.Label(skip_row, text=SKIP_DETAILS, fg="#0645ad", cursor="hand2",
+                            font=("TkDefaultFont", 8, "underline"))
+            more.pack(side="left", anchor="n", padx=(6, 0))
+            more.bind("<Button-1>", details_toggle(details))
 
     summary = tk.Frame(pages, name="summary")
     tk.Label(summary, text="Ready. This is what will be saved:", anchor="w",

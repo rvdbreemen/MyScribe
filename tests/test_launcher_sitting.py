@@ -122,6 +122,21 @@ def a_yes_no(id="fetch_models", default="yes") -> dict:
     }
 
 
+def a_library(new=r"C:\Users\Example\MyScribe\data", old=r"C:\Users\Example\Old\data") -> dict:
+    """The library step as `scribe.setup` asks it with one library found:
+    an `if_skipped` of two sentences, the first naming where the new library
+    goes - a long path - and the second what is left where it was."""
+    return {
+        "id": "library", "kind": "choice",
+        "text": "A MyScribe library already exists on this machine. Use it, start a new one, or name another folder?",
+        "choices": [{"value": "new", "label": "Start a new library", "note": ""},
+                    {"value": old, "label": old, "note": ""}],
+        "current": "", "default": "new", "shown_if": None,
+        "if_skipped": f"A new library is started at {new}. Left untouched, and still there: {old} (5 recordings).",
+        "answer_later": "Settings > Library > Change library, while the new one holds no recordings",
+    }
+
+
 A_FOUND_TOKEN = {
     "kind": "credential", "name": "huggingface", "label": "Hugging Face token",
     "found": True, "source": "HF_TOKEN in .env", "also_in": [], "conflict": False, "note": "",
@@ -806,45 +821,80 @@ def _on_step(widget, step: str) -> bool:
     return False
 
 
-def test_the_skip_explanation_is_one_line_and_the_engine_s_sentences_wait_behind_details(
-    layout, monkeypatch
-):
-    """Criterion 4: under every question one small line about Skip, and the
-    engine's own `if_skipped` and `answer_later` one click away - drawn word
-    for word, and not on screen until somebody asks for them."""
-    plan = a_plan(a_secret(), a_choice(), a_yes_no())
+def _skip_step(sitting, question) -> dict:
+    """What one step shows about Skip before and after a click on "Details"."""
+    sitting.goto(question["id"])
+    mine = [w for w in sitting.widgets if _on_step(w.master, f"q_{question['id']}")]
+    said = [str(w.kwargs.get("text", "")) for w in mine if w.visible]
+    links = [w for w in mine if w.kwargs.get("cursor") == "hand2"
+             and w.kwargs.get("text") == launcher.SKIP_DETAILS]
+    hidden = [w for w in mine if not w.visible]
+    before = [str(w.kwargs.get("text", "")) for w in hidden]
+    for link in links:
+        link.bindings["<Button-1>"](None)
+    opened = [str(w.kwargs.get("text", "")) for w in hidden if w.visible]
+    small = [w for w in mine if w.visible and tuple(w.kwargs.get("font") or ())[:2] == ("TkDefaultFont", 8)]
+    return {"lines": [text for text in said if text.startswith(launcher.SKIP_PREFIX)],
+            "said": said, "links": len(links), "before": before, "opened": opened, "small": len(small)}
+
+
+def test_the_skip_line_is_the_first_sentence_of_the_engine_s_own_if_skipped(layout, monkeypatch):
+    """Criterion 4, as Robert settled it on 2026-10-24: the one line under a
+    question is the first sentence of the engine's `if_skipped` for that
+    question (ADR-015: the engine owns the text), and the rest of it waits
+    behind "Details" with `answer_later`. A fixed "Skip writes nothing; this
+    can be answered later." was false on the library step, where skipping
+    starts a new library and the found one can be taken up only while the new
+    one holds no recordings."""
+    library = a_library()
+    first, rest = library["if_skipped"].split(". ", 1)
+    first += "."
+    plan = a_plan(library, a_secret(), a_choice(), a_yes_no())
     seen: dict = {}
 
     def touch(sitting):
         for question in plan["questions"]:
-            sitting.goto(question["id"])
-            mine = [w for w in sitting.widgets if _on_step(w.master, f"q_{question['id']}")]
-            said = [str(w.kwargs.get("text", "")) for w in mine if w.visible]
-            details = [w for w in mine if question["if_skipped"] in str(w.kwargs.get("text", ""))]
-            links = [w for w in mine if w.kwargs.get("cursor") == "hand2"
-                     and w.kwargs.get("text") == launcher.SKIP_DETAILS]
-            before = [w.visible for w in details]
-            for link in links:
-                link.bindings["<Button-1>"](None)
-            seen[question["id"]] = {
-                "line": [text for text in said if text == launcher.SKIP_LINE],
-                "engine_text_on_screen": any(question["if_skipped"] in text for text in said),
-                "details": len(details), "links": len(links), "before": before,
-                "after": [w.visible for w in details],
-                "later_after": any(question["answer_later"] in str(w.kwargs.get("text", ""))
-                                   for w in details if w.visible),
-            }
+            seen[question["id"]] = _skip_step(sitting, question)
 
     hold(monkeypatch, layout, plan, touch=touch, press=None)
 
-    assert "\n" not in launcher.SKIP_LINE and len(launcher.SKIP_LINE) <= 60, "one short line"
-    assert set(seen) == {"hf_token", "llm_provider", "fetch_models"}
-    for question_id, step in seen.items():
-        assert step["line"] == [launcher.SKIP_LINE], f"{question_id}: one skip line on screen"
-        assert not step["engine_text_on_screen"], f"{question_id}: the details wait for the link"
-        assert step["links"] == 1 and step["details"] == 1, question_id
-        assert step["before"] == [False] and step["after"] == [True], f"{question_id}: one click shows them"
-        assert step["later_after"], f"{question_id}: where it can be answered later is in the details"
+    step = seen["library"]
+    assert step["lines"] == [launcher.SKIP_PREFIX + first], "one line: the engine's first sentence"
+    assert not any(rest in text for text in step["said"]), "the second sentence waits for Details"
+    assert not any(library["answer_later"] in text for text in step["said"])
+    assert step["links"] == 1
+    assert any(rest in text for text in step["before"]), "Details holds the rest of if_skipped"
+    assert any(rest in text and library["answer_later"] in text for text in step["opened"]), \
+        "one click shows the rest and where it is answered later"
+    assert not any(first in text for text in step["before"]), "the first sentence is not said twice"
+    for question in plan["questions"][1:]:
+        step = seen[question["id"]]
+        assert step["lines"] == [launcher.SKIP_PREFIX + question["if_skipped"]], question["id"]
+        assert step["links"] == 1 and any(question["answer_later"] in text for text in step["opened"]), \
+            f"{question['id']}: where it is answered later is behind Details"
+    assert not hasattr(launcher, "SKIP_LINE"), "no fixed sentence about Skip is left to show"
+
+
+def test_a_question_without_if_skipped_shows_no_skip_line(layout, monkeypatch):
+    """Nothing to say is said as nothing: no line, and no "Details" with
+    nothing behind it. A question with only `answer_later` keeps its
+    Details. The engine fills both on every question today
+    (tests/test_setup_plan.py); this is the launcher not inventing one."""
+    bare = dict(a_secret(), if_skipped="", answer_later="")
+    later_only = dict(a_choice(), if_skipped="")
+    seen: dict = {}
+
+    def touch(sitting):
+        for question in (bare, later_only):
+            seen[question["id"]] = _skip_step(sitting, question)
+
+    hold(monkeypatch, layout, a_plan(bare, later_only), touch=touch, press=None)
+
+    assert seen["hf_token"]["lines"] == [] and seen["hf_token"]["links"] == 0
+    assert seen["hf_token"]["small"] == 0, "not even an empty line is drawn"
+    assert seen["llm_provider"]["lines"] == [] and seen["llm_provider"]["links"] == 1
+    assert seen["llm_provider"]["small"] == 2, "no line: the Details link and, clicked, what it holds"
+    assert any(later_only["answer_later"] in text for text in seen["llm_provider"]["opened"])
 
 
 def test_a_long_choice_wraps_instead_of_widening_the_window(layout, monkeypatch):
