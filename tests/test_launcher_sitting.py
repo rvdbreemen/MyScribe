@@ -122,6 +122,22 @@ def a_yes_no(id="fetch_models", default="yes") -> dict:
     }
 
 
+def a_library(new=r"C:\Users\Example\MyScribe\data", old=r"C:\Users\Example\Old\data") -> dict:
+    """The library step as `scribe.setup` asks it with one library found:
+    an `if_skipped` of two sentences, the first naming where the new library
+    goes - a long path - and the second what is left where it was."""
+    return {
+        "id": "library", "kind": "choice",
+        "text": "A MyScribe library already exists on this machine. Use it, start a new one, or name another folder?",
+        "choices": [{"value": "new", "label": "Start a new library", "note": ""},
+                    {"value": old, "label": old, "note": ""}],
+        "current": "", "default": "new", "shown_if": None,
+        "if_skipped": f"A new library is started at {new}. Left untouched, and still there: {old} (5 recordings).",
+        "answer_later": ("To use another library, quit MyScribe and start it with --setup, which offers "
+                         "a library found elsewhere while this one holds no recordings."),
+    }
+
+
 A_FOUND_TOKEN = {
     "kind": "credential", "name": "huggingface", "label": "Hugging Face token",
     "found": True, "source": "HF_TOKEN in .env", "also_in": [], "conflict": False, "note": "",
@@ -233,7 +249,9 @@ def _fake_tkinter(sitting: _Sitting):
         def __init__(self, master=None, **kwargs):
             self.master = master
             self.kwargs = kwargs
-            self.visible = True
+            # On screen once it is packed or gridded, as in Tk: a widget that
+            # is built and never placed is not seen (TASK-098's details).
+            self.visible = False
             self.bindings: dict = {}
             sitting.widgets.append(self)
 
@@ -491,11 +509,10 @@ def test_the_found_block_names_a_source_and_never_a_value():
     lines = launcher.found_lines(a_plan(found=rows, ollama="running, 3 models"))
 
     assert lines == [
-        "Hugging Face token: HF_TOKEN in .env",
-        "    also the registry - which defines a different value, not used",
-        "OpenAI key: not found",
+        "Hugging Face token: HF_TOKEN in .env - also in the registry, which defines a different value, not used",
         "HTTPS_PROXY: proxy.example:8080 (the environment)",
         "Ollama: running, 3 models",
+        "Not found: OpenAI key",
     ]
 
 
@@ -751,6 +768,182 @@ def test_a_yes_no_question_opens_on_the_plan_s_default(layout, monkeypatch):
 
     answers, _sitting = hold(monkeypatch, layout, a_plan(a_yes_no(default="no")))
     assert answers == {"fetch_models": "no"}
+
+
+# --- TASK-098, criteria 2 and 4: a shorter found step, a one-line skip ---------------
+#
+# Measured on 2026-10-24 with the real engine's plan on a scratch home: the
+# found step put every other place a token sits on a line of its own and
+# listed every credential that was not found, and each question carried two
+# to eight lines of "If you skip / Later" under it. At 150 % the summary was
+# 1093 physical pixels tall, over the 1008 a 1080p screen leaves at that scale.
+
+
+def test_the_found_step_says_what_was_found_in_one_line_each():
+    """One line per thing found: the other places a token also sits are a
+    count unless one of them disagrees, which is a warning and keeps its
+    words. What was not found is one line at the end, and a login entry that
+    is off is not on this step at all - its question asks it."""
+    rows = [
+        dict(A_FOUND_TOKEN, source="HF_TOKEN (environment)",
+             also_in=["HF_TOKEN (registry)", "HUGGINGFACE_TOKEN (environment)", "HUGGINGFACE_TOKEN (registry)"]),
+        {"kind": "credential", "name": "openrouter", "label": "OpenRouter", "found": True,
+         "source": "OPENROUTER_TOKEN (environment)", "also_in": ["OPENROUTER_TOKEN (registry)"],
+         "conflict": False, "note": ""},
+        {"kind": "credential", "name": "openai", "label": "OpenAI", "found": False,
+         "source": "", "also_in": [], "conflict": False, "note": ""},
+        {"kind": "credential", "name": "anthropic", "label": "Anthropic", "found": False,
+         "source": "", "also_in": [], "conflict": False, "note": ""},
+        {"kind": "login", "name": "start_at_login", "label": "Start at login", "found": True,
+         "source": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MyScribe", "also_in": [],
+         "conflict": False, "note": r"C:\Example\MyScribe.exe --at-login", "on": True},
+    ]
+
+    lines = launcher.found_lines(a_plan(found=rows, ollama="running, 3 models"))
+
+    assert lines == [
+        "Hugging Face token: HF_TOKEN (environment), and 3 other places",
+        "OpenRouter: OPENROUTER_TOKEN (environment), and 1 other place",
+        "Start at login: on",
+        "Ollama: running, 3 models",
+        "Not found: OpenAI, Anthropic",
+    ]
+    off = dict(rows[-1], found=False, on=False, source="")
+    assert launcher.found_lines(a_plan(found=[off])) == ["Ollama: not installed"], (
+        "a login entry that is off is the start_at_login question, not a line on the found step")
+
+
+def _on_step(widget, step: str) -> bool:
+    """Is this widget inside that step's frame, at any depth?"""
+    while widget is not None:
+        if str(getattr(widget, "kwargs", {}).get("name", "")) == step:
+            return True
+        widget = getattr(widget, "master", None)
+    return False
+
+
+def _skip_step(sitting, question) -> dict:
+    """What one step shows about Skip before and after a click on "Details"."""
+    sitting.goto(question["id"])
+    mine = [w for w in sitting.widgets if _on_step(w.master, f"q_{question['id']}")]
+    said = [str(w.kwargs.get("text", "")) for w in mine if w.visible]
+    links = [w for w in mine if w.kwargs.get("cursor") == "hand2"
+             and w.kwargs.get("text") == launcher.SKIP_DETAILS]
+    hidden = [w for w in mine if not w.visible]
+    before = [str(w.kwargs.get("text", "")) for w in hidden]
+    for link in links:
+        link.bindings["<Button-1>"](None)
+    opened = [str(w.kwargs.get("text", "")) for w in hidden if w.visible]
+    small = [w for w in mine if w.visible and tuple(w.kwargs.get("font") or ())[:2] == ("TkDefaultFont", 8)]
+    return {"lines": [text for text in said if text.startswith(launcher.SKIP_PREFIX)],
+            "said": said, "links": len(links), "before": before, "opened": opened, "small": len(small)}
+
+
+def test_the_skip_line_is_the_first_sentence_of_the_engine_s_own_if_skipped(layout, monkeypatch):
+    """Criterion 4, as Robert settled it on 2026-10-24: the one line under a
+    question is the first sentence of the engine's `if_skipped` for that
+    question (ADR-015: the engine owns the text), and the rest of it waits
+    behind "Details" with `answer_later`. A fixed "Skip writes nothing; this
+    can be answered later." was false on the library step, where skipping
+    starts a new library and the found one can be taken up only while the new
+    one holds no recordings."""
+    library = a_library()
+    first, rest = library["if_skipped"].split(". ", 1)
+    first += "."
+    plan = a_plan(library, a_secret(), a_choice(), a_yes_no())
+    seen: dict = {}
+
+    def touch(sitting):
+        for question in plan["questions"]:
+            seen[question["id"]] = _skip_step(sitting, question)
+
+    hold(monkeypatch, layout, plan, touch=touch, press=None)
+
+    step = seen["library"]
+    assert step["lines"] == [launcher.SKIP_PREFIX + first], "one line: the engine's first sentence"
+    assert not any(rest in text for text in step["said"]), "the second sentence waits for Details"
+    assert not any(library["answer_later"] in text for text in step["said"])
+    assert step["links"] == 1
+    assert any(rest in text for text in step["before"]), "Details holds the rest of if_skipped"
+    assert any(rest in text and library["answer_later"] in text for text in step["opened"]), \
+        "one click shows the rest and where it is answered later"
+    assert not any(first in text for text in step["before"]), "the first sentence is not said twice"
+    for question in plan["questions"][1:]:
+        step = seen[question["id"]]
+        assert step["lines"] == [launcher.SKIP_PREFIX + question["if_skipped"]], question["id"]
+        assert step["links"] == 1 and any(question["answer_later"] in text for text in step["opened"]), \
+            f"{question['id']}: where it is answered later is behind Details"
+    assert not hasattr(launcher, "SKIP_LINE"), "no fixed sentence about Skip is left to show"
+
+
+def test_a_question_without_if_skipped_shows_no_skip_line(layout, monkeypatch):
+    """Nothing to say is said as nothing: no line, and no "Details" with
+    nothing behind it. A question with only `answer_later` keeps its
+    Details. The engine fills both on every question today
+    (tests/test_setup_plan.py); this is the launcher not inventing one."""
+    bare = dict(a_secret(), if_skipped="", answer_later="")
+    later_only = dict(a_choice(), if_skipped="")
+    seen: dict = {}
+
+    def touch(sitting):
+        for question in (bare, later_only):
+            seen[question["id"]] = _skip_step(sitting, question)
+
+    hold(monkeypatch, layout, a_plan(bare, later_only), touch=touch, press=None)
+
+    assert seen["hf_token"]["lines"] == [] and seen["hf_token"]["links"] == 0
+    assert seen["hf_token"]["small"] == 0, "not even an empty line is drawn"
+    assert seen["llm_provider"]["lines"] == [] and seen["llm_provider"]["links"] == 1
+    assert seen["llm_provider"]["small"] == 2, "no line: the Details link and, clicked, what it holds"
+    assert any(later_only["answer_later"] in text for text in seen["llm_provider"]["opened"])
+
+
+def test_a_long_choice_wraps_instead_of_widening_the_window(layout, monkeypatch):
+    """A library found at a long path made the library step 1536 pixels wide:
+    a radio button's label does not wrap unless it is told to."""
+    long_path = "C:\\Users\\Example\\" + "\\".join(["a-rather-long-folder-name"] * 6) + "\\data"
+    plan = a_plan(a_choice(id="library", choices=(("new", "Start a new library"), (long_path, long_path))))
+
+    _answers, sitting = hold(monkeypatch, layout, plan, press=None)
+
+    assert sitting.radios and all(radio.get("wraplength") for radio in sitting.radios)
+
+
+def test_a_path_with_an_initial_in_it_is_not_cut_into_two_sentences():
+    """A Windows profile named after a person can hold an initial and a space,
+    `C:\\Users\\J. Smith`, and the library's skip line is the path's sentence:
+    cut there, the step showed half a path and hid the rest behind Details."""
+    first, details = launcher.skip_texts({
+        "if_skipped": r"A new library is started at C:\Users\J. Smith\MyScribe\data. The one found stays.",
+        "answer_later": "",
+    })
+
+    assert first.endswith(r"C:\Users\J. Smith\MyScribe\data.")
+    assert details == "The one found stays."
+
+
+def test_the_summary_names_each_question_by_the_sentence_that_asks_it(layout, monkeypatch):
+    """The install offer is a paragraph - the URL, the size, the sha256 and the
+    command line - and the summary repeated it whole, which made that step the
+    tallest of all. The step itself still shows every word; the summary names
+    the question by the sentence that asks it."""
+    offer = dict(
+        a_yes_no(id="ollama_install", default="no"),
+        text=("Ollama is not on this machine. Install it, and let it answer questions about a transcript? "
+              "MyScribe would download OllamaSetup.exe v0.99.1 from https://example.invalid/OllamaSetup.exe "
+              "(1,600,000,001 bytes, sha256 " + "1" * 64 + "), then run exactly: OllamaSetup.exe /VERYSILENT."),
+    )
+
+    def touch(sitting):
+        sitting.goto("summary")
+
+    _answers, sitting = hold(monkeypatch, layout, a_plan(offer, a_choice()), touch=touch, press=None)
+
+    text = "\n".join(str(w.kwargs.get("text", "")) for w in sitting.widgets
+                     if w.visible and str(getattr(w.master, "kwargs", {}).get("name", "")) == "summary")
+    assert "Install it, and let it answer questions about a transcript?  →  No" in text
+    assert "Who answers questions about a transcript?  →  " in text
+    assert "sha256" not in text and "OllamaSetup.exe" not in text
 
 
 # --- criterion 5: the progress lines drive a bar, not the log ---------------------

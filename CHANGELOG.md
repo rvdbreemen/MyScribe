@@ -2,6 +2,12 @@
 
 ### Fixed
 
+- **The doctor names the weights for the quality you chose.** With *Max* set
+  as the transcription default, the models line asked about the *Turbo*
+  weights and never mentioned the larger ones *Max* loads. It now checks the
+  tier you chose, *Turbo* when you never chose one, and its fix names the
+  exact download (TASK-107.04).
+
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget
   thinking and returned nothing (speakers and minutes on a long recording).
@@ -12,6 +18,16 @@
   into an effort level. A request refused with an error that names the
   reasoning field is sent once more without it. Each answer records the
   limit it was sent with (TASK-123, ADR-030).
+
+### Changed
+
+- **The setup window is shorter.** Its first step lists each thing MyScribe
+  found on one line and everything it did not find on one more. Under each
+  question there is now one sentence about Skip, with what skipping costs and where
+  to answer it later behind a **Details** link. The summary names each question
+  by the sentence that asks it. A library at a long path no longer makes the
+  window wider than the screen, and every step was measured to fit a 1080p
+  screen (TASK-098).
 
 ## [0.9.1] - 2026-10-23
 
