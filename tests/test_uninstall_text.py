@@ -158,11 +158,30 @@ def test_an_uninstall_removes_the_lock_and_the_login_note_beside_the_default_hom
     never the home itself, and never MyScribe.location, which the
     installation guide says stays."""
     launcher = _launcher()
-    # The default home is {localappdata}\MyScribe; only the names are used.
-    home = Path(launcher.APP_NAME)
-    names = {launcher.instance_lock_path(home).name, launcher.login_note_path(home).name}
-    assert names == {"MyScribe.lock", "MyScribe-at-login.txt"}
+    # The folder comes from the launcher too: default_home under a stand-in
+    # %LOCALAPPDATA%, so a renamed or nested default home moves the paths the
+    # uninstaller must name, not only the suffixes.
+    base = Path("LOCALAPPDATA-stand-in")
+    home = launcher.default_home("win32", {"LOCALAPPDATA": str(base)})
+    files = [launcher.instance_lock_path(home), launcher.login_note_path(home)]
+    assert {f.name for f in files} == {"MyScribe.lock", "MyScribe-at-login.txt"}
+    relative = ["\\".join(f.relative_to(base).parts) for f in files]
 
     entries = _section(_iss(), "UninstallDelete")
     assert sorted(entries) == sorted(
-        rf'Type: files; Name: "{{localappdata}}\{name}"' for name in names)
+        rf'Type: files; Name: "{{localappdata}}\{rel}"' for rel in relative)
+
+
+def test_the_macos_and_linux_uninstall_text_names_the_lock_and_the_login_note():
+    """The launcher leaves both files beside the home on every platform, not
+    only on Windows (review of TASK-112.07): the macOS and Linux paragraphs of
+    the uninstall section name them, by the names the launcher uses."""
+    launcher = _launcher()
+    home = Path(launcher.APP_NAME)
+    names = [launcher.instance_lock_path(home).name, launcher.login_note_path(home).name]
+    text = README.read_text(encoding="utf-8")
+    section = text.split("## Uninstalling", 1)[1]
+    for platform in ("**macOS**", "**Linux**"):
+        paragraph = section.split(platform, 1)[1].split("\n\n", 1)[0]
+        for name in names:
+            assert f"`{name}`" in paragraph, (platform, name)

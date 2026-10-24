@@ -235,14 +235,20 @@ home. It leaves:
 Settings first, or delete
 `~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist` by hand. Your
 home stays in `~/Library/Application Support/MyScribe` (or the folder you
-chose), with `~/Library/Application Support/MyScribe.location` beside it. An
+chose), with `~/Library/Application Support/MyScribe.location` beside it.
+Beside the home, wherever it is, also stay `MyScribe.lock`, the launcher's
+lock, and after a failed start at login `MyScribe-at-login.txt`; they can go
+with the home. An
 Ollama installed through MyScribe is `/Applications/Ollama.app`; its models
 are in `~/.ollama`.
 
 **Linux** - delete the AppImage. Switch *Start at login* off first, or delete
 `~/.config/autostart/myscribe.desktop` (under `$XDG_CONFIG_HOME` if you set
 it). Your home stays in `~/.local/share/MyScribe` (under `$XDG_DATA_HOME` if
-set), with `MyScribe.location` beside it. MyScribe never installs Ollama on
+set), with `MyScribe.location` beside it. Beside the home, wherever it is,
+also stay `MyScribe.lock` and after a failed start at login
+`MyScribe-at-login.txt`; they can go with the home. MyScribe never installs
+Ollama on
 Linux - it shows Ollama's commands and you run them - so removing it is
 [Ollama's uninstall section](https://docs.ollama.com/linux).
 
