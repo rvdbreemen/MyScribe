@@ -187,6 +187,9 @@ NO_REASONING = {
 }
 """What each real provider puts on the wire for TASK-029's hint."""
 
+PLAIN_REASONING = {"openrouter": {"reasoning": {"max_tokens": 1600}}}
+"""What a call without the hint carries instead (TASK-123)."""
+
 
 @pytest.mark.parametrize("provider_name", sorted(WIRING))
 def test_cleanup_reaches_each_real_provider_with_its_own_no_reasoning_field(
@@ -194,7 +197,8 @@ def test_cleanup_reaches_each_real_provider_with_its_own_no_reasoning_field(
 ):
     """The join for the hint: `TaskSpec.reasoning_off` through `_ask`,
     `llm.chat` and the real provider class, onto the body that leaves. A kind
-    without the hint sends none of the three fields."""
+    without the hint sends none of the three fields, except OpenRouter's
+    reasoning limit (TASK-123)."""
     sent = Sent()
     tasks.run_task(
         conn,
@@ -220,4 +224,7 @@ def test_cleanup_reaches_each_real_provider_with_its_own_no_reasoning_field(
         model="m",
         **WIRING[provider_name](plain),
     )
-    assert [k for k, _ in NO_REASONING.values() if k in plain.chat_body()] == []
+    # Without the hint OpenRouter carries its reasoning limit, a share of the
+    # 4,000-token summary cap (TASK-123); the others send nothing.
+    sent_plain = {k: plain.chat_body()[k] for k, _ in NO_REASONING.values() if k in plain.chat_body()}
+    assert sent_plain == PLAIN_REASONING.get(provider_name, {})

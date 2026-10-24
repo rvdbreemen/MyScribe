@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Fixed
+
+- **AI tasks through OpenRouter keep room to answer.** With the default
+  `openrouter/auto`, some of the models OpenRouter picked spent the whole
+  answer budget thinking and came back with nothing (speakers, cleanup and
+  minutes on a long recording). Every OpenRouter call now asks the model to
+  keep its thinking to two fifths of that budget, so at least three fifths
+  stay for the answer; models that do not think ignore the request. Each
+  reply's job event and stored answer record the limit sent (TASK-123).
+
 ## [0.9.1] - 2026-10-23
 
 Fixes found by installing the 0.9.0 release on Windows and running its

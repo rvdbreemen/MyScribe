@@ -289,14 +289,16 @@ REASONING_KEYS = ("reasoning", "reasoning_effort")
 
 
 @pytest.mark.parametrize(
-    "cls, key, value",
+    "cls, key, value, plain_body",
     [
-        (openai_like.OpenRouterProvider, "reasoning", {"enabled": False}),
-        (openai_like.OpenAIProvider, "reasoning_effort", "none"),
+        # Without the hint OpenRouter carries the reasoning limit (TASK-123).
+        (openai_like.OpenRouterProvider, "reasoning", {"enabled": False},
+         {"reasoning": {"max_tokens": 1600}}),
+        (openai_like.OpenAIProvider, "reasoning_effort", "none", {}),
     ],
     ids=["openrouter", "openai"],
 )
-def test_each_cloud_provider_says_no_reasoning_its_own_way(cls, key, value):
+def test_each_cloud_provider_says_no_reasoning_its_own_way(cls, key, value, plain_body):
     """One hint on the seam, one wire field per provider, and no caller that
     knows which. Measured 2026-09-11: OpenRouter's `reasoning: {enabled:
     false}` took deepseek-v4-flash and gpt-5.6-luna to 0 reasoning tokens;
@@ -315,7 +317,7 @@ def test_each_cloud_provider_says_no_reasoning_its_own_way(cls, key, value):
 
     plain = Recorder(completion())
     provider(cls, plain).complete(REQUEST)
-    assert [k for k in REASONING_KEYS if k in plain.body()] == []
+    assert {k: plain.body()[k] for k in REASONING_KEYS if k in plain.body()} == plain_body
 
 
 @pytest.mark.parametrize(
@@ -361,7 +363,9 @@ def test_a_refused_hint_is_retried_once_without_it(cls, refusal):
     assert answer.text == "Paris"
     assert rec.calls == 2
     assert [k for k in REASONING_KEYS if k in rec.body(0)] != []
-    assert [k for k in REASONING_KEYS if k in rec.body(1)] == []
+    assert "reasoning_effort" not in rec.body(1)
+    # OpenRouter puts its reasoning limit where the hint was (TASK-123).
+    assert rec.body(1).get("reasoning") in (None, {"max_tokens": 1600})
     assert rec.body(1)["temperature"] == hinted().temperature, "only the hint was dropped"
     assert answer.hint_sent is False
 
@@ -480,7 +484,8 @@ def test_the_hint_mapping_is_copied_into_the_body_never_shared(monkeypatch):
     why an earlier version of this test, asserting only that the mapping still
     compared equal, passed against a by-reference merge. Also pins that
     `extra_body` carries the hint and nothing else, since dropping the hint
-    drops the whole key."""
+    drops the whole key - and that the retry then carries the reasoning
+    limit in its place (TASK-123)."""
     assert openai_like.OpenRouterProvider.reasoning_off_body == {
         "extra_body": {"reasoning": {"enabled": False}}
     }
@@ -507,12 +512,132 @@ def test_the_hint_mapping_is_copied_into_the_body_never_shared(monkeypatch):
     assert sent == {"reasoning": {"enabled": False}}
     assert sent is not shared["extra_body"], "the body holds the class's own extra_body"
     assert sent["reasoning"] is not shared["extra_body"]["reasoning"], "copied one level only"
-    assert handed[1] is None, "the retry without the hint sends no extra_body at all"
+    assert handed[1] == {"reasoning": {"max_tokens": 1600}}, (
+        "the retry without the hint carries the reasoning limit instead (TASK-123)"
+    )
     sent["reasoning"]["enabled"] = True  # anything downstream writing into what it was handed
     assert shared == {"extra_body": {"reasoning": {"enabled": False}}}
     later = Recorder(completion())
     provider(openai_like.OpenRouterProvider, later).complete(hinted())
     assert later.body()["reasoning"] == {"enabled": False}
+
+
+# --- a bounded share of the budget for reasoning (TASK-123) -----------------------
+#
+# Jobs 423, 426 and 428 on media 61, 2026-10-22, all openrouter/auto: 12,842
+# of 16,000 completion tokens reasoning and no text; 6,000 of 6,000 after the
+# hint was refused; 4,000 of 4,000. Robert's choice (2026-10-24): every
+# OpenRouter call carries OpenRouter's own reasoning limit, so the visible
+# answer keeps room whichever model the router picks.
+
+
+def capped(max_output_tokens: int, **kw) -> base.ChatRequest:
+    return base.ChatRequest(system="s", user="u", model="m", max_output_tokens=max_output_tokens, **kw)
+
+
+@pytest.mark.parametrize(
+    "cap, reasoning",
+    [(4000, 1600), (6000, 2400), (16000, 6400), (2560, 1024)],
+    ids=["default-4000", "blog-and-cleanup-6000", "speakers-16000", "at-the-floor"],
+)
+def test_openrouter_bounds_reasoning_to_a_share_of_the_answer_budget(cap, reasoning):
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(cap))
+
+    sent = rec.body()
+    assert sent["reasoning"] == {"max_tokens": reasoning}
+    assert sent["max_tokens"] == cap, "the overall cap is unchanged"
+    assert sent["max_tokens"] - sent["reasoning"]["max_tokens"] >= cap * 0.6
+    assert "extra_body" not in sent
+    assert answer.reasoning_cap == reasoning, "the answer says which limit went on the wire"
+
+
+@pytest.mark.parametrize("cap", [2559, 512, 64])
+def test_a_share_below_openrouters_floor_is_not_sent(cap):
+    """OpenRouter clamps an Anthropic budget to at least 1,024 and wants the
+    overall cap strictly above it; a share under 1,024 would ask for a budget
+    the cap cannot hold. Such a call goes out exactly as it always did."""
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(cap))
+
+    assert [k for k in REASONING_KEYS if k in rec.body()] == []
+    assert answer.reasoning_cap is None
+
+
+@pytest.mark.parametrize("cap", [4000, 16000])
+def test_openai_sends_no_reasoning_limit(cap):
+    """api.openai.com has no `reasoning` object; its only knob is the hint's
+    `reasoning_effort`, and a plain call stays byte-for-byte what it was."""
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenAIProvider, rec).complete(capped(cap))
+
+    assert sorted(rec.body()) == ["max_completion_tokens", "messages", "model", "temperature"]
+    assert answer.reasoning_cap is None
+
+
+def test_the_hint_goes_alone_never_beside_the_limit():
+    """`enabled: false` and a budget in one object contradict each other; the
+    hint asks for none, so it goes on its own."""
+    rec = Recorder(completion())
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(6000, reasoning_off=True))
+
+    assert rec.body()["reasoning"] == {"enabled": False}
+    assert answer.hint_sent is True and answer.reasoning_cap is None
+
+
+def test_a_refused_hint_falls_back_to_the_limit_not_to_nothing():
+    """Job 426: cleanup sends the hint, a mandatory reasoner refused it, and
+    the call without it spent 6,000 of 6,000 thinking. The second call now
+    carries the limit instead of no reasoning control at all."""
+    refusal = error(400, "Reasoning is mandatory for this endpoint and cannot be disabled.")
+    rec = Recorder(refusal, completion("clean text"))
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(6000, reasoning_off=True))
+
+    assert rec.calls == 2
+    assert rec.body(0)["reasoning"] == {"enabled": False}
+    assert rec.body(1)["reasoning"] == {"max_tokens": 2400}
+    assert answer.hint_sent is False and answer.reasoning_cap == 2400
+
+
+def test_a_400_with_only_the_limit_on_the_wire_is_not_retried():
+    """OpenRouter's documented rule is that a provider ignores a parameter it
+    does not support (provider-selection, require_parameters false), so the
+    limit is not treated as a knob worth a second call: a 400 is a refusal."""
+    rec = Recorder(error(400, "Unsupported parameter: 'max_tokens' is not supported with this model."))
+
+    with pytest.raises(base.BadResponse):
+        provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert rec.calls == 1
+
+
+def test_an_answer_lost_despite_the_limit_is_asked_again_with_the_hint_alone():
+    """The limit is a request, honoured where an upstream maps it; one that
+    ignores it and loses everything to thinking still gets the TASK-099
+    retry, with the hint and without the limit."""
+    rec = Recorder(lost_to_reasoning(), completion("SPEAKER_00 is Robert"))
+
+    answer = provider(openai_like.OpenRouterProvider, rec).complete(capped(16000))
+
+    assert rec.calls == 2
+    assert rec.body(0)["reasoning"] == {"max_tokens": 6400}
+    assert rec.body(1)["reasoning"] == {"enabled": False}
+    assert answer.hint_sent is True and answer.reasoning_cap is None
+
+
+def test_a_contentless_answer_names_the_limit_it_was_asked_with():
+    rec = Recorder(completion(None, completion_tokens=4000, finish="length",
+                              details={"reasoning_tokens": 0}))
+
+    with pytest.raises(base.BadResponse) as caught:
+        provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert "reasoning_cap=1600" in str(caught.value)
 
 
 def test_the_answer_carries_reasoning_tokens_and_upstream():
@@ -614,7 +739,8 @@ def test_an_answer_lost_to_reasoning_is_asked_once_more_with_the_hint(cls):
 
     assert answer.text == "SPEAKER_00 is Robert"
     assert rec.calls == 2
-    assert [k for k in REASONING_KEYS if k in rec.body(0)] == [], "the first request is as before"
+    assert "reasoning_effort" not in rec.body(0), "the first request asks no hint"
+    assert rec.body(0).get("reasoning") in (None, {"max_tokens": 1600}), "only the limit (TASK-123)"
     assert [k for k in REASONING_KEYS if k in rec.body(1)] != [], "the second carries the hint"
     assert answer.hint_sent is True, "the row says the answer was bought with the hint"
 
