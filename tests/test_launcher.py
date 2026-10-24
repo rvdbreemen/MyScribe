@@ -3355,3 +3355,54 @@ def test_quit_requeues_a_running_job_and_leaves_no_runner(layout, monkeypatch):
         if conn is not None:
             conn.close()
         launch.app.stop(timeout=10)
+
+
+def test_the_hard_stop_leaves_no_runner_and_says_the_job_is_interrupted(layout, monkeypatch):
+    """ADR-031 end to end: the launcher's hard stop, the one that runs when
+    the stop route does not answer, on a real `python -m scribe` running the
+    slow fake job. On Windows taskkill ends the tree, as before. On macOS and
+    Linux it SIGTERMs the app's group only, and before TASK-112.09 the runner,
+    a session of its own, ran on and wrote `done`. Now the app ends it in its
+    lifespan, the row waits for reconcile, and the sentence says interrupted."""
+    from scribe import db as scribe_db
+    from scribe import jobs as scribe_jobs
+
+    monkeypatch.setattr(launcher.Layout, "app_dir", property(lambda self: REPO))
+    monkeypatch.setattr(launcher.Layout, "env_python", property(lambda self: Path(sys.executable)))
+    launcher.prepare_home(layout)
+    port = _free_port()
+    said: list[tuple[str, str]] = []
+    launch = launcher.Launch(layout, port, False, lambda state, text: said.append((state, text)))
+    launch.app = launcher.AppProcess(layout, port, base=dict(os.environ, SCRIBE_FAKE_STAGES="1"))
+    launch.stop_through_route = lambda app: False  # the route does not answer
+    launch.app.start()
+    conn = None
+    try:
+        assert launch.app.wait_ready(timeout=180), "the app did not start"
+        app_pid = launcher.read_health(port)["pid"]
+        conn = scribe_db.connect(layout.data_dir / "myscribe.db")
+        slow = scribe_jobs.enqueue(conn, "fake", params={"scenario": "slow"})
+        deadline = time.monotonic() + 60
+        row = None
+        while time.monotonic() < deadline:
+            row = conn.execute("SELECT status, pid, stage FROM job WHERE id=?", (slow,)).fetchone()
+            if row["status"] == "running" and row["pid"] and row["stage"] == "one":
+                break
+            time.sleep(0.1)
+        assert row["status"] == "running" and row["pid"], "the slow job never started"
+        runner = row["pid"]
+        stopped = time.monotonic()
+
+        launch.stop()
+
+        # taskkill /F returns before Windows has torn the tree down: a moment.
+        assert launcher.wait_gone(app_pid, 5), "the hard stop left the app running"
+        assert launcher.wait_gone(runner, 5), "the runner outlived the app"
+        assert said[-1] == ("status", launcher.ENDED), said[-1]
+        time.sleep(max(0.0, stopped + 13 - time.monotonic()))  # past the slow stage's 10 s
+        status = conn.execute("SELECT status FROM job WHERE id=?", (slow,)).fetchone()["status"]
+        assert status == "running", f"the job became {status} after the app had gone"
+    finally:
+        if conn is not None:
+            conn.close()
+        launch.app.stop(timeout=10)

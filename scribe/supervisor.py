@@ -555,10 +555,11 @@ class Supervisor:
         thread = self._thread
         if thread is None:
             return
-        thread.join(max(timeout, STOP_JOIN_SECONDS))
+        waited = max(timeout, STOP_JOIN_SECONDS)
+        thread.join(waited)
         if thread.is_alive():
             print(
-                f"scribe: the supervisor thread is still running {timeout:g}s after"
+                f"scribe: the supervisor thread is still running {waited:g}s after"
                 " being asked to stop; it is most likely ending a cancelled runner"
                 " and will finish on its own.",
                 file=sys.stderr,

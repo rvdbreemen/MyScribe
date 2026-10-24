@@ -91,7 +91,7 @@ runner's session.
 
 ## Decision Outcome
 
-Chosen option: **A**, decided by Robert on 2026-10-24 (his option b). It
+Chosen option: **A**, decided by Robert on 2026-10-24. It
 reuses ADR-028's kill path and changes nothing about which stops requeue. B
 would requeue after a logout or a service manager's stop, which ADR-028 rules
 out. C is per-OS code in every runner, and macOS has no parent-death signal.
@@ -117,12 +117,12 @@ without its job page open: the runner goes with the app, and the row stays `runn
 
 ### Exceptions
 
-* An app that ends without its lifespan can still leave a runner on macOS and Linux: a SIGKILL, a crash, the hard stop's SIGKILL after `STOP_TIMEOUT`, or uvicorn's forced exit on a second Ctrl+C. The hard stop's sentence then says the job can keep running.
+* An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after `STOP_TIMEOUT` and then says the job can keep running.
 
 ### Verification
 
 * `tests/test_app_signal_stop.py`; `tests/test_app.py::test_the_supervisor_stops_before_the_watchers`; `tests/test_supervisor.py::test_a_stop_nobody_asked_for_ends_the_runner_and_leaves_the_job_to_reconcile`.
-* `tests/test_launcher.py::test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job` and `::test_the_hard_stop_says_whether_it_had_to_kill_the_app`.
+* `tests/test_launcher.py::test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job`, `::test_the_hard_stop_says_whether_it_had_to_kill_the_app` and `::test_the_hard_stop_leaves_no_runner_and_says_the_job_is_interrupted`.
 
 ## Consequences
 
@@ -137,7 +137,7 @@ without its job page open: the runner goes with the app, and the row stays `runn
 
 ## Open Questions
 
-- [x] What does the app do with the runner on a shutdown that did not come through the stop route? — **Answered 2026-10-24 by User: Robert van den Breemen:** it ends the runner's tree without requeueing (option b); recorded by Claude from the session.
+- [x] What does the app do with the runner on a shutdown that did not come through the stop route? — **Answered 2026-10-24 by Robert van den Breemen (chose it in session 2026-10-24; recorded by Claude):** the app ends the runner's tree on any shutdown, without requeueing.
 
 ## Related Decisions
 
