@@ -1887,8 +1887,8 @@
       "title": "Ollama is asked never to truncate, and the token estimate is calibrated against measured tokenizer counts",
       "path": "ADR-031-ollama-is-asked-never-to-truncate-and-the-token-estimate-is-calibrated-against-measured-tokenizer-counts.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-10-24",
+      "status": "Accepted",
+      "date": "2026-10-25",
       "decision_summary": "Chosen option: A, proposed by the agent.",
       "topics": [
         "chunking",

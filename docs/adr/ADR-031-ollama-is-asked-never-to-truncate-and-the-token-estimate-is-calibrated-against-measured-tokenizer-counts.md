@@ -1,8 +1,8 @@
 ---
 id: "ADR-031"
 title: "Ollama is asked never to truncate, and the token estimate is calibrated against measured tokenizer counts"
-status: "Proposed"
-date: "2026-10-24"
+status: "Accepted"
+date: "2026-10-25"
 binding: false
 gate: null
 documents_shipped: false
@@ -36,7 +36,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-10-24.
+Accepted, 2026-10-25.
 
 ## Status History
 
@@ -47,6 +47,11 @@ status_history:
     changed_by: Claude (agent, session 2026-10-24)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
+    reason: Robert accepted ADR-031 in the session of 2026-10-25 with the truncate probe and the calibration in front of him
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
