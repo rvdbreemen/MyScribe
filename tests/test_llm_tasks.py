@@ -1125,7 +1125,11 @@ def test_the_shipped_cloud_window_admits_a_chunked_task(kind, chunks):
 def test_the_note_budget_checked_is_the_note_budget_spent(conn, monkeypatch):
     """The number `plan_task` proved would fit is the number `generate` asks
     for. Two computations of one budget is how a check passes on one value and
-    the calls go out with another."""
+    the calls go out with another.
+
+    24,000 tokens rather than the 16,000 this had before TASK-124: `word07`
+    costs four tokens now (its digits are a token each), so 16,000 no longer
+    leaves a full note per chunk, which is the case this test is about."""
     media_id = seed_media(conn, title="A long meeting")
     seed_long_run(conn, media_id, n_segments=150, words_per=50)
     provider, calls = fake_provider(map_reduce_script(ANSWERS["summary"]))
@@ -1137,7 +1141,7 @@ def test_the_note_budget_checked_is_the_note_budget_spent(conn, monkeypatch):
         kind="summary",
         provider_name="fake",
         model="fake-1",
-        context_tokens=16_000,
+        context_tokens=24_000,
     )
     tasks.generate(conn, plan)
 
@@ -1145,7 +1149,7 @@ def test_the_note_budget_checked_is_the_note_budget_spent(conn, monkeypatch):
     assert plan.note_budget >= tasks.MIN_NOTE_TOKENS
     assert plan.note_budget * len(plan.chunks) <= tasks.combine_capacity(
         plan.spec,
-        context_tokens=16_000,
+        context_tokens=24_000,
         max_output_tokens=plan.max_output_tokens,
         chunks=len(plan.chunks),
         title=plan.title,
@@ -2065,6 +2069,93 @@ def test_a_refused_cut_off_part_names_the_model_that_answered(conn, monkeypatch)
         tasks.run_task(conn, media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1")
 
     assert "model='z/model'" in str(caught.value), str(caught.value)
+
+
+# --- a full window is not a spent cap (TASK-124) ---------------------------------------------
+
+WINDOW = 32768
+
+
+def window_full(text: str, *, prompt: int, completion: int) -> base.ChatResponse:
+    """An answer that stopped because prompt + answer filled the window.
+
+    Job 436 on a copy of Robert's library (2026-10-23): a blog answer read
+    32,016 prompt tokens and wrote 752 = 32,768, `done_reason: length`, and the
+    board said it 'stopped at the 4000-token cap' - which it never reached.
+    """
+    return replace(truncated(text), prompt_tokens=prompt, completion_tokens=completion)
+
+
+def assert_says_window(message: str, *numbers: int) -> None:
+    assert "window" in message, message
+    assert "-token cap" not in message, message
+    for number in numbers:
+        assert str(number) in message, message
+
+
+def test_an_object_answer_that_filled_the_window_says_the_window_not_the_cap(
+    conn, media, monkeypatch
+):
+    provider, _ = fake_provider(
+        [window_full('{"title": "Terrein", "body": "## Wat', prompt=32016, completion=752)]
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1",
+                       context_tokens=WINDOW)
+
+    assert_says_window(str(caught.value), WINDOW, 32016, 752)
+
+
+def test_a_note_that_filled_the_window_says_the_window_not_the_cap(conn, monkeypatch):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(
+        map_reduce_script(
+            ANSWERS["summary"],
+            note=lambda i: window_full(f"notes {i} which stop", prompt=32568, completion=200),
+        )
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="summary", provider_name="fake",
+                       model="fake-1", budget_tokens=100, context_tokens=WINDOW)
+
+    assert_says_window(str(caught.value), WINDOW, 32568, 200)
+
+
+def test_a_part_that_filled_the_window_says_the_window_not_the_cap(conn, monkeypatch):
+    media_id = seed_media(conn, title="Guide")
+    seed_run(conn, media_id)
+    provider, _ = fake_provider([window_full("[0:01] Ford: Don't", prompt=32016, completion=752)])
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="cleanup", provider_name="fake",
+                       model="fake-1", context_tokens=WINDOW)
+
+    assert_says_window(str(caught.value), WINDOW, 32016, 752)
+
+
+def test_an_answer_that_spent_its_cap_still_says_the_cap_even_past_the_planned_window(
+    conn, media, monkeypatch
+):
+    """The cap is checked first. On a cloud provider the plan's window is the
+    128k planning floor, not the model's, so a prompt past it with the whole
+    cap spent is a cap, and calling it a full window would send Robert after
+    the wrong number."""
+    plan_cap = tasks.task_spec("blog").max_output_tokens
+    provider, _ = fake_provider(
+        [window_full('{"title": "x", "body": "y', prompt=130_000, completion=plan_cap)]
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1")
+
+    assert f"{plan_cap}-token cap" in str(caught.value), str(caught.value)
 
 
 def test_repair_json_accepts_a_raw_newline_inside_a_string():

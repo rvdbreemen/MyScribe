@@ -67,8 +67,20 @@ http://127.0.0.1:11434, `qwen3.5:4b` / `qwen3.5:9b` / `gemma4:12b` pulled):
   tokenizer, so a prompt with more words than the whole window is refused
   before the request is sent. Together they are the plan's "the value the
   request asks for is the value the caller gets, or `ContextTooLong` is
-  raised", implemented against what the API does rather than against a 400 it
-  never sends.
+  raised".
+
+  **Since TASK-124 the daemon is asked to refuse instead.** Its `ChatRequest`
+  has a `truncate` flag, and measured 2026-10-24 on Ollama 0.40.8 with
+  `"truncate": false` the same overflowing request is **HTTP 400** `request
+  (7909 tokens) exceeds the available context size (2048 tokens), try
+  increasing it` - which `_raise_for_status` turns into `ContextTooLong`. The
+  two checks above stay, and `_answer` adds the halving signature itself
+  (`prompt_eval_count == window / 2 + 2`), for a daemon too old to know the
+  key: an unknown field is ignored, and such a daemon halves as before. Both
+  compare against the window `_body` asks for (`context_tokens(model)`), not
+  the 8192 floor. `shift` is not sent: a generation that fills the window
+  stopped at prompt + answer == window with `done_reason: "length"` whether it
+  was true, false or absent.
 
 There is no key: nothing here resolves one, nothing logs one, and `available()`
 never mentions one.
@@ -175,6 +187,11 @@ every measurement in this docstring was taken at."""
 
 SETTING_NUM_CTX = "llm_num_ctx"
 """The settings row that moves `MAX_NUM_CTX`, for a machine that knows better."""
+
+CONTEXT_REFUSAL = "exceeds the available context size"
+"""The words of the 400 a `truncate: false` request gets when the prompt does
+not fit (Ollama 0.40.8, 2026-10-24): `request (7909 tokens) exceeds the
+available context size (2048 tokens), try increasing it`."""
 
 MAX_NUM_CTX = 32768
 """The ceiling a *measured* window is planned against.
@@ -773,15 +790,20 @@ class OllamaProvider(base.Provider):
         see it. Waiting for the answer cannot work; the only place left to
         notice is before the request.
 
-        This is deliberately not the pessimistic `chunking.estimate_tokens`
-        (3 chars/token). An estimator that over-counts would refuse prompts
-        that would have fitted; the floor only refuses what certainly does not.
+        This is deliberately not the pessimistic `chunking.estimate_tokens`.
+        An estimator that over-counts would refuse prompts that would have
+        fitted; the floor only refuses what certainly does not.
+
+        Against the window `_body` asks for, not the 8192 floor: comparing
+        against the floor refused every prompt planned for a measured window
+        above it (TASK-123, TASK-124).
         """
+        window = self.context_tokens(req.model)
         floor = self.word_floor(req.system, req.user)
-        if floor >= self.num_ctx:
+        if floor >= window:
             raise base.ContextTooLong(
                 f"the prompt is {floor} words, so at least {floor} tokens, and the window "
-                f"asked for is {self.num_ctx}: ollama would drop the front of it and answer "
+                f"asked for is {window}: ollama would drop the front of it and answer "
                 f"from the rest without saying so; send less text (chunk it) or raise num_ctx"
             )
 
@@ -803,11 +825,15 @@ class OllamaProvider(base.Provider):
 
         The reasoning hint adds `think: false`; without it no `think` key is
         sent at all, which is the body this provider always sent.
+
+        `truncate: false` makes a prompt the window cannot hold a 400 instead
+        of a 200 answered from its second half (module docstring, TASK-124).
         """
         body: dict[str, Any] = {
             "model": req.model,
             "messages": self._messages(req),
             "stream": False,
+            "truncate": False,
             "options": {
                 "temperature": req.temperature,
                 "num_ctx": self.context_tokens(req.model),
@@ -835,11 +861,25 @@ class OllamaProvider(base.Provider):
         # caught before the request instead, by
         # `_refuse_a_prompt_that_cannot_fit`. Neither check subsumes the other:
         # this one needs the answer, that one cannot wait for it.
-        if isinstance(prompt_tokens, int) and prompt_tokens > self.num_ctx:
+        window = self.context_tokens(req.model)
+        if isinstance(prompt_tokens, int) and prompt_tokens > window:
             raise base.ContextTooLong(
-                f"ollama read {prompt_tokens} prompt tokens into the {self.num_ctx}-token "
+                f"ollama read {prompt_tokens} prompt tokens into the {window}-token "
                 f"window asked for, so the prompt was truncated before the model saw it; "
                 f"send less text (chunk it) or raise num_ctx"
+            )
+        # The halving signature (TASK-124): a daemon that ignores `truncate`
+        # keeps the second half of an overflowing prompt and reports exactly
+        # half the window plus two - 4098 at 8192, 16386 at 32768, measured.
+        # A prompt that really is that long is refused too; one exact count in
+        # half a window is the price of never storing an answer to half a
+        # transcript.
+        if isinstance(prompt_tokens, int) and prompt_tokens == window // 2 + 2:
+            raise base.ContextTooLong(
+                f"ollama read exactly {prompt_tokens} prompt tokens = half the {window}-token "
+                f"window plus two, which is how it reports a prompt it cut in half to fit; "
+                f"the answer would be about the second half only. Send less text (chunk it) "
+                f"or raise num_ctx"
             )
 
         message = payload.get("message") or {}
@@ -944,6 +984,12 @@ class OllamaProvider(base.Provider):
         if status >= 500:
             # A dead or unstartable model runner. Transient: the card frees up.
             raise base.Unreachable(f"ollama at {self.host} failed with HTTP {status}: {detail}")
+        if status == 400 and CONTEXT_REFUSAL in detail:
+            # What `truncate: false` turns a silent halving into (TASK-124).
+            raise base.ContextTooLong(
+                f"ollama refused a prompt its window cannot hold rather than cut it: {detail}; "
+                f"send less text (chunk it) or raise num_ctx"
+            )
         raise base.BadResponse(f"ollama refused the request (HTTP {status}): {detail}")
 
 

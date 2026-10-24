@@ -391,6 +391,104 @@ def test_a_prompt_that_fits_the_requested_window_is_not_refused():
     assert provider(rec, num_ctx=512).complete(REQUEST).text == "Paris"
 
 
+# --- a truncated prompt is refused, by the daemon or by its signature (TASK-124) ----------
+
+REFUSED_TO_TRUNCATE = {
+    # Measured 2026-10-24 on Ollama 0.40.8, qwen3.5:4b, `num_ctx: 512` (the
+    # daemon allocated its 2048 minimum) and `"truncate": false`: HTTP 400.
+    "error": "request (7909 tokens) exceeds the available context size (2048 tokens), "
+    "try increasing it"
+}
+
+
+def test_the_body_asks_the_daemon_never_to_truncate():
+    """Without the key the daemon drops the front of a prompt that does not fit
+    and answers 200 (measured 2026-10-24: 7,909 tokens into a 2,048 window gave
+    `prompt_eval_count: 1026`); with `"truncate": false` the same request is a
+    400 that names both numbers. `shift` is not sent: with or without it a
+    generation that fills the window stopped at prompt + answer == 2048."""
+    rec = Recorder(chat_answer())
+
+    provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert rec.body(0)["truncate"] is False
+    assert "shift" not in rec.body(0)
+
+
+def test_a_daemon_that_refuses_to_truncate_is_context_too_long():
+    rec = Recorder(httpx2.Response(400, json=REFUSED_TO_TRUNCATE))
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert "7909" in str(exc.value) and "2048" in str(exc.value), str(exc.value)
+    assert rec.calls == 1, "chunking is the fix; the same prompt again is the same 400"
+
+
+def test_another_400_is_still_a_bad_response_not_a_window_problem():
+    """Only the window refusal is ContextTooLong: a 400 about anything else -
+    a `think` the model cannot do - would send a caller off to chunk a prompt
+    that fits."""
+    rec = Recorder(httpx2.Response(400, json={"error": '"qwen2:0.5b" does not support thinking'}))
+
+    with pytest.raises(base.BadResponse) as exc:
+        provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert not isinstance(exc.value, base.ContextTooLong)
+
+
+def test_a_prompt_the_daemon_halved_is_refused():
+    """The signature the 2026-09-03 measurement recorded: a prompt over the
+    window comes back with `prompt_eval_count` exactly `num_ctx / 2 + 2` (4098
+    at 8192) and HTTP 200. A daemon that ignores `truncate` - older than the
+    key - still does that, so the count is checked as well."""
+    rec = Recorder(chat_answer("a summary of the second half", prompt_eval=4098))
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert "4098" in str(exc.value) and "8192" in str(exc.value), str(exc.value)
+    assert "half" in str(exc.value), str(exc.value)
+
+
+def test_a_prompt_halved_in_a_measured_window_is_refused_against_that_window():
+    """TASK-123's minutes job on media 61: two notes of 87,180 and 89,374
+    characters read `prompt_eval_count: 16386` = 32768 / 2 + 2 and the job
+    ended 'done' on half a transcript."""
+    rec = Recorder(chat_answer("notes on the second half", prompt_eval=16386),
+                   show=show(32768, arch="qwen35"))
+    request = base.ChatRequest(system="s", user="lots of words", model="qwen3.5:4b")
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec).complete(request)
+
+    assert "16386" in str(exc.value) and "32768" in str(exc.value), str(exc.value)
+    assert "half" in str(exc.value), str(exc.value)
+
+
+def test_the_window_guards_use_the_window_that_was_asked_for_not_the_floor():
+    """The body asks the daemon for `context_tokens(model)` - up to 32768 on
+    this machine - and both overflow checks have to compare against that, not
+    the 8192 floor, or a prompt planned for the measured window is refused
+    before it is sent. Reverted once (1401d3c) because the planner then
+    under-counted and the daemon halved; with `truncate: false` and the
+    signature check it is safe to compare against the real window again."""
+    rec = Recorder(chat_answer("a summary", prompt_eval=12000), show=show(32768, arch="gemma4"))
+    request = base.ChatRequest(
+        system="s", user=" ".join(f"word{i}" for i in range(9000)), model="gemma4:12b"
+    )
+
+    assert provider(rec).complete(request).text == "a summary"
+    assert rec.body(0)["options"]["num_ctx"] == 32768
+
+    too_long = base.ChatRequest(
+        system="s", user=" ".join(f"word{i}" for i in range(40000)), model="gemma4:12b"
+    )
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec).complete(too_long)
+    assert "32768" in str(exc.value)
+
+
 # --- what the daemon offers -------------------------------------------------------------
 
 

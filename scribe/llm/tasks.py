@@ -1064,6 +1064,11 @@ class TaskPlan:
     `_collect_notes` so that the number `plan_task` proved would fit back
     through the combine call is provably the number that gets spent. Zero for
     a task that is not chunked, which makes no note call at all."""
+    context_tokens: int = 0
+    """The window this plan was cut for (`context_tokens_for`, or the caller's).
+    Read back when an answer stops at `length`, to tell a full window from a
+    spent cap (`_ran_out_of`). Zero means unknown, and then only the cap is
+    ever named."""
 
     @property
     def kind(self) -> str:
@@ -1217,6 +1222,7 @@ def plan_task(
         language=answer_language(doc.run),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
         note_budget=note_budget,
+        context_tokens=window,
     )
 
 
@@ -1926,7 +1932,7 @@ def _collect_notes(
         if response.raw_finish_reason == TRUNCATED_FINISH:
             raise base.BadResponse(
                 f"the model ran out of room writing its notes for chunk {chunk.index} of the "
-                f"{plan.kind!r} task {where}: it stopped at the {note_budget}-token cap "
+                f"{plan.kind!r} task {where}: {_ran_out_of(plan, response, note_budget)} "
                 f"({_spent(response)}) rather than finishing, so the "
                 "notes are cut off mid-sentence and have not been stored. What it managed: "
                 + clip(text)
@@ -2063,7 +2069,7 @@ def _refuse_a_cut_off_part(plan: TaskPlan, chunk: Chunk, response: ChatResponse)
     where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
     raise base.BadResponse(
         f"the model ran out of room on chunk {chunk.index} of the {plan.kind!r} task "
-        f"{where}: it stopped at the {plan.max_output_tokens}-token cap "
+        f"{where}: {_ran_out_of(plan, response, plan.max_output_tokens)} "
         f"({_spent(response)}) rather than finishing, so the part "
         "is cut off and has not been stored. What it managed: " + clip(response.text or "")
     )
@@ -2082,11 +2088,42 @@ def _refuse_a_cut_off_answer(plan: TaskPlan, response: ChatResponse) -> None:
     if plan.spec.schema is None or response.raw_finish_reason != TRUNCATED_FINISH:
         return
     raise base.BadResponse(
-        f"the model ran out of room on the {plan.kind!r} task: it stopped at the "
-        f"{plan.max_output_tokens}-token cap ({_spent(response)}) before its answer was "
+        f"the model ran out of room on the {plan.kind!r} task: "
+        f"{_ran_out_of(plan, response, plan.max_output_tokens)} ({_spent(response)}) before its answer was "
         "complete, so there is nothing whole to store. What it managed: "
         + clip(response.text or "")
     )
+
+
+def _ran_out_of(plan: TaskPlan, response: ChatResponse, cap: int) -> str:
+    """Which limit a `length` answer hit, in the words that name the fix.
+
+    Job 436 (TASK-124): a blog answer read 32,016 prompt tokens and wrote 752,
+    which is 32,768 - the whole window - and the board said it 'stopped at the
+    4000-token cap', which it never reached. The cap is a number to raise; a
+    full window is a prompt to shorten, so the two must not share a sentence.
+
+    The cap is checked first: a cloud plan's window is the 128k planning floor
+    (`CLOUD_CONTEXT_TOKENS`), not the model's, and a call that spent its whole
+    cap past that floor hit the cap. Counts a provider did not report leave the
+    cap wording, which is what was said before this could tell.
+    """
+    prompt, completion = response.prompt_tokens, response.completion_tokens
+    spent_cap = isinstance(completion, int) and completion >= cap
+    window = plan.context_tokens
+    if (
+        not spent_cap
+        and window
+        and isinstance(prompt, int)
+        and isinstance(completion, int)
+        and prompt + completion >= window
+    ):
+        return (
+            f"the {window}-token window was full - {prompt} tokens of prompt and {completion} "
+            f"of answer - before it reached its {cap}-token answer budget, so a bigger budget "
+            f"would not help: the prompt has to be shorter (smaller chunks) or the window larger"
+        )
+    return f"it stopped at the {cap}-token cap"
 
 
 def _spent(response: ChatResponse) -> str:

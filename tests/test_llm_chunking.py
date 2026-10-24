@@ -19,8 +19,8 @@ rather than against the shape of one example:
   differently or the indexes ever start at one.
 
 Sizes are chosen so the token arithmetic is checkable by hand: the test
-segments are built from six-character words (`word00`), which cost exactly two
-tokens each at three characters per token, and each line carries a `[m:ss]`
+segments are built from six-letter words (`wordxy`), which cost exactly two
+tokens each at three letters per token, and each line carries a `[m:ss]`
 prefix that is six characters and therefore two more.
 """
 
@@ -40,8 +40,8 @@ from tests.seed import seed_media, seed_run
 SEGMENT_SECONDS = 10.0
 GAP_SECONDS = 0.5
 
-WORD = "word00"  # six characters: two tokens at three characters per token
-LINE_OVERHEAD = 2  # the "[m:ss] " prefix, also six characters
+WORD = "wordxy"  # six letters: two tokens at three letters per token
+LINE_OVERHEAD = 7  # the "[m:ss]" prefix, a token a character, and the line break
 
 
 def cost_of(words_per_segment: int) -> int:
@@ -81,8 +81,8 @@ def make_doc(sizes: list[int], *, title: str = "Clip") -> docs.TranscriptDoc:
     )
 
 
-TEN_WORDS = 22  # cost_of(10): what every segment costs in the split tests
-BUDGET = 100  # room for four such segments (88), never five (110)
+TEN_WORDS = 27  # cost_of(10): what every segment costs in the split tests
+BUDGET = 110  # room for four such segments (108), never five (135)
 
 
 @pytest.fixture
@@ -96,12 +96,70 @@ def conn(tmp_path):
 # --- the estimate ------------------------------------------------------------------
 
 
-def test_estimate_tokens_is_pessimistic_at_three_characters_a_token():
+def test_estimate_tokens_is_pessimistic_at_three_letters_a_token():
+    """Before TASK-124 these were 4, 1 and 7: the line break was free and a
+    digit or a colon cost a third of a token."""
     assert chunking.estimate_tokens("") == 0
-    assert chunking.estimate_tokens("hello world") == 4  # two two-token words
-    assert chunking.estimate_tokens("a") == 1  # never zero for a real word
-    assert chunking.estimate_tokens("supercalifragilistic") == 7  # 20 chars, rounded up
+    assert chunking.estimate_tokens("hello world") == 5  # two two-token words and a line
+    assert chunking.estimate_tokens("a") == 2  # never zero for a real word, plus its line
+    assert chunking.estimate_tokens("supercalifragilistic") == 8  # 20 letters, rounded up
+    assert chunking.estimate_tokens("[0:05]") == 7  # a token a character, and the line
+    assert chunking.estimate_tokens("Oké, 12") == 5  # "Oké" is one letter run; ",", "1", "2" a token each
     assert cost_of(10) == TEN_WORDS
+
+
+def dutch_meeting(lines: int = 600) -> str:
+    """A synthetic Dutch transcript in the shape `transcript_lines` sends.
+
+    Its real token count was measured once, 2026-10-24, on the local daemon
+    (Ollama 0.40.8, `prompt_eval_count` of this text minus that of an empty
+    prompt): see `MEASURED`. Generated rather than pasted so the text and the
+    number cannot drift apart without this function changing.
+    """
+    said = [
+        "Goedemiddag allemaal, welkom bij de vergadering van de gemeenteraad.",
+        "We beginnen met de vaststelling van de agenda, en daarna de begroting.",
+        "Wethouder Jansen zegt dat het zwembad 12 procent duurder uitvalt dan verwacht.",
+        "Ja, dat klopt, maar we hebben in 2025 al €1,2 miljoen gereserveerd.",
+        "Nee, dat is niet helemaal juist; kijk even naar pagina 34 van de nota.",
+        "Oké. Zijn er verder nog opmerkingen over punt drie, het Stationsplein?",
+        "Uh, ja, ik wil nog iets zeggen over de fietsenstalling bij het station.",
+        "Dank u wel. Dan gaan we nu over tot de stemming.",
+    ]
+    out = []
+    for i in range(lines):
+        t = 7 * i
+        stamp = f"{t // 60}:{t % 60:02d}" if t < 3600 else f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}"
+        out.append(f"[{stamp}] SPEAKER_{i % 4:02d}: {said[i % len(said)]} {said[(i * 3 + 1) % len(said)]}")
+    return "\n".join(out)
+
+
+MEASURED = {"qwen3.5:4b": 32034, "chars": 94583}
+"""`dutch_meeting()` as the local tokenizer counted it: 2.95 characters a token.
+The old estimate (three characters a token per word) said 31,264 - under, which
+is the direction that gets a prompt truncated."""
+
+
+def test_the_estimate_is_not_below_what_the_local_tokenizer_counted():
+    """TASK-124. On media 61 a blog note of 81,018 characters read 32,016 prompt
+    tokens (2.53 characters a token) and two minutes notes planned to fit
+    32,768 came back halved: the estimate under-counted. Every line's `[m:ss]`
+    and speaker label is where it went wrong - see the next test."""
+    text = dutch_meeting()
+    assert len(text) == MEASURED["chars"], "the fixture changed; measure it again"
+
+    assert chunking.estimate_tokens(text) >= MEASURED["qwen3.5:4b"]
+
+
+def test_a_timestamp_and_a_speaker_label_cost_a_token_a_character():
+    """Measured 2026-10-24 on qwen3.5:4b and gemma4:12b alike: 1,000 lines of
+    `[mm:ss]` read 8,000 tokens and 1,000 of `[h:mm:ss]` 10,000 - every digit,
+    colon and bracket is its own token, and so is the line break. 1,000 lines
+    of `SPEAKER_0n:` read 8,000 on qwen (7,000 on gemma). Three characters a
+    token priced the stamp at two or three."""
+    assert chunking.estimate_tokens("\n".join(["[12:34]"] * 1000)) >= 8000
+    assert chunking.estimate_tokens("\n".join(["[1:23:45]"] * 1000)) >= 10000
+    assert chunking.estimate_tokens("\n".join(["SPEAKER_03:"] * 1000)) >= 8000
 
 
 def test_estimate_tokens_is_additive_over_joined_lines():

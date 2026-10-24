@@ -7,6 +7,16 @@
   weights and never mentioned the larger ones *Max* loads. It now checks the
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
+- **Local AI can take a long recording, and never answers from half of it.**
+  MyScribe under-counted how much of a model's window a transcript fills: each
+  timestamp and speaker name costs more than it allowed for. So a local model
+  could get a part of a long recording too big for its window, read only the
+  second half, and report the job as done. MyScribe now counts what the
+  models really count. It asks Ollama to refuse a prompt that does not fit
+  instead of shortening it, and it refuses one that was shortened anyway. A
+  note that stopped because the window was full now says so, instead of
+  blaming the answer limit. Long recordings are split into a few more parts
+  than before, locally and for cleanup in the cloud (TASK-124).
 
 ### Changed
 
