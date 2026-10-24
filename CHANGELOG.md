@@ -10,11 +10,14 @@
 - **Quit no longer costs you the running job.** Quit in the MyScribe window,
   Ctrl+C in a console and a stop signal (on macOS and Linux) now stop MyScribe
   the way the Stop button in Settings does. A job that was running goes back to
-  the front of the queue and starts over at the next start. Before, it came
-  back as *interrupted* and waited for you to press Retry. On macOS and Linux
-  its transcription even kept running after MyScribe had closed. The window
-  and the console say which job goes back, before and after the stop
-  (TASK-112.09).
+  the front of the queue and starts over at the next start. Before, on Windows
+  that job came back as *interrupted* and waited for you to press Retry; on
+  Linux its transcription kept running after MyScribe had closed and finished
+  on its own. The window and the console say which job goes back, before and
+  after the stop. When MyScribe does not answer that stop, or has not stopped
+  a minute later, it is ended the old way and says so: on Windows the job comes
+  back as *interrupted*, and on macOS and Linux its transcription can keep
+  running after MyScribe has closed (TASK-112.09).
 
 ### Changed
 

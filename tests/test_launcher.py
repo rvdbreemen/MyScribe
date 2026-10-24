@@ -2682,7 +2682,7 @@ def test_a_sigterm_is_a_clean_stop_and_says_so(layout, monkeypatch):
     assert code == 0
     # TASK-112.09: the stop says what happened to the running job; this app
     # has no stop route to answer, so it is the hard stop's sentence.
-    assert launcher.STOPPING in _launcher_log(layout) and launcher.ENDED in _launcher_log(layout)
+    assert launcher.STOPPING in _launcher_log(layout) and launcher.ended() in _launcher_log(layout)
 
 
 def _port_busy(layout, monkeypatch, held):
@@ -2888,7 +2888,7 @@ def test_stop_ends_a_server_that_does_not_stop_and_says_what_that_costs():
 
         assert code == 0 and fake.posted == ["/api/shutdown"]
         assert _gone(pid), "the hard stop left the app running"
-        assert any("interrupted" in text for _state, text in said)
+        assert ("status", launcher.ended()) in said
     finally:
         _end(pid)
 
@@ -2978,7 +2978,7 @@ def test_the_hard_stop_ends_the_launcher_so_it_exits_clean_and_takes_its_app(tmp
     assert _gone(app_pid) and _gone(launcher_pid)
     if sys.platform != "win32":  # taskkill /F gives a Windows launcher no handler to run
         assert marker.read_text() == "0", "the launcher did not stop through its own handler"
-    assert any("interrupted" in text for text in said)
+    assert launcher.ended() in said
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -3093,7 +3093,7 @@ def test_quit_falls_back_to_the_hard_stop_when_the_app_outlives_the_wait(layout,
         assert fake.posted == ["/api/shutdown"]
         assert hard == [child.pid], "an app that did not stop through its route was left running"
         assert child.poll() is not None
-        assert said[-1] == ("status", launcher.ENDED)
+        assert said[-1] == ("status", launcher.ended())
     finally:
         _cleanup(child, fake)
 
@@ -3107,7 +3107,7 @@ def test_quit_falls_back_to_the_hard_stop_when_the_route_does_not_answer(layout,
         assert fake.posted == []
         assert hard == [child.pid]
         assert child.poll() is not None
-        assert said[-1] == ("status", launcher.ENDED)
+        assert said[-1] == ("status", launcher.ended())
     finally:
         _cleanup(child, fake)
 
@@ -3181,6 +3181,72 @@ def test_a_second_signal_while_the_stop_runs_does_not_cut_it_short(layout, monke
     assert unhandled == [], "the second SIGTERM fell through to whoever handled it before"
     assert fake.posted == ["/api/shutdown"] and hard == []
     assert "Job 7 is back at the front of the queue" in _launcher_log(layout)
+
+
+def test_the_hard_stop_gives_a_launcher_longer_than_its_own_stop_can_take(layout, monkeypatch):
+    """`--stop` SIGTERMs the launcher when its own route wait ran out, and the
+    launcher's stop then reads /health, asks the route and waits again before
+    its hard stop. Killing it before that is over exits it non-zero, which is
+    `APP_DIED`'s restart signal. The budget is what this stop really waits:
+    the timeouts its own requests pass, measured, plus its `stop_wait`, the
+    setup child's timeout and the hard stop's two."""
+    import inspect
+
+    hard_stop = inspect.signature(launcher.AppProcess.stop).parameters["timeout"].default
+    setup = inspect.signature(launcher.Launch.stop_setup).parameters["timeout"].default
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch, obeys=False)
+    stop_wait = launch.stop_wait
+    launch.stop_wait = 0.5
+    timeouts: list[float] = []
+    real_opener = launcher.loopback_opener
+
+    def spying_opener():
+        opener = real_opener()
+        real_open = opener.open
+
+        def open_(fullurl, data=None, timeout=None):
+            timeouts.append(timeout)
+            return real_open(fullurl, data, timeout)
+
+        opener.open = open_
+        return opener
+
+    monkeypatch.setattr(launcher, "loopback_opener", spying_opener)
+    try:
+        launch.stop()
+    finally:
+        _cleanup(child, fake)
+
+    assert fake.posted == ["/api/shutdown"] and hard == [child.pid]
+    assert len(timeouts) == 2 and all(isinstance(t, (int, float)) for t in timeouts), timeouts
+    worst = sum(timeouts) + stop_wait + setup + 2 * hard_stop
+    assert launcher.LAUNCHER_STOP_WAIT > worst, (
+        f"--stop kills a launcher after {launcher.LAUNCHER_STOP_WAIT:g} s; its own stop may take {worst:g} s")
+
+
+@pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
+def test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job(layout, monkeypatch, windows):
+    """The hard stop on Windows ends the runner's tree, so reconcile marks the
+    job interrupted. On macOS and Linux it signals the app's group only, and
+    the runner - a session of its own - can run on and finish the job
+    (ADR-028, measured in WSL). The sentence must not promise *interrupted*
+    there."""
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch)
+    fake.close()  # the route does not answer: the hard stop runs
+    monkeypatch.setattr(launcher.AppProcess, "stop", lambda self, *a, **k: (child.kill(), child.wait(10)))
+    monkeypatch.setattr(launcher, "IS_WINDOWS", windows)
+    try:
+        launch.stop()
+    finally:
+        _cleanup(child, fake)
+
+    state, text = said[-1]
+    assert state == "status" and "Retry on the jobs page" in text, text
+    if windows:
+        assert "is marked interrupted" in text, text
+    else:
+        assert "keep running after MyScribe has closed" in text, text
+        assert "is marked interrupted;" not in text, text
 
 
 REPO = LAUNCHER_PATH.parents[2]
