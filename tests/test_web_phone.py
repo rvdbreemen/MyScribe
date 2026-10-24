@@ -461,6 +461,29 @@ def test_a_door_that_timed_out_does_not_reload_the_library(client, clock):
     assert "/phone/done" not in tick.text
 
 
+@pytest.mark.parametrize("close", ["by hand", "by timeout"])
+def test_a_door_closed_otherwise_after_a_file_neither_claims_it_nor_reloads(client, clock, monkeypatch, close):
+    # The window between the phone's answer and the door closing itself on
+    # it: the laptop's Close or the timer gets there first. The reason is
+    # then not "received", and the panel must not report an arrival.
+    door = door_of(client)
+    monkeypatch.setattr(door, "_close_after_answer", lambda opening: None)
+    client.post("/phone/open", headers=HX)
+    assert send(door.opening.ip_url, "Meeting.m4a", b"phone audio bytes").status_code == 200
+    assert door.received == ["Meeting.m4a"]
+    if close == "by hand":
+        panel = client.post("/phone/close", headers=HX)
+        assert door.closed_reason == "closed on the laptop"
+        assert "Received Meeting.m4a" not in panel.text
+    else:
+        clock.advance(15 * 60)
+    tick = client.get("/phone/countdown", headers=HX)
+    assert tick.status_code == phone_ui.STOP_POLLING
+    assert door.closed_reason == ("closed on the laptop" if close == "by hand" else "timeout")
+    assert "Received Meeting.m4a" not in tick.text
+    assert "/phone/done" not in tick.text
+
+
 def test_opening_the_panel_later_does_not_reload_the_library(client):
     # The reload belongs to the moment the file arrived, not to every later
     # look at the panel: that would reload the library in a loop.
