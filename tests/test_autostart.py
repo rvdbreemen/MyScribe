@@ -828,6 +828,8 @@ def test_a_systemctl_that_fails_or_hangs_is_an_os_error(tmp_path):
         raise subprocess.TimeoutExpired(args, 15)
 
     unit.run = hang
+    # A unit file on disk, so `read()` gets as far as asking `is-enabled`.
+    unit.path.write_text(unit.text(AT_LOGIN), encoding="utf-8")
     with pytest.raises(OSError):
         unit.read()
 
@@ -930,3 +932,73 @@ def test_the_start_migrates_before_it_refreshes_and_logs_it(monkeypatch):
 
     assert order == ["migrate", "refresh"]
     assert logged == [("autostart.migrated", {"where": entry.where, "command": entry.command})]
+
+
+# --- the card tells the truth about the desktop file the unit replaces --------------
+
+
+def test_a_desktop_file_the_unit_did_not_take_over_reads_as_on(tmp_path):
+    """Review of TASK-112.06. A desktop file naming another launcher path - an
+    AppImage renamed, or replaced by a new versioned filename - is not moved
+    into the unit, and the desktop still starts it at login. The card has to
+    say on, and where, or a user who believes it never flips the switch that
+    would take the file away. Off then removes it; a hidden one stays off."""
+    unit = _systemd(tmp_path)
+    renamed = ("/home/me/Apps/MyScribe-0.9.0.AppImage", "--at-login", "--no-browser")
+    unit.legacy.write(renamed)
+    assert autostart.migrate(unit, command=AT_LOGIN, environ=LINUX_RELEASE) is None
+
+    shown = autostart.status(unit, command=AT_LOGIN)
+
+    assert shown.on is True
+    assert shown.where == str(unit.legacy.path)
+    assert shown.command == unit.legacy.render(renamed)
+
+    off = autostart.disable(unit, command=AT_LOGIN)
+    assert off.on is False and off.where == str(unit.path)
+    assert not unit.legacy.path.exists()
+
+    unit.legacy.folder.mkdir(parents=True, exist_ok=True)
+    unit.legacy.path.write_text(f"[Desktop Entry]\nExec={APPIMAGE} --at-login\nHidden=true\n", encoding="utf-8")
+    assert autostart.status(unit, command=AT_LOGIN).on is False
+
+
+def test_a_migration_the_manager_refused_leaves_no_unit_and_the_card_on(tmp_path):
+    """Review of TASK-112.06. `systemctl --user enable` fails during the
+    migration: the desktop file still starts MyScribe at login, so the card
+    says on and names it, and no disabled unit file is left behind."""
+    unit = _systemd(tmp_path)
+    unit.legacy.write((APPIMAGE, "--at-login", "--no-browser"))
+    fake = unit.run
+
+    def refuse_enable(args):
+        if args[0] == "enable":
+            fake.calls.append(tuple(args))
+            return subprocess.CompletedProcess(args, 1, "", "Failed to enable unit")
+        return fake(args)
+
+    unit.run = refuse_enable
+    with pytest.raises(OSError, match="Failed to enable unit"):
+        autostart.migrate(unit, command=AT_LOGIN, environ=LINUX_RELEASE)
+
+    assert not unit.path.exists()
+    assert unit.legacy.path.exists()
+    shown = autostart.status(unit, command=AT_LOGIN)
+    assert shown.on is True and shown.where == str(unit.legacy.path)
+
+
+def test_a_rewrite_the_manager_refused_keeps_the_unit_that_was_on(tmp_path):
+    """The rollback is only for a file this write created: a unit that was
+    already on and is being rewritten keeps its file, so a failed refresh
+    does not switch the entry off."""
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=(APPIMAGE, "--at-login", "--no-browser"))
+    fake = unit.run
+    unit.run = lambda args: (
+        subprocess.CompletedProcess(args, 1, "", "Failed to enable unit") if args[0] == "enable" else fake(args)
+    )
+
+    with pytest.raises(OSError):
+        autostart.enable(unit, command=AT_LOGIN)
+
+    assert unit.path.exists()

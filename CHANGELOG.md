@@ -17,8 +17,11 @@
   crashes in five minutes), and logs to `journalctl --user -u myscribe`. An
   `XDG_DATA_HOME` you set is written into it, so it opens the same library.
   Without a user session, and from a checkout, the autostart file stays as it
-  was. An autostart file an earlier version wrote is moved into the unit at
-  the next start, so one login starts one MyScribe (TASK-112.06).
+  was. An autostart file an earlier version wrote for this same AppImage
+  path is moved into the unit at the next start. One for another path, such
+  as an AppImage you renamed, is left alone; Settings then shows Start at
+  login as on with that file's path, and switching it off or on there removes
+  it (TASK-112.06).
 - **The setup window is shorter.** Its first step lists each thing MyScribe
   found on one line and everything it did not find on one more. Under each
   question there is now one sentence about Skip, with what skipping costs and where

@@ -424,10 +424,23 @@ class SystemdUserUnit:
         return command if answer.returncode == 0 and answer.stdout.strip() == "enabled" else None
 
     def write(self, command) -> None:
+        """Write, reload, enable, and only then take the desktop file away.
+
+        A manager that refuses leaves no unit file this write created: a
+        disabled unit beside a desktop file that still starts MyScribe is a
+        file nobody asked for. A unit that was already there keeps its file,
+        so a failed rewrite does not switch an entry that was on off.
+        """
         self.folder.mkdir(parents=True, exist_ok=True)
+        created = not self.path.exists()
         self.path.write_text(self.text(command), encoding="utf-8")
-        self._must("daemon-reload")
-        self._must("enable", self.name)
+        try:
+            self._must("daemon-reload")
+            self._must("enable", self.name)
+        except OSError:
+            if created:
+                self.path.unlink(missing_ok=True)
+            raise
         self.legacy.remove()
 
     def remove(self) -> None:
@@ -552,7 +565,8 @@ def status(mechanism=None, command=None) -> Entry:
     """What the OS holds right now.
 
     An entry that is there is reported exactly as the OS spells it, whatever
-    wrote it. An entry that is not there reports the command switching it on
+    wrote it - for the user unit, that includes a desktop file it replaces
+    that the desktop still starts. An entry that is not there reports the command switching it on
     would write, so the card can show that before anything is written; where
     there is nothing to start, that is the empty string.
     """
@@ -560,6 +574,14 @@ def status(mechanism=None, command=None) -> Entry:
     registered = mechanism.read()
     if registered is not None:
         return Entry(where=mechanism.where, command=registered, on=True)
+    if isinstance(mechanism, SystemdUserUnit):
+        # A desktop file the unit did not take over - one naming another
+        # launcher path, or one a refused migration left - still starts
+        # something at login. The card says so, and where; switching off
+        # removes it, switching on replaces it.
+        legacy = mechanism.legacy.read()
+        if legacy is not None:
+            return Entry(where=mechanism.legacy.where, command=legacy, on=True)
     command = command or start_command()
     return Entry(
         where=mechanism.where,
