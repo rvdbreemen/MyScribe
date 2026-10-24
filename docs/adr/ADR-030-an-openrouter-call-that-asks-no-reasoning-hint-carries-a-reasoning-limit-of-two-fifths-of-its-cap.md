@@ -117,6 +117,7 @@ rerun of jobs 423 and 428 on a copy of the library, decides whether it works.
 * `tests/test_llm_providers.py::test_openrouter_bounds_reasoning_to_a_share_of_the_answer_budget`, `::test_a_share_below_openrouters_floor_is_not_sent`, `::test_openai_sends_no_reasoning_limit`, `::test_the_hint_goes_alone_never_beside_the_limit`.
 * `tests/test_llm_providers.py::test_a_refused_hint_falls_back_to_no_reasoning_field_not_to_the_limit`, `::test_a_400_naming_reasoning_with_only_the_limit_on_the_wire_is_retried_once_without_it`, `::test_a_400_that_names_no_reasoning_field_with_only_the_limit_on_the_wire_is_not_retried`, `::test_a_limit_refused_twice_is_two_calls_and_a_refusal`.
 * `tests/test_llm_task_providers.py::test_a_cleanup_whose_hint_openrouter_refuses_goes_again_with_no_reasoning_limit`.
+* `tests/test_llm_providers.py::test_a_context_length_400_naming_reasoning_with_the_limit_on_is_context_too_long_after_one_call`; `tests/test_llm_tasks.py::test_the_row_and_a_cut_off_refusal_name_the_reasoning_limit_sent`.
 
 ## Consequences
 

@@ -1866,7 +1866,8 @@
         "verification": [
           "tests/testllmproviders.py::testopenrouterboundsreasoningtoashareoftheanswerbudget, ::testasharebelowopenroutersfloorisnotsent, ::testopenaisendsnoreasoninglimit, ::testthehintgoesaloneneverbesidethelimit.",
           "tests/testllmproviders.py::testarefusedhintfallsbacktonoreasoningfieldnottothelimit, ::testa400namingreasoningwithonlythelimitonthewireisretriedoncewithoutit, ::testa400thatnamesnoreasoningfieldwithonlythelimitonthewireisnotretried, ::te...",
-          "tests/testllmtaskproviders.py::testacleanupwhosehintopenrouterrefusesgoesagainwithnoreasoninglimit."
+          "tests/testllmtaskproviders.py::testacleanupwhosehintopenrouterrefusesgoesagainwithnoreasoninglimit.",
+          "tests/testllmproviders.py::testacontextlength400namingreasoningwiththelimitoniscontexttoolongafteronecall; tests/testllmtasks.py::testtherowandacutoffrefusalnamethereasoninglimitsent."
         ]
       },
       "scope": {

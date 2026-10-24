@@ -646,6 +646,17 @@ def test_a_400_naming_reasoning_with_only_the_limit_on_the_wire_is_retried_once_
     assert answer.reasoning_cap is None and answer.hint_sent is None
 
 
+def test_a_context_length_400_naming_reasoning_with_the_limit_on_is_context_too_long_after_one_call():
+    """The prompt does not fit; without the limit it would not fit either."""
+    rec = Recorder(error(400, "maximum context length is 128000 tokens",
+                         code="context_length_exceeded", param="reasoning"))
+
+    with pytest.raises(base.ContextTooLong):
+        provider(openai_like.OpenRouterProvider, rec).complete(capped(4000))
+
+    assert rec.calls == 1
+
+
 def test_a_limit_refused_twice_is_two_calls_and_a_refusal():
     rec = Recorder(error(400, "bad reasoning", param="reasoning"))
 
