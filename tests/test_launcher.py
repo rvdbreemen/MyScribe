@@ -5558,3 +5558,120 @@ def test_the_box_says_on_its_own_because_the_installer_starts_it_too(monkeypatch
 
     assert said[0][0] == "MyScribe could not start"
     assert "on its own, at login or after an update" in said[0][1]
+
+
+# --- TASK-112.10 with TASK-120: a login start that gave up shows the box too ------
+#
+# ADR-039: a start at login that cannot serve shows one notice on Windows. A
+# restart loop that gives up (ADR-037) is such a start: it ends without
+# serving. A stop somebody asked for after a crash is not, even though the
+# crash left its "stopped unexpectedly" in `launch.problem`.
+
+
+def _crashing_at_login(layout, monkeypatch):
+    """`main` at login over an app that crashes on every start: one restart,
+    then the give-up."""
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    layout.logs_dir.mkdir(parents=True, exist_ok=True)
+    starts: list[int] = []
+
+    def start_app(self):
+        starts.append(1)
+        self.app = launcher.AppProcess(layout, self.port)
+        self.app.proc = _exits(3)
+        return True
+
+    monkeypatch.setattr(launcher.Launch, "start_app", start_app)
+    monkeypatch.setattr(launcher, "first_run", lambda launch, *a, **k: launch.start_app())
+    return starts
+
+
+def test_a_start_at_login_that_gave_up_shows_the_box_after_letting_go_of_the_lock(
+        layout, monkeypatch, boxes):
+    starts = _crashing_at_login(layout, monkeypatch)
+    port = _free_port()
+
+    code = launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser"))
+
+    assert code == launcher.APP_DIED
+    assert len(starts) == 2, "the first start and one restart"
+    gave_up = launcher.GAVE_UP.format(limit=1, minutes=launcher.RESTART_WINDOW / 60,
+                                      log=layout.logs_dir / "app.log")
+    assert len(boxes) == 1, "a login start that gave up showed no box"
+    assert gave_up in boxes[0]["problem"]
+    assert boxes[0]["lock_free"] is True
+
+
+def test_a_start_by_hand_that_gave_up_shows_no_box(layout, monkeypatch, boxes):
+    """Somebody is at the screen of a start by hand: the console says it."""
+    _crashing_at_login(layout, monkeypatch)
+
+    assert launcher.main(_argv(layout, _free_port(), "--headless", "--no-browser")) == launcher.APP_DIED
+    assert boxes == []
+
+
+def _no_box_after_a_deliberate_stop(launch, layout):
+    assert launch.problem, "the crash before the stop left a problem behind: the guard is not vacuous"
+    assert launch.kept == "", "a stop somebody asked for was kept for the box"
+    assert launcher.take_login_problem(layout.home) == ""
+
+
+def test_at_login_a_stop_route_after_a_crash_shows_no_box(layout, monkeypatch):
+    """The restarted app ends with 0: Settings' Stop or `--stop` (ADR-032)."""
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+
+    assert launcher.run_headless(launch, at_login=True) == 0
+    assert len(started) == 1
+    _no_box_after_a_deliberate_stop(launch, layout)
+
+
+def test_at_login_a_tray_stop_after_a_crash_shows_no_box(layout, monkeypatch):
+    tray = _ServingTray(after=None)
+
+    def restarted(n):
+        threading.Timer(0.3, tray.ask_stop).start()
+        return _sleeping_child()
+
+    launch, started, _ = _tray_over_restarts(layout, monkeypatch, tray, _exits(3), restarted)
+    _stopping_by_kill(launch)
+
+    assert launcher.run_headless(launch, at_login=True) == 0
+    assert len(started) == 1
+    _no_box_after_a_deliberate_stop(launch, layout)
+
+
+def test_at_login_a_sigterm_after_a_crash_shows_no_box(layout, monkeypatch):
+    """A logout or `--stop` signalling the launcher during the restart delay."""
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 3.0)
+    unhandled = []
+    previous = _signal.signal(_signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    try:
+        threading.Timer(1.0, _signal.raise_signal, args=(_signal.SIGTERM,)).start()
+        code = launcher.run_headless(launch, at_login=True)
+    finally:
+        _signal.signal(_signal.SIGTERM, previous)
+
+    assert code == 0
+    assert started == []
+    _no_box_after_a_deliberate_stop(launch, layout)
+
+
+def test_at_login_ctrl_c_after_a_crash_shows_no_box(layout, monkeypatch):
+    launch = _launch_over(layout, _exits(3), monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+
+    def start_app():
+        launch.app = launcher.AppProcess(layout, launch.port)
+        launch.app.proc = _sleeping_child()
+        raise KeyboardInterrupt  # Ctrl+C while it waits for /health
+
+    launch.start_app = start_app
+    _stopping_by_kill(launch)
+
+    assert launcher.run_headless(launch, at_login=True) == 0
+    _no_box_after_a_deliberate_stop(launch, layout)

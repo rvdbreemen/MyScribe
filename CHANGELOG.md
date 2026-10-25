@@ -109,6 +109,12 @@
   makes after an update; it closes by itself after 10 minutes. On every system
   the next start says it once, as before, and **Settings → Start at login**
   now shows it too, until you dismiss it or MyScribe stops (TASK-120).
+- **A start at login that crashed and gave up restarting now shows the box
+  too.** On Windows, a MyScribe started at login that keeps crashing stops
+  restarting after 5 restarts in 5 minutes. It now says so in the same message
+  box as a start that could not start. Before, only the next start said it. A
+  Stop from the tray, from Settings or from `--stop` never shows the box
+  (TASK-112.10, TASK-120).
 
 - **Run checks in Settings no longer loads torch into the web process.** The
   button ran every quick check, the accelerator check among them, which

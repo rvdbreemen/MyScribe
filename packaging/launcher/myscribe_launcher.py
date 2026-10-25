@@ -3849,6 +3849,10 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
         launch.report("error", GAVE_UP.format(limit=budget.limit, minutes=budget.window / 60, log=app_log()))
         if at_login:
             keep_login_problem(launch.layout.home, launch.problem)  # the next start by hand says it
+            # A login start that gave up never served: ADR-039's one box on
+            # Windows, as for a busy port. Here and not after the `finally`:
+            # a stop somebody asked for after a crash has a problem too.
+            launch.kept = launch.problem
         return APP_DIED
     code = launch.app.exit_code()
     if code:
