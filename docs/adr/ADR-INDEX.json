@@ -2182,6 +2182,60 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-039",
+      "title": "A login start that cannot serve shows one notice on Windows",
+      "path": "ADR-039-a-login-start-that-cannot-serve-shows-one-notice-on-windows.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: C, decided by Robert on 2026-10-24 and kept on 2026-10-25.",
+      "topics": [
+        "autostart",
+        "launcher"
+      ],
+      "aliases": [
+        "failed login start",
+        "login box"
+      ],
+      "components": [
+        "packaging/launcher/myscribe_launcher.py"
+      ],
+      "symbols": [
+        "LOGIN_BOX_SECONDS",
+        "show_login_box"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Show it on Windows only, for an --at-login start that ends without serving.",
+          "Show it after the instance lock is let go, so a start by hand is not held up.",
+          "Wait at most LOGINBOXSECONDS (600 s); the box ends with the process.",
+          "Use user32's MessageBoxW through ctypes, on a daemon thread; skip it when MYSCRIBENOLOGINBOX is set, as the test suite does."
+        ],
+        "must_not": [
+          "Show the box for a start by hand, a start that serves, or on macOS or Linux.",
+          "Let a box that cannot be shown fail the start, or add a package for it."
+        ],
+        "exceptions": [
+          "None beyond the one case this ADR makes in ADR-026's no-window Must."
+        ],
+        "verification": [
+          "The TASK-120 box tests in tests/testlauncher.py."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -2750,6 +2804,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-026",
+      "target": "ADR-039",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-027",
       "target": "ADR-011",
       "type": "related",
@@ -2878,6 +2938,18 @@
     {
       "source": "ADR-035",
       "target": "ADR-030",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-039",
+      "target": "ADR-011",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-039",
+      "target": "ADR-026",
       "type": "related",
       "resolved": true
     }

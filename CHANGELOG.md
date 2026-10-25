@@ -85,6 +85,21 @@
 
 ### Fixed
 
+- **A port Windows has reserved is no longer called "used by another
+  program".** Hyper-V, WSL, Docker and Windows Sandbox can reserve the port
+  MyScribe uses (4242). MyScribe now says the port is reserved, how to list the
+  reserved blocks (`netsh int ipv4 show excludedportrange protocol=tcp`) and
+  what to do: start it on another port with `--port`, or put the dynamic port
+  range back to the Windows default. A port a program answers on is still
+  called used by another program, also when Windows refuses it rather than
+  calls it taken. On Linux and macOS a refused port gets a sentence of its own,
+  which names the rule for ports below 1024 only for such a port (TASK-120).
+- **A start at login that cannot start no longer fails without a word.** On
+  Windows a message box says why at once, also for the start the installer
+  makes after an update; it closes by itself after 10 minutes. On every system
+  the next start says it once, as before, and **Settings → Start at login**
+  now shows it too, until you dismiss it or MyScribe stops (TASK-120).
+
 - **Run checks in Settings no longer loads torch into the web process.** The
   button ran every quick check, the accelerator check among them, which
   imports torch. It now runs the checks the page runs when it opens, as

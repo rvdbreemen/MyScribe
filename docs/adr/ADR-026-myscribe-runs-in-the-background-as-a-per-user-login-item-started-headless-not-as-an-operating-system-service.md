@@ -9,6 +9,8 @@ documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
+related:
+  - "ADR-039"
 topics:
   - "autostart"
   - "packaging"
