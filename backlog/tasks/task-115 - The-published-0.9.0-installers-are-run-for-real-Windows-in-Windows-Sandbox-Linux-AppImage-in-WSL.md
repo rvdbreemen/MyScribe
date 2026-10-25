@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-22T18:19:00Z'
-updated_date: '2026-10-23T05:04:00Z'
+updated_date: '2026-10-24T11:15:00Z'
 labels:
   - packaging
   - release
@@ -26,7 +26,7 @@ CI never runs the installer: --smoke starts the frozen launcher, and ISCC builds
 <!-- AC:BEGIN -->
 - [x] #1 Linux: the 0.9.0 AppImage verifies against SHA256SUMS and starts with chmod +x alone, or the missing piece is named
 - [x] #2 Linux: 0.9.0 started over a home made by 0.8.6 updates it and /health says 0.9.0
-- [ ] #3 Linux: Start at login writes a desktop entry whose Exec line starts MyScribe headless, and --stop on a running job requeues it
+- [x] #3 Linux: Start at login writes a desktop entry whose Exec line starts MyScribe headless, and --stop on a running job requeues it
 - [ ] #4 Windows Sandbox: a fresh install of 0.9.0 starts, serves /health and a page, with nothing else installed first
 - [ ] #5 Windows Sandbox: the 0.9.0 installer over a running 0.8.6 with Start at login stops it, installs, and restarts it headless, shown by the install log
 - [ ] #6 Windows Sandbox: an update with a job running requeues the job; an uninstall while running stops it, removes the program and the Run value, and keeps the home
@@ -50,4 +50,6 @@ CI never runs the installer: --smoke starts the frozen launcher, and ISCC builds
 2026-10-22 23:22, Robert's real machine, with his OK: the 0.9.1 rehearsal installer (run 39843057516, sha256 d1378ae2...a9e7) with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG over his running 0.9.0 (no job running or queued). Setup exit 0; setup log 'Setup version: Inno Setup version 6.7.1', 'RedirectionGuard status for current process: Not enabling' (no command-line flag); MyScribe-launcher.log 'setup: MyScribe is running (process 33548); asking it to stop.' and 'MyScribe stopped; a job that was running starts over at the next start.'; /health 0.9.1 after 15 s with launcher_pid 22404 = MyScribe.exe --at-login --no-browser --headless; launcher and both python children Enforce=0 hwnd=0; launcher.log 'Checked 124 packages' then 'MyScribe is running'. Log: scratchpad itest/results-real/setup-091-over-090.log. Next, with Robert's OK: a second local Windows user for the 0.8.6 -> published 0.9.0 reproduction, a job during an update, uninstall while running, and a fresh home.
 
 Release: v0.9.1 published 2026-10-23 as Latest. Linux: the final AppImage in WSL - start on an existing home, --stop on a running job, immediate restart with TIME-WAIT on the port, job requeued and done, words in the transcript. Windows: the final candidate and the published installer over Robert's running MyScribe (see TASK-116/117/125). Not run: the second-user Windows run (fresh install, uninstall while running, a job during an update, the 0.9.0 reproduction). Two attempts stopped before the test user's script started: the first on a missing catch, the second because Windows PowerShell 5.1 started from PowerShell 7 inherits a PSModulePath that hides its own modules (ConvertTo-SecureString); both fixed in the scripts. Robert's MyScribe was restarted each time.
+
+2026-10-24 review: AC3 met by the 2026-10-22 Linux evidence above - L5: POST /settings/autostart wrote ~/.config/autostart/myscribe.desktop with Exec=...AppImage --at-login --no-browser --headless; L6 and L4d: --stop on a running job said it is back at the front of the queue and the job row read queued, then done (L5c). Not shown: a real XDG autostart at a login.
 <!-- SECTION:NOTES:END -->

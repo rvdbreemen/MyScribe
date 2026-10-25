@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: 2026-10-19 05:51
-updated_date: '2026-10-22T18:55:00Z'
+updated_date: '2026-10-24T11:15:00Z'
 labels:
   - packaging
   - autostart
@@ -26,7 +26,7 @@ myscribe.iss has no [UninstallRun] stop and no PrepareToInstall stop. A running 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An update while MyScribe runs stops it, installs, and starts it headless again when the login item is on
+- [x] #1 An update while MyScribe runs stops it, installs, and starts it headless again when the login item is on
 - [ ] #2 An uninstall while MyScribe runs stops it before files are removed, and removes the Run value as today
 - [x] #3 Both work against a server started by an older version that has no --stop
 - [ ] #4 A real install over a running 0.8.x on Windows shows it, with the install log
@@ -61,4 +61,6 @@ C. Uninstall (AC2): while MyScribe runs, Settings > Apps > MyScribe > Uninstall.
 Correction to the release walk (2026-10-22): the Windows installer is MyScribe-<version>-windows-x64.exe (for this release: MyScribe-0.9.0-windows-x64.exe /LOG=%TEMP%\myscribe-setup.log), not ...-setup.exe. And step B (the running job requeued through the stop route) can only be seen when updating a 0.9.0 over a 0.9.0 or later: 0.8.x has no stop route, so an update from 0.8.6 ends it and its running job is marked interrupted (Retry starts it over).
 
 2026-10-22 on Robert's real machine (TASK-115): published 0.9.0 installed over a running 0.9.0 with Start at login on (/VERYSILENT /NOREDIRECTIONGUARD /LOG): exit 0; MyScribe-launcher.log 'setup: Ending MyScribe.exe (process 6384) and what it started.'; restarted headless, /health 0.9.0 after 11 s. Two bugs found, both fixed in PR #80: without /NOREDIRECTIONGUARD the restarted MyScribe inherits RedirectionGuard and cannot start (TASK-116); the stop route was never asked because /health named uv's trampoline as launcher_pid (TASK-117). AC1 as shipped in 0.9.0 therefore does not hold on a real install; the sandbox run on the 0.9.1 candidate decides it again.
+
+2026-10-24 review: AC1 met on Robert's machine with the published v0.9.1 installer (sha256 20b3cdba..., matches SHA256SUMS) over his running MyScribe with Start at login on (see TASK-125 notes): exit 0, MyScribe-launcher.log 'asking it to stop' and 'MyScribe stopped; a job that was running starts over', restarted as MyScribe.exe --at-login --headless, hwnd=0, /health 0.9.1. AC2 and AC4 go to the second-user run on 2026-10-24.
 <!-- SECTION:NOTES:END -->

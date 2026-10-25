@@ -1,9 +1,10 @@
 ---
 id: TASK-112
-title: 'MyScribe runs in the background after login, with no window to keep open'
+title: MyScribe runs in the background after login, with no window to keep open
 status: To Do
 assignee: []
-created_date: '2026-10-19 05:49'
+created_date: 2026-10-19 05:49
+updated_date: '2026-10-24T20:13:00Z'
 labels:
   - packaging
   - autostart
@@ -30,3 +31,9 @@ Robert asked on 2026-10-19 that MyScribe on a laptop or MacBook starts by itself
 - [ ] #3 The server can be stopped and is stopped before an update or uninstall
 - [ ] #4 macOS and Linux walks are listed with their commands, and read not run until somebody runs them
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-24 Robert's decision (asked with options and consequences in the session): close on its own 4 ACs (option A); the subtasks continue on their own.
+<!-- SECTION:NOTES:END -->
