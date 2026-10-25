@@ -20,8 +20,10 @@
   (TASK-112.07).
   For this MyScribe keeps two small files beside your home, not in it:
   `MyScribe.lock`, and `MyScribe-at-login.txt` while such a problem waits to
-  be shown, next to the default `%LOCALAPPDATA%\MyScribe`. The Windows uninstaller removes those two. When
-  your home is in a folder you chose, say `D:\Data\MyScribe`, they are
+  be shown, next to the default `%LOCALAPPDATA%\MyScribe`. The Windows
+  uninstaller lists those two to delete; a real uninstall has not been run
+  yet to confirm it. When your home is in a folder you chose, say
+  `D:\Data\MyScribe`, they are
   `D:\Data\MyScribe.lock` and `D:\Data\MyScribe-at-login.txt`, and an
   uninstall leaves them there with the home.
 

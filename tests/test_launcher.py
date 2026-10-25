@@ -3087,17 +3087,24 @@ def test_a_second_start_while_the_first_still_installs_waits_and_opens_the_brows
     The first one starts serving when the second has looked and found nothing,
     not a second after the test began: on a slow runner `main` took longer
     than that to reach its first look, which then found it serving (CI run
-    40137186180, Windows). The probe itself stays the real one."""
+    40137186180, Windows). The probe itself stays the real one.
+
+    It starts serving on the second "no", the first look inside the wait
+    loop, so the loop has to sleep and look again. The answers prove the
+    second start waited; the strings and the URL alone did not, since a
+    `main` without the loop said and opened the same."""
     port = _free_port()
     holder = _hold_lock(a_second_start.lock)
     server: list = []
+    answers: list = []
     probe = launcher.running_instance
 
     def running_instance(port_, *args, **kwargs):
-        answers = probe(port_, *args, **kwargs)
-        if not answers and not server:
+        answer = probe(port_, *args, **kwargs)
+        answers.append(answer)
+        if answers.count(False) == 2 and not server:
             server.append(_serve(port, {"ok": True}))
-        return answers
+        return answer
 
     monkeypatch.setattr(launcher, "running_instance", running_instance)
     try:
@@ -3109,6 +3116,7 @@ def test_a_second_start_while_the_first_still_installs_waits_and_opens_the_brows
             each.server_close()
 
     assert code == 0
+    assert answers == [False, False, True], f"the second start did not wait: {answers}"
     assert a_second_start.did == [], "a second start installed or started something"
     assert a_second_start.opened == [f"http://127.0.0.1:{port}/"]
     said = capsys.readouterr().out
