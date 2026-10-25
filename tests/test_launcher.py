@@ -4395,8 +4395,8 @@ def test_a_port_windows_reserved_is_named_as_reserved_with_the_way_out(layout, m
 
 
 def test_a_port_posix_refuses_says_permission_and_not_netsh(layout, monkeypatch):
-    """EACCES on Linux or macOS is a port below 1024 without privilege; the
-    Windows way out would be nonsense there."""
+    """EACCES on port 80 on Linux or macOS is most likely the rule for ports
+    below 1024; the Windows way out would be nonsense there."""
     monkeypatch.setattr(launcher, "IS_WINDOWS", False)
     monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
     monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(PermissionError(13, "Permission denied")))
