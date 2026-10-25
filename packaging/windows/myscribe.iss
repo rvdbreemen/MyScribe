@@ -43,15 +43,25 @@ UninstallDisplayIcon={app}\{#MyAppExe}
 ; user only, unelevated, so the guard protects nothing a junction could not
 ; already reach.
 RedirectionGuard=no
+; The PATH task below changes HKCU\Environment; this tells Windows to reread
+; it, so a new terminal finds myscribe without logging off.
+ChangesEnvironment=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
+; Off unless ticked, like the login item: most people never type a command.
+; Inno Setup remembers the choice for the next update.
+Name: "addtopath"; Description: "Add the myscribe command to my PATH, for scripts and AI agents"; GroupDescription: "Command line:"; Flags: unchecked
 
 [Files]
 Source: "{#MySource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Stops a running MyScribe before it is replaced (TASK-112.04). In {app} for
 ; the uninstaller; the installer extracts this same entry to {tmp} first.
 Source: "stop-myscribe.ps1"; DestDir: "{app}"; Flags: ignoreversion
+; The myscribe command (TASK-108): python -m scribe.cli in the environment the
+; launcher installed. In bin\ and not beside MyScribe.exe, because Windows
+; tries .EXE before .CMD, so there "myscribe" would start the launcher.
+Source: "myscribe.cmd"; DestDir: "{app}\bin"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
@@ -121,6 +131,65 @@ begin
       + 'login > Stop MyScribe - and run Setup again.';
 end;
 
+// The PATH task (TASK-108): one entry, {app}\bin, in this user's own PATH.
+// [Registry] cannot do this: it can only append to a value, and taking that
+// part back out on uninstall would need uninsdeletevalue, which deletes the
+// whole Path. So both directions are here, and touch only that one entry.
+function PathHas(Path, Dir: String): Boolean;
+begin
+  Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Path) + ';') > 0;
+end;
+
+procedure AddToPath(Dir: String);
+var
+  Path: String;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Path) then
+    Path := '';
+  if PathHas(Path, Dir) then
+    Exit;
+  if (Path <> '') and (Copy(Path, Length(Path), 1) <> ';') then
+    Path := Path + ';';
+  RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Path + Dir);
+end;
+
+procedure RemoveFromPath(Dir: String);
+var
+  Path, Rest, Entry, Kept: String;
+  Cut: Integer;
+  First: Boolean;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Path) then
+    Exit;
+  if not PathHas(Path, Dir) then
+    Exit;
+  Kept := '';
+  First := True;
+  Rest := Path;
+  while Rest <> '' do
+  begin
+    Cut := Pos(';', Rest);
+    if Cut = 0 then
+    begin
+      Entry := Rest;
+      Rest := '';
+    end
+    else
+    begin
+      Entry := Copy(Rest, 1, Cut - 1);
+      Rest := Copy(Rest, Cut + 1, Length(Rest));
+    end;
+    if CompareText(Entry, Dir) <> 0 then
+    begin
+      if not First then
+        Kept := Kept + ';';
+      Kept := Kept + Entry;
+      First := False;
+    end;
+  end;
+  RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Kept);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
@@ -131,6 +200,12 @@ begin
   // never race for the port.
   if CurStep <> ssPostInstall then
     Exit;
+  // Ticked: on PATH. Unticked on an update: off again, so PATH says what the
+  // last install was told.
+  if WizardIsTaskSelected('addtopath') then
+    AddToPath(ExpandConstant('{app}\bin'))
+  else
+    RemoveFromPath(ExpandConstant('{app}\bin'));
   if StoppedOne
     and RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'MyScribe') then
     // Back the way the login item starts it, headless (ADR-026), and only
@@ -158,6 +233,12 @@ begin
       + 'Start at login > Stop MyScribe - and run the uninstaller again.', mbError, MB_OK, IDOK);
     Result := False;
   end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RemoveFromPath(ExpandConstant('{app}\bin'));
 end;
 
 [Messages]

@@ -1541,9 +1541,9 @@
       "title": "How an outside program drives MyScribe without the web pages",
       "path": "ADR-025-how-an-outside-program-drives-myscribe-without-the-web-pages.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-10-06",
-      "decision_summary": "Not decided; Robert decides.",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen: B (Robert, 2026-10-24), as recommended, because the token in A stops no one the guard does not already stop.",
       "topics": [
         "api",
         "automation",
@@ -1566,9 +1566,9 @@
       "context_scope": "selective",
       "decision_contract": {
         "must": [
-          "Each /api/v1 route calls the same helper its HTML route calls; neither holds logic of its own.",
-          "Errors are JSON with a stable code and the detail the pages already show.",
-          "POST /api/v1/media honours an idempotency key, so a retried request queues no second job.",
+          "Each /api/v1 route calls the same helper its HTML route calls; neither holds business logic of its own (the Exceptions name what a route adds).",
+          "Errors under /api/v1 are JSON with a stable code and the detail the pages already show, an unhandled exception included (internalerror, without its text); other paths keep {\"detail\": ...} and the plain-text 500.",
+          "POST /api/v1/media honours an idempotency key, kept in the database, so a retried request queues no second job; the key compares content and options, and is decided after hashing and before filing, so a refused reuse or a replay files no...",
           "The routes appear in /openapi.json."
         ],
         "must_not": [
@@ -1577,10 +1577,15 @@
           "Change an HTML route's path or form fields."
         ],
         "exceptions": [
-          "None."
+          "The guard's refusals answer before any route, in their own shape (see Confirmation).",
+          "GET /api/v1/settings assembles its answer from the settings helpers through an allowlist: no page returns this JSON, and the setting table holds keys and tokens.",
+          "POST /api/v1/media/{id}/transcribe refuses a body field outside the dialog's options and params (400), as ingestoptions refuses a foreign params key; an empty body repeats the last request.",
+          "POST /api/v1/watch-folders refuses a field outside path, includevideo and the dialog's options (400), and answers a folder already watched with its own code, alreadywatched.",
+          "GET /api/v1/doctor adds ok, doctor.exitcode over the checks the page's doctorcontext shows."
         ],
         "verification": [
-          "tests/testwebphone.py::testnorouteofthemainappanswersthroughthedoor."
+          "tests/testwebphone.py::testnorouteofthemainappanswersthroughthedoor.",
+          "tests/testapiv1.py."
         ]
       },
       "scope": {
@@ -1997,6 +2002,63 @@
       },
       "scope": {
         "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-033",
+      "title": "The MCP server is hand-written JSON-RPC on the standard library, not the official SDK",
+      "path": "ADR-033-the-mcp-server-is-hand-written-json-rpc-on-the-standard-library-not-the-official-sdk.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "automation",
+        "dependencies",
+        "mcp"
+      ],
+      "aliases": [
+        "mcp server",
+        "model context protocol"
+      ],
+      "components": [
+        "scribe.mcp_server"
+      ],
+      "symbols": [
+        "PROTOCOL_VERSIONS",
+        "serve"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "scribe/mcpserver.py imports only the standard library and scribe.cli.",
+          "Every tool is one or a few /api/v1 requests through scribe.cli.Api.",
+          "An unknown method is answered with -32601, never with silence."
+        ],
+        "must_not": [
+          "Import mcp, fastmcp or any other protocol library at runtime.",
+          "Open the database or the library; the app stays the only writer (ADR-013)."
+        ],
+        "exceptions": [
+          "None. (A scratch venv with the SDK, to check interop, is not shipped.)"
+        ],
+        "verification": [
+          "tests/testmcpserver.py: testtheserverloadsnothingbutthestandardlibrary, testanunknownmethodismethodnotfound."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**",
+          "scribe/mcp_server.py"
+        ]
       },
       "metadata": {
         "binding": false,
@@ -2774,6 +2836,18 @@
     {
       "source": "ADR-032",
       "target": "ADR-028",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-033",
+      "target": "ADR-013",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-033",
+      "target": "ADR-025",
       "type": "related",
       "resolved": true
     },
