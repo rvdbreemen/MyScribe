@@ -2601,6 +2601,26 @@ def test_yes_calls_the_same_enable_the_settings_switch_calls_with_no_arguments(
     assert login_entry.value == by_the_sitting
 
 
+def test_a_yes_writes_the_entry_and_does_not_load_it_now(
+        library, no_weights, monkeypatch, login_entry):
+    """TASK-112.05 review. The sitting runs in the launcher before it starts
+    the app, so nothing serves yet. A plist loaded now has RunAtLoad, and the
+    launcher launchd starts would find nobody serving and start a second
+    MyScribe beside the one this launcher is about to start - there is no
+    per-user lock (TASK-112.07). So the sitting writes the entry and loads
+    nothing; launchd loads it at the next login. Loading now is the Settings
+    switch's alone, where the app answering the click is the one serving."""
+    loaded: list[str] = []
+    monkeypatch.setattr(login_entry, "switch_on", lambda: loaded.append("switch_on") or "",
+                        raising=False)
+
+    report = setup.apply(setup.Answers(start_at_login=True), library)
+
+    assert "start_at_login" in report["wrote"] and "start_at_login" not in report["reopen"]
+    assert login_entry.value is not None
+    assert loaded == [], "the first-start sitting must not load the agent while nothing serves"
+
+
 @pytest.mark.parametrize("given,state", [("no", "answered"), (None, "skipped")])
 def test_no_and_skip_register_nothing_and_neither_returns_at_the_next_start(
         library, no_weights, monkeypatch, login_entry, given, state):

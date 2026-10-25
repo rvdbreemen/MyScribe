@@ -196,9 +196,12 @@ way Quit does, and a job that was running starts over afterwards; 0.8.x has
 no stop, so it is ended, and its running job is marked interrupted: Retry on
 the jobs page starts it over.
 
-On Linux the new release is a new file. If *Start at login* is on, switch it
-off and on again in Settings after you start the new AppImage, so the login
-entry names the new file and not the old one.
+On Linux the new release is a new file. Put it in the same folder as the old
+one: when you start it, a *Start at login* entry that starts another
+`MyScribe-<version>-linux-x64.AppImage` from that folder is pointed at the
+new file. If you keep the new file somewhere else, or renamed the old one,
+Settings says the entry starts another file; switch *Start at login* off and
+on there so it names the new one.
 
 **A clone:** `git pull`, then `python install.py`.
 
@@ -227,8 +230,11 @@ if you ticked that at install. It leaves:
   Advanced system settings > Environment Variables, for your account.
 
 **macOS** - drag `MyScribe.app` to the Bin. Switch *Start at login* off in
-Settings first, or delete
-`~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist` by hand. Your
+Settings first; if MyScribe was started at login, that also stops it at
+once. By hand: run
+`launchctl bootout gui/$(id -u)/io.github.rvdbreemen.myscribe` and delete
+`~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist`. The log
+launchd wrote stays in `~/Library/Logs/MyScribe`. Your
 home stays in `~/Library/Application Support/MyScribe` (or the folder you
 chose), with `~/Library/Application Support/MyScribe.location` beside it. An
 Ollama installed through MyScribe is `/Applications/Ollama.app`; its models
