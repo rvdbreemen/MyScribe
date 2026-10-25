@@ -53,11 +53,6 @@ status_history:
     changed_by: "User: Robert van den Breemen"
     reason: Robert chose option A with a systemd user unit on Linux, 2026-10-19
     changed_via: adr-kit lifecycle
-  - date: 2026-10-25
-    status: Accepted
-    changed_by: Claude (agent, session 2026-10-25)
-    reason: the tray shows in the headless login door ADR-026 starts (TASK-112.11)
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

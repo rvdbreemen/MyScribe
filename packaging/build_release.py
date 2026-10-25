@@ -49,6 +49,18 @@ only one of them would produce an artifact that builds and cannot be run."""
 
 NATIVE = {"windows-x64": "win32", "macos-arm64": "darwin", "linux-x64": "linux"}
 
+CLI_SCRIPT = REPO / "packaging" / "posix" / "myscribe"
+"""The ``myscribe`` command for an AppImage and a Mac bundle (TASK-108): it
+runs ``python -m scribe.cli`` with the environment the launcher installed.
+Windows gets packaging/windows/myscribe.cmd from the Inno script instead."""
+
+
+def add_cli_script(target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(CLI_SCRIPT, target)
+    target.chmod(0o755)
+    return target
+
 
 def run(command: list[str], **kwargs) -> None:
     printable = " ".join(str(c) for c in command)
@@ -98,7 +110,7 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
     run(args)
     replaceable_tray(out, target)
     if target == "macos-arm64":
-        stamp_bundle_version(out / "MyScribe.app", version())
+        finish_bundle(out / "MyScribe.app", version())
     return out
 
 
@@ -119,6 +131,15 @@ def replaceable_tray(frozen: Path, target: str = "windows-x64") -> Path:
         raise SystemExit(f"pystray's licence (COPYING.LGPL) is not in {shipped}")
     print(f"tray: pystray as source at {found}")
     return found
+
+
+def finish_bundle(app: Path, value: str, sign: Callable[[Path], None] | None = None) -> None:
+    """The ``myscribe`` script into Contents/Resources, then the version and
+    the signature: anything added after signing breaks ``codesign --verify``.
+    Resources, not MacOS: a resource is sealed by the bundle's signature,
+    where a script among the executables would need a signature of its own."""
+    add_cli_script(app / "Contents" / "Resources" / "myscribe")
+    stamp_bundle_version(app, value, **({} if sign is None else {"sign": sign}))
 
 
 def sign_ad_hoc(app: Path, run: Callable = run) -> None:
@@ -209,15 +230,25 @@ def _placeholder_png(path: Path, size: int = 256) -> None:
     )
 
 
-def appimage(frozen: Path, out: Path) -> Path:
-    appdir = BUILD / "MyScribe.AppDir"
-    if appdir.exists():
-        shutil.rmtree(appdir)
+APPRUN = (
+    "#!/bin/sh\n"
+    'HERE=$(dirname "$(readlink -f "$0")")\n'
+    "# `MyScribe.AppImage cli ...` is the myscribe command (TASK-108).\n"
+    'if [ "${1-}" = cli ]; then shift; exec "$HERE/usr/bin/myscribe-cli" "$@"; fi\n'
+    'exec "$HERE/usr/bin/MyScribe" "$@"\n'
+)
+
+
+def write_appdir(frozen: Path, appdir: Path) -> None:
+    """The AppDir: the frozen onedir as usr/bin, the ``myscribe`` script
+    beside it as ``myscribe-cli``, AppRun, the desktop entry and an icon.
+
+    Not ``usr/bin/myscribe``: on a file system that ignores case (where the
+    tests run, and an AppImage extracted onto one) that is the launcher's
+    ``MyScribe``, and the copy replaced it."""
     shutil.copytree(frozen / "MyScribe", appdir / "usr" / "bin")
-    (appdir / "AppRun").write_text(
-        '#!/bin/sh\nHERE=$(dirname "$(readlink -f "$0")")\nexec "$HERE/usr/bin/MyScribe" "$@"\n',
-        encoding="utf-8",
-    )
+    add_cli_script(appdir / "usr" / "bin" / "myscribe-cli")
+    (appdir / "AppRun").write_text(APPRUN, encoding="utf-8", newline="\n")
     (appdir / "AppRun").chmod(0o755)
     (appdir / "myscribe.desktop").write_text(
         "[Desktop Entry]\nType=Application\nName=MyScribe\n"
@@ -226,6 +257,13 @@ def appimage(frozen: Path, out: Path) -> Path:
         encoding="utf-8",
     )
     _placeholder_png(appdir / "myscribe.png")
+
+
+def appimage(frozen: Path, out: Path) -> Path:
+    appdir = BUILD / "MyScribe.AppDir"
+    if appdir.exists():
+        shutil.rmtree(appdir)
+    write_appdir(frozen, appdir)
 
     tools = TOOLS["appimage"]
     tool = BUILD / "appimagetool"

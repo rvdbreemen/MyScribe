@@ -311,6 +311,16 @@ class Provider(ABC):
     itself.
     """
 
+    schema_clock_as_text: bool = False
+    """True when this provider's schema becomes a grammar that constrains every
+    token as it is sampled, so a timestamp field typed `number` lets a model
+    start `2:16:10` as the number 2 and finish it as `2.0`: valid JSON, the
+    wrong moment (Ollama 0.40.8 with qwen3.5:4b, measured 2026-10-25). Such a
+    provider is sent timestamps as pattern-bound text (`tasks.CLOCK_TEXT`,
+    ADR-034). False for the cloud providers: their strict schema was validated
+    live with numbers, and nothing was measured to say they cut a clock short.
+    """
+
     default_model: str = ""
     key_env_vars: tuple[str, ...] = ()
 

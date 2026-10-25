@@ -159,3 +159,12 @@ A real `python -m scribe` with the slow fake job gets SIGTERM (POSIX) or Ctrl+Br
 ## References
 
 * Backlog TASK-112.09, implementation note of 2026-10-24; Robert's decisions of 2026-10-25 in the session; `scribe/supervisor.py`, `scribe/app.py` (lifespan), `scribe/shutdown.py`, `scribe/__main__.py`, `scribe/web/stopping.py`, `scribe/web/phone_door.py`, `scribe/web/phone_ui.py`, `packaging/launcher/myscribe_launcher.py`.
+
+## More Information
+
+Note added 2026-10-25, after acceptance. It changes no decision above.
+
+* The automation API's upload, `POST /api/v1/media` (TASK-108, ADR-025), is an
+  upload in the sense of this decision and gets the same 30 s bound as
+  `/api/media`: it is in `stopping.APP_UPLOAD_PATHS`, pinned by
+  `tests/test_stopping.py::test_the_automation_api_upload_is_an_upload_too`.

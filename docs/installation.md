@@ -223,7 +223,8 @@ anything MyScribe installed for you from somebody else, such as Ollama.
 **Windows** - Settings > Apps > MyScribe > Uninstall stops a running MyScribe,
 then removes
 `%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, the login item if
-*Start at login* was on, and `%LOCALAPPDATA%\MyScribe.lock` and
+*Start at login* was on, the `myscribe` command's entry in your PATH if you
+ticked that at install, and `%LOCALAPPDATA%\MyScribe.lock` and
 `%LOCALAPPDATA%\MyScribe-at-login.txt`: the launcher's lock, and the note a
 failed start at login leaves for the next start by hand, beside the default
 home. It leaves:
