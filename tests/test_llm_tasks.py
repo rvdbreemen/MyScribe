@@ -267,10 +267,15 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "80f59da4962055e099a2408282d2139875a397f3f6277436726d69737308715e"
-"""sha256 over everything a prompt is made of, for PROMPT_VERSION "5": the
+PROMPTS_DIGEST = "8caa7d01408d090994a9955f80b707e67078ef0049aadb9c5cb8492d0f75cfaf"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "6": the
 templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal and note
 rule, and the source line `source_label` writes.
+
+Version "6" (TASK-126, 2026-10-25): map_chunk.md gained the second ask of a
+note that broke `MAX_NOTE_POINTS` or ran out of its budget (the `again`
+slot). The note rules render the same text, now from the constant. Was
+80f59da4... under "5".
 
 Version "5" (TASK-124, 2026-10-25): minutes, action_items and chapters got a
 note rule like blog's (points in their own words, no line copied from the
@@ -2155,7 +2160,7 @@ def test_notes_keep_the_speaker_when_the_lines_carry_one(speakers, kept):
     SPEAKER_XX left to name."""
     text = tasks.render_prompt("map_chunk", index=1, count=2, start="0:00", end="5:00",
                                goal="g", transcript="[0:01] x", speakers=speakers,
-                               note_rule="")
+                               note_rule="", again="", max_points=tasks.MAX_NOTE_POINTS)
 
     assert ("speaker" in text.lower()) is kept
 
@@ -2579,3 +2584,149 @@ def test_repair_json_says_why_it_could_not_parse():
     with pytest.raises(base.BadResponse) as caught:
         tasks.repair_json('{"body": "never closed')
     assert "json:" in str(caught.value), str(caught.value)
+
+
+# --- the note count is bounded in code, not only asked (TASK-126) ---------------------------
+
+ASKED_AGAIN = "Your first notes for this excerpt"
+"""The first words of the second ask: how a script tells it from the first."""
+
+
+def _points(n: int, start: int = 0) -> str:
+    """`n` notes in a model's own words, each with its own clock."""
+    return "\n".join(
+        f"[{(start + k) // 60}:{(start + k) % 60:02d}] Point {start + k} in the model's own words."
+        for k in range(n)
+    )
+
+
+def _notes(first, again, kind: str = "minutes"):
+    """`first` for a chunk's first ask, `again` for the second, and the kind's own
+    answer for the combine. Each is a string or a ChatResponse."""
+
+    def answer(req: base.ChatRequest):
+        if CHUNK_MARKER not in req.user:
+            return ANSWERS.get(kind, json.dumps({"speakers": []}))
+        return again if ASKED_AGAIN in req.user else first
+
+    return answer
+
+
+def _run_minutes(conn, monkeypatch, first, again, kind: str = "minutes"):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, calls = fake_provider(_notes(first, again, kind))
+    register(monkeypatch, provider)
+    tasks.run_task(conn, media_id=media_id, kind=kind, provider_name="fake", model="fake-1",
+                   budget_tokens=100)
+    chunk_rows = [r for r in rows(conn, media_id) if tasks.is_chunk_kind(r["kind"])]
+    assert chunk_rows
+    return chunk_rows, calls
+
+
+def test_the_note_rules_ask_for_the_bound_the_code_keeps():
+    """The number in the prompt and the number in the code are one constant, so
+    the bound a note is cut to is the bound it was asked for."""
+    for kind, spec in tasks.TASKS.items():
+        if spec.note_rule:
+            assert f"Write at most {tasks.MAX_NOTE_POINTS} notes." in spec.note_rule, kind
+
+
+def test_an_85_note_chunk_is_asked_again_and_then_bounded(conn, monkeypatch):
+    """Job 430 on the round-8 library copy (TASK-124, 2026-10-25): qwen3.5:9b
+    wrote 85 minutes notes on chunk 0 against 'at most 30'. Asked once more, a
+    model that still writes 85 has them cut to 30 in code - spread over the
+    whole note, the last one kept, each line untouched with its clock."""
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), _points(85))
+
+    again = [c for c in calls if ASKED_AGAIN in c.user]
+    assert len(again) == len(chunk_rows), "every 85-note chunk is asked a second time"
+    assert "85 notes" in again[0].user and str(tasks.MAX_NOTE_POINTS) in again[0].user
+    written = _points(85).splitlines()
+    for row in chunk_rows:
+        kept = row["content"].splitlines()
+        assert len(kept) == tasks.MAX_NOTE_POINTS, row["content"]
+        assert kept[0] == written[0] and kept[-1] == written[-1], "the chunk's end is kept"
+        assert all(line in written for line in kept), "a kept line was rewritten"
+        params = json.loads(row["params_json"])
+        assert params["points_written"] == 85 and params["points_kept"] == tasks.MAX_NOTE_POINTS
+        assert params["asked_again"] is True
+
+
+def test_a_note_that_keeps_the_bound_when_asked_again_is_stored_whole(conn, monkeypatch):
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), _points(20))
+
+    for row in chunk_rows:
+        assert row["content"] == _points(20)
+        params = json.loads(row["params_json"])
+        assert (params["points_written"], params["points_kept"]) == (20, 20)
+        assert params["asked_again"] is True
+
+
+def test_a_note_within_the_bound_is_asked_once(conn, monkeypatch):
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(30), _points(5))
+
+    assert not [c for c in calls if ASKED_AGAIN in c.user]
+    for row in chunk_rows:
+        assert row["content"] == _points(30)
+        assert json.loads(row["params_json"])["asked_again"] is False
+
+
+def test_a_note_cut_off_at_its_cap_is_asked_again_and_the_finished_one_stored(
+    conn, monkeypatch
+):
+    """Job 433 (chapters, qwen3.5:4b, round-8 copy) ran out of its 4000-token
+    budget at 31:15 of a 60-minute chunk, writing fragments. The second ask
+    says so and asks for the whole excerpt within the bound. Twenty notes and
+    cut off: within the bound, and asked again all the same, because the cap
+    is what kept it from the end of the excerpt."""
+    chunk_rows, calls = _run_minutes(
+        conn, monkeypatch, truncated(_points(20) + "\n[0:20] Sti"), _points(12), kind="chapters",
+    )
+
+    again = [c for c in calls if ASKED_AGAIN in c.user]
+    assert len(again) == len(chunk_rows)
+    assert "ran out of room" in again[0].user
+    for row in chunk_rows:
+        assert row["content"] == _points(12)
+
+
+def test_a_note_cut_off_twice_is_refused_and_not_stored(conn, monkeypatch):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    cut = truncated(_points(20) + "\n[0:20] Sti")
+    provider, calls = fake_provider(_notes(cut, cut, "chapters"))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="chapters", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "ran out of room" in str(caught.value) and "asked twice" in str(caught.value)
+    assert rows(conn, media_id) == []
+    assert len(calls) == 2, "one chunk, asked twice, then refused"
+
+
+def test_speaker_notes_are_not_bounded(conn, monkeypatch):
+    """`speakers` keeps its quotes and has no note rule, so no bound either."""
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), _points(5),
+                                     kind="speakers")
+
+    assert not [c for c in calls if ASKED_AGAIN in c.user]
+    for row in chunk_rows:
+        assert row["content"] == _points(85)
+
+
+def test_bounded_points_spreads_the_kept_lines_over_the_whole_note():
+    note = _points(85)
+    kept = tasks.bounded_points(note, 30).splitlines()
+    lines = note.splitlines()
+
+    assert len(kept) == 30
+    assert kept[0] == lines[0] and kept[-1] == lines[-1]
+    assert [lines.index(line) for line in kept] == sorted({lines.index(line) for line in kept})
+    # Spread, not the first thirty: something from the middle third is kept.
+    assert any(28 <= lines.index(line) <= 56 for line in kept)
+    assert tasks.bounded_points(_points(30), 30) == _points(30)
+    # Blank lines are not points and are not kept.
+    assert tasks.bounded_points("[0:01] a\n\n[0:02] b\n", 30) == "[0:01] a\n[0:02] b"

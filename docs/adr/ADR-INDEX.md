@@ -45,3 +45,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-037 | Accepted | - | Chosen option: A. |
 | ADR-038 | Accepted | `packaging/launcher/*.py` | Chosen option: A. |
 | ADR-039 | Accepted | - | Chosen option: C, decided by Robert on 2026-10-24 and kept on 2026-10-25. |
+| ADR-040 | Proposed | - | Chosen option: B. |

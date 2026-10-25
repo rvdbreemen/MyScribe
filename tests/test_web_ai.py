@@ -2135,3 +2135,23 @@ def test_the_chat_poll_leaves_the_question_form_alone(client, conn, media, ollam
     assert not re.search(r'<div id="chat-panel"[^>]*hx-trigger', page), "the panel itself no longer polls"
     answers = page[page.index('<div id="chat-answers"'):page.index('<form class="chat-ask"')]
     assert answers.count("<div") - answers.count("</div>") <= 0, "the poll's element closes before the form"
+
+
+LOCAL_MODEL_LIMIT = (
+    "Minutes and action items with timestamps need qwen3.5:9b or larger on a local model; "
+    "a 4B model such as qwen3.5:4b may leave them without timestamps."
+)
+"""Robert's decision of 2026-10-25 (TASK-126): a documented limit, no change in
+behaviour. Measured on media 61 (2h28m, Dutch) on a library copy in TASK-124:
+qwen3.5:4b gave minutes and action items with no timestamp at all, qwen3.5:9b
+gave real ones, three of three."""
+
+
+def test_the_ollama_model_pick_says_which_size_keeps_timestamps(client, conn, no_ollama):
+    """Said where a local model is chosen, and only there: the cloud pickers
+    carry no such limit."""
+    body = client.get("/settings").text
+
+    assert body.count(LOCAL_MODEL_LIMIT) == 1, "the limit is said once on the page"
+    pick = body.split('name="model_ollama"', 1)[1].split("data-model-pick", 1)[0]
+    assert LOCAL_MODEL_LIMIT in pick, "the limit is not beside the Ollama model pick"

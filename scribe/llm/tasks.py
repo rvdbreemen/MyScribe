@@ -67,7 +67,7 @@ from scribe.llm import base, chunking, ollama, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "5"
+PROMPT_VERSION = "6"
 """Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
 JSON_SYSTEM, LANGUAGE_SYSTEM, a kind's goal or note rule (`TaskSpec.note_rule`)
 or the line `source_label` writes - because it is
@@ -288,6 +288,15 @@ class Labels(BaseModel):
 
 # --- the six kinds -----------------------------------------------------------------------
 
+MAX_NOTE_POINTS = 30
+"""How many notes a chunk of a kind with a `note_rule` may keep: asked for in
+the rule, and held in code by `_collect_notes` (TASK-126, ADR-040). Asking
+alone was measured not to hold on media 61 (round-8 library copy, 2026-10-25):
+qwen3.5:9b wrote 85 minutes notes on one chunk, and qwen3.5:4b wrote chapters
+fragments until its 4000-token note budget ran out halfway through the chunk.
+A note over the bound, or cut off at its budget, is asked once more; a second
+answer still over it keeps this many lines, spread over the whole note."""
+
 DEFAULT_MAX_OUTPUT_TOKENS = 4000
 """Room for an answer, per call, and a measured floor rather than a round
 number.
@@ -407,7 +416,7 @@ TASKS: dict[str, TaskSpec] = {
         schema=ActionItems,
         goal="list everything somebody agreed to do, with who took it on and when it was said",
         note_rule=(
-            "Write at most 30 notes. Each note is one thing somebody took on or was asked to do, "
+            f"Write at most {MAX_NOTE_POINTS} notes. Each note is one thing somebody took on or was asked to do, "
             "in your own words, written as `[m:ss] Name: point` - the moment it was said and who "
             "took it on, as the excerpt names them. Never copy a line from the excerpt: a note "
             "that repeats a line word for word is not a note. Where the exact words matter, such "
@@ -423,7 +432,7 @@ TASKS: dict[str, TaskSpec] = {
         schema=Chapters,
         goal="mark where the subject changes, with the time each new stretch starts",
         note_rule=(
-            "Write at most 30 notes. Each note is one subject in your own words, starting with "
+            f"Write at most {MAX_NOTE_POINTS} notes. Each note is one subject in your own words, starting with "
             "the `[m:ss]` where talk of it begins. Never copy a line from the excerpt: a note "
             "that repeats a line word for word is not a note."
         ),
@@ -435,7 +444,7 @@ TASKS: dict[str, TaskSpec] = {
         schema=Minutes,
         goal="write the minutes: what was discussed, what was decided, what was agreed to do",
         note_rule=(
-            "Write at most 30 notes. Each note is one point in your own words, written as "
+            f"Write at most {MAX_NOTE_POINTS} notes. Each note is one point in your own words, written as "
             "`[m:ss] Name: point` - the moment it is about and who it is about, as the excerpt "
             "names them - saying what was discussed, decided or agreed to do. Never copy a line "
             "from the excerpt: a note that repeats a line word for word is not a note. Where the "
@@ -454,7 +463,7 @@ TASKS: dict[str, TaskSpec] = {
             "and what was said about each, in your own words"
         ),
         note_rule=(
-            "Write at most 30 notes. Each note is one point in your own words, starting with the "
+            f"Write at most {MAX_NOTE_POINTS} notes. Each note is one point in your own words, starting with the "
             "`[m:ss]` of the moment it is about. Never copy a line from the excerpt: a note that "
             "repeats a line word for word is not a note. Where the exact words matter, quote only "
             "those few words, in quotation marks, inside your own sentence."
@@ -855,10 +864,16 @@ def chunk_prompt(
     end: str,
     transcript: str,
     note_question: str | None = None,
+    again: str | None = None,
 ) -> str:
     """The note prompt for one excerpt: `map_chunk.md` with this kind's goal and
     note rule. One place, so the job and anything measuring its prompt render
-    the same text. `index` is one-based: the model is reading, not indexing."""
+    the same text. `index` is one-based: the model is reading, not indexing.
+
+    `again` is the second ask of a note that broke `MAX_NOTE_POINTS` or ran out
+    of its budget: what the first notes did ('were 85 notes, more than the 30
+    asked for'), closing the prompt, after the excerpt, where a small model
+    reads it last."""
     return render_prompt(
         chunking.MAP_REDUCE_PROMPTS["chunk"],
         index=index,
@@ -869,7 +884,33 @@ def chunk_prompt(
         note_rule=spec.note_rule,
         transcript=transcript,
         speakers=spec.with_speakers,
+        again=again or "",
+        max_points=MAX_NOTE_POINTS,
     )
+
+
+def note_points(note: str) -> list[str]:
+    """A note's points: its non-empty lines, as written. Counted by line rather
+    than by a parsed `[m:ss]`, because qwen3.5:4b writes `[2:26:09 Henry:`
+    without the closing bracket (TASK-124 round 8) and that is still a point."""
+    return [line.rstrip() for line in note.splitlines() if line.strip()]
+
+
+def bounded_points(note: str, limit: int) -> str:
+    """At most `limit` of a note's points, spread evenly over the whole note,
+    the first and the last always kept, every kept line untouched.
+
+    Spread rather than the first `limit`: notes run in the order of the
+    excerpt, so the first 30 of job 430's 85 would end about a third of the way
+    into a 52-minute chunk, and the combine would never hear of the rest.
+    Untouched, so each kept point keeps its `[m:ss]`."""
+    points = note_points(note)
+    if len(points) <= limit:
+        return "\n".join(points)
+    if limit <= 1:
+        return points[-1] if limit == 1 else ""
+    last = len(points) - 1
+    return "\n".join(points[round(i * last / (limit - 1))] for i in range(limit))
 
 
 COPY_MIN_WORDS = 4
@@ -2068,6 +2109,48 @@ def generate(
     )
 
 
+def _ask_note(
+    conn: sqlite3.Connection,
+    plan: TaskPlan,
+    chunk: Chunk,
+    on_call: Callable[[str, ChatRequest, ChatResponse], None] | None,
+    provider_kwargs: dict[str, Any],
+    again: str | None = None,
+) -> tuple[ChatResponse, str]:
+    """One ask for one chunk's notes, and its text; nothing at all is refused.
+    `again` is the second ask's sentence (`chunk_prompt`)."""
+    where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
+    response = _ask(
+        conn,
+        plan,
+        # The language line too (TASK-105.01): notes taken in English from
+        # a Dutch transcript would hand the combine an English text.
+        system=SYSTEM + (LANGUAGE_SYSTEM.format(name=plan.language) if plan.language else ""),
+        user=chunk_prompt(
+            plan.spec,
+            index=chunk.index + 1,
+            count=len(plan.chunks),
+            start=render.format_ts(chunk.start),
+            end=render.format_ts(chunk.end),
+            transcript=chunk.text,
+            note_question=plan.note_question,
+            again=again,
+        ),
+        max_output_tokens=plan.note_budget,
+        json_schema=None,  # notes are prose; only the combine has a shape to keep
+        **provider_kwargs,
+        phase="note",
+        on_call=on_call,
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise base.BadResponse(
+            f"the model returned nothing for chunk {chunk.index} of the {plan.kind!r} task "
+            f"{where}"
+        )
+    return response, text
+
+
 def _collect_notes(
     conn: sqlite3.Connection,
     plan: TaskPlan,
@@ -2097,35 +2180,30 @@ def _collect_notes(
             step()
             continue
 
-        response = _ask(
-            conn,
-            plan,
-            # The language line too (TASK-105.01): notes taken in English from
-            # a Dutch transcript would hand the combine an English text.
-            system=SYSTEM + (LANGUAGE_SYSTEM.format(name=plan.language) if plan.language else ""),
-            user=chunk_prompt(
-                plan.spec,
-                index=chunk.index + 1,
-                count=len(plan.chunks),
-                start=render.format_ts(chunk.start),
-                end=render.format_ts(chunk.end),
-                transcript=chunk.text,
-                note_question=plan.note_question,
-            ),
-            max_output_tokens=note_budget,
-            json_schema=None,  # notes are prose; only the combine has a shape to keep
-            **provider_kwargs,
-            phase="note",
-            on_call=on_call,
-        )
-        calls += 1
         where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
-        text = (response.text or "").strip()
-        if not text:
-            raise base.BadResponse(
-                f"the model returned nothing for chunk {chunk.index} of the {plan.kind!r} task "
-                f"{where}"
+        response, text = _ask_note(conn, plan, chunk, on_call, provider_kwargs)
+        calls += 1
+        first_points = len(note_points(text))
+        # The bound is held in code, not only asked (TASK-126, ADR-040): a kind
+        # with a note rule whose note broke `MAX_NOTE_POINTS`, or ran out of its
+        # budget before the excerpt's end, is asked once more, told what its
+        # first notes did. Only those kinds: `speakers` is asked for quotes and
+        # has no bound to keep.
+        bounded = bool(plan.spec.note_rule)
+        cut_off = response.raw_finish_reason == TRUNCATED_FINISH
+        asked_again = bounded and (cut_off or first_points > MAX_NOTE_POINTS)
+        if asked_again:
+            response, text = _ask_note(
+                conn,
+                plan,
+                chunk,
+                on_call,
+                provider_kwargs,
+                "ran out of room before the end of the excerpt"
+                if cut_off
+                else f"were {first_points} notes, more than the {MAX_NOTE_POINTS} asked for",
             )
+            calls += 1
         # Emptiness used to be the only thing checked, and a note that stopped
         # mid-word because it hit `note_budget` looks exactly like a short one.
         # Storing it is what makes it permanent: the row is the cache, so every
@@ -2139,11 +2217,23 @@ def _collect_notes(
                 f"{plan.kind!r} task {where}: {_ran_out_of(plan, response, note_budget)} "
                 f"({_spent(response)}) rather than finishing, so the "
                 "notes are cut off mid-sentence and have not been stored."
+                + (
+                    f" It was asked twice, the second time for at most {MAX_NOTE_POINTS} notes "
+                    "over the whole excerpt."
+                    if asked_again
+                    else ""
+                )
                 # Named a fault only where the note rule forbade copying:
                 # `speakers` is asked for quotes, and its notes are lines.
-                f"{_copying(copied, counted) if plan.spec.note_rule else ''} What it managed: "
+                + f"{_copying(copied, counted) if plan.spec.note_rule else ''} What it managed: "
                 + clip(text)
             )
+        written = len(note_points(text))
+        if bounded and written > MAX_NOTE_POINTS:
+            # Asked twice and still over: cut in code, spread over the whole
+            # note so the excerpt's last minutes still reach the combine.
+            text = bounded_points(text, MAX_NOTE_POINTS)
+            copied, counted = copied_lines(text, chunk.text)
         chunk_ids.append(
             _insert_output(
                 conn,
@@ -2172,6 +2262,13 @@ def _collect_notes(
                     # it would fail a job that can finish (TASK-124).
                     "copied_lines": copied,
                     "note_lines": counted,
+                    # The bound (TASK-126): how many points the stored answer
+                    # wrote and kept, whether it was a second ask, and how many
+                    # the first ask wrote.
+                    "points_first_ask": first_points,
+                    "points_written": written,
+                    "points_kept": len(note_points(text)),
+                    "asked_again": asked_again,
                     # Judged against the note budget this call was asked with.
                     **reasoning_record(response, note_budget),
                 },

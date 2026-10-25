@@ -2415,6 +2415,67 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-040",
+      "title": "A note over its count, or cut off at its budget, is asked once more and then thinned in code",
+      "path": "ADR-040-a-note-over-its-count-or-cut-off-at-its-budget-is-asked-once-more-and-then-thinned-in-code.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: B.",
+      "topics": [
+        "llm",
+        "map-reduce",
+        "notes"
+      ],
+      "aliases": [
+        "at most 30 notes",
+        "MAX_NOTE_POINTS",
+        "note count bound",
+        "second ask"
+      ],
+      "components": [
+        "scribe/llm/tasks.py"
+      ],
+      "symbols": [
+        "bounded_points",
+        "MAX_NOTE_POINTS",
+        "note_points"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Count a note's points as its non-empty lines, by notepoints.",
+          "Ask a kind with a noterule once more when its note has more than MAXNOTEPOINTS points or stopped at its budget.",
+          "Thin a second reply still over the count with boundedpoints.",
+          "Render the number in every note rule from MAXNOTEPOINTS."
+        ],
+        "must_not": [
+          "Keep only the first MAXNOTEPOINTS lines.",
+          "Store a note that stopped at its budget, asked again or not.",
+          "Ask or thin the notes of a kind without a noterule."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testllmtasks.py::testan85notechunkisaskedagainandthenbounded",
+          "tests/testllmtasks.py::testanotecutoffatitscapisaskedagainandthefinishedonestored",
+          "tests/testllmtasks.py::testboundedpointsspreadsthekeptlinesoverthewholenote"
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -3237,6 +3298,30 @@
     {
       "source": "ADR-039",
       "target": "ADR-026",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-040",
+      "target": "ADR-023",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-040",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-040",
+      "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-040",
+      "target": "ADR-034",
       "type": "related",
       "resolved": true
     }

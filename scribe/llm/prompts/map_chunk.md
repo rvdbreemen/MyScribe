@@ -22,3 +22,9 @@ them: who said something is part of what the task needs.
 Excerpt:
 
 {{ transcript }}
+{% if again %}
+
+Your first notes for this excerpt {{ again }}. Take them again: at most
+{{ max_points }} notes, spread over the whole excerpt from {{ start }} to
+{{ end }}, each keeping its `[m:ss]`.
+{% endif %}

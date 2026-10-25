@@ -171,8 +171,11 @@
   ran out of room, and the job failed. Those notes are now asked as at most
   30 points in the model's own words, each with its timestamp (for minutes
   and action items also the speaker), quoting only a few words where they
-  matter. This is a request, not a limit: a model can still write more.
-  Such a note that runs out of room with most of its lines copied from the
+  matter. A note with more than 30 points, or one that runs out of room
+  before the end of its part, is asked once more. If the second note still
+  has more than 30, MyScribe keeps 30 of them, spread over the whole part,
+  each with its timestamp (TASK-126, ADR-040). A note that runs out of room
+  the second time fails the job, as before. Such a note that runs out of room with most of its lines copied from the
   transcript now says so. Notes for the other tasks are asked as before.
   The shared notes prompt changed, so notes stored by an earlier version
   are not reused: the next run of any AI task on a long recording (summary, minutes,
@@ -194,11 +197,11 @@
   Cloud providers are asked as before; OpenRouter keeps the thinking limit
   below. The notes and a recording short enough for one step are asked as
   before (TASK-124, ADR-035).
-- **Known limit: a small local model on a long recording.** On a 4B model
-  such as qwen3.5:4b, minutes and action items may come back without
-  timestamps, and chapters can stop at the model's note budget. qwen3.5:9b
-  gave minutes with real timestamps (measured on one 2h28m Dutch recording)
-  (TASK-124).
+- **Known limit: timestamps on a small local model.** Minutes and action
+  items with timestamps need qwen3.5:9b or larger on a local model; a 4B
+  model such as qwen3.5:4b may leave them without timestamps. Settings says
+  so beside the Ollama model. Measured on one 2h28m Dutch recording, where
+  qwen3.5:9b gave minutes with real timestamps (TASK-124, TASK-126).
 - **Quit no longer costs you the running job.** Quit in the MyScribe window,
   Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
   (on macOS and Linux) now stop MyScribe the way the Stop button in Settings

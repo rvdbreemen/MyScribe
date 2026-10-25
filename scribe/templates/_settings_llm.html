@@ -107,6 +107,11 @@
       <datalist id="models-{{ p.name }}">
         {% for name in p.models %}<option value="{{ name }}"></option>{% endfor %}
       </datalist>
+      {# Robert's decision of 2026-10-25 (TASK-126): a documented limit, said
+         where a local model is chosen. Measured on one 2h28m recording. #}
+      {% if p.local %}
+      <p class="hint">Minutes and action items with timestamps need qwen3.5:9b or larger on a local model; a 4B model such as qwen3.5:4b may leave them without timestamps.</p>
+      {% endif %}
     </div>
     {% endfor %}
 
