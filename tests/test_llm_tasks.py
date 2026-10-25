@@ -267,10 +267,15 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "fe13c07f396025ef12d50ec4dd2b5efef3510a8fc16b1f63bc839e8eef9b05a1"
-"""sha256 over everything a prompt is made of, for PROMPT_VERSION "4": the
+PROMPTS_DIGEST = "80f59da4962055e099a2408282d2139875a397f3f6277436726d69737308715e"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "5": the
 templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal and note
 rule, and the source line `source_label` writes.
+
+Version "5" (TASK-124, 2026-10-25): minutes, action_items and chapters got a
+note rule like blog's (points in their own words, no line copied from the
+excerpt), after live notes on media 61 copied the excerpt. Was fe13c07f...
+under "4".
 
 Version "4" (TASK-124, 2026-10-25): map_chunk.md gained the note-rule slot,
 blog got a new goal and a note rule (points in its own words, no line copied
@@ -2184,6 +2189,78 @@ def test_a_blog_note_is_asked_as_points_in_its_own_words_never_a_copied_line():
     assert BLOG_NOTE_RULE in text, text
     assert "own words" in tasks.chunk_goal(tasks.task_spec("blog"))
     assert "gather the material" not in tasks.chunk_goal(tasks.task_spec("blog"))
+
+
+MINUTES_NOTE_RULE = (
+    "Write at most 30 notes. Each note is one point in your own words, written as "
+    "`[m:ss] Name: point` - the moment it is about and who it is about, as the excerpt names "
+    "them - saying what was discussed, decided or agreed to do. Never copy a line from the "
+    "excerpt: a note that repeats a line word for word is not a note. Where the exact words "
+    "matter, such as a decision or a promise, quote only those few words, in quotation "
+    "marks, inside your own sentence."
+)
+"""Pinned word for word. Job 433 on the round-6 library copy (2026-10-25):
+qwen3.5:4b, asked for minutes notes on media 61, wrote chunk 2 back line for
+line from `[1:38:25] Henry: Het is goed.` until the 4000-token note budget ran
+out, and chunk 1 came back as 93 lines for a 47-minute stretch. Robert's
+decision of 2026-10-25: minutes gets a note rule like blog's. The order
+`[m:ss] Name:` is the transcript's own, so the stamp `copied_lines` strips
+still leads and the speaker clause of map_chunk.md is not contradicted."""
+
+
+def test_a_minutes_note_is_asked_as_points_in_its_own_words_never_a_copied_line():
+    text = _blog_chunk_prompt("minutes")
+
+    assert MINUTES_NOTE_RULE in text, text
+    # Still asked to name who spoke: an owner is part of what minutes need.
+    assert "Begin every note with the speaker" in text
+
+
+def test_a_minutes_note_cut_off_while_copying_the_excerpt_says_it_was_copying(
+    conn, monkeypatch
+):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    # Chunk 0 of this plan is one line once the speaker name is on it, so the
+    # note is that line alone: one of one copied.
+    provider, _ = fake_provider(_copying(own=0))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="minutes", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "copied word for word" in str(caught.value), str(caught.value)
+
+
+def test_which_kinds_ask_their_notes_in_their_own_words():
+    """Every kind that combines notes shares map_chunk.md, and its sentence
+    'plain lines, each keeping the [m:ss]' read as 'copy the lines' to
+    qwen3.5:4b on media 61 for each kind measured (round-7 library copy,
+    2026-10-25: action_items job 430 copied 21 of 24 note lines, chapters job
+    431 copied 25 of 26, both until the 4000-token cap). `speakers` must keep
+    its quotes; `summary` and `labels` were not measured, so they stay as they
+    were; `cleanup` and `custom` take no such notes."""
+    assert {kind: bool(spec.note_rule) for kind, spec in tasks.TASKS.items()} == {
+        "summary": False,
+        "action_items": True,
+        "chapters": True,
+        "minutes": True,
+        "blog": True,
+        "speakers": False,
+        "labels": False,
+        "cleanup": False,
+        "custom": False,
+    }
+
+
+@pytest.mark.parametrize("kind", ["action_items", "chapters"])
+def test_action_items_and_chapters_notes_are_never_a_copied_line(kind):
+    text = _blog_chunk_prompt(kind)
+
+    assert tasks.task_spec(kind).note_rule in text
+    assert "Never copy a line from the excerpt" in text
+    assert "Write at most 30 notes" in text
 
 
 def test_the_speaker_notes_keep_their_quotes():

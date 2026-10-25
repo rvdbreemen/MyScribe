@@ -67,7 +67,7 @@ from scribe.llm import base, chunking, ollama, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "4"
+PROMPT_VERSION = "5"
 """Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
 JSON_SYSTEM, LANGUAGE_SYSTEM, a kind's goal or note rule (`TaskSpec.note_rule`)
 or the line `source_label` writes - because it is
@@ -326,8 +326,13 @@ class TaskSpec:
     TASK-124 (Robert's option A, 2026-10-25): on media 61 qwen3.5:4b and :9b
     wrote the excerpt back line for line until the note budget ran out (jobs
     430-432 on the 2026-10-24 library copy), so a blog note is asked as a bounded number of points in the
-    model's own words. Not shared through `map_chunk.md` itself, because
-    `speakers` asks for 'the quote and its time' and must keep its quotes."""
+    model's own words. Set for `minutes` by Robert's decision of 2026-10-25,
+    after job 433 (round-6 copy) wrote chunk 2 back line for line to the cap,
+    and for `action_items`, which shares that note path, after job 430 on the
+    round-7 copy did the same to chunk 0 (21 of 24 lines copied), and for
+    `chapters`, whose job 431 there copied 25 of 26. Not shared
+    through `map_chunk.md` itself, because `speakers` asks for 'the quote and
+    its time' and must keep its quotes."""
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     needs_prompt: bool = False
     with_speakers: chunking.Speakers = False
@@ -401,6 +406,14 @@ TASKS: dict[str, TaskSpec] = {
         template="action_items",
         schema=ActionItems,
         goal="list everything somebody agreed to do, with who took it on and when it was said",
+        note_rule=(
+            "Write at most 30 notes. Each note is one thing somebody took on or was asked to do, "
+            "in your own words, written as `[m:ss] Name: point` - the moment it was said and who "
+            "took it on, as the excerpt names them. Never copy a line from the excerpt: a note "
+            "that repeats a line word for word is not a note. Where the exact words matter, such "
+            "as a promise or a deadline, quote only those few words, in quotation marks, inside "
+            "your own sentence."
+        ),
         with_speakers="names",
     ),
     "chapters": TaskSpec(
@@ -409,6 +422,11 @@ TASKS: dict[str, TaskSpec] = {
         template="chapters",
         schema=Chapters,
         goal="mark where the subject changes, with the time each new stretch starts",
+        note_rule=(
+            "Write at most 30 notes. Each note is one subject in your own words, starting with "
+            "the `[m:ss]` where talk of it begins. Never copy a line from the excerpt: a note "
+            "that repeats a line word for word is not a note."
+        ),
     ),
     "minutes": TaskSpec(
         kind="minutes",
@@ -416,6 +434,14 @@ TASKS: dict[str, TaskSpec] = {
         template="minutes",
         schema=Minutes,
         goal="write the minutes: what was discussed, what was decided, what was agreed to do",
+        note_rule=(
+            "Write at most 30 notes. Each note is one point in your own words, written as "
+            "`[m:ss] Name: point` - the moment it is about and who it is about, as the excerpt "
+            "names them - saying what was discussed, decided or agreed to do. Never copy a line "
+            "from the excerpt: a note that repeats a line word for word is not a note. Where the "
+            "exact words matter, such as a decision or a promise, quote only those few words, in "
+            "quotation marks, inside your own sentence."
+        ),
         with_speakers="names",
     ),
     "blog": TaskSpec(
