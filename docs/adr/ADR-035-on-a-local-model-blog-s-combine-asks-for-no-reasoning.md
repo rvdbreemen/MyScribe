@@ -45,16 +45,6 @@ status_history:
     changed_by: Claude (agent, session 2026-10-25)
     reason: Initial proposal
     changed_via: adr-kit
-  - date: 2026-10-25
-    status: Proposed
-    changed_by: Claude (agent, session 2026-10-25)
-    reason: ADR-035 scopes the combine hint to local models (TASK-124)
-    changed_via: adr-kit lifecycle
-  - date: 2026-10-25
-    status: Proposed
-    changed_by: Claude (agent, session 2026-10-25)
-    reason: ADR-035 scopes the combine hint to local models (TASK-124)
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
@@ -66,7 +56,8 @@ whole 6000-token cap thinking. ADR-020 makes the reasoning hint a per-kind
 setting on every call; ADR-030 gives an OpenRouter call without the hint a
 reasoning limit of two fifths of its cap. Neither covers one call of a kind.
 
-The A/B (`run-124/r6/ab-summary.txt`, library copies, TASK-124):
+The A/B (library copies, TASK-124; the measurement files stayed in the
+session scratchpad, so the numbers below are the record):
 
 * Without the hint, each run on its own notes: job 430 in round 4 done
   (5057 completion tokens); job 430 in round 5 failed at the cap after
@@ -145,4 +136,6 @@ hint, read 3147 prompt tokens and wrote 2626 with no thinking in 40.6 s.
 
 ## References
 
-* TASK-124; `run-124/r6/ab-summary.txt`; `scribe/llm/tasks.py` (`_ask`).
+* TASK-124 (jobs 430-434 on library copies; the numbers in Context and
+  Confirmation are copied from the session's measurement files, not kept
+  in the repo); `scribe/llm/tasks.py` (`_ask`).

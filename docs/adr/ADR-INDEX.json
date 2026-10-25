@@ -1199,7 +1199,7 @@
       "path": "ADR-020-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap-and-a-copied-part-that-skipped-the-grouping-refuses-the-cleaning.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-25",
+      "date": "2026-10-24",
       "decision_summary": "Chosen option: A.",
       "topics": [
         "llm",
@@ -1831,7 +1831,7 @@
       "path": "ADR-030-an-openrouter-call-that-asks-no-reasoning-hint-carries-a-reasoning-limit-of-two-fifths-of-its-cap.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-25",
+      "date": "2026-10-24",
       "decision_summary": "Chosen option: B, decided by Robert on 2026-10-24.",
       "topics": [
         "openrouter",
