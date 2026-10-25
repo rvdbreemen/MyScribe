@@ -4,3 +4,5 @@
 
 # Export golden files are compared byte for byte: no line-ending or BOM conversion.
 tests/golden/** -text
+*.cmd text eol=crlf
+packaging/posix/myscribe text eol=lf

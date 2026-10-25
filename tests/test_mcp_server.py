@@ -174,6 +174,7 @@ EXPECTED_TOOLS = {
     "list_recordings", "get_recording", "search_transcripts", "get_transcript",
     "export_transcript", "add_recording", "transcribe_again", "ask_ai",
     "list_jobs", "get_job", "cancel_job", "get_settings",
+    "doctor", "list_watch_folders", "add_watch_folder", "remove_watch_folder",
 }
 
 
@@ -194,10 +195,12 @@ def test_read_tools_say_so_and_writers_do_not():
     (answer,) = exchange(None, request(1, "tools/list"))
     read_only = {t["name"] for t in answer["result"]["tools"] if t["annotations"]["readOnlyHint"]}
     assert read_only == {"list_recordings", "get_recording", "search_transcripts",
-                         "get_transcript", "list_jobs", "get_job", "get_settings"}
+                         "get_transcript", "list_jobs", "get_job", "get_settings",
+                         "doctor", "list_watch_folders"}
     destructive = {t["name"] for t in answer["result"]["tools"]
                    if t["annotations"].get("destructiveHint")}
-    assert destructive == {"export_transcript", "cancel_job"}  # save_to replaces a file
+    # save_to replaces a file; removing a watch folder ends what it was doing.
+    assert destructive == {"export_transcript", "cancel_job", "remove_watch_folder"}
 
 
 def test_the_schemas_enums_are_the_apps():
@@ -477,7 +480,66 @@ def test_get_settings(transport):
     assert payload(call(transport, "get_settings")) == direct
 
 
+@pytest.fixture
+def fake_doctor(monkeypatch):
+    from test_cli import fake_checks
+    from scribe import doctor
+
+    monkeypatch.setattr(doctor, "web_checks", fake_checks)
+
+
+def test_doctor_is_the_apis_answer_and_queues_nothing(transport, conn, fake_doctor):
+    direct = transport.client.get("/api/v1/doctor").json()
+    answer = payload(call(transport, "doctor"))
+    assert answer == direct
+    assert [c["name"] for c in answer["checks"]] == ["python", "ffmpeg", "yt-dlp"]
+    assert jobs_of(conn) == []
+
+
+def test_add_list_and_remove_a_watch_folder(transport, conn, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    added = payload(call(transport, "add_watch_folder",
+                         {"path": str(inbox), "include_video": True, "tier": "max"}))
+    assert Path(added["path"]) == inbox and added["include_video"] is True
+    assert added["options"]["tier"] == "max"
+    assert "Watching that folder" in added["message"]
+    listed = payload(call(transport, "list_watch_folders"))
+    assert [f["id"] for f in listed["folders"]] == [added["id"]]
+    removed = payload(call(transport, "remove_watch_folder", {"folder_id": added["id"]}))
+    assert removed == {"id": added["id"], "removed": True}
+    assert payload(call(transport, "list_watch_folders"))["folders"] == []
+
+
+def test_a_watch_folder_path_must_be_absolute(transport, conn):
+    text = error_text(call(transport, "add_watch_folder", {"path": "inbox"}))
+    assert "absolute" in text
+    assert [p for _, p, _, _ in transport.requests if "watch" in p] == []
+
+
+def test_a_watch_folder_twice_is_the_apis_conflict(transport, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    payload(call(transport, "add_watch_folder", {"path": str(inbox)}))
+    text = error_text(call(transport, "add_watch_folder", {"path": str(inbox)}))
+    assert "error 409 already_watched" in text
+
+
+def test_removing_an_unknown_watch_folder_is_a_tool_error(transport):
+    assert "error 404 not_found" in error_text(call(transport, "remove_watch_folder", {"folder_id": 42}))
+
+
+def test_the_watch_folder_options_are_the_dialogs_without_params():
+    """The route takes the dialog's fields and refuses ``params``."""
+    from scribe import options
+
+    schema = mcp_server.BY_NAME["add_watch_folder"].schema["properties"]
+    assert set(schema) == {"path", "include_video", *options.OPTION_FIELDS}
+
+
 def test_every_tool_call_goes_to_api_v1(transport, transcribed, conn, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
     clip = tmp_path / "clip.wav"
     clip.write_bytes(tiny_wav())
     job = seed_job(conn, transcribed, status="done")
@@ -489,6 +551,8 @@ def test_every_tool_call_goes_to_api_v1(transport, transcribed, conn, tmp_path):
         "ask_ai": {"media_id": transcribed, "kind": "summary"},
         "list_jobs": {}, "get_job": {"job_id": job}, "cancel_job": {"job_id": job},
         "get_settings": {},
+        "doctor": {}, "list_watch_folders": {}, "add_watch_folder": {"path": str(inbox)},
+        "remove_watch_folder": {"folder_id": 1},
     }
     assert set(arguments) == EXPECTED_TOOLS
     for name, args in arguments.items():

@@ -5,8 +5,14 @@
 - **A JSON API for programs, under `/api/v1`.** A script or an agent can list
   and search the library, read a transcript as JSON, send a recording in
   (multipart, or a path under the browse roots), transcribe a recording again,
-  queue an AI question, read and cancel jobs, download an export, and read the
-  settings (never a key or token). Every route is in `/openapi.json`, and every
+  queue an AI question, read and cancel jobs, download an export, read the
+  settings (never a key or token), read the doctor's checks, and list, add
+  and remove watch folders. `GET /api/v1/doctor` runs the checks the Settings
+  page runs when it opens and returns them with the last GPU check's stored
+  result; it queues nothing, and its `ok` is false when a required check of
+  that run failed. `POST /api/v1/watch-folders` calls the function the
+  Settings page calls, with the same refusals; a folder already watched is
+  `already_watched`. Every route is in `/openapi.json`, and every
   error under `/api/v1` is JSON with a stable `code` and a `detail`; an
   unexpected server error is `internal_error`, without the exception's text.
   A re-transcribe refuses a field that is not one of the dialog's options or
@@ -27,35 +33,49 @@
   running MyScribe on 127.0.0.1 (`--port`, default 4242), only to `/api/v1`,
   and never through a proxy. Commands: `status`, `list`, `search`, `upload`
   (the file's bytes, or `--by-path` for a file under the browse roots),
-  `transcribe`, `jobs`, `cancel`, `wait`, `transcript` and `export`;
+  `transcribe`, `jobs`, `cancel`, `wait`, `transcript`, `export`, `doctor`
+  and `watch list|add|remove`;
   `--idempotency-key` on `upload` and `transcribe`, `--json` for the API's
   own answer. `export` and `transcript --out` replace a file that is
   already there and say so on stderr. An `upload` of a file that cannot be
   read, or that disappears while it is sent, ends with `cannot read <file>`
   and the usage exit code, not with "MyScribe is not answering". Each outcome has its own exit code
   (not running, not found, conflict, refused, job not done, wait timed
-  out), listed in [Configuration](docs/configuration.md). There is no `myscribe` command
-  yet: the project is not packaged, so the environment installs no console
-  script (TASK-108).
+  out, a required doctor check failed), listed in
+  [Configuration](docs/configuration.md). `watch add` sends the folder as
+  an absolute path, resolved where the command runs (TASK-108).
+- **A `myscribe` command in the installed app.** Windows: `myscribe.cmd` in
+  the install folder's `bin`, which Setup adds to your PATH only when you
+  tick that task (off by default); an uninstall, or an update with it
+  unticked, takes the entry out of PATH again. Linux: `MyScribe.AppImage cli
+  <command>`. macOS: `MyScribe.app/Contents/Resources/myscribe`, to link
+  into your PATH. Each runs `python -P -m scribe.cli` with the Python the
+  launcher installed, in the home the launcher uses (`MYSCRIBE_HOME`, a
+  moved home, or the default), and says to start MyScribe once when that
+  environment is not there yet (exit 3). In a clone it stays
+  `python -m scribe.cli` (TASK-108).
 - **An MCP server for AI agents: `python -m scribe.cli mcp`.** An agent such
   as Claude Code or Claude Desktop starts it and talks MCP to it over stdin
-  and stdout. It offers twelve tools, each one or a few requests to a running
+  and stdout. It offers sixteen tools, each one or a few requests to a running
   MyScribe's `/api/v1`: `list_recordings`, `get_recording`,
   `search_transcripts`, `get_transcript`, `export_transcript`,
   `add_recording`, `transcribe_again`, `ask_ai`, `list_jobs`, `get_job`,
-  `cancel_job` and `get_settings`. Like the CLI it reaches only 127.0.0.1 and
+  `cancel_job`, `get_settings`, `doctor`, `list_watch_folders`,
+  `add_watch_folder` and `remove_watch_folder`. Like the CLI it reaches only 127.0.0.1 and
   never opens the library itself. A failed action comes back as a tool
   result marked as an error, with the API's status, code and detail;
   arguments that do not fit a tool's schema come back the same way, with
-  what was wrong, and so does a file the tool cannot read. `path` and
-  `save_to` must be absolute: a relative one is refused, because the client
+  what was wrong, and so does a file the tool cannot read. The `path` of
+  `add_recording` and `add_watch_folder`, and `save_to`, must be absolute:
+  a relative one is refused, because the client
   chooses the folder the server runs in. `export_transcript` returns one text format as text; a
   docx or several formats (a ZIP) need `save_to`, and with `save_to` any
   export is written to that file or folder, replacing a file already there. `add_recording` sends the file's bytes,
   or its path with `by_path`, and takes an `idempotency_key`; a replayed
   answer is marked `myscribe/replayed`. The server is written on Python's
   standard library and adds no package to the install (ADR-033, Proposed).
-  How to register it is in [Configuration](docs/configuration.md)
+  With an installed MyScribe, the client starts the `myscribe` command with
+  the argument `mcp`. How to register it is in [Configuration](docs/configuration.md)
   (TASK-108).
 - The library database moves to schema version 19 for the idempotency keys;
   an older MyScribe refuses a library this version has opened.

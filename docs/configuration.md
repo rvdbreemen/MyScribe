@@ -152,9 +152,29 @@ library, and ignores `HTTP_PROXY`, because a proxy cannot reach this
 computer's 127.0.0.1. The full API is described at
 `http://127.0.0.1:4242/openapi.json`.
 
-There is no `myscribe` command yet: the project is not packaged
-(`tool.uv.package = false`), so the environment installs no console script.
-Call it as `python -m scribe.cli` with the environment's Python.
+In a clone, call it as `python -m scribe.cli` with the environment's
+Python: the project is not packaged (`tool.uv.package = false`), so the
+environment installs no console script. An installed MyScribe has a
+`myscribe` command instead, a small script that runs the same thing with
+the Python the launcher installed:
+
+* **Windows**: `myscribe.cmd` in the `bin` folder of the install folder,
+  `%LOCALAPPDATA%\Programs\MyScribe\bin` by default. Setup puts that folder
+  on your PATH only when you tick *Add the myscribe command to my PATH*; it
+  is off by default, and an uninstall takes the entry out again. Open a new
+  terminal after installing.
+* **Linux**: `MyScribe.AppImage cli`, followed by the command. For a plain
+  `myscribe`, add `alias myscribe='/path/to/MyScribe.AppImage cli'` to your
+  shell's startup file.
+* **macOS**: `/Applications/MyScribe.app/Contents/Resources/myscribe`. Link
+  it into a folder on your PATH:
+  `ln -s /Applications/MyScribe.app/Contents/Resources/myscribe /usr/local/bin/myscribe`.
+
+The script finds the environment the way the launcher does: `MYSCRIBE_HOME`,
+then a home you moved at the first start, then the default. Until MyScribe
+has been started once there is no environment, and it says so (exit 3). On
+Linux and macOS, a moved home whose path holds a character outside ASCII is
+not read; set `MYSCRIBE_HOME` to it instead.
 
 | Command | What it does |
 | --- | --- |
@@ -167,6 +187,10 @@ Call it as `python -m scribe.cli` with the environment's Python.
 | `cancel ID` | Cancel a job |
 | `wait ID` | Wait until a job ends. `--timeout SECONDS`, `--interval SECONDS`, `--quiet` |
 | `transcript ID` | The transcript as JSON, word by word, to stdout or `--out` |
+| `doctor` | Check this computer: the checks the Settings page runs, and the last GPU check's result. Exit 9 when a required check failed. It starts nothing: run the GPU check from Settings |
+| `watch list` | The watch folders: on or off, audio only or with video, and why one may be doing nothing (missing, outside the browse roots) |
+| `watch add FOLDER` | Watch a folder, with `--include-video` and `--option` (repeatable) for what it takes in. What is already in it is left alone and counted, as in Settings |
+| `watch remove ID` | Stop watching a folder; its recordings stay in the library |
 | `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout. In a folder the file gets the app's name for it; a file that is already there is replaced, with a `replaced` line on stderr |
 | `mcp` | Serve these actions as MCP tools on stdin and stdout, for an AI agent; see [below](#letting-an-ai-agent-use-myscribe-mcp) |
 
@@ -193,6 +217,7 @@ a lost answer gives the first answer back and queues nothing new.
 | 6 | `REFUSED` | The app refused the request itself: a wrong option, an empty search, a path outside the browse roots |
 | 7 | `JOB_UNSUCCESSFUL` | `wait`: the job ended failed, cancelled or interrupted |
 | 8 | `TIMEOUT` | `wait`: the job had not ended when `--timeout` ran out |
+| 9 | `CHECK_FAILED` | `doctor`: a required check failed or was not tested |
 
 An error goes to stderr as the API's `code` and `detail`, for example
 `myscribe: error 409 no_transcript: media 7 has no transcript yet`.
@@ -218,19 +243,33 @@ another port.
 | `ask_ai` | Queue an AI job (`kind` summary, chapters, ... or custom with a `prompt`) |
 | `list_jobs`, `get_job`, `cancel_job` | Follow and cancel jobs |
 | `get_settings` | The transcription defaults, browse roots, watch folders and AI provider. Never a key |
+| `doctor` | The checks the Settings page runs, each with its fix, and the last GPU check's result. Starts nothing |
+| `list_watch_folders`, `add_watch_folder`, `remove_watch_folder` | The watch folders. `add_watch_folder` takes an absolute `path`, `include_video` and the transcription options |
 
 A failed action comes back as a tool result marked as an error. The text is
 the API's error, for example `error 404 not_found: no job with id 999`, so
-the agent can read it and try again. The seven tools that change nothing
+the agent can read it and try again. The nine tools that change nothing
 carry MCP's read-only flag, which a client may use to decide what needs
 your approval. A repeated `add_recording` or `transcribe_again`
 with the same `idempotency_key` returns the first answer. Its result carries
 `"_meta": {"myscribe/replayed": true}`.
 
-To register the server, give the client the Python of MyScribe's
+With an installed MyScribe, register the `myscribe` command above with
+the argument `mcp`. On Windows a client starts a `.cmd` through `cmd /c`;
+with the default install folder, in Claude Code:
+
+```sh
+claude mcp add myscribe -- cmd /c "%LOCALAPPDATA%\Programs\MyScribe\bin\myscribe.cmd" mcp
+```
+
+In a JSON configuration, write the whole path out:
+`"command": "cmd", "args": ["/c", "C:\\Users\\me\\AppData\\Local\\Programs\\MyScribe\\bin\\myscribe.cmd", "mcp"]`.
+On Linux the command is the AppImage with the arguments `cli mcp`; on
+macOS the `myscribe` script in the bundle with `mcp`.
+
+From a source checkout, give the client the Python of the checkout's
 environment, the arguments `-m scribe.cli mcp`, and `PYTHONPATH` set to the
-folder that holds `scribe`. In a source checkout on Windows, Claude Code
-takes it as:
+folder that holds `scribe`. On Windows, Claude Code takes it as:
 
 ```sh
 claude mcp add myscribe --env PYTHONPATH=C:/src/myscribe -- C:/src/myscribe/.venv/Scripts/python.exe -m scribe.cli mcp

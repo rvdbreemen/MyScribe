@@ -210,8 +210,9 @@ anything MyScribe installed for you from somebody else, such as Ollama.
 
 **Windows** - Settings > Apps > MyScribe > Uninstall stops a running MyScribe,
 then removes
-`%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, and the login item if
-*Start at login* was on. It leaves:
+`%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, the login item if
+*Start at login* was on, and the `myscribe` command's entry in your PATH
+if you ticked that at install. It leaves:
 
 - your home and library: `%LOCALAPPDATA%\MyScribe`, or the folder you chose.
   Delete it by hand when you no longer want the recordings.

@@ -34,6 +34,7 @@ import http.client
 import json
 import math
 import mimetypes
+import os
 import secrets
 import socket
 import sys
@@ -64,6 +65,7 @@ class Exit(enum.IntEnum):
     REFUSED = 6  # 400, 403, 413, 415, 422: the request itself was refused
     JOB_UNSUCCESSFUL = 7  # wait: the job ended failed, cancelled or interrupted
     TIMEOUT = 8  # wait: the job had not ended when --timeout ran out
+    CHECK_FAILED = 9  # doctor: a required check failed or was not tested
 
 
 # A transport takes (method, path, headers, body) and answers
@@ -544,6 +546,93 @@ def cmd_export(api: Api, args, out: Out) -> Exit:
     return Exit.OK
 
 
+def _check_lines(checks: list) -> list[str]:
+    """`scribe.doctor.render`'s marks, which this module may not import."""
+    width = max((len(c["name"]) for c in checks), default=0)
+    lines = []
+    for c in checks:
+        mark = ("----" if not c.get("tested", True) else "OK  " if c["ok"]
+                else "SKIP" if c.get("optional") else "FAIL")
+        lines.append(f"[{mark}] {c['name'].ljust(width)}  {c.get('detail', '')}".rstrip())
+        if not c["ok"] and c.get("fix_hint"):
+            lines.append(f"       {' ' * width}  -> {c['fix_hint']}")
+    return lines
+
+
+def cmd_doctor(api: Api, args, out: Out) -> Exit:
+    body, _ = api.json("GET", "/doctor")
+    exit_ = Exit.OK if body["ok"] else Exit.CHECK_FAILED
+    if out.as_json:
+        out.data(body)
+        return exit_
+    for line in _check_lines(body["checks"]):
+        out.line(line)
+    last, waiting = body.get("gpu_last"), body.get("gpu_job")
+    out.line()
+    if last:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(last["ts"]))
+        out.line(f"GPU checks, last run {when}:")
+        for line in _check_lines(last["checks"]):
+            out.line(line)
+    else:
+        out.line("GPU checks: never run. Run them from Settings > This computer.")
+    if waiting:
+        out.line(f"GPU checks {waiting['status']} as job {waiting['id']}")
+    out.line("All required checks passed." if body["ok"] else "A required check did not pass.")
+    return exit_
+
+
+def _folder_line(folder: dict) -> str:
+    notes = [note for flag, note in (
+        (not folder["enabled"], "off"), (folder["missing"], "missing"),
+        (not folder["allowed"], "outside the browse roots"),
+        (folder["unwatchable"], "not watched live"),
+    ) if flag]
+    state = ", ".join(notes) if notes else "on"
+    video = "audio and video" if folder["include_video"] else "audio only"
+    return f"{folder['id']:>4}  {state:<10}  {video:<15}  {folder['path']}"
+
+
+def cmd_watch_list(api: Api, args, out: Out) -> Exit:
+    body, _ = api.json("GET", "/watch-folders")
+    if out.as_json:
+        out.data(body)
+        return Exit.OK
+    out.line(f"{'id':>4}  {'state':<10}  {'takes':<15}  folder")
+    for folder in body["folders"]:
+        out.line(_folder_line(folder))
+    if not body["folders"]:
+        out.note("no watch folders")
+    if not body["watching"]:
+        out.note("note: this MyScribe runs without its supervisor, so nothing is being watched")
+    return Exit.OK
+
+
+def cmd_watch_add(api: Api, args, out: Out) -> Exit:
+    # Absolute here: the app refuses a relative path, and only this side
+    # knows which folder it is relative to.
+    request: dict = {"path": os.path.abspath(os.path.expanduser(args.folder))}
+    if args.include_video:
+        request["include_video"] = True
+    request.update({k: _value(v) for k, v in _pairs(args.option, args.parser)})
+    body, _ = api.json("POST", "/watch-folders", json_body=request)
+    if out.as_json:
+        out.data(body)
+        return Exit.OK
+    out.line(f"watch folder {body['id']}: {body['path']}")
+    out.line(body["message"])
+    return Exit.OK
+
+
+def cmd_watch_remove(api: Api, args, out: Out) -> Exit:
+    body, _ = api.json("DELETE", f"/watch-folders/{args.folder_id}")
+    if out.as_json:
+        out.data(body)
+    else:
+        out.line(f"watch folder {body['id']} removed; the library keeps what it took in")
+    return Exit.OK
+
+
 # --- the parser --------------------------------------------------------------------------------
 
 
@@ -653,6 +742,23 @@ def build_parser() -> argparse.ArgumentParser:
     _with_options(p, "an export option, e.g. speakers=false or timestamps=turn")
     p.add_argument("--out", default=".", help="a file or folder (default .); - is stdout")
     p.set_defaults(run=cmd_export)
+
+    p = sub.add_parser("doctor", help="check this computer: the checks the Settings page runs, "
+                                      "and the last GPU check (exit 9 when a required one fails)")
+    p.set_defaults(run=cmd_doctor)
+
+    p = sub.add_parser("watch", help="the folders that transcribe by themselves")
+    watch = p.add_subparsers(dest="watch_command", required=True, metavar="ACTION")
+    w = watch.add_parser("list", help="the watch folders and whether each is doing anything")
+    w.set_defaults(run=cmd_watch_list)
+    w = watch.add_parser("add", help="watch a folder; what is already in it is left alone")
+    w.add_argument("folder")
+    w.add_argument("--include-video", action="store_true", help="take video files too")
+    _with_options(w, "a transcription option for what it takes in")
+    w.set_defaults(run=cmd_watch_add)
+    w = watch.add_parser("remove", help="stop watching a folder; the library keeps its recordings")
+    w.add_argument("folder_id", type=int)
+    w.set_defaults(run=cmd_watch_remove)
 
     p = sub.add_parser("mcp", help="serve these actions as MCP tools on stdin/stdout, "
                                    "for an AI agent (see docs/configuration.md)")

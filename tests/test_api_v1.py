@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import time
 import wave
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from scribe import db, paths
+from scribe import db, doctor, fsbrowse, paths
 from scribe.app import create_app
 from scribe.llm import ollama
 from seed import seed_media, seed_run
@@ -133,6 +136,10 @@ EXPECTED_OPERATIONS = {
     ("get", "/api/v1/jobs/{job_id}"),
     ("post", "/api/v1/jobs/{job_id}/cancel"),
     ("get", "/api/v1/settings"),
+    ("get", "/api/v1/doctor"),
+    ("get", "/api/v1/watch-folders"),
+    ("post", "/api/v1/watch-folders"),
+    ("delete", "/api/v1/watch-folders/{folder_id}"),
 }
 
 
@@ -755,6 +762,203 @@ def test_settings_read_never_carries_a_secret(client, conn):
         assert value not in text
 
 
+# --- the doctor, read only ------------------------------------------------------------------------
+
+
+def fake_checks(*, failing_required: bool = False) -> list:
+    return [
+        doctor.Check("python", True, "3.12.10"),
+        doctor.Check("ffmpeg", not failing_required, "not found" if failing_required else "ffmpeg 7.1",
+                     fix_hint="install ffmpeg" if failing_required else ""),
+        doctor.Check("yt-dlp", False, "not installed", fix_hint="uv sync", optional=True),
+    ]
+
+
+def test_the_doctor_answers_the_checks_the_settings_page_runs(client, conn, monkeypatch):
+    """The page's GET runs `doctor.web_checks` (TASK-022: never a check that
+    imports torch in the web process); the route runs exactly those."""
+    monkeypatch.setattr(doctor, "web_checks", fake_checks)
+    body = client.get(f"{V1}/doctor").json()
+    assert set(body) == {"ok", "checks", "gpu_last", "gpu_job"}
+    assert [c["name"] for c in body["checks"]] == ["python", "ffmpeg", "yt-dlp"]
+    assert body["checks"][2] == {"name": "yt-dlp", "ok": False, "detail": "not installed",
+                                 "fix_hint": "uv sync", "optional": True, "tested": True}
+    # An optional check that fails does not make the machine fail.
+    assert body["ok"] is True
+    assert body["gpu_last"] is None and body["gpu_job"] is None
+
+
+def test_the_doctor_is_not_ok_when_a_required_check_fails(client, monkeypatch):
+    monkeypatch.setattr(doctor, "web_checks", lambda: fake_checks(failing_required=True))
+    body = client.get(f"{V1}/doctor").json()
+    assert body["ok"] is False
+    assert body["checks"][1]["fix_hint"] == "install ffmpeg"
+
+
+def test_the_doctor_reads_the_last_gpu_run_and_queues_nothing(client, conn, monkeypatch):
+    monkeypatch.setattr(doctor, "web_checks", fake_checks)
+    doctor.store_last_run(conn, [doctor.Check("gpu-smoke", True, "4.2x realtime")], job_id=None)
+    body = client.get(f"{V1}/doctor").json()
+    assert [c["name"] for c in body["gpu_last"]["checks"]] == ["gpu-smoke"]
+    assert isinstance(body["gpu_last"]["ts"], float)
+    assert jobs_of(conn) == []
+
+
+def test_the_doctor_names_a_gpu_check_that_is_still_waiting(client, conn, monkeypatch):
+    from scribe import jobs
+
+    monkeypatch.setattr(doctor, "web_checks", fake_checks)
+    job_id = jobs.enqueue(conn, doctor.JOB_TYPE)
+    assert client.get(f"{V1}/doctor").json()["gpu_job"] == {"id": job_id, "status": "queued"}
+    assert len(jobs_of(conn)) == 1
+
+
+# --- watch folders ------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def inbox(tmp_path):
+    path = tmp_path / "inbox"
+    path.mkdir()
+    return path
+
+
+def settled_file(folder: Path, name: str) -> Path:
+    path = folder / name
+    path.write_bytes(b"a recording of something")
+    old = time.time() - 60
+    os.utime(path, (old, old))
+    return path
+
+
+def folders_of(conn) -> list:
+    from scribe.ingest import watching
+
+    return watching.folders(conn, enabled_only=False)
+
+
+def test_a_watch_folder_added_here_is_the_one_the_page_adds(client, conn, inbox):
+    resp = client.post(f"{V1}/watch-folders",
+                       json={"path": str(inbox), "language": "nl", "tier": "max", "diarize": False})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    (row,) = folders_of(conn)
+    assert body["id"] == row["id"]
+    assert Path(body["path"]) == inbox
+    assert body["enabled"] is True
+    # Audio only unless asked, as the page's form.
+    assert body["include_video"] is False and row["include_video"] == 0
+    assert row["options"].language == "nl" and row["options"].tier == "max"
+    assert row["options"].diarize is False
+    assert body["options"]["tier"] == "max"
+    assert body["message"] == "Watching that folder for new recordings."
+
+
+def test_adding_a_folder_says_what_it_left_alone(client, conn, inbox):
+    settled_file(inbox, "old.mp3")
+    settled_file(inbox, "old.mp4")
+    body = client.post(f"{V1}/watch-folders", json={"path": str(inbox)}).json()
+    assert body["left"] == 1
+    assert body["skipped_video"] == 1
+    assert "left alone" in body["message"] and "video is off" in body["message"]
+    assert jobs_of(conn) == []
+
+
+def test_the_watch_list_is_what_the_page_shows(client, conn, inbox, tmp_path):
+    client.post(f"{V1}/watch-folders", json={"path": str(inbox), "include_video": True})
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    client.post(f"{V1}/watch-folders", json={"path": str(gone)})
+    gone.rmdir()
+    body = client.get(f"{V1}/watch-folders").json()
+    # No supervisor in these tests, so no watcher: the page says so too.
+    assert body["watching"] is False
+    by_path = {Path(f["path"]).name: f for f in body["folders"]}
+    assert set(by_path) == {"inbox", "gone"}
+    assert by_path["inbox"]["include_video"] is True
+    assert by_path["inbox"]["missing"] is False and by_path["gone"]["missing"] is True
+    assert set(by_path["inbox"]) == {"id", "path", "enabled", "include_video", "allowed", "missing",
+                                     "unwatchable", "left", "options"}
+
+
+@pytest.mark.parametrize(
+    "case, status, code",
+    [
+        ("empty", 400, "bad_request"),
+        ("relative", 400, "bad_request"),
+        ("not_there", 400, "bad_request"),
+        ("a_file", 400, "bad_request"),
+        ("data_dir", 400, "bad_request"),
+        ("outside_roots", 403, "forbidden"),
+        ("bad_option", 400, "bad_request"),
+        ("unknown_field", 400, "bad_request"),
+        ("not_an_object", 400, "bad_request"),
+    ],
+)
+def test_a_watch_folder_the_page_refuses_is_refused_here(client, conn, inbox, data_dir, tmp_path,
+                                                         case, status, code):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    if case == "outside_roots":
+        with db.LOCK:
+            conn.execute("INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+                         (fsbrowse.SETTING_KEY, str(allowed)))
+            conn.commit()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    body = {
+        "empty": {"path": "  "},
+        "relative": {"path": "relative/folder"},
+        "not_there": {"path": str(inbox / "nope")},
+        "a_file": {"path": str(settled_file(inbox, "x.mp3"))},
+        "data_dir": {"path": str(data_dir)},
+        "outside_roots": {"path": str(inbox)},
+        "bad_option": {"path": str(inbox), "tier": "huge"},
+        "unknown_field": {"path": str(inbox), "colour": "blue"},
+        "not_an_object": ["path"],
+    }[case]
+    assert_coded(client.post(f"{V1}/watch-folders", json=body), status, code)
+    assert folders_of(conn) == []
+
+
+def test_the_same_folder_twice_is_already_watched(client, conn, inbox):
+    assert client.post(f"{V1}/watch-folders", json={"path": str(inbox)}).status_code == 201
+    body = assert_coded(client.post(f"{V1}/watch-folders", json={"path": str(inbox)}),
+                        409, "already_watched")
+    assert "already being watched" in body["detail"]
+    assert len(folders_of(conn)) == 1
+
+
+def test_removing_a_watch_folder_keeps_the_library(client, conn, inbox, transcribed):
+    folder_id = client.post(f"{V1}/watch-folders", json={"path": str(inbox)}).json()["id"]
+    resp = client.delete(f"{V1}/watch-folders/{folder_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"id": folder_id, "removed": True}
+    assert folders_of(conn) == []
+    assert client.get(f"{V1}/media/{transcribed}").status_code == 200
+
+
+def test_removing_a_watch_folder_that_is_not_there_is_a_coded_404(client):
+    body = assert_coded(client.delete(f"{V1}/watch-folders/42"), 404, "not_found")
+    assert "42" in body["detail"]
+
+
+def test_a_foreign_host_or_site_changes_no_watch_folder(app, conn, inbox):
+    with TestClient(app, base_url="http://evil.example") as foreign:
+        assert foreign.post(f"{V1}/watch-folders", json={"path": str(inbox)}).status_code == 400
+    assert folders_of(conn) == []
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for headers in ({"Origin": "http://evil.example"}, {"Sec-Fetch-Site": "cross-site"}):
+            resp = client.post(f"{V1}/watch-folders", json={"path": str(inbox)}, headers=headers)
+            assert resp.status_code == 403
+        assert folders_of(conn) == []
+        folder_id = client.post(f"{V1}/watch-folders", json={"path": str(inbox)}).json()["id"]
+        for headers in ({"Origin": "http://evil.example"}, {"Sec-Fetch-Site": "cross-site"}):
+            assert client.delete(f"{V1}/watch-folders/{folder_id}", headers=headers).status_code == 403
+    with TestClient(app, base_url="http://evil.example") as foreign:
+        assert foreign.delete(f"{V1}/watch-folders/{folder_id}").status_code == 400
+    assert len(folders_of(conn)) == 1
+
+
 # --- the guard covers it, and the phone door does not reach it -------------------------------------
 
 
@@ -790,7 +994,7 @@ def test_the_phone_door_reaches_no_v1_route(app):
             with http() as c:
                 for path in found:
                     for prefix in ("", f"/{opening.secret}"):
-                        for method in ("GET", "POST"):
+                        for method in ("GET", "POST", "DELETE"):
                             answer = c.request(method, base + prefix + path)
                             assert answer.status_code == 404, (method, prefix and "<secret>", path)
             assert door_of(client).is_open() is True

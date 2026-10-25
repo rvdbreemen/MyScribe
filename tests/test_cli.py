@@ -160,7 +160,8 @@ def test_an_unpackaged_project_declares_no_entry_point():
     and says so on every sync: "warning: Skipping installation of entry
     points (`project.scripts`) ... because this project is not packaged"
     (uv 0.12.18), a line the launcher streams into its setup window and log.
-    Until the project is packaged, the command is ``python -m scribe.cli``."""
+    In a clone the command is ``python -m scribe.cli``; an install gets a
+    ``myscribe`` shim beside its launcher instead (tests/test_cli_shims.py)."""
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     if pyproject["tool"]["uv"].get("package", True) is False:
         assert "scripts" not in pyproject["project"]
@@ -494,6 +495,122 @@ def test_wait_for_an_unknown_job_is_not_found(transport):
 
 
 # --- answers that are not the API's own ---------------------------------------------------------
+
+
+# --- the doctor and the watch folders --------------------------------------------------------------
+
+
+def fake_checks(*, failing_required: bool = False) -> list:
+    from scribe import doctor
+
+    return [
+        doctor.Check("python", True, "3.12.10"),
+        doctor.Check("ffmpeg", not failing_required, "not found" if failing_required else "ffmpeg 7.1",
+                     fix_hint="install ffmpeg" if failing_required else ""),
+        doctor.Check("yt-dlp", False, "not installed", fix_hint="uv sync", optional=True),
+    ]
+
+
+@pytest.fixture
+def checks(monkeypatch):
+    from scribe import doctor
+
+    state = {"failing": False}
+    monkeypatch.setattr(doctor, "web_checks", lambda: fake_checks(failing_required=state["failing"]))
+    return state
+
+
+def test_doctor_prints_each_check_and_passes(transport, conn, checks):
+    result = run(transport, "doctor")
+    assert result.code == E.OK, result.err
+    lines = result.text.splitlines()
+    assert any(line.startswith("[OK  ]") and "python" in line and "3.12.10" in line for line in lines)
+    assert any(line.startswith("[SKIP]") and "yt-dlp" in line for line in lines), lines
+    assert "GPU checks: never run" in result.text
+    assert transport.requests[-1][:2] == ("GET", "/api/v1/doctor")
+    assert jobs_of(conn) == []
+
+
+def test_doctor_with_a_failing_required_check_has_its_own_exit(transport, checks):
+    checks["failing"] = True
+    result = run(transport, "doctor")
+    assert result.code == E.CHECK_FAILED
+    assert any(line.startswith("[FAIL]") and "ffmpeg" in line for line in result.text.splitlines())
+    assert "install ffmpeg" in result.text
+
+
+def test_doctor_shows_the_last_gpu_run(transport, conn, checks):
+    from scribe import doctor
+
+    doctor.store_last_run(conn, [doctor.Check("gpu-smoke", True, "4.2x realtime")])
+    result = run(transport, "doctor")
+    assert "GPU checks, last run" in result.text and "4.2x realtime" in result.text
+
+
+def test_doctor_json_is_the_api_answer_and_keeps_the_exit(transport, checks):
+    checks["failing"] = True
+    result = run(transport, "--json", "doctor")
+    assert result.code == E.CHECK_FAILED
+    assert result.json()["ok"] is False
+
+
+def test_watch_add_sends_an_absolute_path_and_the_options(transport, conn, tmp_path, monkeypatch):
+    from scribe.ingest import watching
+
+    (tmp_path / "inbox").mkdir()
+    monkeypatch.chdir(tmp_path)
+    result = run(transport, "watch", "add", "inbox", "--option", "tier=max", "--include-video")
+    assert result.code == E.OK, result.err
+    (row,) = watching.folders(conn, enabled_only=False)
+    assert Path(row["path"]) == tmp_path / "inbox"
+    assert row["options"].tier == "max" and row["include_video"] == 1
+    sent = json.loads(transport.requests[-1][3])
+    assert sent == {"path": str(tmp_path / "inbox"), "include_video": True, "tier": "max"}
+    assert f"watch folder {row['id']}" in result.text
+    assert "Watching that folder for new recordings." in result.text
+
+
+def test_watch_list_and_remove(transport, conn, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    folder_id = run(transport, "--json", "watch", "add", str(inbox)).json()["id"]
+    listed = run(transport, "watch", "list")
+    assert listed.code == E.OK
+    assert any(str(folder_id) in line and str(inbox) in line and "on" in line
+               for line in listed.text.splitlines()), listed.text
+    as_json = run(transport, "--json", "watch", "list").json()
+    assert [f["id"] for f in as_json["folders"]] == [folder_id]
+    removed = run(transport, "watch", "remove", str(folder_id))
+    assert removed.code == E.OK
+    assert f"watch folder {folder_id} removed" in removed.text
+    assert run(transport, "--json", "watch", "list").json()["folders"] == []
+
+
+def test_watch_add_twice_is_a_conflict(transport, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    assert run(transport, "watch", "add", str(inbox)).code == E.OK
+    again = run(transport, "watch", "add", str(inbox))
+    assert again.code == E.CONFLICT
+    assert "already_watched" in again.err
+
+
+def test_watch_add_outside_the_roots_is_refused(transport, conn, tmp_path):
+    from scribe import fsbrowse
+
+    (tmp_path / "allowed").mkdir()
+    (tmp_path / "inbox").mkdir()
+    with db.LOCK:
+        conn.execute("INSERT OR REPLACE INTO setting(key, value) VALUES (?, ?)",
+                     (fsbrowse.SETTING_KEY, str(tmp_path / "allowed")))
+        conn.commit()
+    result = run(transport, "watch", "add", str(tmp_path / "inbox"))
+    assert result.code == E.REFUSED
+    assert "error 403 forbidden" in result.err
+
+
+def test_watch_remove_of_an_unknown_folder_is_not_found(transport):
+    assert run(transport, "watch", "remove", "42").code == E.NOT_FOUND
 
 
 def test_a_plain_text_error_is_reported_without_a_traceback():

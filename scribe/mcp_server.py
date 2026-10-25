@@ -89,6 +89,9 @@ TRANSCRIPTION = {
     "params": {"type": "object", "description": "Stage keys, for a caller that knows them; "
                "instead of the fields above"},
 }
+# What a watch folder takes: the dialog's fields, without params, which the
+# route refuses (it stores options, not stage keys).
+WATCH_OPTIONS = {name: spec for name, spec in TRANSCRIPTION.items() if name != "params"}
 KEY = {"idempotency_key": {"type": "string", "description": "Retry-safe: the same key with the "
                            "same request answers the first job again and queues nothing. Kept 24 hours."}}
 MEDIA_ID = {"media_id": {"type": "integer", "description": "The recording's id (list_recordings)"}}
@@ -259,6 +262,24 @@ def get_settings(api: Api, args: dict) -> Answer:
     return _json(api, "GET", "/settings")
 
 
+def doctor(api: Api, args: dict) -> Answer:
+    return _json(api, "GET", "/doctor")
+
+
+def list_watch_folders(api: Api, args: dict) -> Answer:
+    return _json(api, "GET", "/watch-folders")
+
+
+def add_watch_folder(api: Api, args: dict) -> Answer:
+    body = {"path": str(_absolute(args["path"], "path")),
+            **{k: v for k, v in args.items() if k != "path"}}
+    return _json(api, "POST", "/watch-folders", json_body=body)
+
+
+def remove_watch_folder(api: Api, args: dict) -> Answer:
+    return _json(api, "DELETE", f"/watch-folders/{args['folder_id']}")
+
+
 TOOLS: tuple[Tool, ...] = (
     Tool("list_recordings", "List the library",
          "The recordings in the library, newest first unless sorted otherwise: id, title, "
@@ -335,6 +356,28 @@ TOOLS: tuple[Tool, ...] = (
          "What the next job gets: the transcription defaults, the browse roots, the watch "
          "folders and the AI provider. Never a key or token.",
          {}, get_settings, read_only=True),
+    Tool("doctor", "Check this computer",
+         "The checks MyScribe's Settings page runs (ffmpeg, the database, disk space, ...), "
+         "each ok or not with a fix, ok false when a required one failed, and the stored "
+         "result of the last GPU check. Starts nothing.",
+         {}, doctor, read_only=True),
+    Tool("list_watch_folders", "List the watch folders",
+         "The folders that transcribe by themselves: whether each is on, takes video, is on "
+         "this computer and under the browse roots, and the options its recordings get.",
+         {}, list_watch_folders, read_only=True),
+    Tool("add_watch_folder", "Watch a folder",
+         "Watch a folder on this computer: every new recording that lands in it is "
+         "transcribed with these options. Files already in it are left alone and counted. "
+         "The folder must be under the app's browse roots.",
+         {"path": {"type": "string", "description": "The folder's absolute path"},
+          "include_video": {"type": "boolean", "description": "Take video files too (default false)"},
+          **WATCH_OPTIONS},
+         add_watch_folder, required=("path",)),
+    Tool("remove_watch_folder", "Stop watching a folder",
+         "Stop watching a folder (its id from list_watch_folders). The recordings it brought "
+         "in stay in the library.",
+         {"folder_id": {"type": "integer", "description": "The watch folder's id"}},
+         remove_watch_folder, required=("folder_id",), destructive=True, idempotent=True),
 )
 BY_NAME = {tool.name: tool for tool in TOOLS}
 

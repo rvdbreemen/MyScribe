@@ -26,14 +26,16 @@ Three rules shape the module:
   with two routes (ADR-022); tests/test_api_v1.py walks every /api/v1 path
   through it and expects a 404.
 
-Settings are read-only here, and read from an allowlist: the `setting` table
-holds the Hugging Face token and provider keys, and none of them is in the
-answer.
+The settings are read from an allowlist: the `setting` table holds the
+Hugging Face token and provider keys, and none of them is in the answer.
+The one setting a program may change here is the watch folders, through
+the functions the Settings page calls (`scribe.web.settings.add_watched`).
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, FastAPI, Header, HTTPException, Request
@@ -44,13 +46,14 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
-from scribe import accel, db, fsbrowse, glossary, idempotency, llm, options
+from scribe import accel, db, doctor, fsbrowse, glossary, idempotency, llm, options
 from scribe import app as spine
 from scribe.exports import jsonw
 from scribe.exports import doc as export_doc
 from scribe.exports.options import ExportOptions, filename_for
 from scribe.ingest import watching
 from scribe.web import ai_ui, exports_ui, library, transcript
+from scribe.web import settings as settings_page
 
 PREFIX = "/api/v1"
 
@@ -157,6 +160,60 @@ class Settings(BaseModel):
     watch_folders: list[dict]
     ai: dict
     cpu_fallback: bool
+
+
+class Check(BaseModel):
+    name: str
+    ok: bool
+    detail: str
+    fix_hint: str
+    optional: bool
+    tested: bool
+
+
+class GpuRun(BaseModel):
+    ts: float
+    job_id: int | None = None
+    checks: list[Check]
+
+
+class PendingJob(BaseModel):
+    id: int
+    status: str
+
+
+class Doctor(BaseModel):
+    ok: bool
+    checks: list[Check]
+    gpu_last: GpuRun | None = None
+    gpu_job: PendingJob | None = None
+
+
+class WatchFolder(BaseModel):
+    id: int
+    path: str
+    enabled: bool
+    include_video: bool
+    allowed: bool
+    missing: bool
+    unwatchable: bool
+    left: int
+    options: dict
+
+
+class WatchFolderList(BaseModel):
+    watching: bool
+    folders: list[WatchFolder]
+
+
+class WatchFolderAdded(WatchFolder):
+    skipped_video: int
+    message: str
+
+
+class WatchFolderRemoved(BaseModel):
+    id: int
+    removed: bool
 
 
 _ERRORS = {
@@ -587,6 +644,113 @@ def get_settings(request: Request) -> dict:
         },
         "cpu_fallback": bool(accel.cpu_fallback_allowed(conn)),
     }
+
+
+# --- the doctor, read only -------------------------------------------------------------------
+
+
+@router.get("/doctor", response_model=Doctor, summary="Does this computer work")
+async def get_doctor(request: Request) -> dict:
+    """The checks the Settings page runs when it opens (`doctor.web_checks`:
+    none that loads a model runtime into the web process, ADR-001), the last
+    GPU check's stored result and a GPU check still waiting. It queues
+    nothing: the GPU check is a job, started from the page. ``ok`` is false
+    when a required check of this run failed; the stored GPU run is not
+    counted in it."""
+    conn = _conn(request)
+    checks = await run_in_threadpool(doctor.web_checks)
+    context = settings_page.doctor_context(conn, cpu_checks=checks)
+    last = context["gpu_last"]
+    return {
+        "ok": doctor.exit_code(checks) == 0,
+        "checks": [asdict(check) for check in checks],
+        "gpu_last": None if last is None else {**last, "checks": [asdict(c) for c in last["checks"]]},
+        "gpu_job": context["gpu_job"],
+    }
+
+
+# --- watch folders ---------------------------------------------------------------------------
+
+WATCH_FIELDS = frozenset((*options.OPTION_FIELDS, settings_page.FIELD_WATCH_PATH,
+                          settings_page.FIELD_WATCH_VIDEO))
+
+
+def _watch_folders(request: Request) -> dict:
+    """The page's own `watch_context`, as JSON."""
+    conn = _conn(request)
+    context = settings_page.watch_context(conn, watcher=getattr(request.app.state, "watcher", None))
+    stored = {folder["id"]: folder for folder in watching.folders(conn, enabled_only=False)}
+    return {
+        "watching": context["watching"],
+        "folders": [
+            {
+                "id": row["id"],
+                "path": row["path"],
+                "enabled": row["enabled"],
+                "include_video": row["include_video"],
+                "allowed": not row["outside_roots"],
+                "missing": row["missing"],
+                "unwatchable": row["unwatchable"],
+                "left": row["left"],
+                "options": stored[row["id"]]["options"].model_dump(),
+            }
+            for row in context["watch_folders"]
+        ],
+    }
+
+
+@router.get("/watch-folders", response_model=WatchFolderList, summary="The watch folders")
+def list_watch_folders(request: Request) -> dict:
+    """Each folder as the Settings page shows it: whether it is on, takes
+    video, is still under the browse roots, is on this machine, could be
+    watched live (``unwatchable``; always false while ``watching`` is false,
+    an app run without its supervisor), and how many of the files it held
+    when it was added it is still leaving alone (``left``)."""
+    return _watch_folders(request)
+
+
+@router.post("/watch-folders", status_code=201, response_model=WatchFolderAdded,
+             summary="Watch a folder")
+async def add_watch_folder(request: Request) -> dict:
+    """``path`` (absolute, a folder under the browse roots and outside the
+    app's data directory), ``include_video`` (default false, as the page's
+    form) and the transcribe dialog's option fields for what it takes in.
+    The function the page calls: what is already in the folder is left
+    alone and counted (``left``, ``skipped_video``), and ``message`` is the
+    sentence the page shows. A folder already watched is a 409
+    ``already_watched``."""
+    body = await _json_body(request)
+    unknown = sorted(set(body) - WATCH_FIELDS)
+    if unknown:
+        raise CodedError(400, "bad_request", f"this route takes {', '.join(sorted(WATCH_FIELDS))}; "
+                         f"not {', '.join(map(repr, unknown))}")
+    include_video = body.get(settings_page.FIELD_WATCH_VIDEO, False)
+    if not isinstance(include_video, bool):
+        raise CodedError(400, "bad_request", "include_video must be true or false")
+    path = body.get(settings_page.FIELD_WATCH_PATH)
+    if path is not None and not isinstance(path, str):
+        raise CodedError(400, "bad_request", "path must be a string")
+    conn = _conn(request)
+    chosen = options.parse_options(body)
+    try:
+        added, left = settings_page.add_watched(conn, path, chosen, include_video=include_video)
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            raise CodedError(409, "already_watched", exc.detail) from None
+        raise
+    (row,) = [f for f in _watch_folders(request)["folders"] if f["path"] == str(added)]
+    return {**row, "skipped_video": left.skipped_video,
+            "message": settings_page.watch_added_sentence(left, include_video)}
+
+
+@router.delete("/watch-folders/{folder_id}", response_model=WatchFolderRemoved,
+               summary="Stop watching a folder")
+def remove_watch_folder(folder_id: int, request: Request) -> dict:
+    """Nothing already in the library is touched, as on the page."""
+    conn = _conn(request)
+    settings_page._get_watch_folder(conn, folder_id)
+    watching.remove_folder(conn, folder_id)
+    return {"id": folder_id, "removed": True}
 
 
 # --- wiring --------------------------------------------------------------------------------------
