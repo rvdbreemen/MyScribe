@@ -25,6 +25,8 @@ compare strings and touch no disk at all.
 from __future__ import annotations
 
 import ast
+import configparser
+import importlib.util
 import plistlib
 import shlex
 import subprocess
@@ -49,7 +51,53 @@ def _drop_scratch_key() -> None:
         pass
 
 
-@pytest.fixture(params=["windows", "macos", "linux"])
+class FakeSystemctl:
+    """`systemctl --user` as far as this module asks it anything.
+
+    It keeps the one fact the real one keeps - which units are enabled - and
+    answers `is-enabled` from that and from whether the unit file is still
+    there, the way the user manager does. Every call is recorded, so a test
+    can say which verbs were asked and in what order. The real one was driven
+    in WSL for TASK-112.06; this stands in for it on a machine without systemd.
+    """
+
+    def __init__(self, folder: Path):
+        self.folder = Path(folder)
+        self.calls: list[tuple[str, ...]] = []
+        self.enabled: set[str] = set()
+
+    def __call__(self, args):
+        args = tuple(args)
+        self.calls.append(args)
+        verb, *rest = args
+        if verb == "enable":
+            if not (self.folder / rest[0]).exists():
+                return subprocess.CompletedProcess(args, 1, "", f"Unit file {rest[0]} does not exist.")
+            self.enabled.add(rest[0])
+        elif verb == "disable":
+            self.enabled.discard(rest[0])
+        elif verb == "is-enabled":
+            on = rest[0] in self.enabled and (self.folder / rest[0]).exists()
+            return subprocess.CompletedProcess(args, 0 if on else 1, "enabled\n" if on else "disabled\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def verbs(self) -> list[str]:
+        return [call[0] for call in self.calls]
+
+
+def _systemd(tmp_path, environ: dict | None = None):
+    """A user unit under a folder this test owns, a fake `systemctl`, and the
+    desktop file it replaces beside it."""
+    folder = tmp_path / "systemd" / "user"
+    return autostart.SystemdUserUnit(
+        folder=folder,
+        run=FakeSystemctl(folder),
+        legacy=autostart.XdgAutostart(folder=tmp_path / "autostart"),
+        environ={} if environ is None else environ,
+    )
+
+
+@pytest.fixture(params=["windows", "macos", "linux", "systemd"])
 def mechanism(request, tmp_path):
     """One mechanism per platform, each pointed at somewhere this test owns."""
     if request.param == "windows":
@@ -62,6 +110,8 @@ def mechanism(request, tmp_path):
             _drop_scratch_key()
     elif request.param == "macos":
         yield autostart.LaunchAgent(folder=tmp_path / "LaunchAgents")
+    elif request.param == "systemd":
+        yield _systemd(tmp_path)
     else:
         yield autostart.XdgAutostart(folder=tmp_path / "autostart")
 
@@ -304,6 +354,16 @@ def test_every_mechanism_names_a_place_inside_this_user_s_own_profile():
     assert autostart.default_mechanism("linux", {}).where == str(
         Path.home() / ".config" / "autostart" / "myscribe.desktop"
     )
+    # TASK-112.06: a release with a systemd user session gets a user unit,
+    # in the same per-user config directory.
+    release = {autostart.LAUNCHER_VARIABLE: "/opt/MyScribe.AppImage"}
+    assert autostart.default_mechanism("linux", {**release, "XDG_CONFIG_HOME": str(Path("/x/cfg"))},
+                                       session=True).where == str(
+        Path("/x/cfg") / "systemd" / "user" / "myscribe.service"
+    )
+    assert autostart.default_mechanism("linux", release, session=True).where == str(
+        Path.home() / ".config" / "systemd" / "user" / "myscribe.service"
+    )
     for platform in ("darwin", "linux"):
         assert autostart.default_mechanism(platform, {}).where.startswith(str(Path.home()))
 
@@ -315,7 +375,8 @@ def test_nothing_machine_wide_is_named_in_the_module():
     to take it away again."""
     source = Path(autostart.__file__).read_text(encoding="utf-8")
 
-    for forbidden in ("HKEY_LOCAL_MACHINE", "HKLM", "/Library/LaunchAgents", "/etc/xdg"):
+    for forbidden in ("HKEY_LOCAL_MACHINE", "HKLM", "/Library/LaunchAgents", "/etc/xdg",
+                      "/etc/systemd", "/usr/lib/systemd", "--system", "--global"):
         assert forbidden not in source, forbidden
     for elevation in ("runas", "ShellExecute", "sudo", "AdminExecute"):
         assert elevation not in source, elevation
@@ -565,3 +626,379 @@ def test_a_rewrite_is_logged_with_what_was_written(monkeypatch):
     app_module._refresh_login_entry()
 
     assert logged == [("autostart.rewritten", {"where": entry.where, "command": entry.command})]
+
+
+# --- Linux: a systemd user unit, the desktop file as fallback (TASK-112.06) --------
+#
+# ADR-026, answered by Robert on 2026-10-19: a systemd user unit where a
+# systemd user session runs, the XDG autostart file where none does. The unit
+# is what restarts a crash and logs to the journal; the desktop file nothing
+# supervises. These run against a fake `systemctl`. The real user manager
+# (systemd 255 in WSL, a scratch user, the 0.9.1 AppImage) was driven once
+# for TASK-112.06; the commit that added this section says what it showed.
+
+LAUNCHER_PATH = Path(__file__).resolve().parent.parent / "packaging" / "launcher" / "myscribe_launcher.py"
+APPIMAGE = "/home/me/Apps/MyScribe.AppImage"
+LINUX_RELEASE = {autostart.LAUNCHER_VARIABLE: APPIMAGE}
+AT_LOGIN = (APPIMAGE, "--at-login", "--no-browser", "--headless")
+
+
+def _launcher():
+    spec = importlib.util.spec_from_file_location("myscribe_launcher_for_autostart", LAUNCHER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _unit(mechanism) -> configparser.ConfigParser:
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    parser.optionxform = str  # systemd's keys are case-sensitive
+    parser.read_string(mechanism.path.read_text(encoding="utf-8"))
+    return parser
+
+
+def test_with_a_systemd_user_session_switching_on_writes_and_enables_the_unit(tmp_path):
+    """AC #1. The unit file is written under the user's own `systemd/user`,
+    the manager is told to read it, and it is enabled."""
+    unit = _systemd(tmp_path)
+
+    entry = autostart.enable(unit, command=AT_LOGIN)
+
+    assert unit.path == tmp_path / "systemd" / "user" / "myscribe.service"
+    assert unit.path.is_file()
+    assert unit.run.calls == [("daemon-reload",), ("enable", "myscribe.service")]
+    assert entry.on is True and entry.where == str(unit.path)
+    assert autostart.status(unit).on is True
+    assert _unit(unit)["Install"]["WantedBy"] == "default.target"
+
+
+def test_switching_the_unit_off_disables_and_removes_it(tmp_path):
+    """AC #1's other half: disabled first, then the file goes, then the
+    manager forgets it. A second off is not an error and asks nothing."""
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=AT_LOGIN)
+    unit.run.calls.clear()
+
+    off = autostart.disable(unit)
+
+    assert off.on is False
+    assert not unit.path.exists()
+    assert unit.run.calls[:2] == [("disable", "myscribe.service"), ("daemon-reload",)]
+    assert "myscribe.service" not in unit.run.enabled
+
+    unit.run.calls.clear()
+    again = autostart.disable(unit)
+    assert again.on is False
+    assert "disable" not in unit.run.verbs()
+
+
+def test_a_unit_disabled_with_systemctl_reads_as_off(tmp_path):
+    """`systemctl --user disable myscribe` leaves the file and removes the
+    link. The card has to say off, the way a hidden desktop file does."""
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=AT_LOGIN)
+
+    unit.run.enabled.clear()
+
+    assert unit.path.exists()
+    assert autostart.status(unit, command=AT_LOGIN).on is False
+
+
+def test_without_a_systemd_user_session_the_xdg_file_is_written_as_today(tmp_path):
+    """AC #2. No user manager - no `$XDG_RUNTIME_DIR/systemd/private`, or no
+    `systemctl` - and Linux writes the same desktop file it always did."""
+    config = {**LINUX_RELEASE, "XDG_CONFIG_HOME": str(tmp_path / "cfg")}
+    mechanism = autostart.default_mechanism("linux", config, session=False)
+    assert type(mechanism) is autostart.XdgAutostart
+
+    autostart.enable(mechanism, command=AT_LOGIN)
+    assert (tmp_path / "cfg" / "autostart" / "myscribe.desktop").read_text(encoding="utf-8") == (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=MyScribe\n"
+        "Exec=/home/me/Apps/MyScribe.AppImage --at-login --no-browser --headless\n"
+        "X-GNOME-Autostart-enabled=true\n"
+    )
+    assert type(autostart.default_mechanism("linux", config, session=True)) is autostart.SystemdUserUnit
+
+
+def test_a_user_session_is_the_managers_own_socket_and_a_systemctl_to_ask(tmp_path):
+    """What `default_mechanism` asks on every Settings load: two cheap
+    looks, and no process started."""
+    runtime = tmp_path / "run"
+    (runtime / "systemd").mkdir(parents=True)
+    found = lambda name, path=None: "/usr/bin/systemctl"  # noqa: E731
+    absent = lambda name, path=None: None  # noqa: E731
+
+    assert autostart.systemd_user_session({}, which=found) is False
+    assert autostart.systemd_user_session({"XDG_RUNTIME_DIR": str(runtime)}, which=found) is False
+    (runtime / "systemd" / "private").write_text("", encoding="utf-8")
+    assert autostart.systemd_user_session({"XDG_RUNTIME_DIR": str(runtime)}, which=found) is True
+    assert autostart.systemd_user_session({"XDG_RUNTIME_DIR": str(runtime)}, which=absent) is False
+
+
+def test_a_clone_keeps_the_desktop_file_even_with_a_user_session():
+    """A clone's command is `start.sh --detached`: the script starts the app
+    in the background and exits 0. A unit reads that exit as the service
+    ending and stops what is left in its cgroup - the app. So a clone keeps
+    the desktop file, which nothing stops."""
+    assert type(autostart.default_mechanism("linux", {}, session=True)) is autostart.XdgAutostart
+    assert type(autostart.default_mechanism("linux", LINUX_RELEASE, session=True)) is autostart.SystemdUserUnit
+
+
+def test_an_xdg_data_home_set_at_registration_is_written_into_the_unit(tmp_path):
+    """AC #3. The user manager does not read `.profile`, so an
+    `XDG_DATA_HOME` set there would send the background server to another
+    library. The value at registration goes into the unit - quoted, because a
+    path with a space in it is one `Environment=` word only inside quotes."""
+    unit = _systemd(tmp_path, environ={"XDG_DATA_HOME": "/home/me/My Data"})
+    autostart.enable(unit, command=AT_LOGIN)
+
+    lines = unit.path.read_text(encoding="utf-8").splitlines()
+    assert 'Environment="XDG_DATA_HOME=/home/me/My Data"' in lines
+
+    plain = _systemd(tmp_path / "plain")
+    autostart.enable(plain, command=AT_LOGIN)
+    assert not [line for line in plain.path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("Environment=")]
+
+    odd = _systemd(tmp_path / "odd", environ={"XDG_DATA_HOME": '/d/100%/a"b\\c'})
+    autostart.enable(odd, command=AT_LOGIN)
+    assert r'Environment="XDG_DATA_HOME=/d/100%%/a\"b\\c"' in odd.path.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_unit_restarts_only_on_a_crash_and_gives_up_after_five_in_five_minutes(tmp_path):
+    """AC #4. The launcher's contract (TASK-112.02): `APP_DIED` when the app
+    died under it, 0 for a clean stop, another instance or a configuration
+    problem. So no restart at all except on that one code, and five starts
+    in five minutes is where systemd stops trying. The number is read from
+    the launcher itself, so the two cannot drift apart."""
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=AT_LOGIN)
+    parsed = _unit(unit)
+
+    assert parsed["Service"]["Restart"] == "no"
+    assert parsed["Service"]["RestartForceExitStatus"] == str(_launcher().APP_DIED)
+    assert "RestartPreventExitStatus" not in parsed["Service"]
+    assert "SuccessExitStatus" not in parsed["Service"]
+    # The limit is a [Unit] setting since systemd 230; under [Service] it is ignored.
+    assert parsed["Unit"]["StartLimitBurst"] == "5"
+    assert parsed["Unit"]["StartLimitIntervalSec"] == "300"
+    assert "StartLimitBurst" not in parsed["Service"]
+
+
+def test_the_unit_starts_the_launcher_headless(tmp_path):
+    """ADR-026's Must on the unit too: `ExecStart=` is the launcher with
+    `--headless`, so no window opens at login."""
+    unit = _systemd(tmp_path)
+    command = autostart.start_command(environ=LINUX_RELEASE, platform="linux")
+    autostart.enable(unit, command=command)
+
+    assert _unit(unit)["Service"]["ExecStart"] == f"{APPIMAGE} --at-login --no-browser --headless"
+    assert unit.read() == unit.render(command)
+
+
+def test_exec_start_quotes_the_way_systemd_says(tmp_path):
+    """`ExecStart=` has its own rules (systemd.service, "Command lines"):
+    `%` is a specifier and `$` a variable everywhere on the line, so each is
+    doubled; a backslash and a double quote are C-style escapes; a word with
+    a space in it is one word only inside quotes."""
+    unit = _systemd(tmp_path)
+
+    assert unit.render(("/opt/MyScribe.AppImage", "--headless")) == "/opt/MyScribe.AppImage --headless"
+    assert unit.render(("/opt/My Apps/MyScribe.AppImage",)) == '"/opt/My Apps/MyScribe.AppImage"'
+    assert unit.render(("/opt/100%/x",)) == "/opt/100%%/x"
+    assert unit.render(("/opt/a$b",)) == "/opt/a$$b"
+    assert unit.render(("/opt/a\\b",)) == r'"/opt/a\\b"'
+    assert unit.render(('/opt/a"b',)) == r'"/opt/a\"b"'
+
+
+def test_a_systemctl_that_fails_or_hangs_is_an_os_error(tmp_path):
+    """Settings and the setup engine catch OSError and show it. An enable the
+    manager refused leaves the desktop file it would replace alone."""
+    unit = _systemd(tmp_path)
+    unit.legacy.write(AT_LOGIN)
+
+    unit.run = lambda args: subprocess.CompletedProcess(args, 1, "", "Failed to connect to bus")
+    with pytest.raises(OSError, match="Failed to connect to bus"):
+        autostart.enable(unit, command=AT_LOGIN)
+    assert unit.legacy.path.exists()
+
+    def hang(args):
+        raise subprocess.TimeoutExpired(args, 15)
+
+    unit.run = hang
+    # A unit file on disk, so `read()` gets as far as asking `is-enabled`.
+    unit.path.write_text(unit.text(AT_LOGIN), encoding="utf-8")
+    with pytest.raises(OSError):
+        unit.read()
+
+
+def test_the_real_runner_asks_the_users_own_manager_with_a_timeout(monkeypatch):
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"], seen["kwargs"] = argv, kwargs
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+    autostart.systemctl(["is-enabled", "myscribe.service"])
+
+    assert seen["argv"] == ["systemctl", "--user", "is-enabled", "myscribe.service"]
+    assert seen["kwargs"]["timeout"] > 0
+    assert seen["kwargs"]["capture_output"] is True
+
+
+# --- one entry, never two -----------------------------------------------------------
+
+
+def test_switching_the_unit_on_or_off_takes_the_desktop_file_away_too(tmp_path):
+    """One login, one MyScribe. A desktop file left beside the unit would
+    start a second one; one left after "off" would start one the card says
+    is not there."""
+    unit = _systemd(tmp_path)
+    unit.legacy.write(OLD)
+
+    autostart.enable(unit, command=AT_LOGIN)
+    assert not unit.legacy.path.exists()
+
+    unit.legacy.write(OLD)
+    autostart.disable(unit)
+    assert not unit.legacy.path.exists() and not unit.path.exists()
+
+
+def test_the_first_start_moves_this_launchers_desktop_file_into_the_unit(tmp_path):
+    """An entry 0.9.1 or earlier wrote is a desktop file. With a user session
+    the next start writes the unit, enables it and removes the file."""
+    unit = _systemd(tmp_path)
+    unit.legacy.write((APPIMAGE, "--at-login", "--no-browser"))
+
+    entry = autostart.migrate(unit, command=AT_LOGIN, environ=LINUX_RELEASE)
+
+    assert entry is not None and entry.on is True and entry.where == str(unit.path)
+    assert not unit.legacy.path.exists()
+    assert unit.read() == unit.render(AT_LOGIN)
+    assert ("enable", "myscribe.service") in unit.run.calls
+
+
+def test_migration_leaves_what_is_not_this_launchers_to_switch(tmp_path):
+    """The guards of `refresh()`, kept: a desktop file the user switched off
+    stays off and gets no unit; one naming another launcher is not ours; a
+    clone moves nothing; and without a user session nothing moves."""
+    hidden = _systemd(tmp_path / "hidden")
+    hidden.legacy.folder.mkdir(parents=True)
+    hidden.legacy.path.write_text(f"[Desktop Entry]\nExec={APPIMAGE} --at-login\nHidden=true\n", encoding="utf-8")
+    assert autostart.migrate(hidden, command=AT_LOGIN, environ=LINUX_RELEASE) is None
+    assert hidden.legacy.path.exists() and not hidden.path.exists()
+
+    other = _systemd(tmp_path / "other")
+    other.legacy.write(("/opt/Other.AppImage", "--at-login"))
+    assert autostart.migrate(other, command=AT_LOGIN, environ=LINUX_RELEASE) is None
+    assert other.legacy.path.exists() and not other.path.exists()
+
+    clone = _systemd(tmp_path / "clone")
+    clone.legacy.write((APPIMAGE, "--at-login"))
+    assert autostart.migrate(clone, command=AT_LOGIN, environ={}) is None
+    assert clone.legacy.path.exists()
+
+    xdg = autostart.XdgAutostart(folder=tmp_path / "plain")
+    xdg.write((APPIMAGE, "--at-login"))
+    assert autostart.migrate(xdg, command=AT_LOGIN, environ=LINUX_RELEASE) is None
+    assert xdg.path.exists()
+
+
+def test_a_unit_already_on_takes_a_leftover_desktop_file_of_this_launcher_away(tmp_path):
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=AT_LOGIN)
+    unit.legacy.write((APPIMAGE, "--at-login"))
+
+    autostart.migrate(unit, command=AT_LOGIN, environ=LINUX_RELEASE)
+
+    assert not unit.legacy.path.exists()
+    assert unit.read() == unit.render(AT_LOGIN)
+
+
+def test_the_start_migrates_before_it_refreshes_and_logs_it(monkeypatch):
+    from scribe import app as app_module
+
+    entry = autostart.Entry(where="/home/me/.config/systemd/user/myscribe.service", command="x", on=True)
+    order: list[str] = []
+    logged: list[tuple[str, dict]] = []
+    monkeypatch.setattr(autostart, "migrate", lambda *_a, **_k: order.append("migrate") or entry)
+    monkeypatch.setattr(autostart, "refresh", lambda *_a, **_k: order.append("refresh") or None)
+    monkeypatch.setattr(app_module.applog, "log", lambda event, **fields: logged.append((event, fields)))
+
+    app_module._refresh_login_entry()
+
+    assert order == ["migrate", "refresh"]
+    assert logged == [("autostart.migrated", {"where": entry.where, "command": entry.command})]
+
+
+# --- the card tells the truth about the desktop file the unit replaces --------------
+
+
+def test_a_desktop_file_the_unit_did_not_take_over_reads_as_on(tmp_path):
+    """Review of TASK-112.06. A desktop file naming another launcher path - an
+    AppImage renamed, or replaced by a new versioned filename - is not moved
+    into the unit, and the desktop still starts it at login. The card has to
+    say on, and where, or a user who believes it never flips the switch that
+    would take the file away. Off then removes it; a hidden one stays off."""
+    unit = _systemd(tmp_path)
+    renamed = ("/home/me/Apps/MyScribe-0.9.0.AppImage", "--at-login", "--no-browser")
+    unit.legacy.write(renamed)
+    assert autostart.migrate(unit, command=AT_LOGIN, environ=LINUX_RELEASE) is None
+
+    shown = autostart.status(unit, command=AT_LOGIN)
+
+    assert shown.on is True
+    assert shown.where == str(unit.legacy.path)
+    assert shown.command == unit.legacy.render(renamed)
+
+    off = autostart.disable(unit, command=AT_LOGIN)
+    assert off.on is False and off.where == str(unit.path)
+    assert not unit.legacy.path.exists()
+
+    unit.legacy.folder.mkdir(parents=True, exist_ok=True)
+    unit.legacy.path.write_text(f"[Desktop Entry]\nExec={APPIMAGE} --at-login\nHidden=true\n", encoding="utf-8")
+    assert autostart.status(unit, command=AT_LOGIN).on is False
+
+
+def test_a_migration_the_manager_refused_leaves_no_unit_and_the_card_on(tmp_path):
+    """Review of TASK-112.06. `systemctl --user enable` fails during the
+    migration: the desktop file still starts MyScribe at login, so the card
+    says on and names it, and no disabled unit file is left behind."""
+    unit = _systemd(tmp_path)
+    unit.legacy.write((APPIMAGE, "--at-login", "--no-browser"))
+    fake = unit.run
+
+    def refuse_enable(args):
+        if args[0] == "enable":
+            fake.calls.append(tuple(args))
+            return subprocess.CompletedProcess(args, 1, "", "Failed to enable unit")
+        return fake(args)
+
+    unit.run = refuse_enable
+    with pytest.raises(OSError, match="Failed to enable unit"):
+        autostart.migrate(unit, command=AT_LOGIN, environ=LINUX_RELEASE)
+
+    assert not unit.path.exists()
+    assert unit.legacy.path.exists()
+    shown = autostart.status(unit, command=AT_LOGIN)
+    assert shown.on is True and shown.where == str(unit.legacy.path)
+
+
+def test_a_rewrite_the_manager_refused_keeps_the_unit_that_was_on(tmp_path):
+    """The rollback is only for a file this write created: a unit that was
+    already on and is being rewritten keeps its file, so a failed refresh
+    does not switch the entry off."""
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=(APPIMAGE, "--at-login", "--no-browser"))
+    fake = unit.run
+    unit.run = lambda args: (
+        subprocess.CompletedProcess(args, 1, "", "Failed to enable unit") if args[0] == "enable" else fake(args)
+    )
+
+    with pytest.raises(OSError):
+        autostart.enable(unit, command=AT_LOGIN)
+
+    assert unit.path.exists()
