@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-25
+
+MyScribe can now be driven by other programs: a JSON API, a `myscribe`
+command and an MCP server for AI agents. Started at login it runs in the
+background on every system, with a tray icon, a systemd user unit on Linux
+and a LaunchAgent that starts MyScribe itself on a Mac, and it restarts after
+a crash. A stop no longer costs the running job, and two starts start one
+MyScribe. The Windows installer asks where your library goes. Local AI reads
+all of a long recording, and short glossary names leave small words alone.
+This version moves the library database to schema 19: an older MyScribe
+cannot open a library this one has used.
+
 ### Added
 
 - **A tray icon while MyScribe runs in the background.** Started at login,
