@@ -1,7 +1,7 @@
 ---
 id: "ADR-037"
 title: "Where no operating system watches it, the launcher restarts a crashed app a bounded number of times"
-status: "Proposed"
+status: "Accepted"
 date: "2026-10-25"
 binding: false
 gate: null
@@ -32,7 +32,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-10-25.
+Accepted, 2026-10-25.
 
 ## Status History
 
@@ -47,6 +47,11 @@ status_history:
     status: Proposed
     changed_by: Claude (agent, session 2026-10-25)
     reason: "TASK-112.10: the launcher-side restart"
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
+    reason: Robert accepted ADR-037 in the session of 2026-10-25
     changed_via: adr-kit lifecycle
 ```
 
@@ -82,9 +87,10 @@ carry `XPC_SERVICE_NAME` (`0`), and a shell under a terminal server running
 as a systemd user service can inherit `INVOCATION_ID` (neither checked here).
 C drops the OS restart of a crashed launcher and undoes TASK-112.05/06.
 
-The limit is 3 restarts in any 10 minutes, each after 5 s (the unit's
-`RestartSec=5`); a restart that never answers `/health` is spent like a
-crash. Past it the launcher says one sentence, keeps it for the next start by
+The limit is 5 restarts in any 5 minutes, each after 5 s: the unit's
+`StartLimitBurst=5`, `StartLimitIntervalSec=300` and `RestartSec=5`, Robert's
+choice of 2026-10-25 over the 3 in 10 minutes first proposed. A restart
+that never answers `/health` is spent like a crash. Past it the launcher says one sentence, keeps it for the next start by
 hand after a login start (TASK-112.07), and exits 70. A running job is not
 requeued, only the stop route does that (ADR-028, ADR-032): the restarted
 app's reconcile marks it interrupted if its runner is gone, and a runner that
@@ -93,7 +99,8 @@ outlived the crash writes its own verdict (ADR-013). The sentence says both.
 ### Confirmation
 
 Windows, launcher from source, scratch home, port 4530: a killed app answers
-`/health` again with a new pid; the fourth kill ends in the sentence.
+`/health` again with a new pid; the kill after the last restart in the
+budget ends in the sentence and exit 70.
 
 ## Decision Contract
 
@@ -117,7 +124,8 @@ Windows, launcher from source, scratch home, port 4530: a killed app answers
 
 ### Verification
 
-* The TASK-112.10 block of `tests/test_launcher.py`, and `tests/test_autostart.py::test_the_launcher_knows_the_unit_and_the_job_by_the_names_written_here`.
+* The TASK-112.10 block of `tests/test_launcher.py`, and `tests/test_autostart.py::test_the_launcher_knows_the_unit_and_the_job_by_the_names_written_here`
+  and `::test_the_launchers_restart_budget_is_the_units_start_limit`.
 
 ## Consequences
 
@@ -129,11 +137,11 @@ Windows, launcher from source, scratch home, port 4530: a killed app answers
 
 * A launcher that crashes itself is still not restarted on Windows.
 * launchd putting the label in `XPC_SERVICE_NAME` is unseen on a Mac here; if
-  it does not, each launcher launchd starts first restarts its app 3 times.
+  it does not, each launcher launchd starts first restarts its app 5 times.
 
 ## Open Questions
 
-* [ ] Is 3 restarts in 10 minutes, 5 s apart, the budget Robert wants?
+- [x] Is 3 restarts in 10 minutes, 5 s apart, the budget Robert wants? — **Answered 2026-10-25 by Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude):** No: Robert chose 5 restarts in 5 minutes, 5 s apart, the systemd unit's own budget, in the session of 2026-10-25.
 
 ## Related Decisions
 

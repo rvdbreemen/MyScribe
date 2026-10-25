@@ -4356,6 +4356,23 @@ def test_the_restart_budget_is_a_number_of_restarts_in_a_sliding_window():
     assert budget.spend() is False
 
 
+def test_the_default_budget_is_five_restarts_in_five_minutes():
+    """Robert's decision of 2026-10-25 (ADR-037): 5 restarts in any 300 s,
+    the systemd unit's StartLimitBurst=5 and StartLimitIntervalSec=300."""
+    now = [0.0]
+    budget = launcher.RestartBudget(clock=lambda: now[0])
+    assert (budget.limit, budget.window) == (5, 300.0)
+    for _ in range(5):  # at 0, 10, 20, 30 and 40
+        assert budget.spend() is True
+        now[0] += 10.0
+    assert budget.spend() is False, "a sixth crash inside 300 s was restarted"
+    now[0] = 299.999
+    assert budget.spend() is False
+    now[0] = 300.0  # the restart at 0 has left the window
+    assert budget.spend() is True
+    assert budget.spend() is False
+
+
 def test_a_restart_exactly_one_window_old_no_longer_counts():
     """The boundary: "in any 600 s" is a half-open window. A restart spent
     exactly `window` seconds ago has left it, so the budget has room again."""

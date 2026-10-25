@@ -1121,6 +1121,16 @@ def test_the_launcher_knows_the_unit_and_the_job_by_the_names_written_here():
     assert launcher.SUPERVISED_LABEL == autostart.LABEL
 
 
+def test_the_launchers_restart_budget_is_the_units_start_limit():
+    """Robert's decision of 2026-10-25 (ADR-037): the launcher restarts a
+    crashed app at most as often as the systemd unit does, 5 times in 5
+    minutes. Spelled again in the launcher, like `APP_DIED`; this holds the
+    two to one budget."""
+    launcher = _launcher()
+    assert launcher.RESTART_LIMIT == autostart.START_LIMIT_BURST == 5
+    assert launcher.RESTART_WINDOW == autostart.START_LIMIT_INTERVAL_SEC == 300
+
+
 def test_the_plist_waits_longer_than_the_launchers_longest_stop():
     """Robert's decision: launchd's SIGKILL must not come before the
     launcher's own stop has run out - killed sooner, the launcher exits

@@ -2903,11 +2903,12 @@ uncaught exception (TASK-112.02)."""
 
 # --- a crashed app is started again (TASK-112.10, ADR-037) -----------------------
 
-RESTART_LIMIT = 3
-RESTART_WINDOW = 600.0
+RESTART_LIMIT = 5
+RESTART_WINDOW = 300.0
 RESTART_DELAY = 5.0
 """At most `RESTART_LIMIT` restarts in any `RESTART_WINDOW` seconds, each after
-`RESTART_DELAY` seconds, the `RestartSec=5` of the systemd unit. A crash after
+`RESTART_DELAY` seconds: the systemd unit's `StartLimitBurst=5`,
+`StartLimitIntervalSec=300` and `RestartSec=5` (Robert, 2026-10-25). A crash after
 hours of serving finds its budget back; a crash that repeats at every start
 is given up on within a minute or so instead of being retried for ever."""
 
