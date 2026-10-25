@@ -242,9 +242,12 @@ with the home. An
 Ollama installed through MyScribe is `/Applications/Ollama.app`; its models
 are in `~/.ollama`.
 
-**Linux** - delete the AppImage. Switch *Start at login* off first, or delete
-`~/.config/autostart/myscribe.desktop` (under `$XDG_CONFIG_HOME` if you set
-it). Your home stays in `~/.local/share/MyScribe` (under `$XDG_DATA_HOME` if
+**Linux** - delete the AppImage. Switch *Start at login* off first. By hand:
+with a systemd user session the entry is a user unit, so run
+`systemctl --user disable myscribe.service` and delete
+`~/.config/systemd/user/myscribe.service`; without one it is
+`~/.config/autostart/myscribe.desktop`. Both are under `$XDG_CONFIG_HOME` if
+you set it. Your home stays in `~/.local/share/MyScribe` (under `$XDG_DATA_HOME` if
 set), with `MyScribe.location` beside it. Beside the home, wherever it is,
 also stay `MyScribe.lock` and after a failed start at login
 `MyScribe-at-login.txt`; they can go with the home. MyScribe never installs

@@ -94,6 +94,10 @@ def test_the_readme_has_an_uninstalling_section_per_platform_and_documents_tools
     assert "MyScribe.location" in section, "the pointer file stays and is named"
     assert f"{autostart.LABEL}.plist" in section
     assert autostart.DESKTOP_NAME in section
+    # TASK-112.06: with a systemd user session the entry is a user unit.
+    linux = section[section.index("**Linux**"):section.index("**A clone**")]
+    assert autostart.UNIT_NAME in linux and autostart.DESKTOP_NAME in linux
+    assert "systemctl --user disable" in linux
     assert "`.tools/`" in readme and "python install.py` fetches it again" in readme
 
 
