@@ -89,6 +89,11 @@
   `GET /api/v1/doctor` does; the accelerator check stays in
   `python -m scribe.doctor` and the GPU check job.
 
+- **The first-start setup in a terminal no longer says "Transcribe them
+  below".** A watch folder added there with recordings already in it now
+  says to transcribe them in Settings > Watch folders; a terminal has no
+  button below.
+
 - **After a Linux update, Start at login starts the new AppImage.** Each
   release is a new file, and the login entry kept starting the old one. When
   an AppImage starts, a login entry (the systemd user unit or the autostart
