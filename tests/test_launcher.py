@@ -4356,6 +4356,18 @@ def test_the_restart_budget_is_a_number_of_restarts_in_a_sliding_window():
     assert budget.spend() is False
 
 
+def test_a_restart_exactly_one_window_old_no_longer_counts():
+    """The boundary: "in any 600 s" is a half-open window. A restart spent
+    exactly `window` seconds ago has left it, so the budget has room again."""
+    now = [0.0]
+    budget = launcher.RestartBudget(limit=1, window=600.0, clock=lambda: now[0])
+    assert budget.spend() is True
+    now[0] = 599.999
+    assert budget.spend() is False
+    now[0] = 600.0
+    assert budget.spend() is True, "a restart exactly one window old still counted"
+
+
 def _restarting(layout, monkeypatch, first, then, supervisor=""):
     """A Launch over ``first`` whose `start_app` starts the children ``then``
     makes, one per restart, and records each start."""
@@ -4437,12 +4449,18 @@ def test_a_restart_that_never_answers_is_spent_like_a_crash(layout, monkeypatch)
         # 0: on POSIX the SIGTERM `start_app` stops it with may end it cleanly.
         launch.app.proc = _exits(0)
         launch.app.proc.wait()
+        launch.report("error", "MyScribe did not start; see app.log")  # as `start_app` says it
         return False
 
     launch.start_app = start_app
 
     assert launcher.run_headless(launch) == launcher.APP_DIED
     assert len(tries) == 2
+    said = _launcher_log(layout)
+    # One line per failure: the crash says "stopped unexpectedly", each
+    # restart that did not answer says "did not start", and nothing says both.
+    assert said.count("stopped unexpectedly (exit code") == 1, said
+    assert said.count("MyScribe did not start") == 2, said
 
 
 def test_under_an_os_supervisor_the_launcher_never_restarts_itself(layout, monkeypatch):
