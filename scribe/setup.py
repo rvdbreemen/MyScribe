@@ -2411,6 +2411,9 @@ def apply(
             else:
                 report["wrote"].append("start_at_login")
                 report["notes"].append(f"MyScribe starts when you log in: {entry.where}")
+                # Not loaded now, on a Mac either: this sitting runs before the
+                # launcher starts the app, and a LaunchAgent loaded while nothing
+                # serves would start a second MyScribe (TASK-112.05).
 
     if answers.fetch_models:
         answered.append("fetch_models")
