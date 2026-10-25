@@ -225,6 +225,16 @@ def _event_out(row: sqlite3.Row) -> dict:
 
 
 def _refresh_login_entry() -> None:
+    # A desktop file an earlier version wrote becomes the user unit first,
+    # where Linux has a user session (TASK-112.06); then whichever entry is
+    # left is brought up to today's command.
+    try:
+        moved = autostart.migrate()
+    except (OSError, ValueError) as refused:
+        applog.log("autostart.migrate_failed", level="warn", error=str(refused))
+    else:
+        if moved is not None:
+            applog.log("autostart.migrated", where=moved.where, command=moved.command)
     try:
         entry = autostart.refresh()
     except (OSError, ValueError) as refused:
