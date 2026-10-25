@@ -123,6 +123,8 @@ For option B, as built in `scribe/api_v1.py`.
 * The guard's refusals answer before any route, in their own shape (see Confirmation).
 * `GET /api/v1/settings` assembles its answer from the settings helpers through an allowlist: no page returns this JSON, and the `setting` table holds keys and tokens.
 * `POST /api/v1/media/{id}/transcribe` refuses a body field outside the dialog's options and `params` (400), as `_ingest_options` refuses a foreign params key; an empty body repeats the last request.
+* `POST /api/v1/watch-folders` refuses a field outside `path`, `include_video` and the dialog's options (400), and answers a folder already watched with its own code, `already_watched`.
+* `GET /api/v1/doctor` adds `ok`, `doctor.exit_code` over the checks the page's `doctor_context` shows.
 
 ### Verification
 

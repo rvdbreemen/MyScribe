@@ -1579,7 +1579,9 @@
         "exceptions": [
           "The guard's refusals answer before any route, in their own shape (see Confirmation).",
           "GET /api/v1/settings assembles its answer from the settings helpers through an allowlist: no page returns this JSON, and the setting table holds keys and tokens.",
-          "POST /api/v1/media/{id}/transcribe refuses a body field outside the dialog's options and params (400), as ingestoptions refuses a foreign params key; an empty body repeats the last request."
+          "POST /api/v1/media/{id}/transcribe refuses a body field outside the dialog's options and params (400), as ingestoptions refuses a foreign params key; an empty body repeats the last request.",
+          "POST /api/v1/watch-folders refuses a field outside path, includevideo and the dialog's options (400), and answers a folder already watched with its own code, alreadywatched.",
+          "GET /api/v1/doctor adds ok, doctor.exitcode over the checks the page's doctorcontext shows."
         ],
         "verification": [
           "tests/testwebphone.py::testnorouteofthemainappanswersthroughthedoor.",
