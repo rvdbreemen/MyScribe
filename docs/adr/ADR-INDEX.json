@@ -1199,7 +1199,7 @@
       "path": "ADR-020-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap-and-a-copied-part-that-skipped-the-grouping-refuses-the-cleaning.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-10-23",
       "decision_summary": "Chosen option: A.",
       "topics": [
         "llm",
@@ -1541,8 +1541,8 @@
       "title": "How an outside program drives MyScribe without the web pages",
       "path": "ADR-025-how-an-outside-program-drives-myscribe-without-the-web-pages.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-10-06",
+      "status": "Accepted",
+      "date": "2026-10-25",
       "decision_summary": "Chosen: B (Robert, 2026-10-24), as recommended, because the token in A stops no one the guard does not already stop.",
       "topics": [
         "api",
@@ -1888,11 +1888,75 @@
       }
     },
     {
+      "id": "ADR-032",
+      "title": "Every shutdown the app lives through ends the running runner, and only a requested stop requeues",
+      "path": "ADR-032-every-shutdown-the-app-lives-through-ends-the-running-runner-and-only-a-requested-stop-requeues.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A, decided by Robert on 2026-10-24.",
+      "topics": [
+        "background",
+        "jobs",
+        "shutdown"
+      ],
+      "aliases": [
+        "orphan runner",
+        "runner outlives the app",
+        "SIGTERM to the app"
+      ],
+      "components": [
+        "scribe.shutdown",
+        "scribe.supervisor",
+        "scribe.web.stopping"
+      ],
+      "symbols": [
+        "INGEST_FINISH_SECONDS",
+        "SHUTDOWN_GRACE_SECONDS",
+        "STOP_JOIN_SECONDS",
+        "StoppingServer",
+        "Supervisor.stop",
+        "Supervisor.stop_claiming",
+        "UPLOAD_FINISH_SECONDS"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Supervisor.stop ends the running runner's tree and waits for it on every stop, and joins for at least STOPJOINSECONDS; a stop without the route leaves the row running for the next start's reconcile(). The lifespan's end stops the supervi...",
+          "The supervisor claims no new job once a stop begins: the stop route and the server's shutdown call Supervisor.stopclaiming, under the lock the claim takes (Robert, 2026-10-25).",
+          "The app's server cancels open reads SHUTDOWNGRACESECONDS (3 s) after a stop begins; an upload in flight (POST /api/media, /transcribe/upload, /transcribe/path, /record/{session}/chunk and /finish, the phone door's POST) finishes, cut at...",
+          "Each way a file comes in stores it and queues its job in one worker-thread call, counted in Ingests; the lifespan closes the database only once none runs, waiting up to INGESTFINISHSECONDS (20 s, agent addition) from the start of its end...",
+          "Every close of the phone door (its button, its fifteen minutes, a file, the app's stop) lets an upload in flight finish for UPLOADFINISHSECONDS; inside the app's stop it gets what is left of the app's deadline and at least the door's 2 s...",
+          "The launcher's APPSIGTERMWAIT (75 s) and STOPWAIT (80 s) outlast the app's whole stop: 72 s at worst (30 s of uploads, then 20 s, 2 s, 10 s and 10 s of joins, beside which the ingest wait runs), a 3 s POSIX margin (kept by Robert, 2026-1..."
+        ],
+        "must_not": [
+          "Requeue on a stop that did not come through the stop route."
+        ],
+        "exceptions": [
+          "An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after APPSIGTERMWAIT..."
+        ],
+        "verification": [
+          "tests/testappsignalstop.py, tests/teststopping.py, tests/teststopcutsingest.py, tests/testphonedoor.py, tests/testwebphone.py::testwhileaclosewaitsforanuploadthepanelsaysitmaystillarrive, tests/testapp.py (the stop route's tests), tests/..."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
       "id": "ADR-033",
       "title": "The MCP server is hand-written JSON-RPC on the standard library, not the official SDK",
       "path": "ADR-033-the-mcp-server-is-hand-written-json-rpc-on-the-standard-library-not-the-official-sdk.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-10-25",
       "decision_summary": "Chosen option: A.",
       "topics": [
@@ -1967,6 +2031,12 @@
     {
       "source": "ADR-001",
       "target": "ADR-022",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-001",
+      "target": "ADR-032",
       "type": "related",
       "resolved": true
     },
@@ -2529,6 +2599,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-028",
+      "target": "ADR-032",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-029",
       "target": "ADR-020",
       "type": "related",
@@ -2549,6 +2625,18 @@
     {
       "source": "ADR-030",
       "target": "ADR-023",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-032",
+      "target": "ADR-001",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-032",
+      "target": "ADR-028",
       "type": "related",
       "resolved": true
     },

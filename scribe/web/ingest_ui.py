@@ -776,6 +776,18 @@ async def record_chunk(session: str, request: Request) -> dict:
     return {"index": index, "bytes": len(data)}
 
 
+def _finished_and_queued(conn: sqlite3.Connection, session: str, *, title: str,
+                         folder_id: int | None, params: dict) -> dict:
+    """The chunks become a recording and its job is queued, as one call in one
+    worker thread: a stop that cuts the request cannot leave the recording
+    without its job (TASK-112.09)."""
+    row = recording.finalize(conn, session, title=title, folder_id=folder_id)
+    applog.log("record.finished", session=session, media=row["id"], title=row["title"],
+               bytes=row.get("size_bytes"), seconds=row.get("duration"))
+    jobs.enqueue(conn, JOB_TYPE, media_id=row["id"], params=params)
+    return row
+
+
 @router.post("/record/{session}/finish", include_in_schema=False)
 async def record_finish(session: str, request: Request) -> Response:
     """Stop: the chunks become a recording in the library, and a queued job.
@@ -794,11 +806,13 @@ async def record_finish(session: str, request: Request) -> Response:
 
     try:
         row = await run_in_threadpool(
-            recording.finalize,
+            request.app.state.ingests.run,
+            _finished_and_queued,
             conn,
             session,
             title=fields.get(RECORD_TITLE_FIELD) or "",
             folder_id=folder_id,
+            params=options.to_params(),
         )
     except recording.UnknownSession as exc:
         applog.log("record.finish_refused", level="warn", session=session, reason=str(exc))
@@ -810,9 +824,6 @@ async def record_finish(session: str, request: Request) -> Response:
                    error=type(exc).__name__, detail=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
-    applog.log("record.finished", session=session, media=row["id"], title=row["title"],
-               bytes=row.get("size_bytes"), seconds=row.get("duration"))
-    jobs.enqueue(conn, JOB_TYPE, media_id=row["id"], params=options.to_params())
     save_defaults(conn, options)
 
     response = library._after_change(request, conn, flash=RECORD_FLASH)

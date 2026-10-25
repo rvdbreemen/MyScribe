@@ -94,11 +94,6 @@ status_history:
     changed_by: Claude (agent, session 2026-10-23)
     reason: Related to ADR-029
     changed_via: adr-kit lifecycle
-  - date: 2026-10-24
-    status: Accepted
-    changed_by: Claude (agent, session 2026-10-24)
-    reason: ADR-030 amends one ADR-020 Must for OpenRouter's reasoning limit
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

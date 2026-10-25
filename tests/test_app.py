@@ -332,10 +332,14 @@ class _RecordingSupervisor:
 
     def __init__(self, db_path, *args, **kwargs):
         self.stops: list[bool] = []
+        self.events: list[str] = []
         _RecordingSupervisor.made.append(self)
 
     def start(self):
         pass
+
+    def stop_claiming(self):
+        self.events.append("claims stopped")
 
     def stop(self, timeout: float = 10.0, requeue: bool = False):
         self.stops.append(requeue)
@@ -375,6 +379,106 @@ def test_a_shutdown_nobody_asked_for_does_not_requeue(stoppable):
         pass
 
     assert _RecordingSupervisor.made[0].stops == [False]
+
+
+def test_the_supervisor_stops_before_the_watchers(db_path, monkeypatch):
+    """ADR-032: the runner is ended on every shutdown the app lives through.
+    On macOS and Linux the launcher's hard stop sends SIGKILL to the app's
+    group `APP_SIGTERM_WAIT` (75 s) after its SIGTERM, and that SIGKILL never
+    reaches the runner's own session. The door and the watchers may join for
+    up to 22 s between them, after up to 30 s of uploads, so the supervisor -
+    the one holding the card - goes first."""
+    from scribe import supervisor as supervisor_module
+    from scribe.ingest import feeds, watching
+
+    order: list[str] = []
+
+    class _Recording:
+        def __init__(self, name):
+            self.name = name
+
+        def start(self):
+            pass
+
+        def stop(self, *args, **kwargs):
+            order.append(self.name)
+
+    monkeypatch.setattr(supervisor_module, "Supervisor", lambda *a, **k: _Recording("supervisor"))
+    monkeypatch.setattr(watching, "Watcher", lambda *a, **k: _Recording("watcher"))
+    monkeypatch.setattr(feeds, "FeedWatcher", lambda *a, **k: _Recording("feeds"))
+    app = create_app(db_path=db_path, start_supervisor=True, start_watcher=True)
+    with _loopback(app):
+        pass
+
+    assert order and order[0] == "supervisor", order
+
+
+def test_the_server_hands_its_stops_upload_deadline_to_the_app(db_path):
+    """`python -m scribe` builds a `StoppingServer` that tells the app when its
+    uploads must be done; the lifespan passes that on to the phone door
+    (TASK-112.09). Without it a phone upload gets a second 30 s inside the
+    lifespan, and the app's stop outlasts the launcher's SIGKILL."""
+    import asyncio
+
+    from scribe import __main__ as main_module
+    from scribe.web import stopping
+
+    app = create_app(db_path=db_path, start_supervisor=False, start_watcher=False)
+    server = main_module.build_server(app, 4299)
+    assert isinstance(server, stopping.StoppingServer)
+    assert server.grace == main_module.SHUTDOWN_GRACE_SECONDS
+    assert server.upload_seconds == stopping.UPLOAD_FINISH_SECONDS
+    server.servers = []  # never started: what `startup` would have bound
+    server.force_exit = True  # no lifespan: only the stop's first step
+    before = time.monotonic()
+    asyncio.run(server.shutdown())
+    deadline = app.state.upload_deadline
+    assert before + stopping.UPLOAD_FINISH_SECONDS <= deadline <= time.monotonic() + stopping.UPLOAD_FINISH_SECONDS
+
+
+def test_the_stop_route_stops_the_supervisors_claims_before_the_server_exits(stoppable):
+    """No job starts once a stop has begun (Robert, 2026-10-25): the route
+    stops claims before it names the running job and asks the server to exit,
+    so the job it names is the one that goes back."""
+    app, _asked = stoppable
+    with _loopback(app) as client:
+        sup = _RecordingSupervisor.made[-1]
+        app.state.request_exit = lambda: sup.events.append("exit asked")
+        assert client.post("/api/shutdown").status_code == 202
+
+    assert sup.events == ["claims stopped", "exit asked"]
+
+
+def test_the_servers_stop_stops_the_supervisors_claims(db_path):
+    """Every other door - a signal, Ctrl+C - begins its stop in the server's
+    shutdown: claims stop there, before the 30 s window for uploads."""
+    import asyncio
+
+    from scribe import __main__ as main_module
+
+    app = create_app(db_path=db_path, start_supervisor=False, start_watcher=False)
+    sup = _RecordingSupervisor(None)
+    app.state.supervisor = sup
+    server = main_module.build_server(app, 4299)
+    server.servers = []
+    server.force_exit = True
+    asyncio.run(server.shutdown())
+    assert sup.events == ["claims stopped"]
+
+
+def test_the_lifespan_closes_the_door_with_the_stops_upload_deadline(db_path):
+    closes: list[tuple[str, dict]] = []
+
+    class _Door:
+        def close(self, reason, **kwargs):
+            closes.append((reason, kwargs))
+
+    app = create_app(db_path=db_path, start_supervisor=False, start_watcher=False)
+    with _loopback(app):
+        app.state.phone_door = _Door()
+        app.state.upload_deadline = 1234.5
+
+    assert closes == [("app stopped", {"upload_deadline": 1234.5})]
 
 
 def test_the_stop_route_names_the_job_that_will_start_over(stoppable, conn):

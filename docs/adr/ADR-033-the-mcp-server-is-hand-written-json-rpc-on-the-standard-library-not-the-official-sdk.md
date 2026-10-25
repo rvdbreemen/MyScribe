@@ -1,7 +1,7 @@
 ---
 id: "ADR-033"
 title: "The MCP server is hand-written JSON-RPC on the standard library, not the official SDK"
-status: "Proposed"
+status: "Accepted"
 date: "2026-10-25"
 binding: false
 gate: null
@@ -9,7 +9,6 @@ documents_shipped: false
 verified_in: []
 supersedes: []
 superseded_by: null
-format: "madr"
 topics:
   - "automation"
   - "mcp"
@@ -23,6 +22,7 @@ symbols:
   - "serve"
   - "PROTOCOL_VERSIONS"
 context_scope: "selective"
+format: "madr"
 ---
 
 <!-- markdownlint-disable MD025 -->
@@ -31,7 +31,7 @@ context_scope: "selective"
 
 ## Status
 
-Proposed, 2026-10-25. Option A chosen by Robert on 2026-10-25; not yet accepted.
+Accepted, 2026-10-25.
 
 ## Status History
 
@@ -42,6 +42,11 @@ status_history:
     changed_by: Claude (agent, session 2026-10-24)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
+    reason: Robert accepted ADR-033 in the session of 2026-10-25
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

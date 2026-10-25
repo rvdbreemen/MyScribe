@@ -172,13 +172,14 @@ def test_reconcile_flips_a_job_whose_pid_belongs_to_a_younger_process(conn):
 # --- stopping ---------------------------------------------------------------------
 
 
-def test_a_stop_that_could_not_join_says_so_and_keeps_the_thread(db_path, capsys):
+def test_a_stop_that_could_not_join_says_so_and_keeps_the_thread(db_path, capsys, monkeypatch):
     """TASK-073: the loop cannot see the stop event while _watch is inside a
     kill - terminate, then up to two waits of _KILL_WAIT_SECONDS - so a
     shutdown that lands mid-cancel returns from stop() with the loop still
     running. Dropping the handle either way made that indistinguishable from
     a clean stop, and start() would begin a second loop beside the first.
     Same rule as watching.Watcher.stop(): say so, keep it."""
+    monkeypatch.setattr(supervisor, "STOP_JOIN_SECONDS", 0.05)  # every stop joins this long (ADR-032)
     sup = supervisor.Supervisor(db_path, poll_interval=0.05)
     stuck = threading.Thread(target=lambda: time.sleep(30), daemon=True)
     stuck.start()
@@ -187,7 +188,7 @@ def test_a_stop_that_could_not_join_says_so_and_keeps_the_thread(db_path, capsys
     sup.stop(timeout=0.05)
 
     assert sup._thread is stuck, "a thread that never stopped was forgotten"
-    assert "still running" in capsys.readouterr().err
+    assert "still running 0.05s after" in capsys.readouterr().err
     sup.start()
     assert sup._thread is stuck, "a second loop was started beside the first"
 
@@ -698,19 +699,27 @@ def test_a_deliberate_stop_ends_the_runner_and_puts_its_job_at_the_front(
     assert jobs.claim_next(conn)["id"] == first, f"job {waiting} was put ahead of the stopped one"
 
 
-def test_a_stop_nobody_asked_for_leaves_the_job_to_reconcile(conn, db_path, sleeping_runner_cmd):
-    """A crash, a hard kill or a Ctrl+C still ends `interrupted` through
-    reconcile (ADR-001); only the stop route requeues."""
+def test_a_stop_nobody_asked_for_ends_the_runner_and_leaves_the_job_to_reconcile(
+    conn, db_path, sleeping_runner_cmd
+):
+    """ADR-032 (amending ADR-028): every shutdown the app lives through ends
+    the runner's tree - a SIGTERM or Ctrl+C to the app as much as the stop
+    route - so no runner outlives the app on macOS and Linux. Only the stop
+    route requeues; this one leaves the row `running`, and the next start's
+    reconcile marks it `interrupted` (ADR-001)."""
     job_id = jobs.enqueue(conn, "fake")
     sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=sleeping_runner_cmd)
     sup.start()
     pid = _running_with_pid(conn, job_id)
     sup.stop()
     try:
+        assert not supervisor.pid_alive(pid), "the runner outlived the stop"
         assert _row(conn, job_id)["status"] == "running"
-        assert supervisor.pid_alive(pid)
+        supervisor.reconcile(conn)
+        assert _row(conn, job_id)["status"] == "interrupted"
     finally:
-        os.kill(pid, signal.SIGTERM)
+        if supervisor.pid_alive(pid):
+            os.kill(pid, signal.SIGTERM)
 
 
 def test_a_job_cancelled_before_the_stop_is_cancelled_not_requeued(
@@ -814,3 +823,75 @@ def test_a_runner_shaped_process_is_recognised(tmp_path):
     finally:
         runner.kill()
         runner.wait(10)
+
+
+# --- no claim once a stop has begun (TASK-112.09, ADR-032) -----------------------
+
+
+def test_an_idle_supervisor_claims_nothing_queued_after_a_stop_began(conn, db_path, ok_runner_cmd):
+    """A stop may let an upload finish for up to 30 s before the lifespan
+    stops the supervisor; the job that upload queues waits for the next
+    start. Before `stop_claiming` the idle loop claimed it and started a
+    runner inside the stop (Robert, 2026-10-25: no new job once a stop
+    begins)."""
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=ok_runner_cmd)
+    sup.start()
+    try:
+        sup.stop_claiming()
+        job_id = jobs.enqueue(conn, "fake")
+        assert not _wait_for(lambda: _row(conn, job_id)["status"] != "queued", timeout=1.0)
+    finally:
+        sup.stop(requeue=True)
+    assert _row(conn, job_id)["status"] == "queued"
+
+
+def test_a_job_that_ends_inside_a_stop_is_not_followed_by_the_next(conn, db_path, tmp_path):
+    """The running job finishing in the window does not start the one behind it."""
+    gate = tmp_path / "go"
+    runner = _script_cmd(tmp_path, "gated_runner.py", f"""\
+import os, sqlite3, sys, time
+while not os.path.exists({str(gate)!r}):
+    time.sleep(0.02)
+conn = sqlite3.connect({str(db_path)!r})
+conn.execute("UPDATE job SET status='done', finished_at=? WHERE id=?", (time.time(), int(sys.argv[1])))
+conn.commit()
+""")
+    first = jobs.enqueue(conn, "fake")
+    second = jobs.enqueue(conn, "fake")
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=runner)
+    sup.start()
+    try:
+        _running_with_pid(conn, first)
+        sup.stop_claiming()
+        gate.write_text("go")
+        assert _wait_for(lambda: _row(conn, first)["status"] == "done")
+        assert not _wait_for(lambda: _row(conn, second)["status"] != "queued", timeout=1.0)
+    finally:
+        sup.stop(requeue=True)
+    assert _row(conn, second)["status"] == "queued"
+
+
+def test_stop_claiming_waits_out_a_claim_already_under_way(db_path, monkeypatch):
+    """The check and the claim are one step under a lock `stop_claiming` takes:
+    once it returns, no claim that read the flag before it can still land."""
+    entered, release = threading.Event(), threading.Event()
+    real = jobs.claim_next
+
+    def slow_claim(c, *a, **kw):
+        entered.set()
+        release.wait(5)
+        return real(c, *a, **kw)
+
+    monkeypatch.setattr(supervisor.jobs, "claim_next", slow_claim)
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05)
+    sup.start()
+    try:
+        assert entered.wait(5)
+        done = threading.Event()
+        threading.Thread(target=lambda: (sup.stop_claiming(), done.set()), daemon=True).start()
+        assert not done.wait(0.3), "stop_claiming returned while a claim was under way"
+        release.set()
+        assert done.wait(5)
+    finally:
+        release.set()
+        sup.stop()

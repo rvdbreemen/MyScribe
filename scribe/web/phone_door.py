@@ -65,6 +65,7 @@ from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from scribe import applog
 from scribe.stages import probe
+from scribe.web import stopping
 
 DEFAULT_PORT = 4243
 OPEN_SECONDS = 15 * 60
@@ -84,8 +85,17 @@ SHORTER_ENV = "SCRIBE_PHONE_DOOR_SECONDS"
 # address, owned by nobody, and a UDP connect sends no packet at all.
 ROUTE_PROBE = ("192.0.2.1", 9)
 
-# How long a Close waits for an upload still in flight before cutting it off.
+# How long a Close waits for a request still open that is not an upload (the
+# upload page's GET) before cutting it off. An upload in flight may finish for
+# `stopping.UPLOAD_FINISH_SECONDS` after the Close began, whatever closes the
+# door - the button, the fifteen minutes, the app's stop (Robert, 2026-10-25,
+# TASK-112.09) - and the Close takes that long. Inside the app's stop the
+# door gets the app's deadline, never less than this grace.
 GRACE_SECONDS = 2.0
+
+# How long the panel's countdown waits for a due door to close before it
+# answers *Closing* instead (`Door.close_if_due(wait=False)`).
+CLOSE_ANSWER_SECONDS = 1.0
 
 Accept = Callable[[BinaryIO, str], object]
 
@@ -223,8 +233,16 @@ class _QuietH11(H11Protocol):
         self.access_log = False
 
 
+def _is_door_upload(scope: dict) -> bool:
+    return scope.get("type") == "http" and scope.get("method", "").upper() == "POST"
+
+
 class UvicornListener:
     """One uvicorn server on a socket the door bound, on a thread of its own."""
+
+    STOP_JOIN_SECONDS = stopping.UPLOAD_FINISH_SECONDS + 5
+    """How long `stop` waits for the server's thread: past the upload bound,
+    for a phone upload that finishes inside it to get its answer."""
 
     def __init__(self, sock: socket.socket, app, *, grace: float = GRACE_SECONDS) -> None:
         self._sock = sock
@@ -235,9 +253,10 @@ class UvicornListener:
             lifespan="off",
             log_config=None,
             server_header=False,
-            timeout_graceful_shutdown=grace,
         )
-        self._server = uvicorn.Server(config)
+        self._server = stopping.StoppingServer(
+            config, is_upload=_is_door_upload, grace=grace,
+            upload_seconds=stopping.UPLOAD_FINISH_SECONDS, name="phone_door")
         self._thread: threading.Thread | None = None
 
     def start(self, timeout: float = 10.0) -> None:
@@ -255,7 +274,12 @@ class UvicornListener:
                 raise DoorError("The door's listener did not start; the app log may say why.")
             time.sleep(0.01)
 
-    def stop(self, timeout: float = 15.0) -> None:
+    def stop(self, timeout: float = STOP_JOIN_SECONDS, *, upload_deadline: float | None = None) -> None:
+        """Stop the server and wait for its thread. An upload in flight may
+        finish for `stopping.UPLOAD_FINISH_SECONDS`; ``upload_deadline``, the
+        app's when the door closes inside the app's own stop, shortens that,
+        never below the grace."""
+        self._server.upload_deadline = upload_deadline
         self._server.should_exit = True
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -286,6 +310,7 @@ class Door:
         poll: float = 1.0,
         max_bytes: int = MAX_UPLOAD_BYTES,
         listener_factory=UvicornListener,
+        stop_deadline: Callable[[], float | None] = lambda: None,
     ) -> None:
         self._accept = accept
         self._pick = address_picker
@@ -296,11 +321,18 @@ class Door:
         self._poll = poll
         self.max_bytes = max_bytes
         self._listener_factory = listener_factory
+        # The deadline the app's stop gave uploads, once it has begun; None
+        # before. Every close asks it, so the fifteen minutes, Close or a
+        # received file running out inside the app's stop give a phone
+        # upload what is left of that deadline too, not a bound of its own
+        # (ADR-032; review of TASK-112.09).
+        self._stop_deadline = stop_deadline
         self._lock = threading.Lock()
         self._opening: Opening | None = None
         self._listener = None
         self._stop_watch: threading.Event | None = None
         self._closed = threading.Event()
+        self._closing = False
         self._closed.set()
         self.received: list[str] = []
         # What ``accept`` answered for each file, in order (the laptop's side
@@ -317,6 +349,12 @@ class Door:
 
     def is_open(self) -> bool:
         return self._opening is not None
+
+    @property
+    def closing(self) -> bool:
+        """Closed to anything new, with an upload that was already on its way
+        still allowed to finish: the listener is not stopped yet."""
+        return self._closing
 
     def remaining(self) -> float:
         opening = self._opening
@@ -394,7 +432,13 @@ class Door:
                    mdns=mdns_error is None, mdns_error=mdns_error)
         return opening
 
-    def close(self, reason: str = "closed", *, only: Opening | None = None) -> None:
+    def close(
+        self,
+        reason: str = "closed",
+        *,
+        only: Opening | None = None,
+        upload_deadline: float | None = None,
+    ) -> None:
         """Stop the listener, withdraw the name, forget the secret. Idempotent.
 
         ``only``: close only if that opening is still the live one - the
@@ -404,26 +448,42 @@ class Door:
         Returns when the door is closed, also when another thread was already
         closing it (the door closes itself after a file): the listener is
         stopped and ``phone.close`` logged by then.
+
+        A phone upload in flight may finish first, for up to
+        `stopping.UPLOAD_FINISH_SECONDS` (Robert, 2026-10-25), so a Close can
+        take that long; `closing` says so meanwhile. ``upload_deadline``: when
+        the app is stopping, the moment its stop gives uploads until
+        (`stopping.StoppingServer`). A phone upload in flight has run
+        alongside the app's stop and gets no second bound. Without one, the
+        door's ``stop_deadline`` is asked, so a close by anybody else once the
+        app is stopping shares that bound as well.
         """
+        if upload_deadline is None:
+            upload_deadline = self._stop_deadline()
         with self._lock:
             opening = self._opening
             if only is not None and opening is not only:
                 return
             if opening is not None:
                 self._opening = None
+                self._closing = True
                 self.closed_reason = reason
                 listener, self._listener = self._listener, None
                 stop, self._stop_watch = self._stop_watch, None
                 received = len(self.received)
         if opening is None:
-            # Closed already, or being closed by another thread right now.
-            self._closed.wait(20)
+            # Closed already, or being closed by another thread right now,
+            # which may join its listener for STOP_JOIN_SECONDS.
+            self._closed.wait(UvicornListener.STOP_JOIN_SECONDS + 5)
             return
         if stop is not None:
             stop.set()
         try:
             if listener is not None:
-                listener.stop()
+                if upload_deadline is None:
+                    listener.stop()
+                else:
+                    listener.stop(upload_deadline=upload_deadline)
         finally:
             try:
                 if opening.mdns_error is None:
@@ -432,10 +492,18 @@ class Door:
                 applog.log("phone.mdns_withdraw_failed", level="warn", error=str(exc))
             # Logged first: whoever waits on _closed may read the log next.
             applog.log("phone.close", reason=reason, received=received)
+            self._closing = False
             self._closed.set()
 
-    def close_if_due(self) -> bool:
+    def close_if_due(self, *, wait: bool = True) -> bool:
         """Close the door if its time is up; True when it is closed now.
+
+        ``wait=False``: the close runs on a thread of its own and this waits
+        `CLOSE_ANSWER_SECONDS` at most, for a caller that answers a request -
+        the panel's countdown - and must not be the one that waits up to
+        `stopping.UPLOAD_FINISH_SECONDS` for a phone upload to finish
+        (TASK-112.09). A door with nothing in flight is closed by then; with
+        an upload it is `closing`, and the panel says so.
 
         The watchdog calls this once a second, and so does anybody about to
         say the door is closed: the panel's countdown once answered "closed"
@@ -443,9 +511,17 @@ class Door:
         the watchdog's next tick (real run, 2026-09-26).
         """
         opening = self._opening
-        if opening is not None and self._clock() >= opening.closes_at:
+        due = opening is not None and self._clock() >= opening.closes_at
+        if due and wait:
             self.close("timeout", only=opening)
-        return self._opening is None
+        elif due:
+            threading.Thread(
+                target=self.close, args=("timeout",), kwargs={"only": opening},
+                name="scribe-phone-door-close", daemon=True,
+            ).start()
+        if not wait and (due or self._closing):
+            self._closed.wait(CLOSE_ANSWER_SECONDS)  # this close, or one under way
+        return self._opening is None and not self._closing
 
     def _watch(self, opening: Opening, stop: threading.Event) -> None:
         while not stop.wait(self._poll):

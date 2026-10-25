@@ -31,6 +31,12 @@ when you press **Close the door now**, or when MyScribe stops. After that the
 link on the phone no longer works; open the door again for the next
 recording.
 
+A recording the phone is still sending at that moment may finish first, for
+up to 30 seconds; the door takes nothing new meanwhile, and the panel says
+*Closing* until it is done. A recording that arrives then is named in the
+panel and listed in the library. One still sending after those 30 seconds is
+cut off and has to be sent again.
+
 ## Security
 
 - The door is a separate, upload-only listener on port 4243, reachable only

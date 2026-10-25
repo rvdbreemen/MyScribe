@@ -30,10 +30,11 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-022 | Accepted | `scribe/**` | Chosen option: a separate upload-only listener, decided by Robert on 2026-09-26 with the four options in front of him... |
 | ADR-023 | Accepted | - | Chosen option: A, together with a higher cap for speakers (16,000 output tokens, from 8,000), decided by Robert on 20... |
 | ADR-024 | Accepted | - | Chosen option: A, decided by Robert on 2026-09-28 with A and B in front of him ("trust my network"), together with an... |
-| ADR-025 | Proposed | - | Chosen: B (Robert, 2026-10-24), as recommended, because the token in A stops no one the guard does not already stop. |
+| ADR-025 | Accepted | - | Chosen: B (Robert, 2026-10-24), as recommended, because the token in A stops no one the guard does not already stop. |
 | ADR-026 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-19, with a systemd user unit on Linux and the XDG autostart file as fa... |
 | ADR-027 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-19. |
 | ADR-028 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-21. |
 | ADR-029 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-23 with the three options and the A/B in front of him. |
 | ADR-030 | Accepted | - | Chosen option: B, decided by Robert on 2026-10-24. |
-| ADR-033 | Proposed | `scribe/**`, `scribe/mcp_server.py` | Chosen option: A. |
+| ADR-032 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-24. |
+| ADR-033 | Accepted | `scribe/**`, `scribe/mcp_server.py` | Chosen option: A. |

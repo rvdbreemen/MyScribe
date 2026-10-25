@@ -469,8 +469,7 @@ async def add_media(request: Request, idempotency_key: KeyHeader = None) -> Resp
     key = _key(idempotency_key)
     conn = _conn(request)
     if key is None:
-        row, params = await spine.ingest_request(request)
-        return JSONResponse(spine.enqueue_ingested(conn, row, params), status_code=201)
+        return JSONResponse(await spine.ingest_request(request), status_code=201)
 
     # The key is decided between hashing and filing (`admit`), so a refusal
     # or a replay files nothing and nothing is ever taken back. Hashing
@@ -491,12 +490,15 @@ async def add_media(request: Request, idempotency_key: KeyHeader = None) -> Resp
                 raise _Replay(*stored)
             claim.update(held=True, print=print_)
 
+    def queued(body: dict) -> None:
+        # In the filing thread, under the lock that queued the job: a request
+        # cut after this point has its key answered, never free for a second
+        # job (TASK-112.09 runs filing and queueing as one threaded call).
+        idempotency.remember(conn, key, route, claim["print"], 201, body)
+        claim["held"] = False
+
     try:
-        row, params = await spine.ingest_request(request, admit=admit)
-        with db.LOCK:
-            body = spine.enqueue_ingested(conn, row, params)
-            idempotency.remember(conn, key, route, claim["print"], 201, body)
-            claim["held"] = False
+        body = await spine.ingest_request(request, admit=admit, queued=queued)
         return JSONResponse(body, status_code=201)
     except _Replay as replayed:
         return JSONResponse(replayed.body, status_code=replayed.status, headers=REPLAYED)
