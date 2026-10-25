@@ -83,6 +83,17 @@ def _own_log_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_login_box(monkeypatch):
+    """No test puts a real MessageBox on the screen of whoever runs it.
+
+    A failed `--at-login` start on Windows shows one (TASK-120), and it waits
+    for a click or minutes. An environment variable and not a patch: the
+    launcher tests also start the launcher as a child process, where a patch
+    does not reach. The tests about the box delete it themselves."""
+    monkeypatch.setenv("MYSCRIBE_NO_LOGIN_BOX", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_credentials_from_this_machine(tmp_path, monkeypatch):
     """No test is answered by a place on this machine that a test cannot control.
 
