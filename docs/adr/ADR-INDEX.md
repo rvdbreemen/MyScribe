@@ -37,3 +37,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-029 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-23 with the three options and the A/B in front of him. |
 | ADR-030 | Accepted | - | Chosen option: B, decided by Robert on 2026-10-24. |
 | ADR-032 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-24. |
+| ADR-036 | Proposed | - | Chosen option: a request in the pointer file, the only one that gives Windows a page and keeps adoption in the engine. |

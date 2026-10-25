@@ -3040,7 +3040,8 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         type=Path,
-        help="with --plan: a folder somebody named, looked at read-only and listed as a library",
+        help=("with --plan, or a sitting at a terminal: a folder somebody named, looked at "
+              "read-only and listed as a library"),
     )
     parser.add_argument("--status", action="store_true", help="print what setup would ask about, as JSON")
     # Recognised so that the refusal can be a sentence rather than an argparse
@@ -3131,7 +3132,7 @@ def main(argv: list[str] | None = None) -> int:
         # A plan writes nothing, so the sitting is drawn from the read-only
         # open; the apply below is what creates and migrates.
         with read_only(paths.DB_PATH) as looked:
-            answers = _sitting(looked)
+            answers = _sitting(looked, named=args.library)
         if answers is None:
             return 0  # nobody was asked, so there is nothing to apply
 
@@ -3180,7 +3181,7 @@ def _answers_besides_library(answers: Answers) -> bool:
     return asdict(answers) != asdict(bare)
 
 
-def _sitting(conn: sqlite3.Connection) -> Answers | None:
+def _sitting(conn: sqlite3.Connection, named: list[Path] | None = None) -> Answers | None:
     """A run that carried no answers: ask, or say what would have been asked.
 
     Returns what was answered, for `main` to apply, or None when nothing was
@@ -3195,7 +3196,11 @@ def _sitting(conn: sqlite3.Connection) -> Answers | None:
     Stamping there is the failure that costs the most - the launcher never asks
     again, and the questions were never put.
     """
-    document = plan(conn)
+    # TASK-097: a folder the launcher hands over with --library - the one the
+    # installer's library page named - is listed in the first question, with
+    # its numbers, as one typed in an earlier pass is.
+    handed = list(named or [])
+    document = plan(conn, named=handed)
     if not at_a_terminal():
         print(render(document))
         print("\nnothing was asked: this is not a terminal. Answer with "
@@ -3207,7 +3212,7 @@ def _sitting(conn: sqlite3.Connection) -> Answers | None:
         # question is asked again with it in the list - so its numbers are on
         # the screen before the yes (criterion 7). Bounded like a typing
         # mistake is.
-        named: list[Path] = []
+        named: list[Path] = list(handed)
         for _ in range(ASKS_AGAIN):
             if given.get("library") != NAMED_LIBRARY:
                 break

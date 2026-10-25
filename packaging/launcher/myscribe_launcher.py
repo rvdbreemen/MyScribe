@@ -126,7 +126,9 @@ def read_pointer(path: Path) -> tuple[dict, str]:
     this file, and nothing here pins that it holds one.
     """
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        # `utf-8-sig`: the Windows installer writes this file too (TASK-097),
+        # and a BOM in front of the JSON would otherwise read as "not JSON".
+        document = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}, ""
     except OSError as error:
@@ -259,6 +261,42 @@ def write_pointer_data(path: Path, data: Path) -> str:
     return ""
 
 
+# --- a library somebody asked for: the pointer's third fact (TASK-097, ADR-036) -----
+
+
+REQUEST_KEY = "library_request"
+"""Where somebody asked the library to go, before anything decided it.
+
+Written by the Windows installer's library page (and `/LIBRARY=`), only while
+the pointer file does not exist yet, or by the first start's library question
+on a machine without that page. Settled by `locate_library` before anything is
+downloaded: an empty or new folder becomes `"data"` there and then, and the
+request goes; a folder that already holds a library stays a request until the
+engine has shown its numbers and the first sitting decided (ADR-019)."""
+
+LIBRARY_NAMES = ("myscribe.db", "scribe.db")
+"""The two names a library's database has had; `scribe.db` until 2026-09-06."""
+
+
+def update_pointer(path: Path, changes: dict) -> str:
+    """Merge `changes` into the pointer, a None value removing that key;
+    return what went wrong, ``""`` when nothing did. Merged and never raised,
+    for the reasons `write_pointer` gives."""
+    document, problem = read_pointer(path)
+    document = {} if problem else document
+    for key, value in changes.items():
+        if value is None:
+            document.pop(key, None)
+        else:
+            document[key] = value
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    except OSError as error:
+        return f"{path} could not be updated ({error})."
+    return ""
+
+
 SETUP_RESULT_VARIABLE = "MYSCRIBE_SETUP_RESULT"
 """Where `scribe.setup` says what an adoption decided (its RESULT_VARIABLE):
 a file this launcher names for the setup child and reads when it has gone.
@@ -308,7 +346,8 @@ class Layout:
     """Every path the launcher touches, from two roots."""
 
     def __init__(self, home: Path, payload: Path, windows: bool = IS_WINDOWS,
-                 data: Path | None = None, pointer: Path | None = None):
+                 data: Path | None = None, pointer: Path | None = None,
+                 offer: Path | None = None):
         # Absolute: the sync runs with the home as its working directory.
         self.home = Path(home).absolute()
         self.payload = Path(payload).absolute()
@@ -319,6 +358,10 @@ class Layout:
         # The pointer file an adoption is recorded in; None when the home was
         # given by hand, which keeps everything under that home.
         self.pointer = Path(pointer) if pointer is not None else None
+        # TASK-097: a folder that holds a library somebody asked for, which
+        # the first sitting lists with its numbers (`--library`); the engine,
+        # not this launcher, adopts it. None when nobody asked for one.
+        self.offer = Path(offer) if offer is not None else None
 
     app_dir = property(lambda self: self.payload / "app")
     bin_dir = property(lambda self: self.payload / "bin")
@@ -1055,13 +1098,17 @@ def enough_disk(layout: Layout, report: Callable[[str, str], None], *, floor: bo
 
 def wants_location(default: Path, payload: Path, pointer: Path,
                    home_flag: Path | None = None, environ: dict | None = None) -> bool:
-    """Whether to ask where everything goes - a pure predicate, like ``wants_setup``.
+    """Whether to ask where the library goes - a pure predicate, like ``wants_setup``.
 
     Only on a first run, and only when nobody has already said where: a
-    pointer file, ``MYSCRIBE_HOME`` and ``--home`` are all answers. A home that
-    already holds an environment is an install, and an install is not moved by
-    a question (AC #7): moving one means quitting, moving the folder by hand
-    and writing its new path into the pointer file.
+    pointer that names a home, a library or a library request, ``MYSCRIBE_HOME``
+    and ``--home`` are all answers. A home that already holds an environment is
+    an install, and an install is not moved by a question (AC #7).
+
+    Since TASK-097 this is the library question and no longer "where should
+    everything go": the engine home is the per-user default, or ``--home`` /
+    ``MYSCRIBE_HOME`` (ADR-036). On Windows the installer's page asks it, so a
+    first start there finds the request and asks nothing.
     """
     environ = os.environ if environ is None else environ
     if home_flag is not None or environ.get(HOME_VARIABLE):
@@ -1071,9 +1118,10 @@ def wants_location(default: Path, payload: Path, pointer: Path,
     # was ever asked this, and a file that answers a different question is no
     # answer to this one.
     document, problem = read_pointer(pointer)
-    named = document.get("home")
-    if not problem and isinstance(named, str) and named.strip():
-        return False
+    for key in ("home", DATA_KEY, REQUEST_KEY):
+        named = document.get(key)
+        if not problem and isinstance(named, str) and named.strip():
+            return False
     return not Layout(default, payload).env_python.exists()
 
 
@@ -1178,6 +1226,38 @@ def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | N
     ``layout.home`` is the default home, and the volumes are handed in so a
     test can put two of them on a machine that has one.
     """
+    lines = [
+        f"Where should {APP_NAME} keep everything?",
+        "",
+        f"{APP_NAME} keeps the speech engine, the models, your recordings and its database in "
+        f"one folder. The default is {layout.home}.",
+        "",
+    ]
+    lines += install_lines(layout, volumes, platform, machine)
+    lines += [
+        "",
+        f"Keep the default, or give a folder on another disk. {APP_NAME} does not move an "
+        "install that is already there: this question is asked once, before anything is "
+        "downloaded.",
+        "",
+        ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer),
+        "",
+        NOT_A_SHARE,
+    ]
+    return "\n".join(lines)
+
+
+NOT_A_SHARE = (
+    "Not a folder on a network share: the library is SQLite with a write-ahead log, which "
+    "does not work over a network filesystem. A mapped drive letter hides the same problem "
+    f"and {APP_NAME} cannot detect it."
+)
+
+
+def install_lines(layout: Layout, volumes: Iterable[Path] | None = None,
+                  platform: str | None = None, machine: str | None = None) -> list[str]:
+    """What this install downloads, the room it needs and the free space per
+    volume: the middle of both folder questions."""
     platform = sys.platform if platform is None else platform
     size = install_size(layout, platform, machine)
     volumes = local_volumes(platform) if volumes is None else list(volumes)
@@ -1187,13 +1267,7 @@ def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | N
     anchor = Path(layout.home.anchor) if layout.home.anchor else None
     if anchor is not None and anchor not in volumes:
         volumes.append(anchor)
-    lines = [
-        f"Where should {APP_NAME} keep everything?",
-        "",
-        f"{APP_NAME} keeps the speech engine, the models, your recordings and its database in "
-        f"one folder. The default is {layout.home}.",
-        "",
-    ]
+    lines: list[str] = []
     parts = [f"{size['weights_gb']:.1f} GB of speech models for this machine (measured, from the "
              "catalogue that ships)"]
     if size["environment_gb"]:
@@ -1219,19 +1293,7 @@ def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | N
         free = free_gb(volume)
         lines.append(f"  {volume}  {free:.1f} GB free" if free is not None
                      else f"  {volume}  could not be measured")
-    lines += [
-        "",
-        f"Keep the default, or give a folder on another disk. {APP_NAME} does not move an "
-        "install that is already there: this question is asked once, before anything is "
-        "downloaded.",
-        "",
-        ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer),
-        "",
-        "Not a folder on a network share: the library is SQLite with a write-ahead log, which "
-        "does not work over a network filesystem. A mapped drive letter hides the same problem "
-        f"and {APP_NAME} cannot detect it.",
-    ]
-    return "\n".join(lines)
+    return lines
 
 
 def location_note(home: Path, pointer: Path, source: str) -> str:
@@ -1278,34 +1340,30 @@ def locate_home(home_flag: Path | None, ask: Callable[[str], str | None] | None,
                    "there. If it is on a drive that is not plugged in, quit, plug it in and start "
                    f"{APP_NAME} again: nothing has been moved and nothing is lost.")
 
-    if not problem and not wants_location(default, payload, pointer, home_flag, environ):
-        return default  # answered already, or an install nothing here moves
-
-    if ask is None:
-        if problem:
-            report("error", f"{problem} {APP_NAME} cannot start until {pointer} names a folder "
-                            "that is there; it will not quietly start a second, empty library "
-                            "somewhere else.")
-            return None
-        report("status", f"{APP_NAME} keeps everything in {default}; nothing was asked, because "
-                         "nobody is at the screen. "
-                         + ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer))
+    if not problem:
+        # TASK-097: a first start no longer asks where the engine goes - it is
+        # the per-user default, or --home / MYSCRIBE_HOME. Where the library
+        # goes is `locate_library`'s question. What is left here is the repair
+        # of a pointer that names a home somebody moved before TASK-097.
         return default
 
-    if problem:
-        # Said out loud as well as shown on the question: the console and the
-        # log are where somebody looks afterwards for why they were asked.
-        report("error", problem)
+    if ask is None:
+        report("error", f"{problem} {APP_NAME} cannot start until {pointer} names a folder "
+                        "that is there; it will not quietly start a second, empty library "
+                        "somewhere else.")
+        return None
+
+    # Said out loud as well as shown on the question: the console and the log
+    # are where somebody looks afterwards for why they were asked.
+    report("error", problem)
     question = location_question(Layout(default, payload), pointer, volumes, platform)
-    message = f"{problem}\n\n{question}" if problem else question
+    message = f"{problem}\n\n{question}"
     while True:
         answer = ask(message)
         if answer is None:
-            if problem:
-                report("error", f"Nothing was chosen, and {pointer} still names a folder that is "
-                                f"not there. {APP_NAME} cannot start.")
-                return None
-            return default
+            report("error", f"Nothing was chosen, and {pointer} still names a folder that is "
+                            f"not there. {APP_NAME} cannot start.")
+            return None
         refusal = refuse_location(str(answer), install=install, payload=payload)
         if refusal:
             report("error", refusal)
@@ -1319,6 +1377,190 @@ def locate_home(home_flag: Path | None, ask: Callable[[str], str | None] | None,
         if saved:
             report("error", saved)
         return home
+
+
+# --- where the library goes (TASK-097, ADR-036) ------------------------------------
+#
+# Asked by the Windows installer's page, or at a first start where there is
+# none. Settled here, before anything is downloaded, for every folder the
+# launcher can judge without the engine: the default, an empty or new folder,
+# a folder of other things, a folder it must refuse. A folder that already
+# holds a library is the engine's to adopt (ADR-019), after the download.
+
+
+LIBRARY_QUESTION = f"Where should {APP_NAME} keep your library?"
+
+
+def library_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | None = None,
+                     platform: str | None = None, machine: str | None = None) -> str:
+    """The first start's library question, as text. ``layout.home`` is the
+    default home, which is also the answer that means "as today"."""
+    lines = [
+        LIBRARY_QUESTION,
+        "",
+        f"Your library is your recordings, their transcripts, {APP_NAME}'s database, the speech "
+        f"models and the app's log. The default is {layout.home}: keep it and the library goes "
+        f"where it always has, in {layout.home / 'data'}.",
+        "",
+        "Give an empty folder, or a new one, and the library goes there. A folder that holds "
+        f"other files gets a {APP_NAME} folder inside it. A folder that already holds a "
+        f"{APP_NAME} library (myscribe.db) is shown with its recordings after the download, "
+        "and used only when you choose it.",
+        "",
+        f"The speech engine itself always goes to {layout.home}; to put it elsewhere, start "
+        f"{APP_NAME} with --home PATH or set {HOME_VARIABLE}.",
+        "",
+    ]
+    lines += install_lines(layout, volumes, platform, machine)
+    lines += [
+        "",
+        "This question is asked once, before anything is downloaded.",
+        "",
+        NOT_A_SHARE,
+    ]
+    return "\n".join(lines)
+
+
+def library_database(folder: Path) -> Path | None:
+    """The folder that holds a library's database: ``folder`` itself, or its
+    ``data/`` - which is what a home from before TASK-097 looks like, with
+    env/ and cache/ beside it. None when neither does."""
+    for candidate in (folder, folder / "data"):
+        if any((candidate / name).is_file() for name in LIBRARY_NAMES):
+            return candidate
+    return None
+
+
+def _empty(folder: Path) -> bool:
+    """Not there yet, or a folder with nothing in it."""
+    if not folder.exists():
+        return True
+    try:
+        return folder.is_dir() and not any(folder.iterdir())
+    except OSError:
+        return False
+
+
+def judge_library(text: str, home: Path, install: Path | None = None,
+                  payload: Path | None = None) -> tuple[str, Path | None, str]:
+    """What a folder somebody asked for means: ``("today", None, "")``,
+    ``("new", folder, "")``, ``("offer", folder, "")`` or ``("refuse", None,
+    sentence)``. Creates nothing."""
+    refusal = refuse_location(text, install=install, payload=payload)
+    if refusal:
+        return "refuse", None, refusal
+    chosen = Path(str(text).strip().strip('"')).resolve()
+    home = Path(home).absolute()
+    for today in (home, home / "data"):
+        if os.path.normcase(str(chosen)) == os.path.normcase(str(today.resolve())):
+            return "today", None, ""
+    for folder in (chosen, chosen / APP_NAME):
+        held = library_database(folder)
+        if held is not None:
+            return "offer", held, ""
+        if _empty(folder):
+            return "new", folder, ""
+        if folder.exists() and not folder.is_dir():
+            break
+    return "refuse", None, (
+        f"{chosen} holds other files, and so does {chosen / APP_NAME}, and neither holds a "
+        f"{APP_NAME} library. Choose an empty folder, a new one, or the folder of a library you "
+        "already have.")
+
+
+def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[str, str], None],
+                   payload: Path, pointer: Path, home: Path, install: Path | None = None,
+                   volumes: Iterable[Path] | None = None,
+                   platform: str | None = None) -> tuple[Path | None, Path | None] | None:
+    """Where the library goes: ``(data, offer)``, or None when the launcher
+    must stop.
+
+    ``data`` is a new library folder, made and written into the pointer as
+    ``"data"`` here (ADR-036); ``offer`` is a folder that holds a library,
+    for the first sitting to list with its numbers - the engine adopts it, or
+    not (ADR-019). ``(None, None)`` is today's layout, ``<home>/data``.
+
+    Called only for a pointer that names no ``"data"`` yet, and never under a
+    home given by hand. A request that cannot be used stops a door where
+    nobody is at the screen, with a sentence: starting a library somewhere
+    else instead is the one answer that must not happen quietly.
+    """
+    platform = sys.platform if platform is None else platform
+    install = install_dir() if install is None else install
+    document, problem = read_pointer(pointer)
+    request = document.get(REQUEST_KEY) if not problem else None
+    request = request.strip() if isinstance(request, str) and request.strip() else ""
+    question = ""
+
+    if request:
+        held = library_database(Path(home) / "data")
+        if held is not None:
+            # An update of an install that never moved anything has no pointer
+            # file, so the installer may have asked. A library is already
+            # here, and a request is never a reason to swap it for another.
+            update_pointer(pointer, {REQUEST_KEY: None})
+            report("status", f"{APP_NAME} keeps using the library in {held}; the folder asked for, "
+                             f"{request}, is not used and nothing was moved. "
+                             + CHANGE_LIBRARY_LATER)
+            return None, None
+        answer: str | None = request
+    elif ask is not None and wants_location(Path(home), payload, pointer):
+        question = library_question(Layout(home, payload), pointer, volumes, platform)
+        answer = ask(question)
+        if answer is None:
+            return None, None  # "keep the default": today's layout, nothing written
+    else:
+        if ask is None and wants_location(Path(home), payload, pointer):
+            report("status", f"{APP_NAME} keeps your library in {Path(home) / 'data'}; nothing was "
+                             "asked, because nobody is at the screen. " + CHANGE_LIBRARY_LATER
+                             + f" The speech engine stays in {home}; --home PATH or "
+                             f"{HOME_VARIABLE} put it elsewhere.")
+        return None, None
+
+    while True:
+        kind, folder, sentence = judge_library(str(answer), Path(home), install, payload)
+        if kind == "new":
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                kind, sentence = "refuse", f"{folder} could not be made ({error})."
+        if kind != "refuse":
+            break
+        report("error", sentence)
+        if ask is None:
+            report("error", f"{APP_NAME} cannot start: {pointer} asks for a library folder it cannot "
+                            "use. Start it with its window to choose another, or remove "
+                            f'"{REQUEST_KEY}" from that file to keep the default.')
+            return None
+        question = question or library_question(Layout(home, payload), pointer, volumes, platform)
+        answer = ask(f"{sentence}\n\n{question}")
+        if answer is None:
+            if request:
+                update_pointer(pointer, {REQUEST_KEY: None})
+            return None, None
+
+    if kind == "today":
+        return None, None
+    if kind == "new":
+        saved = update_pointer(pointer, {DATA_KEY: str(folder), REQUEST_KEY: None})
+        if saved:
+            report("error", saved + " MyScribe uses the library there for this start only.")
+        report("status", f"{APP_NAME} keeps your library in {folder}.")
+        return folder, None
+    if os.path.normcase(str(answer).strip().strip('"')) != os.path.normcase(request):
+        saved = update_pointer(pointer, {REQUEST_KEY: str(Path(str(answer).strip().strip('"')).resolve())})
+        if saved:
+            report("error", saved)
+    report("status", f"{folder} already holds a {APP_NAME} library. After the speech engine is "
+                     "installed, the setup questions show what it holds; it is used only when you "
+                     "choose it there.")
+    return None, folder
+
+
+CHANGE_LIBRARY_LATER = (
+    "To use another library, quit MyScribe and start it with --setup, which offers one while this "
+    "library holds no recordings."
+)
 
 
 # --- one instance -----------------------------------------------------------------
@@ -2331,12 +2573,22 @@ class Launch:
                                  f"given by hand (--home or {HOME_VARIABLE}), which keeps everything under "
                                  "it. Start without it to keep this library.")
         else:
-            problem = write_pointer_data(self.layout.pointer, where)
+            # The request is settled by this too (TASK-097): it was the engine's to decide.
+            problem = update_pointer(self.layout.pointer, {DATA_KEY: str(where), REQUEST_KEY: None})
             if problem:
                 self.report("error", problem)
         self.layout = Layout(self.layout.home, self.layout.payload, self.layout.windows,
                              data=where, pointer=self.layout.pointer)
         self.report("status", f"{APP_NAME} now uses the library at {where}.")
+
+    def settle_offer(self) -> None:
+        """A sitting that applied without adopting the offered library decided
+        against it: the request is done with (TASK-097)."""
+        if self.layout.offer is not None and self.layout.pointer is not None:
+            problem = update_pointer(self.layout.pointer, {REQUEST_KEY: None})
+            if problem:
+                self.report("error", problem)
+        self.layout.offer = None
 
     def apply(self, answers: dict) -> tuple[int, list[str]]:
         """Hand the answers to the engine, returning its exit code and what it
@@ -2771,8 +3023,9 @@ def console_sitting(launch: Launch, report: Callable[[str, str], None]) -> None:
     # holds its own answers, and this engine asks for them against it.
     for _ in range(2):
         take_setup_result(launch.layout)
+        offered = (["--library", str(launch.layout.offer)] if launch.layout.offer is not None else [])
         try:
-            subprocess.call([str(launch.layout.env_python), "-m", "scribe.setup"],
+            subprocess.call([str(launch.layout.env_python), "-m", "scribe.setup", *offered],
                             cwd=str(launch.layout.app_dir), env=setup_environment(launch.layout))
         except Exception as error:
             report("error", f"The setup questions could not be asked: {error}. MyScribe starts anyway; "
@@ -2797,7 +3050,9 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
     it again at the next start (TASK-089.11).
     """
     applied = False
-    named: list[str] = []
+    # TASK-097: the library asked for at install, listed with its numbers in
+    # the first plan, as a folder typed in an earlier pass is.
+    named: list[str] = [str(launch.layout.offer)] if launch.layout.offer is not None else []
     while True:
         plan = launch.watching(setup_plan, launch.layout, report, unasked_only=not force_setup,
                                **({"named": named} if named else {}))
@@ -2832,6 +3087,7 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
         if retry is None or not retry(sentence):
             break
     if applied:
+        launch.settle_offer()
         launch.watching(run_prove, launch.layout, report, launch.port)
 
 
@@ -3022,7 +3278,10 @@ def ask_location(message: str) -> str | None:
     from tkinter import filedialog
 
     root = tk.Tk()
-    root.title(f"Where should {APP_NAME} keep everything?")
+    # The question's own line: the library question (TASK-097), or the repair
+    # of a home that is not there, whatever sentence was put above it.
+    root.title(next((line for line in message.splitlines() if line.startswith("Where should")),
+                    APP_NAME))
     chosen: dict = {}
 
     tk.Label(root, text=message, justify="left", anchor="w").pack(
@@ -3895,16 +4154,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         return stopped
     # TASK-089.19: an adopted library, the pointer's second fact. Not under a
     # home given by hand: `--home` and MYSCRIBE_HOME mean "everything here".
-    data, missing, pointer = None, "", None
+    data, missing, pointer, offer = None, "", None, None
     if args.home is None and not os.environ.get(HOME_VARIABLE):
         pointer = pointer_path()
         data, missing = adopted_data(pointer)
+        if data is None and not missing:
+            # TASK-097: where the library goes - the installer's request, or
+            # the first start's question where there is no installer page -
+            # settled before anything is written under the home or downloaded.
+            settled = locate_library(ask_location if windowed and not args.at_login else None,
+                                     console, payload, pointer, home)
+            if settled is None:
+                if windowed and problems:
+                    show_error(problems[-1])
+                return stopped
+            data, offer = settled
     if missing:
         console("error", missing)
         if windowed:
             show_error(missing)
         return stopped
-    layout = Layout(home, payload, data=data, pointer=pointer)
+    layout = Layout(home, payload, data=data, pointer=pointer, offer=offer)
     before_home[0] = False
     # One launcher per home from here on (TASK-112.07): before the /health
     # probe in `Launch.prepare`, before the sync, before the app.

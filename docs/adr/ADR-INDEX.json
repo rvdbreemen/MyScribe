@@ -1138,7 +1138,7 @@
       "path": "ADR-019-an-adopted-library-is-the-pointer-file-s-second-fact-which-the-engine-reports-through-a-result-file-and-the-launcher-writes.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-09-24",
+      "date": "2026-10-25",
       "decision_summary": "Chosen option: the pointer's second fact, reported through a result file, because it is the only one that reaches bot...",
       "topics": [
         "installer",
@@ -1945,6 +1945,63 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-036",
+      "title": "The library folder is asked apart from the engine home, as a request the launcher settles and the engine adopts",
+      "path": "ADR-036-the-library-folder-is-asked-apart-from-the-engine-home-as-a-request-the-launcher-settles-and-the-engine-adopts.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: a request in the pointer file, the only one that gives Windows a page and keeps adoption in the engine.",
+      "topics": [
+        "installer",
+        "library"
+      ],
+      "aliases": [
+        "/LIBRARY=",
+        "library page",
+        "library_request"
+      ],
+      "components": [
+        "packaging.launcher",
+        "packaging.windows"
+      ],
+      "symbols": [
+        "judge_library",
+        "locate_library",
+        "WriteLibraryRequest"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "The installer writes \"libraryrequest\" only with no MyScribe.location and no {localappdata}\\MyScribe\\env; uninstall deletes neither library nor pointer.",
+          "The default home, or its data, as a request means /data.",
+          "A folder holding myscribe.db or scribe.db is adopted only by the engine.",
+          "A request is never used while /data holds a library."
+        ],
+        "must_not": [
+          "Let the launcher open, migrate or move a library.",
+          "Ask at a first start where the engine home goes."
+        ],
+        "exceptions": [
+          "Under --home or MYSCRIBEHOME a request is not read (as in ADR-019)."
+        ],
+        "verification": [
+          "tests/testlauncherlibraryrequest.py and tests/testinstallerlibrarypage.py."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -2369,6 +2426,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-019",
+      "target": "ADR-036",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-020",
       "target": "ADR-002",
       "type": "related",
@@ -2575,6 +2638,24 @@
     {
       "source": "ADR-032",
       "target": "ADR-028",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-036",
+      "target": "ADR-011",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-036",
+      "target": "ADR-015",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-036",
+      "target": "ADR-019",
       "type": "related",
       "resolved": true
     }
