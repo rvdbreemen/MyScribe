@@ -24,13 +24,16 @@
   anywhere in a transcript was corrected to that name. A word that stands
   alone is now left as Whisper wrote it when it has three letters or fewer,
   or when it is a Dutch or English function word such as "door" or "maar".
-  The exception is a word you listed as a variant (capitals aside). The
-  cost: a short name is no longer guessed, and its capitals are not fixed
-  either. "Ari" is not corrected to *Arie*, "ida" is not corrected to
-  *Ida*, and with *API*, *GPU* or *NOS* listed a lone "api", "gpu" or "nos"
-  stays lower case, unless you list that spelling as a variant. Only a
-  word that stands alone is protected: with *Isa* listed, "I saw it"
-  still becomes "Isa it".
+  The exceptions: a word you listed as a variant (capitals aside), and a
+  word that differs only in case from a listed term with two or more
+  capitals. With *API*, *GPU* or *NOS* listed, a lone "api", "gpu" or "nos"
+  still becomes *API*, *GPU* or *NOS*. A function word never does: with
+  *IT*, *US* or *BEN* listed, "it", "us" and "ben" stay as written ("us" is
+  added to the list for this). The cost: a short name is no longer guessed,
+  and its capitals are not fixed either. "Ari" is not corrected to *Arie*
+  and "ida" is not corrected to *Ida*, unless you list that spelling as a
+  variant. Only a word that stands alone is protected: with *Isa* listed,
+  "I saw it" still becomes "Isa it".
   A word between the parts of a name is no longer deleted: "Marieke en
   Vermeulen" stays as written with *Marieke Vermeulen* listed. A function
   word next to a name now counts as part of it only when it is spelled as

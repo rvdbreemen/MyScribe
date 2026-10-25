@@ -693,19 +693,49 @@ def test_a_short_word_listed_as_a_variant_is_still_corrected(sentence, entry, ex
 @pytest.mark.parametrize(
     ("sentence", "entry", "expected"),
     [
-        ("de api werkt", term("API"), "de api werkt"),
-        ("de gpu is heet", term("GPU"), "de gpu is heet"),
-        ("Ik ben er", term("Ben"), "Ik ben er"),
-        ("de api werkt", term("API", variants=("api",)), "de API werkt"),
+        ("de api werkt", term("API"), "de API werkt"),
+        ("de gpu is heet", term("GPU"), "de GPU is heet"),
+        ("het journaal van de nos", term("NOS"), "het journaal van de NOS"),
+        ("Api werkt", term("API"), "API werkt"),
+        ("een mp3 bestand", term("MP3"), "een MP3 bestand"),
+        ("de ios app", term("iOS"), "de iOS app"),
     ],
 )
-def test_a_short_terms_capitals_are_fixed_only_through_a_listed_variant(
+def test_a_lone_word_gets_the_capitals_of_an_acronym_it_differs_from_only_in_case(
     sentence, entry, expected
 ):
-    """The disclosed cost of the length guard: the listed term itself is not
-    a variant, so "api" stays lower case with "API" listed - counting it
-    would also turn "Ik ben er" into "Ik Ben er" with "Ben" listed. Listing
-    the lower-case spelling as a variant fixes the capitals again."""
+    """Robert's decision (2026-10-25): a listed term with two or more
+    capitals restores the capitals of a lone word that is the same word in
+    another case - "api" is "API", whatever the length guard says."""
+    assert _read(words_from(sentence), [entry]) == expected
+
+
+@pytest.mark.parametrize(
+    ("sentence", "entry", "expected"),
+    [
+        # A function word never takes an acronym's capitals.
+        ("it is on the table", term("IT"), "it is on the table"),
+        ("Tell us more", term("US"), "Tell us more"),
+        ("Ik ben er", term("BEN"), "Ik ben er"),
+        ("Ik ben er", term("Ben"), "Ik ben er"),
+        ("dat is het", term("DAT"), "dat is het"),
+        ("Het huis is van ons", term("ONS"), "Het huis is van ons"),
+        # One capital is a name, not an acronym: no capitals fixed.
+        ("Ik zag ida gisteren", term("Ida"), "Ik zag ida gisteren"),
+        # Only a difference in case, never a spelling.
+        ("de ap werkt", term("API"), "de ap werkt"),
+        ("de gp is heet", term("GPU"), "de gp is heet"),
+        # A variant still fixes a one-capital term.
+        ("Ik zag ida gisteren", term("Ida", variants=("ida",)), "Ik zag Ida gisteren"),
+    ],
+)
+def test_capitals_come_back_only_for_an_acronym_and_never_on_a_function_word(
+    sentence, entry, expected
+):
+    """The bounds of that decision: "it" never becomes IT, "ben" never Ben or
+    BEN, a one-capital name like "Ida" is still not guessed at, and a word
+    spelled differently ("ap", which sounds like "API") is still under the
+    length guard."""
     assert _read(words_from(sentence), [entry]) == expected
 
 

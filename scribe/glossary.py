@@ -112,11 +112,13 @@ clears a rule easily: "het" is 75 against "Hetty" and 'HT' both ways, "the"
 85.7 against "Thea", "door" 88.9 against "Doori". A spelling already right
 still claims its word; only a correction is stopped. The cost is that a
 short name is no longer guessed: "Ari" is left for "Arie", "ida" for "Ida".
-The listed term itself is not a variant, so the capitals of a short term are
-not fixed either: with "API", "GPU" or "NOS" listed, a lone "api", "gpu" or
-"nos" stays lower case unless that spelling is listed as a variant. Counting
-the term itself would bring back "Ik ben er" -> "Ik Ben er" with "Ben"
-listed. Only a lone word is guarded: "I saw it" with "Isa" listed still
+The listed term itself is not a variant, so the capitals of a short name
+are not fixed either: "ida" stays with "Ida" listed, or "Ik ben er" would
+read "Ik Ben er" with "Ben" listed. An acronym is the exception (Robert's
+decision, 2026-10-25): a term with two or more capitals gives a lone word
+that differs from it only in case its capitals, "api" -> "API", "nos" ->
+"NOS", unless the word is a function word - "it" never becomes "IT", "ben"
+never "BEN". Only a lone word is guarded: "I saw it" with "Isa" listed still
 reads "Isa it", a two-word split whose pieces pass the edge test.
 
 A name followed by a word that completes a longer listed name: "Niels en"
@@ -251,6 +253,13 @@ PAST_CLAIM_FLOOR = 80.0
 # "Hetty" and 'HT' on both metaphones, "the" 85.7 against "Thea". A miss
 # leaves Whisper's text; a hit respells "het" in every sentence it is in.
 SHORT_WORD_LETTERS = 3
+
+# Except a word that differs from a listed term only in case, where the term
+# has this many capitals or more and the word is no function word (Robert's
+# decision, 2026-10-25): "api", "gpu" and "nos" get the capitals of "API",
+# "GPU" and "NOS", while "it" stays with "IT" listed and "ben" with "Ben" or
+# "BEN". One capital is a name, and a name is not guessed: "ida" stays.
+ACRONYM_CAPITALS = 2
 
 # The words that are never respelled alone either, whatever their length:
 # Dutch and English function words, vendored from the Snowball stop word
@@ -597,6 +606,7 @@ def corrections_for(
                     length == 1
                     and _guarded(core)
                     and not (needle != canonical and core.casefold() == needle.casefold())
+                    and not _acronym_case(core, needle)
                 ):
                     # A lone short word or function word, and not a variant the
                     # user listed in that spelling: "het" is not "Hetty"
@@ -890,6 +900,17 @@ def _guarded(core: str) -> bool:
     `SHORT_WORD_LETTERS` letters or fewer, or on the function-word list."""
     letters = sum(ch.isalpha() for ch in core)
     return letters <= SHORT_WORD_LETTERS or _is_function_word(core)
+
+
+def _acronym_case(core: str, needle: str) -> bool:
+    """Whether a lone word is ``needle`` in another case and ``needle`` has
+    `ACRONYM_CAPITALS` capitals or more, while the word is no function word:
+    "api" for "API", never "it" for "IT" (Robert's decision, 2026-10-25)."""
+    return (
+        core.casefold() == needle.casefold()
+        and sum(ch.isupper() for ch in needle) >= ACRONYM_CAPITALS
+        and not _is_function_word(core)
+    )
 
 
 def _bare(text: str) -> str:
