@@ -13,7 +13,9 @@
   that run failed. `POST /api/v1/watch-folders` calls the function the
   Settings page calls, with the same refusals; a folder already watched is
   `already_watched`. Its `message` says to transcribe the files it left
-  alone in Settings > Watch folders, where the page says "below". Every
+  alone in Settings > Watch folders, where the page says "below";
+  `POST /api/v1/watch-folders/{id}/existing` transcribes them, as that
+  page's *Transcribe them* button does. Every
   route is in `/openapi.json`, and every error under `/api/v1` is JSON with a stable `code` and a `detail`; an
   unexpected server error is `internal_error`, without the exception's text.
   A re-transcribe refuses a field that is not one of the dialog's options or
@@ -35,7 +37,7 @@
   and never through a proxy. Commands: `status`, `list`, `search`, `upload`
   (the file's bytes, or `--by-path` for a file under the browse roots),
   `transcribe`, `jobs`, `cancel`, `wait`, `transcript`, `export`, `doctor`
-  and `watch list|add|remove`;
+  and `watch list|add|remove|existing`;
   `--idempotency-key` on `upload` and `transcribe`, `--json` for the API's
   own answer. `export` and `transcript --out` replace a file that is
   already there and say so on stderr. An `upload` of a file that cannot be
@@ -57,12 +59,12 @@
   `python -m scribe.cli` (TASK-108).
 - **An MCP server for AI agents: `python -m scribe.cli mcp`.** An agent such
   as Claude Code or Claude Desktop starts it and talks MCP to it over stdin
-  and stdout. It offers sixteen tools, each one or a few requests to a running
+  and stdout. It offers seventeen tools, each one or a few requests to a running
   MyScribe's `/api/v1`: `list_recordings`, `get_recording`,
   `search_transcripts`, `get_transcript`, `export_transcript`,
   `add_recording`, `transcribe_again`, `ask_ai`, `list_jobs`, `get_job`,
   `cancel_job`, `get_settings`, `doctor`, `list_watch_folders`,
-  `add_watch_folder` and `remove_watch_folder`. Like the CLI it reaches only 127.0.0.1 and
+  `add_watch_folder`, `remove_watch_folder` and `transcribe_left_alone`. Like the CLI it reaches only 127.0.0.1 and
   never opens the library itself. A failed action comes back as a tool
   result marked as an error, with the API's status, code and detail;
   arguments that do not fit a tool's schema come back the same way, with

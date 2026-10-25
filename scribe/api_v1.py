@@ -216,6 +216,12 @@ class WatchFolderRemoved(BaseModel):
     removed: bool
 
 
+class WatchFolderTaken(BaseModel):
+    id: int
+    taken: int
+    message: str
+
+
 _ERRORS = {
     status: {"model": ApiError, "description": code}
     for status, code in CODES.items()
@@ -752,6 +758,22 @@ def remove_watch_folder(folder_id: int, request: Request) -> dict:
     settings_page._get_watch_folder(conn, folder_id)
     watching.remove_folder(conn, folder_id)
     return {"id": folder_id, "removed": True}
+
+
+@router.post("/watch-folders/{folder_id}/existing", response_model=WatchFolderTaken,
+             summary="Transcribe what a folder held when it was added")
+def take_existing_files(folder_id: int, request: Request) -> dict:
+    """The page's "Transcribe them" button: the files the folder left alone
+    when it was added (``left``) are no longer left alone, and the watcher's
+    next walk takes them in with the folder's options. Only what the folder
+    takes: an audio-only folder keeps leaving its video alone. ``taken`` is
+    how many; asked again, it is 0. The jobs are the watcher's to queue, so
+    an app run without its supervisor queues them at its next start with
+    one."""
+    conn = _conn(request)
+    taken, sentence = settings_page.take_existing_watched(
+        conn, folder_id, getattr(request.app.state, "watcher", None))
+    return {"id": folder_id, "taken": taken, "message": sentence}
 
 
 # --- wiring --------------------------------------------------------------------------------------

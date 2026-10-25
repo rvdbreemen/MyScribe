@@ -633,6 +633,15 @@ def cmd_watch_remove(api: Api, args, out: Out) -> Exit:
     return Exit.OK
 
 
+def cmd_watch_existing(api: Api, args, out: Out) -> Exit:
+    body, _ = api.json("POST", f"/watch-folders/{args.folder_id}/existing")
+    if out.as_json:
+        out.data(body)
+    else:
+        out.line(body["message"])
+    return Exit.OK
+
+
 # --- the parser --------------------------------------------------------------------------------
 
 
@@ -759,6 +768,10 @@ def build_parser() -> argparse.ArgumentParser:
     w = watch.add_parser("remove", help="stop watching a folder; the library keeps its recordings")
     w.add_argument("folder_id", type=int)
     w.set_defaults(run=cmd_watch_remove)
+    w = watch.add_parser("existing", help="transcribe the files a folder already held when it "
+                                          "was added, which it left alone")
+    w.add_argument("folder_id", type=int)
+    w.set_defaults(run=cmd_watch_existing)
 
     p = sub.add_parser("mcp", help="serve these actions as MCP tools on stdin/stdout, "
                                    "for an AI agent (see docs/configuration.md)")

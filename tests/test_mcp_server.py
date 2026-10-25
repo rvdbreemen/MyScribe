@@ -175,6 +175,7 @@ EXPECTED_TOOLS = {
     "export_transcript", "add_recording", "transcribe_again", "ask_ai",
     "list_jobs", "get_job", "cancel_job", "get_settings",
     "doctor", "list_watch_folders", "add_watch_folder", "remove_watch_folder",
+    "transcribe_left_alone",
 }
 
 
@@ -525,6 +526,24 @@ def test_a_watch_folder_twice_is_the_apis_conflict(transport, tmp_path):
     assert "error 409 already_watched" in text
 
 
+def test_what_a_watch_folder_left_alone_can_be_transcribed(transport, conn, tmp_path):
+    """The page's "Transcribe them" button, for an agent (TASK-108 review)."""
+    from scribe.ingest import watching
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "old.mp3").write_bytes(b"a recording of something")
+    added = payload(call(transport, "add_watch_folder", {"path": str(inbox)}))
+    assert added["left"] == 1
+
+    taken = payload(call(transport, "transcribe_left_alone", {"folder_id": added["id"]}))
+
+    assert taken["id"] == added["id"] and taken["taken"] == 1
+    assert "will be transcribed" in taken["message"]
+    assert watching.existing_left(conn, added["id"]) == 0
+    assert "error 404 not_found" in error_text(call(transport, "transcribe_left_alone", {"folder_id": 42}))
+
+
 def test_removing_an_unknown_watch_folder_is_a_tool_error(transport):
     assert "error 404 not_found" in error_text(call(transport, "remove_watch_folder", {"folder_id": 42}))
 
@@ -552,7 +571,7 @@ def test_every_tool_call_goes_to_api_v1(transport, transcribed, conn, tmp_path):
         "list_jobs": {}, "get_job": {"job_id": job}, "cancel_job": {"job_id": job},
         "get_settings": {},
         "doctor": {}, "list_watch_folders": {}, "add_watch_folder": {"path": str(inbox)},
-        "remove_watch_folder": {"folder_id": 1},
+        "remove_watch_folder": {"folder_id": 1}, "transcribe_left_alone": {"folder_id": 1},
     }
     assert set(arguments) == EXPECTED_TOOLS
     for name, args in arguments.items():

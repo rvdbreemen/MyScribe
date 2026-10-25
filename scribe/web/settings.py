@@ -835,21 +835,27 @@ async def switch_watch_video(folder_id: int, request: Request) -> Response:
         "That folder now takes video files too." if on else "That folder now takes audio files only."))
 
 
-@router.post("/settings/watch/{folder_id}/existing", include_in_schema=False)
-def take_existing_files(folder_id: int, request: Request) -> Response:
+def take_existing_watched(conn: sqlite3.Connection, folder_id: int, watcher) -> tuple[int, str]:
     """Transcribe what a folder held when it was added, after all
     (TASK-107.01): the rows that kept it out are forgotten, and the watcher's
-    next walk takes those files in with the folder's options."""
-    conn = request.app.state.conn
+    next walk takes those files in with the folder's options. Returns how
+    many and the sentence that says so. The page's button and
+    ``POST /api/v1/watch-folders/{id}/existing`` both call this (TASK-108)."""
     folder = _get_watch_folder(conn, folder_id)
     taken = watching.take_existing(conn, folder_id)
-    watcher = getattr(request.app.state, "watcher", None)
     if watcher is not None:
         watcher.request_reconcile()
     kind = "audio or video file" if folder.get("include_video", 1) else "audio file"
     verb = "it" if taken == 1 else "them"
-    return _watch_answer(request, conn, flash=(
-        f"{_count(taken, kind)} already in it will be transcribed; the watcher takes {verb} in shortly."))
+    return taken, f"{_count(taken, kind)} already in it will be transcribed; the watcher takes {verb} in shortly."
+
+
+@router.post("/settings/watch/{folder_id}/existing", include_in_schema=False)
+def take_existing_files(folder_id: int, request: Request) -> Response:
+    """The "Transcribe them" button: `take_existing_watched`."""
+    conn = request.app.state.conn
+    _taken, sentence = take_existing_watched(conn, folder_id, getattr(request.app.state, "watcher", None))
+    return _watch_answer(request, conn, flash=sentence)
 
 
 @router.post("/settings/watch/{folder_id}/delete", include_in_schema=False)

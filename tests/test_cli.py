@@ -613,6 +613,30 @@ def test_watch_remove_of_an_unknown_folder_is_not_found(transport):
     assert run(transport, "watch", "remove", "42").code == E.NOT_FOUND
 
 
+def test_watch_existing_transcribes_what_the_folder_left_alone(transport, conn, tmp_path):
+    """The page's "Transcribe them" button, from a script (TASK-108 review)."""
+    from scribe.ingest import watching
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "old.mp3").write_bytes(b"a recording of something")
+    folder_id = run(transport, "--json", "watch", "add", str(inbox)).json()["id"]
+    assert watching.existing_left(conn, folder_id) == 1
+
+    result = run(transport, "watch", "existing", str(folder_id))
+
+    assert result.code == E.OK, result.err
+    assert transport.requests[-1][:2] == ("POST", f"/api/v1/watch-folders/{folder_id}/existing")
+    assert "1 audio file already in it will be transcribed" in result.text
+    assert watching.existing_left(conn, folder_id) == 0
+    as_json = run(transport, "--json", "watch", "existing", str(folder_id)).json()
+    assert as_json == {"id": folder_id, "taken": 0, "message": as_json["message"]}
+
+
+def test_watch_existing_of_an_unknown_folder_is_not_found(transport):
+    assert run(transport, "watch", "existing", "42").code == E.NOT_FOUND
+
+
 def test_a_plain_text_error_is_reported_without_a_traceback():
     """The guard's Host refusal is Starlette's plain text, not a coded body."""
     def plain(method, path, headers, body):

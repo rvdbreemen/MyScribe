@@ -140,6 +140,7 @@ EXPECTED_OPERATIONS = {
     ("get", "/api/v1/watch-folders"),
     ("post", "/api/v1/watch-folders"),
     ("delete", "/api/v1/watch-folders/{folder_id}"),
+    ("post", "/api/v1/watch-folders/{folder_id}/existing"),
 }
 
 
@@ -963,6 +964,39 @@ def test_removing_a_watch_folder_keeps_the_library(client, conn, inbox, transcri
 
 def test_removing_a_watch_folder_that_is_not_there_is_a_coded_404(client):
     body = assert_coded(client.delete(f"{V1}/watch-folders/42"), 404, "not_found")
+    assert "42" in body["detail"]
+
+
+def test_what_a_folder_left_alone_can_be_transcribed_after_all(client, conn, inbox):
+    """The page's "Transcribe them" button, for a program: the API's sentence
+    sends a script to Settings > Watch folders, and a script can also finish
+    that step itself (TASK-108 review). Only what the folder takes: an
+    audio-only folder keeps leaving its video alone (TASK-107.06)."""
+    from scribe.ingest import watching
+
+    settled_file(inbox, "old.mp3")
+    settled_file(inbox, "older.mp3")
+    settled_file(inbox, "old.mp4")
+    folder_id = client.post(f"{V1}/watch-folders", json={"path": str(inbox)}).json()["id"]
+    assert watching.existing_left(conn, folder_id) == 2
+
+    resp = client.post(f"{V1}/watch-folders/{folder_id}/existing")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "id": folder_id, "taken": 2,
+        "message": "2 audio files already in it will be transcribed; the watcher takes them in shortly."}
+    assert watching.existing_left(conn, folder_id) == 0
+    (row,) = client.get(f"{V1}/watch-folders").json()["folders"]
+    assert row["left"] == 0
+    # Asked again, there is nothing left to take: an answer, not an error.
+    again = client.post(f"{V1}/watch-folders/{folder_id}/existing").json()
+    assert again["taken"] == 0
+    assert jobs_of(conn) == [], "the watcher queues them; this route only stops leaving them alone"
+
+
+def test_transcribing_what_a_missing_folder_held_is_a_coded_404(client):
+    body = assert_coded(client.post(f"{V1}/watch-folders/42/existing"), 404, "not_found")
     assert "42" in body["detail"]
 
 

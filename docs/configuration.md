@@ -189,8 +189,9 @@ not read; set `MYSCRIBE_HOME` to it instead.
 | `transcript ID` | The transcript as JSON, word by word, to stdout or `--out` |
 | `doctor` | Check this computer: the checks the Settings page runs, and the last GPU check's result. Exit 9 when a required check failed. It starts nothing: run the GPU check from Settings |
 | `watch list` | The watch folders: on or off, audio only or with video, and why one may be doing nothing (missing, outside the browse roots) |
-| `watch add FOLDER` | Watch a folder, with `--include-video` and `--option` (repeatable) for what it takes in. What is already in it is left alone and counted, as in Settings; transcribe those files with *Transcribe them* in Settings > Watch folders |
+| `watch add FOLDER` | Watch a folder, with `--include-video` and `--option` (repeatable) for what it takes in. What is already in it is left alone and counted, as in Settings; transcribe those files with `watch existing ID` or *Transcribe them* in Settings > Watch folders |
 | `watch remove ID` | Stop watching a folder; its recordings stay in the library |
+| `watch existing ID` | Transcribe the files a folder already held when it was added, which it left alone. Only what the folder takes: an audio-only folder still leaves its video alone |
 | `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout. In a folder the file gets the app's name for it; a file that is already there is replaced, with a `replaced` line on stderr |
 | `mcp` | Serve these actions as MCP tools on stdin and stdout, for an AI agent; see [below](#letting-an-ai-agent-use-myscribe-mcp) |
 
@@ -245,6 +246,7 @@ another port.
 | `get_settings` | The transcription defaults, browse roots, watch folders and AI provider. Never a key |
 | `doctor` | The checks the Settings page runs, each with its fix, and the last GPU check's result. Starts nothing |
 | `list_watch_folders`, `add_watch_folder`, `remove_watch_folder` | The watch folders. `add_watch_folder` takes an absolute `path`, `include_video` and the transcription options |
+| `transcribe_left_alone` | Transcribe the files a watch folder held when it was added, which it left alone, as *Transcribe them* in Settings |
 
 A failed action comes back as a tool result marked as an error. The text is
 the API's error, for example `error 404 not_found: no job with id 999`, so

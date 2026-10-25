@@ -280,6 +280,10 @@ def remove_watch_folder(api: Api, args: dict) -> Answer:
     return _json(api, "DELETE", f"/watch-folders/{args['folder_id']}")
 
 
+def transcribe_left_alone(api: Api, args: dict) -> Answer:
+    return _json(api, "POST", f"/watch-folders/{args['folder_id']}/existing")
+
+
 TOOLS: tuple[Tool, ...] = (
     Tool("list_recordings", "List the library",
          "The recordings in the library, newest first unless sorted otherwise: id, title, "
@@ -378,6 +382,13 @@ TOOLS: tuple[Tool, ...] = (
          "in stay in the library.",
          {"folder_id": {"type": "integer", "description": "The watch folder's id"}},
          remove_watch_folder, required=("folder_id",), destructive=True, idempotent=True),
+    Tool("transcribe_left_alone", "Transcribe what a watch folder left alone",
+         "Transcribe the files a watch folder already held when it was added, which it left "
+         "alone (their count is the folder's left). The watcher takes them in with the "
+         "folder's options; an audio-only folder still leaves its video alone. Asked again, "
+         "it takes 0.",
+         {"folder_id": {"type": "integer", "description": "The watch folder's id"}},
+         transcribe_left_alone, required=("folder_id",), idempotent=True),
 )
 BY_NAME = {tool.name: tool for tool in TOOLS}
 
