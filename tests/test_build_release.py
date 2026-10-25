@@ -201,19 +201,18 @@ def test_the_linux_tray_needs_python_xlib_in_the_bundle(tmp_path):
     assert build_release.missing_tray_modules(frozen, "linux-x64", archived=set()) == []
 
 
-def test_the_macos_tray_needs_appkit_and_quartz_in_the_app(tmp_path):
+def test_the_macos_tray_needs_appkit_and_its_pyobjc_in_the_app(tmp_path):
     """The pyobjc pieces sit partly in the archive inside the executable
-    (their Python) and partly beside it (their compiled extensions)."""
+    (their Python) and partly beside it (their compiled extensions). Quartz
+    is not asked for: nothing the tray runs imports it."""
     frozen = _bundle_with(tmp_path, "pystray/__init__.py", "pystray/_darwin.py",
                           inside="MyScribe.app/Contents/Resources")
-    archived = {"AppKit", "Foundation", "objc", "Quartz", "PyObjCTools.MachSignals",
-                "PyObjCTools.AppHelper"}
+    archived = {"AppKit", "Foundation", "objc", "PyObjCTools.MachSignals", "PyObjCTools.AppHelper"}
     missing = build_release.missing_tray_modules(frozen, "macos-arm64", archived=archived)
-    assert "AppKit._AppKit" in missing and "Quartz.CoreGraphics._CoreGraphics" in missing
+    assert "AppKit._AppKit" in missing and "objc._objc" in missing
 
     _bundle_with(tmp_path, "AppKit/_AppKit.cpython-312-darwin.so",
                  "Foundation/_Foundation.cpython-312-darwin.so", "objc/_objc.cpython-312-darwin.so",
-                 "Quartz/CoreGraphics/_CoreGraphics.cpython-312-darwin.so",
                  inside="MyScribe.app/Contents/Frameworks")
     assert build_release.missing_tray_modules(frozen, "macos-arm64", archived=archived) == []
     assert "AppKit" in build_release.missing_tray_modules(frozen, "macos-arm64", archived=set())

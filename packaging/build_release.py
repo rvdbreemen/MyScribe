@@ -136,12 +136,15 @@ def replaceable_tray(frozen: Path, target: str = "windows-x64") -> Path:
 # What each platform's tray imports besides pystray itself (TASK-112.11,
 # ADR-038): its backend, and what that backend imports. The pyobjc packages
 # are Python in the archive plus a compiled extension beside it; both count.
+# Not Quartz: pystray declares pyobjc-framework-quartz, but neither pystray
+# 0.19.5's code nor the launcher imports it, so PyInstaller rightly leaves it
+# out (the macOS runner of 2026-10-25 showed it absent).
 TRAY_MODULES = {
     "windows-x64": ("pystray._win32",),
     "linux-x64": ("pystray._xorg", "Xlib.display", "Xlib.threaded", "Xlib.XK"),
     "macos-arm64": ("pystray._darwin", "AppKit", "AppKit._AppKit", "Foundation",
                     "Foundation._Foundation", "objc", "objc._objc", "PyObjCTools.MachSignals",
-                    "PyObjCTools.AppHelper", "Quartz", "Quartz.CoreGraphics._CoreGraphics"),
+                    "PyObjCTools.AppHelper"),
 }
 
 

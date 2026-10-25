@@ -125,11 +125,12 @@ jobs:
         # the release calls: the same PyInstaller flags and hooks. Unlike the
         # release, the venv comes from the runner's uv without
         # --python-preference only-managed (the release uses the payload's uv
-        # with it) and the payload is empty. freeze's replaceable_tray fails the step unless pystray and
-        # its COPYING.LGPL are in the shipped bundle as loose files; then
-        # missing_tray_modules fails it unless the backend and what it imports
-        # ship too (Xlib on Linux; AppKit, Foundation, objc, PyObjCTools and
-        # Quartz on macOS), loose or in the archive inside the executable.
+        # with it) and the payload is empty. freeze's replaceable_tray fails
+        # the step unless pystray and its COPYING.LGPL are in the shipped
+        # bundle as loose files; then missing_tray_modules fails it unless the
+        # backend and what it imports ship too (Xlib on Linux; AppKit,
+        # Foundation, objc and PyObjCTools on macOS, not Quartz, which nothing
+        # imports), loose or in the archive inside the executable.
         # No installer, dmg or AppImage is made and the frozen launcher is not
         # started: that is the release's --smoke.
         if: ${{ !cancelled() }}
