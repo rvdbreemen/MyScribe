@@ -14,6 +14,7 @@ related:
   - "ADR-023"
   - "ADR-029"
   - "ADR-030"
+  - "ADR-035"
 topics:
   - "llm"
   - "reasoning-models"
@@ -98,6 +99,11 @@ status_history:
     status: Accepted
     changed_by: Claude (agent, session 2026-10-24)
     reason: ADR-030 amends one ADR-020 Must for OpenRouter's reasoning limit
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Claude (agent, session 2026-10-25)
+    reason: ADR-035 scopes the combine hint to local models (TASK-124)
     changed_via: adr-kit lifecycle
 ```
 
@@ -647,8 +653,8 @@ the part rule, the second asks them again.
 
 ## More Information
 
-Note added 2026-10-25, after acceptance. It changes no decision above, and
-the rule it describes is recorded by no ADR yet.
+Note added 2026-10-25, after acceptance. It changes no decision above; the
+rule it describes is recorded by ADR-035 (Proposed).
 
 * `TaskSpec.combine_reasoning_off` (TASK-124, Robert's decision of
   2026-10-25) sends the hint on a kind's combine call alone, beside the
@@ -659,8 +665,8 @@ the rule it describes is recorded by no ADR yet.
   set of notes finished, against two baselines on their own notes, of which
   one stopped at the 6000-token cap after thinking. That is one input against
   two, not three of three.
-* On OpenRouter the blog combine now carries `reasoning: {enabled: false}`,
-  and so, by ADR-030, no reasoning limit. That path is not measured.
+* Only on a local model (ADR-035): an OpenRouter blog combine is asked
+  without the hint and so keeps ADR-030's reasoning limit.
 
 ## Enforcement
 

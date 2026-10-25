@@ -1199,7 +1199,7 @@
       "path": "ADR-020-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap-and-a-copied-part-that-skipped-the-grouping-refuses-the-cleaning.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-10-25",
       "decision_summary": "Chosen option: A.",
       "topics": [
         "llm",
@@ -1831,7 +1831,7 @@
       "path": "ADR-030-an-openrouter-call-that-asks-no-reasoning-hint-carries-a-reasoning-limit-of-two-fifths-of-its-cap.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-10-25",
       "decision_summary": "Chosen option: B, decided by Robert on 2026-10-24.",
       "topics": [
         "openrouter",
@@ -1990,6 +1990,59 @@
           "tests/testllmtasks.py::testagrammarproviderisneverofferedanumberforatimestamp",
           "tests/testllmtasks.py::testthecloudschemaisunchangedbytheclockmarker",
           "tests/testllmtasks.py::testthecombinecarriesthetexttimestampsandthenotesnoschema"
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-035",
+      "title": "On a local model, blog's combine asks for no reasoning",
+      "path": "ADR-035-on-a-local-model-blog-s-combine-asks-for-no-reasoning.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: B.",
+      "topics": [
+        "map-reduce",
+        "ollama",
+        "reasoning"
+      ],
+      "aliases": [
+        "blog combine think false",
+        "combine reasoning off"
+      ],
+      "components": [
+        "scribe/llm/tasks.py"
+      ],
+      "symbols": [
+        "TaskPlan.provider_is_local",
+        "TaskSpec.combine_reasoning_off"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Send reasoningoff on a combinereasoningoff kind's combine call only when the provider is local.",
+          "Keep the notes and a one-call answer at the provider's default."
+        ],
+        "must_not": [
+          "Send the combine hint to a cloud provider.",
+          "Read locality from a provider name instead of islocal."
+        ],
+        "exceptions": [
+          "A kind with reasoningoff (cleanup) sends the hint on every call, on every provider, as ADR-020 decides."
+        ],
+        "verification": [
+          "tests/testllmtasks.py::testablogasksonlyitscombinenottoreasonandonlyonalocalmodel"
         ]
       },
       "scope": {
@@ -2469,6 +2522,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-020",
+      "target": "ADR-035",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-021",
       "target": "ADR-015",
       "type": "related",
@@ -2619,6 +2678,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-030",
+      "target": "ADR-035",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-031",
       "target": "ADR-029",
       "type": "related",
@@ -2633,6 +2698,24 @@
     {
       "source": "ADR-034",
       "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-020",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-030",
       "type": "related",
       "resolved": true
     }
