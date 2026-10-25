@@ -4549,3 +4549,17 @@ def test_a_box_that_cannot_be_shown_is_not_an_error(monkeypatch):
         raise OSError("no desktop")
 
     launcher.show_login_box("x", seconds=1, box=broken)  # no exception
+
+
+def test_the_box_says_on_its_own_because_the_installer_starts_it_too(monkeypatch):
+    """The installer starts `--at-login --headless` after an update as well
+    (myscribe.iss, ssPostInstall), so "at login" alone would be wrong there -
+    the correction TASK-112.07's review made to the note's sentence."""
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    said: list = []
+
+    launcher.show_login_box("Port 4242 is reserved.", seconds=1, box=lambda *a: said.append(a))
+
+    assert said[0][0] == "MyScribe could not start"
+    assert "on its own, at login or after an update" in said[0][1]

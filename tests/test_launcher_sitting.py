@@ -1987,3 +1987,21 @@ def test_window_quit_goes_through_the_stop_route_and_says_what_happens_to_the_jo
     assert window.status.get() == after, "the last thing the window says is what happened to the job"
     assert window.destroyed
     assert window.after_threads == {"MainThread"}, "a worker called Tk"
+
+
+def test_the_window_hands_the_last_login_problem_to_its_launch(layout, monkeypatch):
+    """TASK-120, option C. The Start-menu shortcut opens this door, so on
+    Windows it is the usual start by hand: the note it says must also reach
+    the app it starts, for the Settings card - as the console door does."""
+    window = _Window()
+    fake = _fake_window_tkinter(window)
+    monkeypatch.setitem(sys.modules, "tkinter", fake)
+    monkeypatch.setitem(sys.modules, "tkinter.ttk", fake.ttk)
+    monkeypatch.setitem(sys.modules, "tkinter.scrolledtext", fake.scrolledtext)
+    monkeypatch.setattr(launcher, "open_sitting", lambda *a, **k: None)
+    seen: list[str] = []
+    monkeypatch.setattr(launcher, "first_run", lambda launch, *a, **k: seen.append(launch.notice) or True)
+
+    launcher.run_window(layout, _free_port(), False, notice="The last time MyScribe started on its own: x")
+
+    assert seen == ["The last time MyScribe started on its own: x"]

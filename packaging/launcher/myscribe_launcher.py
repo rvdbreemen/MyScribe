@@ -1556,7 +1556,7 @@ def take_login_problem(home: Path) -> str:
 # box at once as well. There the Run value has no supervisor that would show a
 # failure, and a reservation of the port (Hyper-V, WSL) is the likely one.
 LOGIN_BOX_TITLE = "MyScribe could not start"
-LOGIN_BOX = ("MyScribe was started at login and could not start:\n\n{problem}\n\n"
+LOGIN_BOX = ("MyScribe started on its own, at login or after an update, and could not start:\n\n{problem}\n\n"
              "MyScribe says this again the next time you start it, and Settings shows it "
              "under Start at login.")
 LOGIN_BOX_SECONDS = 600.0

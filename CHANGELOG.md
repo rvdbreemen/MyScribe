@@ -10,8 +10,8 @@
   range back to the Windows default. On Linux and macOS a port that needs
   administrator rights gets a sentence of its own (TASK-120).
 - **A start at login that cannot start no longer fails without a word.** On
-  Windows a message box says why at once; it closes by itself after 10
-  minutes. On every system the next start says it once, as before, and
+  Windows a message box says why at once, also for the start the installer
+  makes after an update; it closes by itself after 10 minutes. On every system the next start says it once, as before, and
   **Settings → Start at login** now shows it too, until you dismiss it or
   MyScribe stops (TASK-120).
 - **After a Linux update, Start at login starts the new AppImage.** Each
