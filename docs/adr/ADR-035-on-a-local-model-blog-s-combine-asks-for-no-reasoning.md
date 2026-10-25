@@ -133,8 +133,8 @@ hint, read 3147 prompt tokens and wrote 2626 with no thinking in 40.6 s.
 
 * Good: the measured local failure is addressed, and the cloud request is as
   it was before the combine hint existed.
-* Bad: a 4B model writes the post without planning it; its quality was read
-  by eye, not scored.
+* Bad: a 4B model writes the post without planning it; its quality was not
+  scored.
 * Bad: a cloud model that thinks too long in the combine is not helped.
 * Neutral: another kind gets the hint only with its own measurement.
 

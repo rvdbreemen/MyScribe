@@ -63,9 +63,9 @@
   asks a local model (Ollama) not to think first, as cleanup does. With
   qwen3.5:4b that step had stopped at its answer limit after thinking once in
   two runs; with the request it finished in three runs, all on the same notes.
-  Cloud providers are asked as before, with the thinking limit below. The
-  notes and a recording short enough for one step are asked as before
-  (TASK-124, ADR-035).
+  Cloud providers are asked as before; OpenRouter keeps the thinking limit
+  below. The notes and a recording short enough for one step are asked as
+  before (TASK-124, ADR-035).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget
