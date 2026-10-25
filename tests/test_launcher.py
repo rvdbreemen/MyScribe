@@ -3441,8 +3441,8 @@ def test_a_window_holds_the_lock_only_while_its_myscribe_runs(layout, monkeypatc
     are stand-ins.
 
     The stand-in loop runs until the lock was let go of - or, for a MyScribe
-    that keeps running, until the worker is done and the pump has looked a few
-    times - and not for a fixed two seconds. A worker that stalled held the
+    that keeps running, until the worker's turn ended and the pump has looked
+    five more times - and not for a fixed two seconds. A worker that stalled held the
     lock past those two seconds on macOS (CI run 40137186180). One stall we
     found: the stand-in never sets _tkinter's "in the main loop" flag, so a
     StringVar of an earlier window that the garbage collector frees on the
@@ -3460,6 +3460,17 @@ def test_a_window_holds_the_lock_only_while_its_myscribe_runs(layout, monkeypatc
         let_go.set()
 
     monkeypatch.setattr(launcher.InstanceLock, "release", release_and_say)
+    # The worker's turn ended, and not a thread that has not started yet.
+    turned = threading.Event()
+    turn = launcher.window_turn
+
+    def window_turn(*args, **kwargs):
+        try:
+            turn(*args, **kwargs)
+        finally:
+            turned.set()
+
+    monkeypatch.setattr(launcher, "window_turn", window_turn)
 
     def first_run(launch, *args, **kwargs):
         if end == "failed":
@@ -3475,16 +3486,13 @@ def test_a_window_holds_the_lock_only_while_its_myscribe_runs(layout, monkeypatc
     monkeypatch.setattr(launcher, "first_run", first_run)
     seen: list[str] = []
 
-    def worker_done() -> bool:
-        return not any(each.name == "myscribe-launch" for each in threading.enumerate())
-
     def mainloop(self, n=0):
         deadline = time.monotonic() + 30.0
-        settled = None  # when the worker of a MyScribe that keeps running was done
+        settled = None  # when the turn of a MyScribe that keeps running ended
         while time.monotonic() < deadline:
             if end != "running" and let_go.is_set():
                 break
-            if end == "running" and settled is None and worker_done():
+            if end == "running" and settled is None and turned.is_set():
                 settled = time.monotonic()
             if settled is not None and time.monotonic() > settled + 1.0:  # five pump ticks
                 break
