@@ -25,6 +25,18 @@ DEFAULT_PORT = 4242
 BROWSER_WAIT_SECONDS = 30.0
 BROWSER_POLL_SECONDS = 0.05
 
+SHUTDOWN_GRACE_SECONDS = 3.0
+"""How long a stopping server lets open requests finish before it cancels
+them and runs the lifespan's end, where the supervisor ends the runner
+(ADR-032). A job page's event stream ends only when its job does, and
+without a limit uvicorn waited for it: an hour's job held the stop for an
+hour, and on macOS and Linux the launcher's hard stop SIGKILLed the app 15 s
+after its SIGTERM, leaving the runner to run on (TASK-112.09).
+
+An upload is not cut here (Robert, 2026-10-25: "exempt uploads"): it may
+finish until `stopping.UPLOAD_FINISH_SECONDS` (30 s, kept by Robert on 2026-10-25) after
+the stop began."""
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -78,6 +90,31 @@ def open_browser_when_ready(
     return thread
 
 
+def build_server(app, port: int) -> uvicorn.Server:
+    """The app's server: open reads cut after `SHUTDOWN_GRACE_SECONDS`, an
+    upload let finish up to `stopping.UPLOAD_FINISH_SECONDS` (ADR-032). The
+    stop's deadline for uploads goes to the lifespan, which hands it to the
+    phone door it closes, so a phone upload shares the app's bound."""
+    from scribe.web import stopping
+
+    return stopping.StoppingServer(
+        uvicorn.Config(app, host=HOST, port=port),
+        is_upload=stopping.is_app_upload,
+        grace=SHUTDOWN_GRACE_SECONDS,
+        on_stopping=lambda deadline: _stopping(app, deadline),
+    )
+
+
+def _stopping(app, deadline: float) -> None:
+    """The first moment of every stop, on the event loop: no new job from
+    here on (ADR-032; a running one is ended in the lifespan), and the
+    uploads' deadline for the phone door the lifespan closes."""
+    app.state.upload_deadline = deadline
+    sup = getattr(app.state, "supervisor", None)
+    if sup is not None:
+        sup.stop_claiming()
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     # `.env` first, before anything reads the environment: scribe.paths fixes
@@ -89,7 +126,7 @@ def main(argv: list[str] | None = None) -> None:
     from scribe.app import create_app
 
     app = create_app(start_supervisor=not args.no_supervisor)
-    server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=args.port))
+    server = build_server(app, args.port)
     # The stop route's way out: uvicorn's own flag, so the lifespan runs to
     # its end - the same path Ctrl+C takes (TASK-112.03).
     app.state.request_exit = lambda: setattr(server, "should_exit", True)

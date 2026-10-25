@@ -69,7 +69,62 @@
   Cloud providers are asked as before; OpenRouter keeps the thinking limit
   below. The notes and a recording short enough for one step are asked as
   before (TASK-124, ADR-035).
-
+- **Known limit: a small local model on a long recording.** On a 4B model
+  such as qwen3.5:4b, minutes and action items may come back without
+  timestamps, and chapters can stop at the model's note budget. qwen3.5:9b
+  gave minutes with real timestamps (measured on one 2h28m Dutch recording)
+  (TASK-124).
+- **Quit no longer costs you the running job.** Quit in the MyScribe window,
+  Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
+  (on macOS and Linux) now stop MyScribe the way the Stop button in Settings
+  does. A job that was running goes back to the front of the queue and starts
+  over at the next start, unless it finishes while MyScribe is stopping. Before, on Windows
+  that job came back as *interrupted* and waited for you to press Retry; on
+  Linux its transcription kept running after MyScribe had closed and finished
+  on its own. The window and the console say which job goes back, before and
+  after the stop, and that it does not if it finishes first (TASK-112.09).
+- **No transcription keeps running after MyScribe has stopped.** A stop that
+  does not go through the Stop button's way now ends the running job with
+  MyScribe: a stop signal sent to MyScribe's server itself, Ctrl+C or
+  Ctrl+Break in a terminal running `python -m scribe` directly, and the hard
+  stop used when MyScribe does not answer that way or has not stopped 80
+  seconds later. That job comes back as *interrupted*, and Retry starts it
+  over. Before, on Linux it kept running after MyScribe had closed (macOS
+  works the same way but was not measured), and on Windows a Ctrl+Break in a
+  terminal left it running too. On every OS a MyScribe that is killed without
+  stopping - a crash, ending its process alone, a second Ctrl+C in its
+  terminal - can still leave the job running. On Windows the hard stop ends
+  the job with MyScribe; on macOS and Linux it has to kill a MyScribe that has
+  not stopped 75 seconds after its stop signal, longer than MyScribe's own
+  stop can take, and its message then says the job can keep running. When
+  MyScribe had already been asked to stop before the hard stop, the message
+  says the job is back in the queue if MyScribe got that far, and otherwise
+  interrupted (or, after a kill on macOS and Linux, possibly still running).
+  A stop with a job's page open no longer waits for that job to finish:
+  requests still open 3 seconds into a stop are cut off. An upload still
+  arriving - from the transcribe dialog (a file sent or added by its path),
+  the API or a phone through *Receive from phone* - is not: it may finish for
+  up to 30 seconds after the stop began, and the recording is in the library
+  with its transcription queued when MyScribe starts again. One still
+  arriving after those 30 seconds is cut off and has to be sent again. A file
+  that had fully arrived and was still being stored at that cut is stored
+  with its job: MyScribe waits up to 20 seconds for it before it closes its
+  database, and leaves the database open for one that takes longer. No job
+  starts once a stop has begun: one queued in those 30 seconds, or next in
+  line when the running job ends inside them, waits for the next start. From
+  the microphone recorder only a request already reaching MyScribe at the
+  stop may finish: a five-second piece of the recording, or the save that
+  follows its Stop button. A recording still in progress is not finished by
+  the stop, and MyScribe does not finish it when it starts again
+  (TASK-112.09, ADR-032).
+- **Closing the phone door no longer cuts off a recording on its way.**
+  *Close the door now* and the door's 15 minutes running out now let a
+  recording the phone is still sending finish, for up to 30 seconds, as a
+  stop of MyScribe does; the Close waits that long. Meanwhile the panel says
+  *Closing*, that the door takes nothing new, and offers no Open. A
+  recording that arrives then is named in the panel, and the library reloads
+  to list it. Before, the door cut it off after 2 seconds and the phone had
+  to send it again (TASK-112.09, ADR-032).
 - **Two starts at once start one MyScribe.** When the start at login and a
   start by hand came within the same seconds, both could install into the
   same environment and both started the app. Now the second one waits for
@@ -152,9 +207,9 @@
   deletes the plist and then runs `launchctl bootout`. That stops a MyScribe
   launchd started right away. If launchctl cannot be started, the switch is
   off all the same and Settings says MyScribe runs until you quit it or log
-  out. A plist that will not parse is removed too. A job that is running is not put back in the
-  queue; per ADR-028 its runner may go on working without MyScribe until it
-  ends. The card warns about the stop first. A MyScribe opened from the disk image or Downloads
+  out. A plist that will not parse is removed too. A job that is running goes back to the front of the
+  queue, unless it finishes first: bootout stops MyScribe through its stop
+  route (TASK-112.09). The card warns about the stop first. A MyScribe opened from the disk image or Downloads
   runs from a temporary copy (App Translocation). It is not registered, and
   Settings says to move it to Applications. A plist an earlier version wrote
   for the same app is rewritten at the next start. None of this has been run

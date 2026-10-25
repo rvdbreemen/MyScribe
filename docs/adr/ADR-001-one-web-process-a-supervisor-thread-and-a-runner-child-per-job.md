@@ -12,6 +12,7 @@ superseded_by: null
 related:
   - "ADR-015"
   - "ADR-022"
+  - "ADR-032"
 topics:
   - "process-architecture"
   - "job-orchestration"

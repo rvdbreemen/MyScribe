@@ -503,8 +503,9 @@ def test_the_app_bootstraps_before_it_imports_the_app(monkeypatch):
     monkeypatch.setattr(env, "bootstrap", lambda: order.append("bootstrap") or {}, raising=False)
     monkeypatch.setattr(env, "load_dotenv", lambda *a, **k: order.append("load_dotenv") or {})
     monkeypatch.setitem(sys.modules, "scribe.app", App("scribe.app"))
-    monkeypatch.setattr(main_module.uvicorn, "Config", lambda app, **kwargs: None)
-    monkeypatch.setattr(main_module.uvicorn, "Server", Server)
+    # The server is built in one place (ADR-032's StoppingServer subclasses
+    # uvicorn's own Server, so patching uvicorn.Server no longer reaches it).
+    monkeypatch.setattr(main_module, "build_server", lambda app, port: Server(None))
 
     main_module.main(["--no-browser", "--no-supervisor", "--port", "4299"])
 

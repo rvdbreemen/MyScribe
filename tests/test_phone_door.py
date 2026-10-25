@@ -725,3 +725,207 @@ def test_the_secret_appears_in_no_log(received, clock, publisher, logs, caplog, 
     log_text = "".join(p.read_text(encoding="utf-8") for p in logs.glob("*.log*"))
     assert "phone.open" in log_text, "the door logged nothing at all; this test proved nothing"
     assert secret not in log_text
+
+
+def _half_an_upload(opening, payload: bytes) -> tuple[socket.socket, bytes]:
+    """Headers and half the body of an upload on a raw socket; the rest is returned."""
+    boundary = "door-boundary"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{phone_door.FILE_FIELD}"; filename="Voice memo 42.m4a"\r\n'
+        "Content-Type: audio/mp4\r\n\r\n"
+    ).encode("ascii") + payload + f"\r\n--{boundary}--\r\n".encode("ascii")
+    head = (
+        f"POST {opening.path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{opening.port}\r\n"
+        f"Content-Type: multipart/form-data; boundary={boundary}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii")
+    sock = socket.create_connection(("127.0.0.1", opening.port), timeout=60)
+    half = len(body) // 2
+    sock.sendall(head + body[:half])
+    return sock, body[half:]
+
+
+def _rest_and_answer(sock: socket.socket, rest: bytes) -> bytes:
+    answer = b""
+    try:
+        sock.sendall(rest)
+        while chunk := sock.recv(65536):
+            answer += chunk
+    except OSError as exc:
+        answer += f"<{type(exc).__name__}>".encode()
+    finally:
+        sock.close()
+    return answer
+
+
+def test_an_upload_in_flight_when_the_app_stops_is_allowed_to_finish(received, clock, publisher, logs):
+    """Robert, 2026-10-25: "exempt uploads". The app's stop used to cut a
+    recording still on its way in after GRACE_SECONDS (2 s). It now
+    finishes, within the deadline the app's stop hands the door, and the
+    laptop has the file."""
+    import time
+
+    d = make_door(received, clock, publisher)
+    try:
+        opening = d.open()
+        payload = b"\x00audio" * 40_000
+        sock, rest = _half_an_upload(opening, payload)
+        time.sleep(0.3)  # the request has begun reading its body
+        closing = threading.Thread(target=d.close, args=("app stopped",),
+                                   kwargs={"upload_deadline": time.monotonic() + 30})
+        closing.start()
+        time.sleep(phone_door.GRACE_SECONDS + 1.5)
+        assert closing.is_alive(), "the door closed under an upload in flight"
+        answer = _rest_and_answer(sock, rest)
+        closing.join(phone_door.UvicornListener.STOP_JOIN_SECONDS + 5)
+        assert answer.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK", answer[:200]
+        assert received.files == [("Voice memo 42.m4a", payload)]
+        assert refused("127.0.0.1", opening.port)
+    finally:
+        d.close()
+
+
+def test_an_upload_still_going_at_a_passed_deadline_is_cut_after_the_grace(received, clock, publisher, logs):
+    """The app's stop gives every upload one shared bound, counted from the
+    moment the app began to stop (`stopping.UPLOAD_FINISH_SECONDS`); the
+    door closes later in that stop, and a phone upload that had all of it
+    already is cut after the door's own grace, not given the bound again."""
+    import time
+
+    d = make_door(received, clock, publisher)
+    try:
+        opening = d.open()
+        sock, rest = _half_an_upload(opening, b"\x00audio" * 40_000)
+        time.sleep(0.3)
+        started = time.monotonic()
+        d.close("app stopped", upload_deadline=time.monotonic() - 1)
+        took = time.monotonic() - started
+        assert took < phone_door.GRACE_SECONDS + 3, f"the close took {took:.1f} s"
+        answer = _rest_and_answer(sock, rest)
+        assert not answer.startswith(b"HTTP/1.1 200"), answer[:200]
+        assert received.files == []
+    finally:
+        d.close()
+
+
+def test_a_door_that_times_out_inside_the_app_stop_shares_the_app_deadline(received, clock, publisher, logs,
+                                                                            monkeypatch):
+    """Review of TASK-112.09: the fifteen minutes can run out inside the
+    app's stop, with a phone upload in flight. That close is the watchdog's,
+    not the lifespan's, and it gave the upload a fresh bound from its own
+    start - past the app's deadline, and the lifespan's close then waited for
+    it (ADR-032: the door gets what is left of the app's deadline). Every
+    close asks the door's ``stop_deadline`` once the app is stopping."""
+    import time
+
+    from scribe.web import stopping
+
+    monkeypatch.setattr(stopping, "UPLOAD_FINISH_SECONDS", 8.0)  # a red run need not sit for 30 s
+    passed = time.monotonic() - 1  # the app's stop gave uploads until a moment ago
+    d = make_door(received, clock, publisher, stop_deadline=lambda: passed)
+    try:
+        opening = d.open()
+        sock, rest = _half_an_upload(opening, b"\x00audio" * 40_000)
+        time.sleep(0.3)
+        started = time.monotonic()
+        clock.advance(phone_door.OPEN_SECONDS + 1)  # the watchdog closes it
+        assert d.wait_closed(30)
+        took = time.monotonic() - started
+        assert took < phone_door.GRACE_SECONDS + 3, f"the timeout's close took {took:.1f} s"
+        assert not _rest_and_answer(sock, rest).startswith(b"HTTP/1.1 200")
+        assert received.files == []
+        assert [e["reason"] for e in read_log(logs) if e["event"] == "phone.close"] == ["timeout"]
+    finally:
+        d.close()
+
+
+def test_a_door_outside_a_stop_gives_an_upload_the_whole_bound(door):
+    """No stop under way: ``stop_deadline`` answers None and a close passes
+    no deadline to its listener, which then gives an upload
+    `stopping.UPLOAD_FINISH_SECONDS` (test above this one)."""
+    assert door._stop_deadline() is None
+
+
+def _close_in_background(close) -> threading.Thread:
+    thread = threading.Thread(target=close, daemon=True)
+    thread.start()
+    return thread
+
+
+@pytest.mark.parametrize("how", ["the Close button", "the fifteen minutes"])
+def test_a_close_of_the_door_alone_lets_an_upload_in_flight_finish(how, received, clock, publisher, logs):
+    """Robert, 2026-10-25: the door's own Close and its fifteen minutes let an
+    upload in flight finish within the same bound as the app's stop
+    (`stopping.UPLOAD_FINISH_SECONDS`), and the Close takes that long. Before,
+    they cut it after GRACE_SECONDS and the phone had to send it again."""
+    import time
+
+    d = make_door(received, clock, publisher)
+    try:
+        opening = d.open()
+        payload = b"\x00audio" * 40_000
+        sock, rest = _half_an_upload(opening, payload)
+        time.sleep(0.3)  # the request has begun reading its body
+        if how == "the Close button":
+            closing = _close_in_background(lambda: d.close("closed on the laptop"))
+        else:
+            clock.advance(phone_door.OPEN_SECONDS + 1)  # the watchdog closes it
+            closing = _close_in_background(lambda: d.wait_closed(60))
+        time.sleep(phone_door.GRACE_SECONDS + 1.5)
+        assert closing.is_alive(), "the door was cut under an upload in flight"
+        assert d.closing and not d.close_if_due(), "the door said closed while an upload was finishing"
+        answer = _rest_and_answer(sock, rest)
+        closing.join(phone_door.UvicornListener.STOP_JOIN_SECONDS + 5)
+        assert answer.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK", answer[:200]
+        assert received.files == [("Voice memo 42.m4a", payload)]
+        assert not d.closing and d.close_if_due()
+        assert refused("127.0.0.1", opening.port)
+    finally:
+        d.close()
+
+
+def test_an_upload_still_going_at_the_bound_after_a_close_is_cut_there(received, clock, publisher, logs,
+                                                                        monkeypatch):
+    import time
+
+    from scribe.web import stopping
+
+    monkeypatch.setattr(stopping, "UPLOAD_FINISH_SECONDS", 1.5)
+    d = make_door(received, clock, publisher)
+    try:
+        opening = d.open()
+        sock, rest = _half_an_upload(opening, b"\x00audio" * 40_000)
+        time.sleep(0.3)
+        started = time.monotonic()
+        d.close("closed on the laptop")
+        took = time.monotonic() - started
+        assert 1.2 < took < 1.5 + 3, f"the close took {took:.1f} s"
+        assert not _rest_and_answer(sock, rest).startswith(b"HTTP/1.1 200")
+        assert received.files == []
+        assert not d.closing
+    finally:
+        d.close()
+
+
+def test_a_close_with_nothing_in_flight_is_quick(door):
+    import time
+
+    door.open()
+    started = time.monotonic()
+    door.close("closed on the laptop")
+    assert time.monotonic() - started < phone_door.GRACE_SECONDS
+    assert not door.closing
+
+
+def test_a_second_close_waits_as_long_as_the_first_may_take(received, clock, publisher, logs):
+    """A close inside the app's stop may join the listener for
+    STOP_JOIN_SECONDS; a caller that finds it under way must not give up
+    sooner and go on to close the database under the phone's upload."""
+    d = make_door(received, clock, publisher)
+    waits: list[float] = []
+    d._closed.wait = lambda timeout=None: waits.append(timeout) or True  # the door is closing elsewhere
+    d.close()  # nothing open: this caller waits for the close under way
+    assert waits and waits[0] >= phone_door.UvicornListener.STOP_JOIN_SECONDS, waits
