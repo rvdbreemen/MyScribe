@@ -1137,6 +1137,11 @@ def test_on_a_mac_the_off_switch_warns_that_it_stops_myscribe_now(client, mac_ag
     shown = re.sub(r"<[^>]*>", " ", card)
     assert "also stops MyScribe now" in shown
     assert "hx-confirm=" in card and "also stops MyScribe now" in card.split("hx-confirm=", 1)[1]
+    # bootout sends the launcher a SIGTERM, which stops through the route
+    # since TASK-112.09, so a running job goes back unless it finishes first.
+    flat = " ".join(shown.split())
+    assert "goes back to the front of the queue, unless it finishes first" in flat
+    assert "not put back" not in flat
 
     off = client.post("/settings/autostart", data={"enabled": "0"}, follow_redirects=False)
     assert off.status_code in (200, 303)

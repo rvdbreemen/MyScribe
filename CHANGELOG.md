@@ -110,9 +110,9 @@
   deletes the plist and then runs `launchctl bootout`. That stops a MyScribe
   launchd started right away. If launchctl cannot be started, the switch is
   off all the same and Settings says MyScribe runs until you quit it or log
-  out. A plist that will not parse is removed too. A job that is running is not put back in the
-  queue; per ADR-028 its runner may go on working without MyScribe until it
-  ends. The card warns about the stop first. A MyScribe opened from the disk image or Downloads
+  out. A plist that will not parse is removed too. A job that is running goes back to the front of the
+  queue, unless it finishes first: bootout stops MyScribe through its stop
+  route (TASK-112.09). The card warns about the stop first. A MyScribe opened from the disk image or Downloads
   runs from a temporary copy (App Translocation). It is not registered, and
   Settings says to move it to Applications. A plist an earlier version wrote
   for the same app is rewritten at the next start. None of this has been run
