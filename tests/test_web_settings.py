@@ -1119,6 +1119,7 @@ def test_the_stop_card_says_what_happens_to_a_running_job(client):
     page = client.get("/settings").text
     assert 'id="stop-myscribe"' in page
     assert "goes back to the front of the queue and starts over" in page
+    assert "the next time MyScribe starts, unless it finishes first" in page
     assert 'hx-post="/settings/stop"' in page
 
 
@@ -1133,6 +1134,8 @@ def test_the_stop_button_stops_and_names_the_job_that_starts_over(stoppable_clie
     assert response.status_code == 200 and stoppable_client.asked == [True]
     assert f"Job {job_id} was running" in response.text
     assert "starts over the next time MyScribe starts" in response.text
+    # The job may finish inside the stop's upload window (review of TASK-112.09).
+    assert "unless it finishes first" in response.text
     assert "Start MyScribe again" in response.text
 
 

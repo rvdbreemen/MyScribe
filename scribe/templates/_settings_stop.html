@@ -9,7 +9,8 @@
 
   What the stop does to that job is ADR-028's, and the card says it before
   the button is pressed, not after: it goes back to the front of the queue and
-  starts over at the next start. The answer says how to start MyScribe again,
+  starts over at the next start, unless it finishes while the stop waits for
+  an upload (ADR-032). The answer says how to start MyScribe again,
   because once it has gone nothing here answers to say it.
 #}
 <section id="stop-myscribe" class="panel">
@@ -17,15 +18,15 @@
   {% if stopping %}
   <p class="hint" role="status">
     MyScribe is stopping.
-    {% if running_job %}Job {{ running_job }} was running: it is back at the front of the queue and
-    starts over the next time MyScribe starts.{% else %}No job was running.{% endif %}
+    {% if running_job %}Job {{ running_job }} was running: it goes back to the front of the queue and
+    starts over the next time MyScribe starts, unless it finishes first.{% else %}No job was running.{% endif %}
     Start MyScribe again from its shortcut or menu entry; until then this page does not answer.
   </p>
   {% else %}
   <p class="hint">
     Stops MyScribe on this computer, also when it was started at login. A job that is running
-    goes back to the front of the queue and starts over the next time MyScribe starts; queued jobs
-    wait for that start.
+    goes back to the front of the queue and starts over
+    the next time MyScribe starts, unless it finishes first; queued jobs wait for that start.
   </p>
   <form method="post" action="/settings/stop"
         hx-post="/settings/stop" hx-target="#stop-myscribe" hx-swap="outerHTML">

@@ -178,7 +178,8 @@ Started at login, MyScribe runs without a window. Stop it from Settings >
   (`.venv/bin/python` on Linux and macOS)
 
 A job that is running goes back to the front of the queue and starts over the
-next time MyScribe starts; queued jobs wait for that start. If MyScribe has
+next time MyScribe starts, unless it finishes while MyScribe is stopping;
+queued jobs wait for that start. If MyScribe has
 not stopped within a minute, `--stop` ends it, and that job is then marked
 *interrupted*: Retry on the jobs page starts it over. On Windows `--stop`
 prints nothing; what it did is in `MyScribe-launcher.log` beside

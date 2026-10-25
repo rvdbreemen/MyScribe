@@ -11,11 +11,11 @@
   Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
   (on macOS and Linux) now stop MyScribe the way the Stop button in Settings
   does. A job that was running goes back to the front of the queue and starts
-  over at the next start. Before, on Windows
+  over at the next start, unless it finishes while MyScribe is stopping. Before, on Windows
   that job came back as *interrupted* and waited for you to press Retry; on
   Linux its transcription kept running after MyScribe had closed and finished
   on its own. The window and the console say which job goes back, before and
-  after the stop (TASK-112.09).
+  after the stop, and that it does not if it finishes first (TASK-112.09).
 - **No transcription keeps running after MyScribe has stopped.** A stop that
   does not go through the Stop button's way now ends the running job with
   MyScribe: a stop signal sent to MyScribe's server itself, Ctrl+C or

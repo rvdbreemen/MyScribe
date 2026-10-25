@@ -1359,27 +1359,30 @@ HEALTH_TIMEOUT = 2.0
 ROUTE_TIMEOUT = 10.0
 """How long the stop route may take to answer (`ask_to_stop`)."""
 
+# A stop claims no new job but may wait up to 30 s for an upload (ADR-032), and
+# the running job can finish inside that wait; the sentences leave room for it
+# (review of TASK-112.09: a real run saw job 1 end done 3.2 s into the stop).
 STOPPED = ("MyScribe stopped. A job that was running is back at the front of the queue and "
-           "starts over the next time MyScribe starts.")
+           "starts over the next time MyScribe starts, unless it finished before MyScribe stopped.")
 
 STOPPING = "Stopping MyScribe..."
 STOPPING_JOB = ("Stopping MyScribe. Job {job} goes back to the front of the queue and starts over "
-                "the next time MyScribe starts.")
+                "the next time MyScribe starts, unless it finishes first.")
 STOPPING_IDLE = "Stopping MyScribe. No job is running."
 STOPPED_JOB = ("MyScribe stopped. Job {job} is back at the front of the queue and starts over the "
-               "next time MyScribe starts.")
+               "next time MyScribe starts, unless it finished before MyScribe stopped.")
 STOPPED_IDLE = "MyScribe stopped. No job was running."
 ENDED = ("MyScribe was ended. A job that was running is marked interrupted; Retry on the "
          "jobs page starts it over.")
 ENDED_KILLED = ("MyScribe was ended. A job that was running can keep running after MyScribe has closed "
                 "and finish by itself; if it does not, Retry on the jobs page starts it over.")
-ENDED_ASKED = ("MyScribe was ended after it had been asked to stop. A job that was running is back at "
-               "the front of the queue if MyScribe got that far; if not, it is marked interrupted and "
-               "Retry on the jobs page starts it over.")
-ENDED_ASKED_KILLED = ("MyScribe was ended after it had been asked to stop. A job that was running is "
-                      "back at the front of the queue if MyScribe got that far; if not, it can keep "
-                      "running after MyScribe has closed and finish by itself, and if it does not, "
-                      "Retry on the jobs page starts it over.")
+ENDED_ASKED = ("MyScribe was ended after it had been asked to stop. A job that was running may have "
+               "finished first; if not, it is back at the front of the queue if MyScribe got that far, "
+               "and otherwise it is marked interrupted and Retry on the jobs page starts it over.")
+ENDED_ASKED_KILLED = ("MyScribe was ended after it had been asked to stop. A job that was running may "
+                      "have finished first; if not, it is back at the front of the queue if MyScribe got "
+                      "that far, and otherwise it can keep running after MyScribe has closed and finish "
+                      "by itself, and if it does not, Retry on the jobs page starts it over.")
 """What Quit, Ctrl+C, a SIGTERM and `--stop` say before and after a stop
 (TASK-112.09, criterion 4): the route's answer names the running job, so the
 sentence before the stop can name it too. The ENDED sentences are the hard

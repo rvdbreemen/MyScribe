@@ -3015,6 +3015,19 @@ def test_the_asked_sentences_name_the_requeue_and_the_interrupt():
     assert "marked interrupted" not in launcher.ENDED_ASKED_KILLED
 
 
+def test_the_stop_sentences_allow_for_a_job_that_finishes_first():
+    """Review of TASK-112.09: the stop route names the running job, but once
+    no new job is claimed the app may still wait up to 30 s for an upload
+    (ADR-032), and the job can finish inside that window - the builder's real
+    run saw job 1 end done 3.2 s into the stop. A sentence that says it goes
+    back, or is back, must leave room for that."""
+    assert launcher.STOPPING_JOB.format(job=7).endswith("unless it finishes first.")
+    for sentence in (launcher.STOPPED_JOB.format(job=7), launcher.STOPPED):
+        assert sentence.endswith("unless it finished before MyScribe stopped."), sentence
+    for sentence in (launcher.ENDED_ASKED, launcher.ENDED_ASKED_KILLED):
+        assert "A job that was running may have finished first; if not," in sentence, sentence
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 @pytest.mark.parametrize("obeys", [True, False], ids=["obeys-sigterm", "ignores-sigterm"])
 def test_the_hard_stop_says_whether_it_had_to_kill_the_app(layout, obeys):
