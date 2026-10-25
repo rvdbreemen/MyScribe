@@ -23,12 +23,15 @@ aliases:
 components:
   - "scribe.supervisor"
   - "scribe.web.stopping"
+  - "scribe.shutdown"
 symbols:
   - "Supervisor.stop"
   - "STOP_JOIN_SECONDS"
   - "SHUTDOWN_GRACE_SECONDS"
   - "UPLOAD_FINISH_SECONDS"
   - "StoppingServer"
+  - "Supervisor.stop_claiming"
+  - "INGEST_FINISH_SECONDS"
 context_scope: "selective"
 format: "madr"
 ---
@@ -70,34 +73,20 @@ status_history:
     changed_by: Claude (agent, session 2026-10-25)
     reason: "Review: only the 3 s grace and exempt uploads were Robert's; the 30 s bound, the lifespan order, the door's own cut and the 75/80 s waits are agent additions awaiting approval; worst stop 72 s, not 62 s; /transcribe/path is an upload"
     changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Proposed
+    changed_by: Claude (agent, session 2026-10-25)
+    reason: "Robert 2026-10-25: 30 s and 75/80 s kept; no claim once a stop begins; one threaded store-and-enqueue call, database closed only when none runs; every door Close lets an upload finish"
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
 
-ADR-028 requeues only on the stop route, which TASK-112.09 gives Quit, Ctrl+C
-and a SIGTERM to the launcher. Other shutdowns skip it: a SIGTERM straight to
-the app, Ctrl+C or Ctrl+Break in a terminal running `python -m scribe`, and
-the launcher's hard stop when the route does not answer in time.
-
-On those, `Supervisor.stop` left the runner alone. On macOS and Linux it
-leads a session of its own and ran on as an orphan holding the GPU (graphics
-processing unit): in WSL (Windows Subsystem for Linux) it wrote `done` 13 s
-after the app had gone (2026-10-21). On Windows, Ctrl+Break to the app left
-it running too (`tests/test_app_signal_stop.py`, red on 2026-10-24).
-
-An open job page's event stream ends only when the job does, and uvicorn's
-graceful shutdown waited for it before the lifespan ran: after Ctrl+Break the
-slow fake job ran to `done` (2026-10-24). A single uvicorn timeout that cut
-the stream also cut an upload still on its way in, a recording the user then
-has to send again. The launcher's hard stop SIGKILLs the app's group
-`APP_SIGTERM_WAIT` after SIGTERM, which never reaches the runner's session.
-That wait outlasts the app's whole shutdown, so a SIGKILL means the lifespan
-did not finish.
+ADR-028 requeues only on the stop route, which TASK-112.09 gives Quit, Ctrl+C and a SIGTERM to the launcher. Other shutdowns skip it: a SIGTERM straight to the app, Ctrl+C or Ctrl+Break in a terminal running `python -m scribe`, and the launcher's hard stop when the route does not answer in time. On those, `Supervisor.stop` left the runner alone. On macOS and Linux it leads a session of its own and ran on as an orphan holding the GPU (graphics processing unit): in WSL (Windows Subsystem for Linux) it wrote `done` 13 s after the app had gone (2026-10-21). On Windows, Ctrl+Break to the app left it running too (`tests/test_app_signal_stop.py`, red on 2026-10-24). An open job page's event stream held uvicorn's graceful shutdown until its job ended, and a single uvicorn timeout that cut it also cut an upload on its way in. A cut upload's worker thread runs on after its request is cancelled, and uvicorn runs the lifespan's end at once: the database closed under it, and a job queued after the `await` never was (red in `tests/test_stop_cuts_ingest.py`, 2026-10-25). The launcher's hard stop SIGKILLs the app's group `APP_SIGTERM_WAIT` after SIGTERM, which never reaches the runner's session.
 
 ## Decision Drivers
 
-* No runner outlives the app on any OS (TASK-112.09, criterion 3), so a next start never finds the card taken (ADR-001, ADR-013).
-* A stop nobody asked for is not a requeue (ADR-028's Must Not).
+* No runner outlives the app on any OS (TASK-112.09, criterion 3), so a next start never finds the card taken (ADR-001, ADR-013), and a stop nobody asked for is not a requeue (ADR-028's Must Not).
 
 ## Considered Options
 
@@ -107,28 +96,22 @@ did not finish.
 
 ## Decision Outcome
 
-Chosen option: **A**, decided by Robert on 2026-10-24. It
-reuses ADR-028's kill path and changes nothing about which stops requeue. B
-would requeue after a logout or a service manager's stop, which ADR-028 rules
-out. C is per-OS code in every runner, and macOS has no parent-death signal.
+Chosen option: **A**, decided by Robert on 2026-10-24. It reuses ADR-028's kill path and changes nothing about which stops requeue. B would requeue after a logout or a service manager's stop, which ADR-028 rules out. C is per-OS code in every runner, and macOS has no parent-death signal.
 
 ### Confirmation
 
-A real `python -m scribe` running the slow fake job gets SIGTERM (POSIX) or Ctrl+Break (Windows), with and
-without its job page open: the runner goes with the app, and the row stays `running` until reconcile.
+A real `python -m scribe` with the slow fake job gets SIGTERM (POSIX) or Ctrl+Break (Windows), with and without its job page open: the runner goes with the app, and the row stays `running` until reconcile. On Windows an upload in flight at a stop lands with its job, and no job starts after the stop began.
 
 ## Decision Contract
 
 ### Must
 
-* `Supervisor.stop` ends the running runner's tree and waits for it on every stop, and joins for at least `STOP_JOIN_SECONDS`.
-* A stop without the route leaves the row `running`, for the next start's `reconcile()` to mark it `interrupted`, or `cancelled` when a cancel was asked.
-* The lifespan's end stops the supervisor before the phone door, the feeds and the watcher (agent addition, awaiting Robert's approval).
-* The app's server cancels open reads, a job page's event stream among them, `SHUTDOWN_GRACE_SECONDS` (3 s) after a stop begins (agent addition, approved by Robert on 2026-10-25).
-* An upload in flight finishes: `POST /api/media`, `/transcribe/upload`, `/transcribe/path`, `/record/{session}/chunk` and `/finish`, and the phone door's POST (approved by Robert on 2026-10-25). It is cut at `UPLOAD_FINISH_SECONDS` (30 s) after the stop began (agent addition, awaiting Robert's approval).
-* The phone door, closed inside the app's stop, gives its upload what is left of the app's deadline and at least its own 2 s grace. A Close of the door alone - its button, its fifteen minutes - still cuts an upload after that grace (agent addition, awaiting Robert's approval).
-* The launcher's `APP_SIGTERM_WAIT` (75 s) and `STOP_WAIT` (80 s) outlast the app's whole stop: 72 s at worst (30 s of uploads, `STOP_JOIN_SECONDS` 20 s, the door's 2 s, the feeds' and the watcher's 10 s each), so the POSIX margin is 3 s (agent addition, awaiting Robert's approval).
-* The hard stop says "marked interrupted" only where the app lived through its SIGTERM, or on Windows.
+* `Supervisor.stop` ends the running runner's tree and waits for it on every stop, and joins for at least `STOP_JOIN_SECONDS`; a stop without the route leaves the row `running` for the next start's `reconcile()`. The lifespan's end stops the supervisor before the phone door, the feeds and the watcher (agent addition).
+* The supervisor claims no new job once a stop begins: the stop route and the server's shutdown call `Supervisor.stop_claiming`, under the lock the claim takes (Robert, 2026-10-25).
+* The app's server cancels open reads `SHUTDOWN_GRACE_SECONDS` (3 s) after a stop begins; an upload in flight (`POST /api/media`, `/transcribe/upload`, `/transcribe/path`, `/record/{session}/chunk` and `/finish`, the phone door's POST) finishes, cut at `UPLOAD_FINISH_SECONDS` (30 s) after the stop began (Robert, 2026-10-25).
+* Each way a file comes in stores it and queues its job in one worker-thread call, counted in `Ingests`; the lifespan closes the database only once none runs, waiting up to `INGEST_FINISH_SECONDS` (20 s, agent addition) from the start of its end, and leaves it open after that (Robert asked for the one call, 2026-10-25).
+* Every close of the phone door (its button, its fifteen minutes, a file, the app's stop) lets an upload in flight finish for `UPLOAD_FINISH_SECONDS`; inside the app's stop it gets what is left of the app's deadline and at least the door's 2 s grace. The panel says *Closing* meanwhile and offers no Open (Robert, 2026-10-25).
+* The launcher's `APP_SIGTERM_WAIT` (75 s) and `STOP_WAIT` (80 s) outlast the app's whole stop: 72 s at worst (30 s of uploads, then 20 s, 2 s, 10 s and 10 s of joins, beside which the ingest wait runs), a 3 s POSIX margin (kept by Robert, 2026-10-25). The hard stop says "marked interrupted" only where the app lived through its SIGTERM, or on Windows.
 
 ### Must Not
 
@@ -136,37 +119,32 @@ without its job page open: the runner goes with the app, and the row stays `runn
 
 ### Exceptions
 
-* Cancelling an upload's request task does not stop a worker thread it started (`run_in_threadpool`). One still hashing a file when it is cut at the bound can go on past the stop, and may store a recording without its job or touch the database after the lifespan closed it. Found by reading in review, not reproduced; known gap.
-* An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after `APP_SIGTERM_WAIT` and then says the job can keep running.
+* An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after `APP_SIGTERM_WAIT` and says the job can keep running. A SIGKILL can also cut a file still being stored.
 
 ### Verification
 
-* `tests/test_app_signal_stop.py`, `tests/test_stopping.py`, `tests/test_phone_door.py::test_an_upload_in_flight_when_the_app_stops_is_allowed_to_finish`, `::test_an_upload_still_going_at_a_passed_deadline_is_cut_after_the_grace`, `::test_a_close_of_the_door_alone_still_cuts_an_upload_after_the_grace` and `::test_a_second_close_waits_as_long_as_the_first_may_take`; `tests/test_app.py::test_the_supervisor_stops_before_the_watchers`; `tests/test_supervisor.py::test_a_stop_nobody_asked_for_ends_the_runner_and_leaves_the_job_to_reconcile`.
-* `tests/test_launcher.py::test_the_hard_stops_sentence_says_what_this_os_does_with_the_running_job`, `::test_the_hard_stop_says_whether_it_had_to_kill_the_app`, `::test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills` and `::test_the_hard_stop_leaves_no_runner_and_says_the_job_is_interrupted`.
+* `tests/test_app_signal_stop.py`, `tests/test_stopping.py`, `tests/test_stop_cuts_ingest.py`, `tests/test_phone_door.py`, `tests/test_web_phone.py::test_while_a_close_waits_for_an_upload_the_panel_says_it_may_still_arrive`, `tests/test_app.py` (the stop route's tests), `tests/test_supervisor.py` (the stop's and `stop_claiming`'s tests), `tests/test_launcher.py::test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills` and the hard-stop sentence tests.
 
 ## Consequences
 
 ### Positive
 
-* A service manager's stop, a logout or a Ctrl+C no longer leaves a runner holding the card, and an open job page no longer holds a stop for the rest of the job.
+* A service manager's stop, a logout or a Ctrl+C no longer leaves a runner holding the card; an open job page no longer holds a stop; a cut upload never leaves a recording without its job.
 
 ### Negative
 
-* A job ended this way is `interrupted` and waits for a Retry; a read still open 3 s into a stop is cut off, and an upload still sending 30 s into it too.
-* A stop with an upload in flight takes up to 30 s longer, and the hard stop waits 75 s instead of 50 s before it SIGKILLs an app that hangs.
+* A job ended this way is `interrupted` and waits for a Retry; a read still open 3 s into a stop is cut off, and an upload still sending 30 s into it too. A stop or a Close of the door with an upload in flight takes up to 30 s longer, and the hard stop waits 75 s instead of 50 s before it SIGKILLs an app that hangs.
 * The `--stop` hard stop that ends a launcher cannot see whether that launcher had to SIGKILL the app, so on macOS and Linux it gives the cautious sentence.
 
 ## Open Questions
 
-- [x] Which open requests does a stop cut off after its 3 s grace? — **Answered 2026-10-25 by Robert van den Breemen (chose "exempt uploads" in session 2026-10-25; recorded by Claude):** reads such as a job page's event stream are cut after the 3 s grace; an upload in flight finishes. The 30 s bound on that (UPLOAD_FINISH_SECONDS) was left to the agent and awaits his approval.
+- [x] Which open requests does a stop cut off after its 3 s grace? — **Answered 2026-10-25 by Robert van den Breemen (chose "exempt uploads" in session 2026-10-25; recorded by Claude):** reads such as a job page's event stream are cut after the 3 s grace; an upload in flight finishes. On 2026-10-25 he kept the 30 s bound and the 75/80 s waits.
 - [x] What does the app do with the runner on a shutdown that did not come through the stop route? — **Answered 2026-10-24 by Robert van den Breemen (chose it in session 2026-10-24; recorded by Claude):** the app ends the runner's tree on any shutdown, without requeueing.
 
 ## Related Decisions
 
-* ADR-028: amended - its Negative "an orphaned runner that runs on elsewhere" no longer holds; its Must Not on requeueing is unchanged.
-* ADR-001: unchanged - `reconcile()` still turns the left row into `interrupted`.
+* ADR-028: amended - its Negative "an orphaned runner that runs on elsewhere" no longer holds; its Must Not on requeueing is unchanged. ADR-001: unchanged - `reconcile()` still turns the left row into `interrupted`.
 
 ## References
 
-* Backlog TASK-112.09, implementation note of 2026-10-24.
-* `scribe/supervisor.py` (`Supervisor.stop`), `scribe/app.py` (lifespan), `scribe/__main__.py`, `scribe/web/stopping.py`, `scribe/web/phone_door.py`, `packaging/launcher/myscribe_launcher.py` (`AppProcess.stop`, `end_tree`, `ended`).
+* Backlog TASK-112.09, implementation note of 2026-10-24; Robert's decisions of 2026-10-25 in the session; `scribe/supervisor.py`, `scribe/app.py` (lifespan), `scribe/shutdown.py`, `scribe/__main__.py`, `scribe/web/stopping.py`, `scribe/web/phone_door.py`, `scribe/web/phone_ui.py`, `packaging/launcher/myscribe_launcher.py`.
