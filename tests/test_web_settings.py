@@ -1078,8 +1078,10 @@ class _FakeAgent(_FakeMechanism):
         super().__init__()
         self.note = ""
         self.booted_out = 0
+        self.loaded = 0
 
     def switch_on(self) -> str:
+        self.loaded += 1
         return self.note
 
     def switch_off(self) -> None:
@@ -1159,6 +1161,17 @@ def test_what_launchd_said_on_switching_on_reaches_the_page(client, mac_agent):
     assert on.status_code == 200
     assert mac_agent.value is not None
     assert "next login" in on.text and "exit 5" in on.text
+
+
+def test_the_settings_switch_loads_the_agent_now(client, mac_agent):
+    """AC #3. The Settings door is the one that loads the agent at once: the
+    app answering the click is already serving, so the launcher RunAtLoad
+    starts finds it and exits 0. `enable()` alone loads nothing - the
+    first-start sitting calls it before anything serves (TASK-112.05 review)."""
+    on = client.post("/settings/autostart", data={"enabled": "1"}, headers=HX, follow_redirects=False)
+
+    assert on.status_code == 200
+    assert mac_agent.value is not None and mac_agent.loaded == 1
 
 
 # --- the installer and the switch register the identical item (TASK-089.22) ---------

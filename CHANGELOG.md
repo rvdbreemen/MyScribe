@@ -27,9 +27,12 @@
   it after an exit that is not clean; the launcher exits that way only when
   the app died under it (code 70). launchd writes its output to
   `~/Library/Logs/MyScribe/launchd.log`. It waits 240 seconds for a
-  stop before it kills MyScribe. Switching it on also loads it at once with
-  `launchctl bootstrap`. If launchd refuses, the plist stays, it loads at
-  your next login, and Settings shows what launchd said. Switching it off
+  stop before it kills MyScribe. Switching it on in Settings also loads it at
+  once with `launchctl bootstrap`. If launchd refuses, the plist stays, it
+  loads at your next login, and Settings shows what launchd said. A Yes in
+  the first-start setup only writes the plist, which loads at your next
+  login: the setup runs before MyScribe starts, and loading it then would
+  start a second MyScribe. Switching it off
   deletes the plist and then runs `launchctl bootout`. That stops a MyScribe
   launchd started right away. A job that is running is not put back in the
   queue; per ADR-028 its runner may go on working without MyScribe until it

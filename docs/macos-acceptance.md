@@ -169,6 +169,13 @@ label is `io.github.rvdbreemen.myscribe`, so in the commands below:
    `ls "$P"` shows nothing new. Paste what `ps -o command= -p $(pgrep -f
    'Contents/MacOS/MyScribe' | head -1)` prints, so we can see the
    AppTranslocation path.
+7. The first-start setup. Switch it off in Settings and quit MyScribe.
+   Start it with `/Applications/MyScribe.app/Contents/MacOS/MyScribe --setup`
+   and answer Yes to start at login. Expected: `$P` exists, but
+   `launchctl print "$J"` says it could not find the service: the setup
+   writes the plist and does not load it, because nothing serves yet.
+   `pgrep -fl 'Contents/MacOS/MyScribe'` shows one launcher, not two. Log
+   out and in: `/health` answers.
 
 ## 7. What an uninstall leaves behind
 

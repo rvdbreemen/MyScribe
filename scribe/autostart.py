@@ -15,8 +15,9 @@ nothing that needs an administrator:
   gone when it is deleted.
 * **macOS** - a launchd agent in this user's own `Library` that starts the
   launcher's own binary, so launchd restarts a crash and keeps its output in
-  `~/Library/Logs/MyScribe` (TASK-112.05). Switching it on loads it now and
-  switching it off unloads it now, which stops a MyScribe it started.
+  `~/Library/Logs/MyScribe` (TASK-112.05). The Settings switch loads it now
+  (`load_now`) and switching it off unloads it now, which stops a MyScribe it
+  started. The first-start setup only writes it: it loads at the next login.
 * **Linux** - a systemd user unit in this user's own config directory where a
   systemd user session runs, so a crash is restarted and the output lands in
   the journal (ADR-026). Where none runs, and for a clone, a desktop entry in
@@ -224,8 +225,11 @@ class LaunchAgent:
       `AssociatedBundleIdentifiers`, which ties the plist to the app in
       Login Items.
 
-    Switching on loads it now (`launchctl bootstrap gui/<uid>`); a refusal
-    is a note, because the plist still loads at the next login. Switching
+    The Settings switch loads it now (`load_now()`, `launchctl bootstrap
+    gui/<uid>`); a refusal is a note, because the plist still loads at the
+    next login. `enable()` alone loads nothing: the first-start sitting calls
+    it in the launcher before the app is started, and a load there would let
+    RunAtLoad start a second MyScribe while nothing serves yet. Switching
     off removes the plist and then boots the job out, which stops a MyScribe
     launchd started - the one answering the click - right away (Robert's
     decision of 2026-10-24). Writing alone asks launchctl nothing: the start
@@ -773,8 +777,11 @@ def _refusal(environ, platform):
 def enable(mechanism=None, command=None, environ: dict | None = None, platform: str | None = None) -> Entry:
     """Write the login entry, and say what was written and where.
 
-    A mechanism that can start it now (the LaunchAgent's bootstrap) does so
-    after the write; what it said, when it said no, is the entry's `note`.
+    Written only, never started: both doors make this one call (TASK-089.22),
+    and the first-start sitting makes it in the launcher before the app runs.
+    A LaunchAgent loaded there would have RunAtLoad start a launcher that
+    finds nothing serving and starts a second MyScribe (TASK-112.05 review).
+    The Settings switch, whose app is the one serving, asks `load_now()`.
     """
     mechanism = mechanism or default_mechanism()
     command = command or _start_command(environ, platform)
@@ -782,10 +789,21 @@ def enable(mechanism=None, command=None, environ: dict | None = None, platform: 
         raise NothingToStart(_refusal(environ, platform)
                              or "nothing on this machine is known to start MyScribe at login")
     mechanism.write(command)
-    switch_on = getattr(mechanism, "switch_on", None)
-    note = switch_on() if switch_on is not None else ""
-    return Entry(where=mechanism.where, command=mechanism.render(command), on=True, note=note,
+    return Entry(where=mechanism.where, command=mechanism.render(command), on=True,
                  stops_now=bool(getattr(mechanism, "stops_when_switched_off", False)))
+
+
+def load_now(mechanism=None) -> str:
+    """Load a written entry in this session, where the OS has such a step -
+    the LaunchAgent's bootstrap. Empty when it loaded or there is nothing to
+    load; otherwise what the OS said, with the reason the switch is on anyway.
+
+    Only for a MyScribe that already serves, so the launcher RunAtLoad starts
+    finds it and exits 0: the Settings switch, not the first-start sitting.
+    """
+    mechanism = mechanism or default_mechanism()
+    switch_on = getattr(mechanism, "switch_on", None)
+    return switch_on() if switch_on is not None else ""
 
 
 def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry | None:

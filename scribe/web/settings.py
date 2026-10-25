@@ -867,7 +867,10 @@ async def set_autostart(request: Request) -> Response:
     note = ""
     try:
         if wanted:
-            note = autostart.enable().note
+            autostart.enable()
+            # Loaded now from here only: this app is serving, so the launcher
+            # launchd's RunAtLoad starts finds it and exits 0 (TASK-112.05).
+            note = autostart.load_now()
         else:
             autostart.disable()
     except autostart.NothingToStart as nothing:

@@ -1216,44 +1216,72 @@ def test_a_translocated_app_is_not_registered_and_says_why(tmp_path):
     assert autostart.refusal(environ=environ, platform="linux") is None
 
 
-def test_switching_on_bootstraps_the_agent_now(tmp_path):
-    """AC #3. The plist first, then `launchctl bootstrap gui/<uid> <plist>`,
-    so it is loaded in this session and not only at the next login. No
-    bootout first: the job a bootout hits may be the app answering this
-    request. A second launcher started by RunAtLoad finds this one serving
-    and exits 0, which KeepAlive leaves alone (TASK-112.02)."""
+def test_enable_writes_the_plist_and_asks_launchctl_nothing(tmp_path):
+    """TASK-112.05 review. `enable()` is the one call both doors make
+    (TASK-089.22 AC2), and the first-start sitting makes it before anything
+    serves: a bootstrap there would let RunAtLoad start a second MyScribe
+    beside the one the launcher is about to start. So writing loads nothing;
+    the plist loads at the next login unless `load_now()` is asked."""
     agent = _agent(tmp_path, uid=501)
 
     entry = autostart.enable(agent, command=MAC_COMMAND)
 
+    assert agent.path.exists() and entry.on is True
+    assert agent.run.calls == []
+
+
+def test_load_now_bootstraps_the_agent(tmp_path):
+    """AC #3, the Settings switch: the plist first, then `launchctl bootstrap
+    gui/<uid> <plist>`, so it is loaded in this session and not only at the
+    next login. No bootout first: the job a bootout hits may be the app
+    answering this request. A second launcher started by RunAtLoad finds this
+    one serving and exits 0, which KeepAlive leaves alone (TASK-112.02)."""
+    agent = _agent(tmp_path, uid=501)
+    autostart.enable(agent, command=MAC_COMMAND)
+
+    note = autostart.load_now(agent)
+
     assert agent.run.calls == [(("bootstrap", "gui/501", str(agent.path)), True)]
-    assert entry.on is True and entry.note == ""
+    assert note == ""
+
+
+def test_load_now_is_nothing_where_the_os_has_no_such_step(tmp_path):
+    """A Run value, a desktop file and a user unit have nothing to load now:
+    the unit is enabled, not started (the app writing it is already running)."""
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=AT_LOGIN)
+    asked = list(unit.run.calls)
+
+    assert autostart.load_now(unit) == ""
+    assert unit.run.calls == asked
+    assert autostart.load_now(autostart.XdgAutostart(folder=tmp_path / "a")) == ""
 
 
 def test_a_bootstrap_launchd_refuses_keeps_the_file_and_says_so(tmp_path):
     """launchd answers an agent that is already loaded with an error, and its
     error numbers are not documented. Either way the plist is loaded at the
-    next login, so the file stays, the switch is on, and the entry carries
+    next login, so the file stays, the switch is on, and the note carries
     what launchctl said for Settings to show."""
     agent = _agent(tmp_path)
     agent.run.refuse = subprocess.CompletedProcess((), 5, "", "Bootstrap failed: 5: Input/output error")
 
     entry = autostart.enable(agent, command=MAC_COMMAND)
+    note = autostart.load_now(agent)
 
     assert agent.path.exists() and entry.on is True
-    assert "Input/output error" in entry.note and "next login" in entry.note
+    assert "Input/output error" in note and "next login" in note
 
     def hang(args, *, wait=True):
         raise subprocess.TimeoutExpired(args, 15)
 
     agent.run = hang
-    assert "next login" in autostart.enable(agent, command=MAC_COMMAND).note
+    assert "next login" in autostart.load_now(agent)
 
     def missing(args, *, wait=True):
         raise FileNotFoundError("/bin/launchctl")
 
     agent.run = missing
-    assert "next login" in autostart.enable(agent, command=MAC_COMMAND).note
+    assert "next login" in autostart.load_now(agent)
 
 
 def test_switching_off_removes_the_plist_then_boots_out_without_waiting(tmp_path):
