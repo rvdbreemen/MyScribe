@@ -101,8 +101,18 @@ def build_server(app, port: int) -> uvicorn.Server:
         uvicorn.Config(app, host=HOST, port=port),
         is_upload=stopping.is_app_upload,
         grace=SHUTDOWN_GRACE_SECONDS,
-        on_stopping=lambda deadline: setattr(app.state, "upload_deadline", deadline),
+        on_stopping=lambda deadline: _stopping(app, deadline),
     )
+
+
+def _stopping(app, deadline: float) -> None:
+    """The first moment of every stop, on the event loop: no new job from
+    here on (ADR-032; a running one is ended in the lifespan), and the
+    uploads' deadline for the phone door the lifespan closes."""
+    app.state.upload_deadline = deadline
+    sup = getattr(app.state, "supervisor", None)
+    if sup is not None:
+        sup.stop_claiming()
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -823,3 +823,75 @@ def test_a_runner_shaped_process_is_recognised(tmp_path):
     finally:
         runner.kill()
         runner.wait(10)
+
+
+# --- no claim once a stop has begun (TASK-112.09, ADR-032) -----------------------
+
+
+def test_an_idle_supervisor_claims_nothing_queued_after_a_stop_began(conn, db_path, ok_runner_cmd):
+    """A stop may let an upload finish for up to 30 s before the lifespan
+    stops the supervisor; the job that upload queues waits for the next
+    start. Before `stop_claiming` the idle loop claimed it and started a
+    runner inside the stop (Robert, 2026-10-25: no new job once a stop
+    begins)."""
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=ok_runner_cmd)
+    sup.start()
+    try:
+        sup.stop_claiming()
+        job_id = jobs.enqueue(conn, "fake")
+        assert not _wait_for(lambda: _row(conn, job_id)["status"] != "queued", timeout=1.0)
+    finally:
+        sup.stop(requeue=True)
+    assert _row(conn, job_id)["status"] == "queued"
+
+
+def test_a_job_that_ends_inside_a_stop_is_not_followed_by_the_next(conn, db_path, tmp_path):
+    """The running job finishing in the window does not start the one behind it."""
+    gate = tmp_path / "go"
+    runner = _script_cmd(tmp_path, "gated_runner.py", f"""\
+import os, sqlite3, sys, time
+while not os.path.exists({str(gate)!r}):
+    time.sleep(0.02)
+conn = sqlite3.connect({str(db_path)!r})
+conn.execute("UPDATE job SET status='done', finished_at=? WHERE id=?", (time.time(), int(sys.argv[1])))
+conn.commit()
+""")
+    first = jobs.enqueue(conn, "fake")
+    second = jobs.enqueue(conn, "fake")
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05, runner_cmd=runner)
+    sup.start()
+    try:
+        _running_with_pid(conn, first)
+        sup.stop_claiming()
+        gate.write_text("go")
+        assert _wait_for(lambda: _row(conn, first)["status"] == "done")
+        assert not _wait_for(lambda: _row(conn, second)["status"] != "queued", timeout=1.0)
+    finally:
+        sup.stop(requeue=True)
+    assert _row(conn, second)["status"] == "queued"
+
+
+def test_stop_claiming_waits_out_a_claim_already_under_way(db_path, monkeypatch):
+    """The check and the claim are one step under a lock `stop_claiming` takes:
+    once it returns, no claim that read the flag before it can still land."""
+    entered, release = threading.Event(), threading.Event()
+    real = jobs.claim_next
+
+    def slow_claim(c, *a, **kw):
+        entered.set()
+        release.wait(5)
+        return real(c, *a, **kw)
+
+    monkeypatch.setattr(supervisor.jobs, "claim_next", slow_claim)
+    sup = supervisor.Supervisor(db_path, poll_interval=0.05)
+    sup.start()
+    try:
+        assert entered.wait(5)
+        done = threading.Event()
+        threading.Thread(target=lambda: (sup.stop_claiming(), done.set()), daemon=True).start()
+        assert not done.wait(0.3), "stop_claiming returned while a claim was under way"
+        release.set()
+        assert done.wait(5)
+    finally:
+        release.set()
+        sup.stop()

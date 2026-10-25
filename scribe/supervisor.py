@@ -504,6 +504,9 @@ class Supervisor:
         self._stop_event = threading.Event()
         self._requeue = False
         """Set by `stop(requeue=True)`: end the runner and queue its job again."""
+        self._claiming = True
+        """Cleared by `stop_claiming`, under `_claim_lock` with the claim itself."""
+        self._claim_lock = threading.Lock()
         self._watching: int | None = None
         """The job whose runner this loop is inside `_watch` for, or None."""
         self._thread: threading.Thread | None = None
@@ -513,6 +516,7 @@ class Supervisor:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
+        self._claiming = True
         self._thread = threading.Thread(
             target=self._loop, name="scribe-supervisor", daemon=True
         )
@@ -527,6 +531,20 @@ class Supervisor:
         to honour the flag and is ended outright.
         """
         return self._watching == job_id
+
+    def stop_claiming(self) -> None:
+        """Claim no new job from now on; the running one runs on until `stop`.
+
+        Called the moment a stop begins (the stop route, and the app server's
+        shutdown for every other door), not when the lifespan ends: a stop
+        lets uploads finish for up to `stopping.UPLOAD_FINISH_SECONDS` first,
+        and a job queued or freed inside that window would otherwise start a
+        runner only to be ended with it (Robert, 2026-10-25; ADR-032). The job
+        stays queued for the next start. Takes the lock the loop claims under,
+        so once this returns no claim can land. Idempotent.
+        """
+        with self._claim_lock:
+            self._claiming = False
 
     def stop(self, timeout: float = 10.0, requeue: bool = False) -> None:
         """Ask the loop to exit and join it. A still-running child's tree is
@@ -576,7 +594,11 @@ class Supervisor:
         try:
             while not self._stop_event.is_set():
                 try:
-                    job = jobs.claim_next(conn)
+                    with self._claim_lock:
+                        job = jobs.claim_next(conn) if self._claiming else None
+                    if job is None and not self._claiming:
+                        self._stop_event.wait(self.poll_interval)  # a stop has begun
+                        continue
                     if job is None:
                         # Nothing queued, or something running. If that
                         # something is a row whose runner is gone, the claim

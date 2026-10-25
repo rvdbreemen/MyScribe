@@ -33,6 +33,12 @@ def stop_requested(request: Request) -> dict:
     request_exit = getattr(app.state, "request_exit", None)
     if request_exit is None:
         raise HTTPException(503, "this server was not started in a way that can stop itself")
+    # No job starts once a stop has begun (Robert, 2026-10-25; ADR-032):
+    # claims stop before the running job is named, so the job named here is
+    # the one that goes back, and nothing queued starts in the upload window.
+    sup = getattr(app.state, "supervisor", None)
+    if sup is not None:
+        sup.stop_claiming()
     with db.LOCK:
         row = app.state.conn.execute(
             "SELECT id FROM job WHERE status='running' LIMIT 1"

@@ -332,10 +332,14 @@ class _RecordingSupervisor:
 
     def __init__(self, db_path, *args, **kwargs):
         self.stops: list[bool] = []
+        self.events: list[str] = []
         _RecordingSupervisor.made.append(self)
 
     def start(self):
         pass
+
+    def stop_claiming(self):
+        self.events.append("claims stopped")
 
     def stop(self, timeout: float = 10.0, requeue: bool = False):
         self.stops.append(requeue)
@@ -430,6 +434,36 @@ def test_the_server_hands_its_stops_upload_deadline_to_the_app(db_path):
     asyncio.run(server.shutdown())
     deadline = app.state.upload_deadline
     assert before + stopping.UPLOAD_FINISH_SECONDS <= deadline <= time.monotonic() + stopping.UPLOAD_FINISH_SECONDS
+
+
+def test_the_stop_route_stops_the_supervisors_claims_before_the_server_exits(stoppable):
+    """No job starts once a stop has begun (Robert, 2026-10-25): the route
+    stops claims before it names the running job and asks the server to exit,
+    so the job it names is the one that goes back."""
+    app, _asked = stoppable
+    with _loopback(app) as client:
+        sup = _RecordingSupervisor.made[-1]
+        app.state.request_exit = lambda: sup.events.append("exit asked")
+        assert client.post("/api/shutdown").status_code == 202
+
+    assert sup.events == ["claims stopped", "exit asked"]
+
+
+def test_the_servers_stop_stops_the_supervisors_claims(db_path):
+    """Every other door - a signal, Ctrl+C - begins its stop in the server's
+    shutdown: claims stop there, before the 30 s window for uploads."""
+    import asyncio
+
+    from scribe import __main__ as main_module
+
+    app = create_app(db_path=db_path, start_supervisor=False, start_watcher=False)
+    sup = _RecordingSupervisor(None)
+    app.state.supervisor = sup
+    server = main_module.build_server(app, 4299)
+    server.servers = []
+    server.force_exit = True
+    asyncio.run(server.shutdown())
+    assert sup.events == ["claims stopped"]
 
 
 def test_the_lifespan_closes_the_door_with_the_stops_upload_deadline(db_path):
