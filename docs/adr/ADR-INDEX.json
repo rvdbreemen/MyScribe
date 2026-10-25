@@ -2240,6 +2240,114 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-037",
+      "title": "Where no operating system watches it, the launcher restarts a crashed app a bounded number of times",
+      "path": "ADR-037-where-no-operating-system-watches-it-the-launcher-restarts-a-crashed-app-a-bounded-number-of-times.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "background",
+        "restart"
+      ],
+      "aliases": [
+        "restart after a crash"
+      ],
+      "components": [
+        "packaging.launcher.myscribe_launcher"
+      ],
+      "symbols": [
+        "os_supervisor",
+        "RestartBudget"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Restart only after a non-zero exit of the app, in the headless door.",
+          "Exit 70 at once under MyScribe's own unit or LaunchAgent (ossupervisor).",
+          "Count every restart against RestartBudget, also one that never answers.",
+          "Stop through Launch.stop on Ctrl+C or SIGTERM, also during a restart."
+        ],
+        "must_not": [
+          "Restart after an exit of 0, Ctrl+C, SIGTERM, Quit or --stop.",
+          "Tell a supervisor by INVOCATIONID or by XPCSERVICENAME alone.",
+          "Re-run the sync or the first-run sitting for a restart."
+        ],
+        "exceptions": [
+          "The window door: its pump frees the instance lock when the app ends, so a restart would race the next start; a person sits there. Its own task."
+        ],
+        "verification": [
+          "The TASK-112.10 block of tests/testlauncher.py, and tests/testautostart.py::testthelauncherknowstheunitandthejobbythenameswrittenhere and ::testthelaunchersrestartbudgetistheunitsstartlimit."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-039",
+      "title": "A login start that cannot serve shows one notice on Windows",
+      "path": "ADR-039-a-login-start-that-cannot-serve-shows-one-notice-on-windows.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: C, decided by Robert on 2026-10-24 and kept on 2026-10-25.",
+      "topics": [
+        "autostart",
+        "launcher"
+      ],
+      "aliases": [
+        "failed login start",
+        "login box"
+      ],
+      "components": [
+        "packaging/launcher/myscribe_launcher.py"
+      ],
+      "symbols": [
+        "LOGIN_BOX_SECONDS",
+        "show_login_box"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Show it on Windows only, for an --at-login start that ends without serving.",
+          "Show it after the instance lock is let go, so a start by hand is not held up.",
+          "Wait at most LOGINBOXSECONDS (600 s); the box ends with the process.",
+          "Use user32's MessageBoxW through ctypes, on a daemon thread; skip it when MYSCRIBENOLOGINBOX is set, as the test suite does."
+        ],
+        "must_not": [
+          "Show the box for a start by hand, a start that serves, or on macOS or Linux.",
+          "Let a box that cannot be shown fail the start, or add a package for it."
+        ],
+        "exceptions": [
+          "None beyond the one case this ADR makes in ADR-026's no-window Must."
+        ],
+        "verification": [
+          "The TASK-120 box tests in tests/testlauncher.py."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -2814,6 +2922,18 @@
       "resolved": true
     },
     {
+      "source": "ADR-026",
+      "target": "ADR-037",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-026",
+      "target": "ADR-039",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-027",
       "target": "ADR-011",
       "type": "related",
@@ -2904,6 +3024,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-032",
+      "target": "ADR-037",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-033",
       "target": "ADR-013",
       "type": "related",
@@ -2960,6 +3086,42 @@
     {
       "source": "ADR-036",
       "target": "ADR-019",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-037",
+      "target": "ADR-013",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-037",
+      "target": "ADR-026",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-037",
+      "target": "ADR-028",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-037",
+      "target": "ADR-032",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-039",
+      "target": "ADR-011",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-039",
+      "target": "ADR-026",
       "type": "related",
       "resolved": true
     }

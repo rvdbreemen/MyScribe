@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -57,6 +58,9 @@ LAUNCHER_VARIABLE = "MYSCRIBE_LAUNCHER"
 # And this launcher's pid, which /health reports as launcher_pid: on Windows
 # the app's parent is uv's trampoline python.exe, not this process (TASK-117).
 LAUNCHER_PID_VARIABLE = "MYSCRIBE_LAUNCHER_PID"
+# And the last start at login's problem, said once by this start, for the
+# Settings card of the app it starts (TASK-120). `scribe.autostart` reads it.
+LOGIN_PROBLEM_VARIABLE = "MYSCRIBE_LOGIN_PROBLEM"
 STAMP_NAME = ".myscribe-sync.json"
 READY_TIMEOUT = 120.0
 STOP_TIMEOUT = 15.0
@@ -508,8 +512,13 @@ def this_launcher() -> Path | None:
     return launcher_path(sys.executable, sys.platform, os.environ)
 
 
-def app_environment(layout: Layout, base: dict | None = None) -> dict:
+def app_environment(layout: Layout, base: dict | None = None, notice: str = "") -> dict:
     env = child_environment(base)
+    # Only the app this start says the note for gets it; one inherited from
+    # whatever started this launcher is not this start's to pass on (TASK-120).
+    env.pop(LOGIN_PROBLEM_VARIABLE, None)
+    if notice:
+        env[LOGIN_PROBLEM_VARIABLE] = notice
     env.update(
         SCRIBE_DATA_DIR=str(layout.data_dir),
         SCRIBE_ENV_FILE=str(layout.env_file),
@@ -1912,6 +1921,56 @@ def take_login_problem(home: Path) -> str:
     return LOGIN_PROBLEM.format(problem=problem) if problem else ""
 
 
+# Robert's option C for TASK-120: the note above everywhere, and on Windows a
+# box at once as well. There the Run value has no supervisor that would show a
+# failure, and a reservation of the port (Hyper-V, WSL) is the likely one.
+LOGIN_BOX_TITLE = "MyScribe could not start"
+LOGIN_BOX = ("MyScribe started on its own, at login or after an update, and could not start:\n\n{problem}\n\n"
+             "MyScribe says this again the next time you start it, and Settings shows it "
+             "under Start at login.")
+LOGIN_BOX_SECONDS = 600.0
+"""How long a launcher at login waits for somebody to close its box. Then it
+ends, and the box goes with it: a login start never waits for ever, and the
+note keeps the sentence for the next start."""
+NO_LOGIN_BOX_VARIABLE = "MYSCRIBE_NO_LOGIN_BOX"
+"""Set to anything: no box. The tests set it, so that no run puts a box on
+the screen of whoever runs them, also from a launcher started as a child."""
+
+
+def _message_box(title: str, text: str) -> None:
+    """A plain MessageBoxW: documented user32, standard library ctypes, no
+    new dependency. MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST, so it is
+    in front of what the login opened. It blocks until it is closed."""
+    import ctypes
+
+    ctypes.windll.user32.MessageBoxW(None, text, title, 0x30 | 0x10000 | 0x40000)
+
+
+def show_login_box(problem: str, seconds: float = LOGIN_BOX_SECONDS,
+                   box: Callable[[str, str], None] | None = None) -> None:
+    """Say a failed start at login in a box, on Windows, for at most
+    ``seconds``.
+
+    The box runs on a daemon thread and this one waits for it with a timeout:
+    closing it ends the wait early; nobody closing it ends the wait at the
+    timeout, and the process ends with the box still on that thread. Called
+    with the instance lock already let go, so a start by hand meanwhile is
+    not held up by a launcher that only shows a sentence."""
+    if not IS_WINDOWS or os.environ.get(NO_LOGIN_BOX_VARIABLE):
+        return
+    show = box or _message_box
+
+    def shown() -> None:
+        try:
+            show(LOGIN_BOX_TITLE, LOGIN_BOX.format(problem=problem))
+        except Exception:  # noqa: BLE001 - no desktop, no user32: the note has it
+            pass
+
+    thread = threading.Thread(target=shown, name="myscribe-login-box", daemon=True)
+    thread.start()
+    thread.join(seconds)
+
+
 def drop_login_problem(home: Path) -> None:
     """A start at login that serves, or finds MyScribe serving, makes the
     last one's problem history: the next start by hand must not say it."""
@@ -2155,6 +2214,71 @@ def ask_to_stop(port: int) -> dict:
 
 
 def port_taken(port: int) -> bool:
+    return port_refusal(port) is not None
+
+
+PORT_IN_USE = "Port {port} is used by another program; MyScribe cannot start."
+PORT_RESERVED = (
+    "Windows has reserved port {port}, so MyScribe cannot use it. "
+    "Hyper-V, WSL, Docker and Windows Sandbox reserve blocks of ports; "
+    "`netsh int ipv4 show excludedportrange protocol=tcp` lists them. "
+    "Start MyScribe with --port and a port outside those blocks (a start at login always uses "
+    f"{DEFAULT_PORT}), or, as an administrator, put the dynamic port range back to the Windows "
+    "default with `netsh int ipv4 set dynamicport tcp start=49152 num=16384` and restart Windows."
+)
+PORT_PRIVILEGED = (
+    "This system does not let MyScribe use port {port} (permission denied). A port below 1024 "
+    "can need administrator rights; start MyScribe with --port and a port above 1024, such as "
+    f"{DEFAULT_PORT}."
+)
+PORT_FORBIDDEN = (
+    "This system does not let MyScribe use port {port} (permission denied). A security policy "
+    "such as SELinux or AppArmor can refuse a port; start MyScribe with --port and another port, "
+    "or allow this one in that policy."
+)
+WSAEACCES = 10013
+ANSWER_TIMEOUT = 0.5
+"""How long `answers` waits for a connect on the loopback, where an answer
+or a refusal comes back at once."""
+
+
+def refused_access(error: OSError) -> bool:
+    """A bind the OS refused rather than one somebody else holds the port for.
+
+    By errno and winerror, not by type: Windows raises a PermissionError
+    (errno 13, winerror 10013) for a reserved port, but an OSError(10013)
+    is not a PermissionError (measured for TASK-120)."""
+    return (error.errno in (errno.EACCES, WSAEACCES)
+            or getattr(error, "winerror", None) == WSAEACCES)
+
+
+def answers(port: int) -> bool:
+    """Whether a program accepts a connect on ``port`` of the loopback."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(ANSWER_TIMEOUT)
+        try:
+            return sock.connect_ex((HOST, port)) == 0
+        except OSError:
+            return False
+
+
+def port_sentence(port: int, error: OSError) -> str:
+    """What a start says about a port it could not bind (TASK-120).
+
+    A refused bind is not proof of a reservation: a program listening on
+    0.0.0.0 with SO_EXCLUSIVEADDRUSE gives a 127.0.0.1 bind WSAEACCES as
+    well (measured in the review of TASK-120). So a refusal where a program
+    accepts a connect is a port in use; only one where nothing answers gets
+    the reservation, or on Linux and macOS the permission, sentence."""
+    if not refused_access(error) or answers(port):
+        return PORT_IN_USE.format(port=port)
+    if IS_WINDOWS:
+        return PORT_RESERVED.format(port=port)
+    return (PORT_PRIVILEGED if port < 1024 else PORT_FORBIDDEN).format(port=port)
+
+
+def port_refusal(port: int) -> OSError | None:
+    """The error a bind of ``port`` fails with, or None when it is free."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         # Bound the way uvicorn binds. Without SO_REUSEADDR a POSIX bind fails
         # for about a minute after a server on the port stopped, on the
@@ -2166,9 +2290,9 @@ def port_taken(port: int) -> bool:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((HOST, port))
-        except OSError:
-            return True
-    return False
+        except OSError as error:
+            return error
+    return None
 
 
 # --- the app process --------------------------------------------------------------
@@ -2178,10 +2302,11 @@ class AppProcess:
     """``python -m scribe`` from the environment, in a process group of its
     own so Quit reaches the runner children it spawns."""
 
-    def __init__(self, layout: Layout, port: int, base: dict | None = None):
+    def __init__(self, layout: Layout, port: int, base: dict | None = None, notice: str = ""):
         self.layout = layout
         self.port = port
         self.base = base
+        self.notice = notice  # for the app's Settings card (TASK-120)
         self.proc: subprocess.Popen | None = None
 
     def command(self) -> list[str]:
@@ -2197,7 +2322,7 @@ class AppProcess:
                 kwargs["start_new_session"] = True
             self.proc = subprocess.Popen(
                 self.command(), cwd=str(self.layout.app_dir),
-                env=app_environment(self.layout, self.base),
+                env=app_environment(self.layout, self.base, notice=self.notice),
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **kwargs,
             )
         finally:
@@ -2478,6 +2603,12 @@ class Launch:
         self.route_asked = False  # set by stop_through_route, read by stop
         # The last error said, for the note a start at login leaves (TASK-112.07).
         self.problem = ""
+        # The last login's problem this start said, which the first app it
+        # starts shows on its Settings card until it is dismissed (TASK-120).
+        self.notice = ""
+        # The problem a failed start at login kept in the note, for the box
+        # `main` shows on Windows once the lock is let go (TASK-120).
+        self.kept = ""
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -2526,8 +2657,9 @@ class Launch:
             self.report("done", f"MyScribe is already running at {self.url()}")
             self.serving = True
             return True
-        if port_taken(self.port):
-            self.report("error", f"Port {self.port} is used by another program; MyScribe cannot start.")
+        refused = port_refusal(self.port)
+        if refused is not None:
+            self.report("error", port_sentence(self.port, refused))
             return False
         # Before anything is written and not only before the download: this is
         # the one place every door with a window passes through, and
@@ -2558,7 +2690,11 @@ class Launch:
     def start_app(self) -> bool:
         self.report("status", "Starting MyScribe...")
         self.app = AppProcess(self.layout, self.port)
+        self.app.notice = self.notice
         self.app.start()
+        # One app gets it: a later start in this launcher (a retry, the app
+        # after one that died) is a clean start, which clears it.
+        self.notice = ""
         if not self.app.wait_ready():
             self.report("error", f"MyScribe did not start; see {self.layout.logs_dir / 'app.log'}")
             self.app.stop()
@@ -3284,6 +3420,85 @@ and under launchd it would retry a multi-GB sync every ten seconds. 70 is
 EX_SOFTWARE from sysexits.h, clear of the 1 Python itself exits with on an
 uncaught exception (TASK-112.02)."""
 
+# --- a crashed app is started again (TASK-112.10, ADR-037) -----------------------
+
+RESTART_LIMIT = 5
+RESTART_WINDOW = 300.0
+RESTART_DELAY = 5.0
+"""At most `RESTART_LIMIT` restarts in any `RESTART_WINDOW` seconds, each after
+`RESTART_DELAY` seconds: the systemd unit's `StartLimitBurst=5`,
+`StartLimitIntervalSec=300` and `RestartSec=5` (Robert, 2026-10-25). A crash after
+hours of serving finds its budget back. A crash that repeats is given up on
+at the sixth crash, 5 x (RESTART_DELAY + L) seconds after the first one, where
+L is how long each restarted app lives, its start-up included: 25 s for L = 0,
+about 1.5 to 2 minutes for an app that dies once it serves (the real run of
+TASK-112.10 gave up 107.0 s in, after 6 kills), and just under 5 minutes as L
+nears 55 s. An app that lives 55 s or more each time never exhausts the
+window and is restarted for as long as it keeps crashing, once a minute at
+most - as systemd does with the same numbers."""
+
+SUPERVISED_UNIT = "myscribe.service"
+SUPERVISED_LABEL = "io.github.rvdbreemen.myscribe"
+"""The names `scribe/autostart.py` gives the systemd user unit (UNIT_NAME) and
+the LaunchAgent (LABEL). Spelled again rather than imported, like `APP_DIED`:
+the app is not importable from the launcher. A test holds them to its own."""
+
+CRASHED_JOB = ("A job that was running finishes by itself if its runner outlived the crash; "
+               "otherwise MyScribe marks it interrupted as it starts, and Retry on the jobs page "
+               "starts it over.")
+RESTARTING = ("Starting MyScribe again in {delay:g} s (restart {count} of at most {limit} in "
+              "{minutes:g} minutes). " + CRASHED_JOB)
+GAVE_UP = ("MyScribe stopped unexpectedly again after {limit} restarts in {minutes:g} minutes, so it "
+           "is not started again; see {log}. Start MyScribe by hand to try once more.")
+"""What the console door says about a crash it restarts and the one it gives
+up on. The job half is reconcile's (ADR-013, `scribe/supervisor.py`): a
+running row whose runner is dead becomes interrupted at the next start, one
+whose runner lives on is left to write its own verdict."""
+
+
+def os_supervisor(environ: dict | None = None, cgroup: Path | None = Path("/proc/self/cgroup")) -> str:
+    """"systemd" or "launchd" when MyScribe's own login entry started this
+    launcher and restarts it on `APP_DIED`, "" when nothing does.
+
+    Known by name, never by a variable being there at all. launchd puts the
+    job's label in XPC_SERVICE_NAME, but a shell in Terminal carries the
+    variable too (`0`, or Terminal's own name). systemd sets INVOCATION_ID,
+    but so does every other unit, a terminal server that runs as one
+    included; the cgroup it puts the unit's processes in is named after the
+    unit. The XDG autostart file and the Windows Run value watch nothing.
+    """
+    environ = os.environ if environ is None else environ
+    if environ.get("XPC_SERVICE_NAME") == SUPERVISED_LABEL:
+        return "launchd"
+    if cgroup is not None:
+        try:
+            lines = cgroup.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            if line.rpartition(":")[2].rstrip("/").rpartition("/")[2] == SUPERVISED_UNIT:
+                return "systemd"
+    return ""
+
+
+class RestartBudget:
+    """`limit` restarts in any `window` seconds; `spend` says whether one more fits."""
+
+    def __init__(self, limit: int | None = None, window: float | None = None,
+                 clock: Callable[[], float] = time.monotonic):
+        self.limit = RESTART_LIMIT if limit is None else limit
+        self.window = RESTART_WINDOW if window is None else window
+        self.clock = clock
+        self.spent: list[float] = []
+
+    def spend(self) -> bool:
+        now = self.clock()
+        self.spent = [then for then in self.spent if now - then < self.window]
+        if len(self.spent) >= self.limit:
+            return False
+        self.spent.append(now)
+        return True
+
 
 def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = False) -> int:
     """The console door, and every build without Tk; the exit code is
@@ -3296,6 +3511,16 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
 
     An app that never answered at start counts as a configuration problem and
     not as a crash: restarting it repeats the same failure.
+
+    An app that dies under a launcher no OS supervisor watches is started
+    again, up to `RESTART_LIMIT` times in `RESTART_WINDOW` (ADR-037,
+    TASK-112.10): the Windows Run value has nobody else to do it. A restart
+    that does not answer is spent like a crash. Under MyScribe's own systemd
+    unit or LaunchAgent (`os_supervisor`) the launcher exits `APP_DIED` at
+    once, as before, and the OS restarts it; both at once would be two
+    restarts for one crash. An exit of 0 - the stop route, from Settings or
+    `--stop` - and Ctrl+C or SIGTERM, also during a restart, are never
+    restarted (ADR-032).
     """
     started = first_run(launch, None, launch.report, force_setup, at_login)
     if at_login and (launch.serving or (started and launch.app is not None)):
@@ -3308,12 +3533,34 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
         if at_login and launch.problem and not launch.serving:
             # Nobody reads that log; the next start by hand says it (TASK-112.07).
             keep_login_problem(launch.layout.home, launch.problem)
+            launch.kept = launch.problem  # for the box, once the lock is let go (TASK-120)
         return 0
-    interrupted = False
+    interrupted = gave_up = False
+    supervisor = os_supervisor()
+    budget = RestartBudget()
+    app_log = lambda: launch.layout.logs_dir / "app.log"  # noqa: E731  (only after a crash)
     try:
+        # One handler and one `finally` over the restarts too: a SIGTERM in
+        # the delay or while a restarted app comes up is a stop, not a crash.
         with stop_on_sigterm():
-            while launch.app.alive():
-                time.sleep(0.5)
+            answered = True
+            while True:
+                while launch.app.alive():
+                    time.sleep(0.5)
+                code = launch.app.exit_code()
+                if (not code and answered) or supervisor:
+                    break
+                if answered:  # `start_app` has said it for one that did not answer
+                    launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see {app_log()}.")
+                if not budget.spend():
+                    gave_up = True
+                    break
+                launch.report("status", RESTARTING.format(delay=RESTART_DELAY, count=len(budget.spent),
+                                                          limit=budget.limit, minutes=budget.window / 60))
+                time.sleep(RESTART_DELAY)
+                # One that does not answer is stopped - on POSIX its SIGTERM may
+                # end it with 0 - and the loop spends again.
+                answered = launch.start_app()
     except KeyboardInterrupt:
         interrupted = True
     finally:
@@ -3321,10 +3568,14 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             launch.stop()  # says what happened to the running job (TASK-112.09)
     if interrupted:
         return 0
+    if gave_up:
+        launch.report("error", GAVE_UP.format(limit=budget.limit, minutes=budget.window / 60, log=app_log()))
+        if at_login:
+            keep_login_problem(launch.layout.home, launch.problem)  # the next start by hand says it
+        return APP_DIED
     code = launch.app.exit_code()
     if code:
-        launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see "
-                               f"{launch.layout.logs_dir / 'app.log'}.")
+        launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see {app_log()}.")
         return APP_DIED
     launch.report("status", "MyScribe stopped.")
     return 0
@@ -4148,6 +4399,7 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         """
         if notice:  # the last login's problem, before this start's own lines
             launch.report("status", notice)
+            launch.notice = notice  # and on the Settings card (TASK-120)
         in_a_worker(
             lambda: take_a_turn(
                 lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry)),
@@ -4329,10 +4581,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         return code
     if lock.problem:
         console("status", lock.problem)
+    kept: list[str] = []
     try:
-        return run_doors(args, layout, console, quiet, windowed, lock)
+        code = run_doors(args, layout, console, quiet, windowed, lock, kept)
     finally:
         lock.release()
+    if kept:
+        show_login_box(kept[-1])  # Windows only; after the lock (TASK-120)
+    return code
 
 
 def run_doctor(args: argparse.Namespace, layout: Layout) -> int:
@@ -4342,7 +4598,8 @@ def run_doctor(args: argparse.Namespace, layout: Layout) -> int:
 
 
 def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, str], None],
-              quiet: bool, windowed: bool, lock: InstanceLock | None = None) -> int:
+              quiet: bool, windowed: bool, lock: InstanceLock | None = None,
+              kept: list[str] | None = None) -> int:
     """`main` past the home and the lock: the one-job doors, the console and
     the window. The window lets go of the lock while it runs no MyScribe,
     which is why it is handed on."""
@@ -4395,7 +4652,11 @@ def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, 
         launch = Launch(layout, args.port, not args.no_browser, console)
         if notice:
             launch.report("status", notice)
-        return run_headless(launch, force_setup=args.setup, at_login=args.at_login)
+            launch.notice = notice
+        code = run_headless(launch, force_setup=args.setup, at_login=args.at_login)
+        if kept is not None and getattr(launch, "kept", ""):
+            kept.append(launch.kept)
+        return code
     extra = {"notice": notice} if notice else {}
     return run_window(
         layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login,

@@ -12,6 +12,7 @@ superseded_by: null
 related:
   - "ADR-001"
   - "ADR-028"
+  - "ADR-037"
 topics:
   - "shutdown"
   - "jobs"

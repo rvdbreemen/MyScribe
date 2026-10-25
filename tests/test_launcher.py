@@ -2780,9 +2780,13 @@ def _launcher_log(layout) -> str:
 
 
 def test_an_app_that_dies_ends_the_headless_launcher_with_its_own_code(layout, monkeypatch):
-    """The crash the research found: the child dies, and the launcher said 0."""
+    """The crash the research found: the child dies, and the launcher said 0.
+
+    Under an OS supervisor, which restarts on this code itself; with none the
+    launcher restarts the app first (TASK-112.10, ADR-037, tests below)."""
     child = _sleeping_child()
     launch = _launch_over(layout, child, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "systemd")
     threading.Timer(0.3, child.kill).start()
 
     code = launcher.run_headless(launch)
@@ -4429,3 +4433,560 @@ def test_a_setup_click_during_the_pump_still_opens_the_sitting(layout, monkeypat
         assert launcher.main(_argv(layout, _free_port(), "--no-browser")) == 0
     assert clicked == ["setup"]
     assert sat == ["sitting"], "the Setup click was dropped"
+
+
+# --- TASK-112.10: the launcher restarts a crashed app, a bounded number of times --
+#
+# ADR-037. Only where no OS supervisor watches the launcher: the Windows Run
+# value, a start by hand on the console and the XDG autostart file. Under the
+# systemd unit or the LaunchAgent the launcher exits `APP_DIED` at once, as
+# before, and the OS restarts it.
+
+
+def test_the_launchd_job_is_known_by_its_own_label_and_nothing_else():
+    """launchd names the job it started in XPC_SERVICE_NAME. A shell in
+    Terminal has the variable too, as `0` or as Terminal's own name, so its
+    presence alone would switch the restart off for a start by hand."""
+    label = launcher.SUPERVISED_LABEL
+    assert launcher.os_supervisor({"XPC_SERVICE_NAME": label}, cgroup=None) == "launchd"
+    for other in ("0", "application.com.apple.Terminal.1234", "", label + ".other"):
+        assert launcher.os_supervisor({"XPC_SERVICE_NAME": other}, cgroup=None) == ""
+    assert launcher.os_supervisor({}, cgroup=None) == ""
+
+
+def test_the_systemd_unit_is_known_by_its_own_cgroup_and_not_by_invocation_id(tmp_path):
+    """systemd puts a unit's processes in a cgroup named after the unit. Not
+    INVOCATION_ID: a shell in a terminal that runs as a user service (GNOME's
+    terminal server) can carry one, and so can anything another unit starts."""
+    cgroup = tmp_path / "cgroup"
+    unit = launcher.SUPERVISED_UNIT
+    cgroup.write_text(f"0::/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}\n", encoding="utf-8")
+    assert launcher.os_supervisor({}, cgroup=cgroup) == "systemd"
+
+    for path in ("/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-myscribe-4242.scope",
+                 "/user.slice/user-1000.slice/user@1000.service/app.slice/gnome-terminal-server.service",
+                 f"/user.slice/user-1000.slice/user@1000.service/app.slice/not-{unit}"):
+        cgroup.write_text(f"0::{path}\n", encoding="utf-8")
+        assert launcher.os_supervisor({"INVOCATION_ID": "0123abcd"}, cgroup=cgroup) == ""
+    assert launcher.os_supervisor({}, cgroup=tmp_path / "missing") == ""
+
+
+def test_the_restart_budget_is_a_number_of_restarts_in_a_sliding_window():
+    now = [1000.0]
+    budget = launcher.RestartBudget(limit=3, window=600.0, clock=lambda: now[0])
+    for _ in range(3):  # at 1000, 1100 and 1200
+        assert budget.spend() is True
+        now[0] += 100.0
+    assert budget.spend() is False, "the fourth crash inside the window is not restarted"
+    now[0] = 1599.0
+    assert budget.spend() is False
+    now[0] = 1601.0  # the restart at 1000 is now older than the window
+    assert budget.spend() is True
+    assert budget.spend() is False
+
+
+def test_the_default_budget_is_five_restarts_in_five_minutes():
+    """Robert's decision of 2026-10-25 (ADR-037): 5 restarts in any 300 s,
+    the systemd unit's StartLimitBurst=5 and StartLimitIntervalSec=300."""
+    now = [0.0]
+    budget = launcher.RestartBudget(clock=lambda: now[0])
+    assert (budget.limit, budget.window) == (5, 300.0)
+    for _ in range(5):  # at 0, 10, 20, 30 and 40
+        assert budget.spend() is True
+        now[0] += 10.0
+    assert budget.spend() is False, "a sixth crash inside 300 s was restarted"
+    now[0] = 299.999
+    assert budget.spend() is False
+    now[0] = 300.0  # the restart at 0 has left the window
+    assert budget.spend() is True
+    assert budget.spend() is False
+
+
+def test_a_restart_exactly_one_window_old_no_longer_counts():
+    """The boundary: "in any 600 s" is a half-open window. A restart spent
+    exactly `window` seconds ago has left it, so the budget has room again."""
+    now = [0.0]
+    budget = launcher.RestartBudget(limit=1, window=600.0, clock=lambda: now[0])
+    assert budget.spend() is True
+    now[0] = 599.999
+    assert budget.spend() is False
+    now[0] = 600.0
+    assert budget.spend() is True, "a restart exactly one window old still counted"
+
+
+def _restarting(layout, monkeypatch, first, then, supervisor=""):
+    """A Launch over ``first`` whose `start_app` starts the children ``then``
+    makes, one per restart, and records each start."""
+    launch = _launch_over(layout, first, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: supervisor)
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    started = []
+
+    def start_app():
+        child = then(len(started))
+        started.append(child)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        launch.app.proc = child
+        return True
+
+    launch.start_app = start_app
+    return launch, started
+
+
+def _exits(code: int):
+    return _app_child(f"import sys; sys.exit({code})")
+
+
+def test_a_crashed_app_is_started_again_and_a_stop_after_that_is_not(layout, monkeypatch):
+    """AC #2: a crash (non-zero) is restarted; the restarted app ending with 0
+    - the stop route, from Settings or `--stop` - ends the launcher with 0."""
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+
+    code = launcher.run_headless(launch)
+
+    assert code == 0
+    assert len(started) == 1
+    said = _launcher_log(layout)
+    assert "stopped unexpectedly (exit code 3)" in said
+    assert launcher.RESTARTING.format(delay=0, count=1, limit=launcher.RESTART_LIMIT,
+                                      minutes=launcher.RESTART_WINDOW / 60) in said
+    assert launcher.CRASHED_JOB in said, "what happens to a running job is said"
+    assert "MyScribe stopped." in said
+
+
+def test_after_the_last_restart_the_launcher_gives_up_with_a_sentence(layout, monkeypatch):
+    """AC #2: up to `RESTART_LIMIT` restarts in the window, then one sentence
+    and `APP_DIED`."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 2)
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(3))
+
+    code = launcher.run_headless(launch)
+
+    assert code == launcher.APP_DIED
+    assert len(started) == 2
+    gave_up = launcher.GAVE_UP.format(limit=2, minutes=launcher.RESTART_WINDOW / 60,
+                                      log=layout.logs_dir / "app.log")
+    assert _launcher_log(layout).count(gave_up) == 1
+    assert launch.problem == gave_up
+
+
+def test_a_start_at_login_that_gave_up_is_said_by_the_next_start_by_hand(layout, monkeypatch):
+    """Nobody reads launcher.log after a login; TASK-112.07's note carries it."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    launch, _ = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(3))
+
+    assert launcher.run_headless(launch, at_login=True) == launcher.APP_DIED
+    assert launcher.GAVE_UP.format(limit=1, minutes=launcher.RESTART_WINDOW / 60,
+                                   log=layout.logs_dir / "app.log") in launcher.take_login_problem(layout.home)
+
+
+def test_a_restart_that_never_answers_is_spent_like_a_crash(layout, monkeypatch):
+    """`start_app` stops an app that did not answer and says so; that counts
+    against the budget, so a broken environment is not retried for ever."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 2)
+    launch = _launch_over(layout, _exits(3), monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    tries = []
+
+    def start_app():
+        tries.append(1)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        # 0: on POSIX the SIGTERM `start_app` stops it with may end it cleanly.
+        launch.app.proc = _exits(0)
+        launch.app.proc.wait()
+        launch.report("error", "MyScribe did not start; see app.log")  # as `start_app` says it
+        return False
+
+    launch.start_app = start_app
+
+    assert launcher.run_headless(launch) == launcher.APP_DIED
+    assert len(tries) == 2
+    said = _launcher_log(layout)
+    # One line per failure: the crash says "stopped unexpectedly", each
+    # restart that did not answer says "did not start", and nothing says both.
+    assert said.count("stopped unexpectedly (exit code") == 1, said
+    assert said.count("MyScribe did not start") == 2, said
+
+
+def test_under_an_os_supervisor_the_launcher_never_restarts_itself(layout, monkeypatch):
+    """AC #3: the systemd unit restarts on 70 and the LaunchAgent on any
+    non-zero exit; a restart here as well would be two for one crash."""
+    for supervisor in ("systemd", "launchd"):
+        launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0),
+                                      supervisor=supervisor)
+
+        assert launcher.run_headless(launch) == launcher.APP_DIED, supervisor
+        assert started == [], supervisor
+
+
+def test_a_clean_end_is_never_restarted(layout, monkeypatch):
+    """AC #2: exit 0 is a stop somebody asked for (ADR-032)."""
+    launch, started = _restarting(layout, monkeypatch, _exits(0), lambda n: _exits(0))
+
+    assert launcher.run_headless(launch) == 0
+    assert started == []
+
+
+def test_ctrl_c_while_a_restart_starts_stops_it_and_starts_nothing_more(layout, monkeypatch):
+    """AC #2: a deliberate stop during the restart is a stop, not a crash.
+    The app the restart started is stopped through `launch.stop`."""
+    launch = _launch_over(layout, _exits(3), monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    started, stopped = [], []
+
+    def start_app():
+        started.append(1)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        launch.app.proc = _sleeping_child()
+        raise KeyboardInterrupt  # Ctrl+C while it waits for /health
+
+    def stop():
+        stopped.append(launch.app.alive())
+        launch.app.proc.kill()
+        launch.app.proc.wait()
+
+    launch.start_app = start_app
+    launch.stop = stop
+
+    assert launcher.run_headless(launch) == 0
+    assert started == [1] and stopped == [True]
+
+
+def test_a_sigterm_during_the_restart_delay_starts_nothing(layout, monkeypatch):
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 3.0)
+    unhandled = []
+    previous = _signal.signal(_signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    try:
+        threading.Timer(1.0, _signal.raise_signal, args=(_signal.SIGTERM,)).start()
+        code = launcher.run_headless(launch)
+    finally:
+        _signal.signal(_signal.SIGTERM, previous)
+
+    assert code == 0
+    assert started == []
+
+
+# --- TASK-120: a reserved port, and a failed start at login somebody sees ---------
+
+
+class _RefusingSocket:
+    """A socket whose bind fails the way ``error`` says, and whose connect
+    answers ``answer``: 10061 (refused, nobody listens) unless a test says 0."""
+
+    def __init__(self, error: OSError, answer: int = 10061):
+        self.error = error
+        self.answer = answer
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def setsockopt(self, *args):
+        pass
+
+    def bind(self, address):
+        raise self.error
+
+    def settimeout(self, seconds):
+        pass
+
+    def connect_ex(self, address):
+        return self.answer
+
+
+def _reserved_by_windows() -> int | None:
+    """A port inside one of this machine's own excluded ranges that no
+    program answers on, or None.
+
+    Hyper-V, WinNAT and friends reserve blocks of the dynamic range; a bind
+    there fails with WSAEACCES for a user without privilege, which is the
+    case TASK-120 is about. Read from `netsh`, never changed. Some excluded
+    ports have Windows itself listening (http.sys on 2869, 5357, 5985 and
+    47001 here): those are in use as well as reserved, and are left out."""
+    if sys.platform != "win32":
+        return None
+    import subprocess as _sp
+
+    try:
+        shown = _sp.run(["netsh", "int", "ipv4", "show", "excludedportrange", "protocol=tcp"],
+                        capture_output=True, text=True, timeout=20).stdout
+    except (OSError, _sp.SubprocessError):
+        return None
+    for start, end in re.findall(r"^\s*(\d+)\s+(\d+)\s*\*?\s*$", shown, re.MULTILINE):
+        for port in range(int(start), int(end) + 1):
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError as error:
+                    if getattr(error, "winerror", None) == 10013 and not launcher.answers(port):
+                        return port
+    return None
+
+
+def _refusal_sentence(layout, port: int) -> str:
+    said: list[tuple[str, str]] = []
+    launch = launcher.Launch(layout, port, False, lambda state, text: said.append((state, text)))
+    assert launch.prepare() is False
+    errors = [text for state, text in said if state == "error"]
+    assert len(errors) == 1, said
+    return errors[0]
+
+
+@pytest.mark.parametrize("error", [
+    PermissionError(13, "An attempt was made to access a socket in a way forbidden", None, 10013),
+    OSError(10013, "WSAEACCES by its number alone"),
+], ids=["permission-error-as-windows-raises-it", "oserror-10013-by-hand"])
+def test_a_port_windows_reserved_is_named_as_reserved_with_the_way_out(layout, monkeypatch, error):
+    """AC #1. Nobody uses a port Windows has reserved, so "used by another
+    program" sends a person looking for a program that is not there. Gone by
+    errno and winerror, not by type: OSError(10013) is not a PermissionError."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(error))
+
+    sentence = _refusal_sentence(layout, 4242)
+
+    assert "used by another program" not in sentence
+    assert "reserved" in sentence and "4242" in sentence
+    assert "netsh int ipv4 show excludedportrange protocol=tcp" in sentence
+    assert "--port" in sentence
+    assert "start=49152 num=16384" in sentence
+
+
+def test_a_port_posix_refuses_says_permission_and_not_netsh(layout, monkeypatch):
+    """EACCES on port 80 on Linux or macOS is most likely the rule for ports
+    below 1024; the Windows way out would be nonsense there."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(PermissionError(13, "Permission denied")))
+
+    sentence = _refusal_sentence(layout, 80)
+
+    assert "used by another program" not in sentence and "netsh" not in sentence
+    assert "80" in sentence and "1024" in sentence and "--port" in sentence
+
+
+def test_a_refused_bind_with_a_program_that_answers_is_in_use_not_reserved(layout, monkeypatch):
+    """WSAEACCES is not proof of a reservation: a program listening on
+    0.0.0.0 with SO_EXCLUSIVEADDRUSE makes the 127.0.0.1 bind fail with
+    10013 too (review of TASK-120, measured). Something that accepts a
+    connect is a program using the port, and the netsh advice cannot help."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(
+        PermissionError(13, "forbidden", None, 10013), answer=0))
+
+    sentence = _refusal_sentence(layout, 4242)
+
+    assert "is used by another program" in sentence
+    assert "reserved" not in sentence and "netsh" not in sentence
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="SO_EXCLUSIVEADDRUSE is Windows")
+def test_a_port_held_exclusively_on_all_addresses_is_said_to_be_in_use(layout):
+    """The real case behind the test above, on an ephemeral port: the holder
+    gives our bind WSAEACCES, and the sentence still names the program."""
+    with socket.socket() as holder:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        holder.bind(("0.0.0.0", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+
+        refused = launcher.port_refusal(port)
+        assert refused is not None and launcher.refused_access(refused), refused
+        sentence = launcher.port_sentence(port, refused)
+
+    assert "is used by another program" in sentence, sentence
+    assert "reserved" not in sentence
+
+
+def test_a_posix_refusal_above_1024_does_not_blame_the_port_number(layout, monkeypatch):
+    """EACCES on 4242 is not the below-1024 rule: SELinux, AppArmor or
+    another policy refused it, and "a port above 1024" would send a person
+    to the port they already use (review of TASK-120)."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(PermissionError(13, "Permission denied")))
+
+    sentence = _refusal_sentence(layout, 4242)
+
+    assert "4242" in sentence and "permission denied" in sentence
+    assert "1024" not in sentence and "netsh" not in sentence
+    assert "used by another program" not in sentence
+
+
+def test_a_port_in_use_is_still_said_to_be_in_use(layout, monkeypatch):
+    """WSAEADDRINUSE (10048) and EADDRINUSE stay what they were."""
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(OSError(10048, "in use", None, 10048)))
+
+    assert "is used by another program" in _refusal_sentence(layout, 4242)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows port reservation")
+def test_a_port_this_machine_has_reserved_for_real_is_said_to_be_reserved(layout):
+    """The real WSAEACCES, from a range `netsh` lists on this very machine,
+    read only. Skipped where Windows reserves nothing."""
+    port = _reserved_by_windows()
+    if port is None:
+        pytest.skip("no excluded TCP port range on this machine")
+
+    assert launcher.port_taken(port) is True
+    sentence = _refusal_sentence(layout, port)
+    assert "reserved" in sentence and str(port) in sentence
+
+
+def test_the_login_problem_variable_is_the_one_the_app_reads():
+    from scribe import autostart
+
+    assert launcher.LOGIN_PROBLEM_VARIABLE == autostart.LOGIN_PROBLEM_VARIABLE
+
+
+def test_the_app_environment_carries_the_login_problem_only_when_there_is_one(layout, monkeypatch):
+    monkeypatch.setenv(launcher.LOGIN_PROBLEM_VARIABLE, "left over from whoever started this")
+
+    assert launcher.app_environment(layout, notice="It could not start.")[
+        launcher.LOGIN_PROBLEM_VARIABLE] == "It could not start."
+    assert launcher.LOGIN_PROBLEM_VARIABLE not in launcher.app_environment(layout)
+
+
+def test_the_first_app_a_launch_starts_gets_the_notice_and_a_restart_does_not(layout, monkeypatch):
+    """Option C: the record is said at the next start by hand (TASK-112.07)
+    and handed to that start's app for its Settings card. One app gets it: a
+    second start in the same launcher is that clean start again."""
+    started: list[str] = []
+
+    class Recorder:
+        notice = ""
+
+        def __init__(self, layout, port, base=None):
+            pass
+
+        def start(self):
+            started.append(self.notice)
+
+        def wait_ready(self, timeout=None):
+            return True
+
+    monkeypatch.setattr(launcher, "AppProcess", Recorder)
+    launch = launcher.Launch(layout, 4520, False, lambda state, text: None)
+    launch.notice = "The last time MyScribe started on its own, it could not start: x"
+
+    assert launch.start_app() and launch.start_app()
+    assert started == ["The last time MyScribe started on its own, it could not start: x", ""]
+
+
+def test_the_start_by_hand_after_a_failed_login_hands_the_notice_to_its_launch(layout, monkeypatch):
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    sock, port = _busy_port()
+    try:
+        assert launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser")) == 0
+    finally:
+        sock.close()
+    notices: list[str] = []
+    monkeypatch.setattr(launcher, "run_headless",
+                        lambda launch, **k: notices.append(launch.notice) or 0)
+
+    launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+    launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+
+    assert "started on its own" in notices[0] and f"Port {port}" in notices[0]
+    assert notices[1] == ""
+
+
+@pytest.fixture
+def boxes(layout, monkeypatch):
+    """The Windows box at login, recorded instead of shown, with whether the
+    instance lock was free at that moment."""
+    shown: list[dict] = []
+
+    def box(problem, *args, **kwargs):
+        probe = launcher.InstanceLock(launcher.instance_lock_path(layout.home))
+        free = probe.acquire()
+        if free:
+            probe.release()
+        shown.append({"problem": problem, "lock_free": free})
+
+    monkeypatch.setattr(launcher, "show_login_box", box)
+    return shown
+
+
+def test_a_failed_start_at_login_shows_the_box_after_letting_go_of_the_lock(layout, monkeypatch, boxes):
+    """Option C's immediate sign. After the lock: a start by hand while the box
+    is up must not wait on a launcher that only shows a sentence."""
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    sock, port = _busy_port()
+    try:
+        launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+        assert boxes == []  # a start by hand has somebody at the screen
+        assert launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser")) == 0
+    finally:
+        sock.close()
+
+    assert len(boxes) == 1
+    assert f"Port {port}" in boxes[0]["problem"]
+    assert boxes[0]["lock_free"] is True
+
+
+def test_the_box_is_windows_only_and_can_be_switched_off(monkeypatch):
+    calls: list = []
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    launcher.show_login_box("x", seconds=1, box=lambda *a: calls.append(a))
+    assert calls == []
+
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    monkeypatch.setenv(launcher.NO_LOGIN_BOX_VARIABLE, "1")
+    launcher.show_login_box("x", seconds=1, box=lambda *a: calls.append(a))
+    assert calls == []
+
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE)
+    launcher.show_login_box("Port 4242 is reserved.", seconds=1, box=lambda *a: calls.append(a))
+    assert len(calls) == 1 and "Port 4242 is reserved." in calls[0][1]
+
+
+def test_a_box_nobody_closes_does_not_hold_up_the_login_start_forever(monkeypatch):
+    """MessageBoxW blocks until somebody clicks. It runs on a thread of its
+    own and the launcher waits a bounded time, then ends - the box with it."""
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    never = threading.Event()
+    begun = time.monotonic()
+
+    launcher.show_login_box("x", seconds=0.5, box=lambda *a: never.wait())
+
+    assert time.monotonic() - begun < 5
+    never.set()
+
+
+def test_a_box_that_cannot_be_shown_is_not_an_error(monkeypatch):
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+
+    def broken(*a):
+        raise OSError("no desktop")
+
+    launcher.show_login_box("x", seconds=1, box=broken)  # no exception
+
+
+def test_the_box_says_on_its_own_because_the_installer_starts_it_too(monkeypatch):
+    """The installer starts `--at-login --headless` after an update as well
+    (myscribe.iss, ssPostInstall), so "at login" alone would be wrong there -
+    the correction TASK-112.07's review made to the note's sentence."""
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    said: list = []
+
+    launcher.show_login_box("Port 4242 is reserved.", seconds=1, box=lambda *a: said.append(a))
+
+    assert said[0][0] == "MyScribe could not start"
+    assert "on its own, at login or after an update" in said[0][1]

@@ -85,6 +85,21 @@
 
 ### Fixed
 
+- **A port Windows has reserved is no longer called "used by another
+  program".** Hyper-V, WSL, Docker and Windows Sandbox can reserve the port
+  MyScribe uses (4242). MyScribe now says the port is reserved, how to list the
+  reserved blocks (`netsh int ipv4 show excludedportrange protocol=tcp`) and
+  what to do: start it on another port with `--port`, or put the dynamic port
+  range back to the Windows default. A port a program answers on is still
+  called used by another program, also when Windows refuses it rather than
+  calls it taken. On Linux and macOS a refused port gets a sentence of its own,
+  which names the rule for ports below 1024 only for such a port (TASK-120).
+- **A start at login that cannot start no longer fails without a word.** On
+  Windows a message box says why at once, also for the start the installer
+  makes after an update; it closes by itself after 10 minutes. On every system
+  the next start says it once, as before, and **Settings → Start at login**
+  now shows it too, until you dismiss it or MyScribe stops (TASK-120).
+
 - **Run checks in Settings no longer loads torch into the web process.** The
   button ran every quick check, the accelerator check among them, which
   imports torch. It now runs the checks the page runs when it opens, as
@@ -298,7 +313,20 @@
   library in the default folder instead and says the folder asked for was
   not used. The request is kept: the next start with its window asks again,
   until the first setup questions have been answered (TASK-097).
-
+- **A MyScribe that crashes in the background starts again by itself.** When
+  MyScribe was started without a window (at login, or with `--headless`) and
+  its server stops with an error, the launcher waits 5 seconds and starts it
+  again, at most 5 times in 5 minutes, as the Linux systemd unit does. After
+  that it stops trying, says why in `launcher.log`, and after a start at
+  login your next start by hand says it too. A job that was running when
+  MyScribe crashed is marked interrupted, and Retry on the jobs page starts
+  it over; if its
+  transcription outlived the crash, it finishes by itself. A stop you asked
+  for (the Stop button in Settings, `--stop`, Ctrl+C) is never restarted.
+  On Linux with the systemd user unit and on macOS with the LaunchAgent,
+  the system restarts MyScribe as before and the launcher does not add a
+  restart of its own (on macOS not seen on a Mac yet). A start with the
+  MyScribe window open does not restart (TASK-112.10).
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser
   --headless` instead of `open -a`, which returned at once. launchd restarts
