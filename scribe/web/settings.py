@@ -872,15 +872,17 @@ async def set_autostart(request: Request) -> Response:
             # launchd's RunAtLoad starts finds it and exits 0 (TASK-112.05).
             note = autostart.load_now()
         else:
-            autostart.disable()
+            note = autostart.disable().note
     except autostart.NothingToStart as nothing:
         raise HTTPException(status_code=409, detail=str(nothing)) from None
     except (OSError, ValueError) as refused:
         raise HTTPException(
             status_code=500, detail=f"the login entry could not be changed: {refused}"
         ) from None
-    # On a Mac the plist can be written while launchd would not load it now;
-    # the switch is on all the same, and the line says both (TASK-112.05).
+    # On a Mac the plist can be written while launchd would not load it now,
+    # or removed while launchctl could not be asked to stop the job; the
+    # switch is where it was put all the same, and the line says both
+    # (TASK-112.05).
     flash = FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF
     return _autostart_answer(request, flash=f"{flash} {note}" if note else flash)
 

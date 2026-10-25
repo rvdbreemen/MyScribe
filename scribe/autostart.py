@@ -49,6 +49,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,8 +119,9 @@ class Entry:
     where: str
     command: str
     on: bool
-    # What the OS said when switching on half-worked: the entry is written,
-    # but launchd would not load it now (TASK-112.05). Empty otherwise.
+    # What the OS said when a switch half-worked (TASK-112.05): the entry is
+    # off, but launchctl could not be asked to stop what launchd started.
+    # Empty otherwise.
     note: str = ""
     # Why there is nothing to register, when that is known better than
     # "nothing to start": an app running from a translocated copy.
@@ -338,11 +340,19 @@ class LaunchAgent:
             said = (done.stderr or done.stdout or "").strip() or f"exit code {done.returncode}"
         return f"launchd did not load it now ({said}); it starts at your next login."
 
-    def switch_off(self) -> None:
+    def switch_off(self) -> str:
         """Unload the agent, which stops a MyScribe launchd started. Not waited
         for, and asked only after the plist is gone: when the job is this
-        app, nothing after this line is sure to run."""
-        self.run(["bootout", f"{self.domain}/{self.label}"], wait=False)
+        app, nothing after this line is sure to run.
+
+        Empty when launchctl was started; otherwise why not. The plist is
+        gone either way, so the switch is off - only the stop is not now."""
+        try:
+            self.run(["bootout", f"{self.domain}/{self.label}"], wait=False)
+        except OSError as failed:
+            return (f"launchctl could not be asked to stop it now ({failed}); the MyScribe "
+                    "launchd started runs until you quit it or log out.")
+        return ""
 
 
 class XdgAutostart:
@@ -887,12 +897,19 @@ def disable(mechanism=None, command=None) -> Entry:
     """Remove that one value or file, and nothing else. Already gone is fine.
 
     A mechanism that also stops what it started (the LaunchAgent's bootout)
-    is asked to after the file is gone, and only when there was a file.
+    is asked to after the file is gone, and only when there was a file - one
+    that will not parse counts, since launchd may have loaded it before it
+    broke. What that stop said, when it could not run, is the entry's `note`.
     """
     mechanism = mechanism or default_mechanism()
     switch_off = getattr(mechanism, "switch_off", None)
-    there = switch_off is not None and mechanism.read() is not None
+    there = False
+    if switch_off is not None:
+        try:
+            there = mechanism.read() is not None
+        except ValueError:  # plistlib's InvalidFileException: a file is there
+            there = True
     mechanism.remove()
-    if there:
-        switch_off()
-    return status(mechanism, command=command)
+    note = (switch_off() or "") if there else ""
+    entry = status(mechanism, command=command)
+    return dataclasses.replace(entry, note=note) if note else entry

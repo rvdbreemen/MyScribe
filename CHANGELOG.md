@@ -34,7 +34,9 @@
   login: the setup runs before MyScribe starts, and loading it then would
   start a second MyScribe. Switching it off
   deletes the plist and then runs `launchctl bootout`. That stops a MyScribe
-  launchd started right away. A job that is running is not put back in the
+  launchd started right away. If launchctl cannot be started, the switch is
+  off all the same and Settings says MyScribe runs until you quit it or log
+  out. A plist that will not parse is removed too. A job that is running is not put back in the
   queue; per ADR-028 its runner may go on working without MyScribe until it
   ends. The card warns about the stop first. A MyScribe opened from the disk image or Downloads
   runs from a temporary copy (App Translocation). It is not registered, and

@@ -1079,13 +1079,15 @@ class _FakeAgent(_FakeMechanism):
         self.note = ""
         self.booted_out = 0
         self.loaded = 0
+        self.off_note = ""
 
     def switch_on(self) -> str:
         self.loaded += 1
         return self.note
 
-    def switch_off(self) -> None:
+    def switch_off(self) -> str:
         self.booted_out += 1
+        return self.off_note
 
 
 @pytest.fixture
@@ -1161,6 +1163,21 @@ def test_what_launchd_said_on_switching_on_reaches_the_page(client, mac_agent):
     assert on.status_code == 200
     assert mac_agent.value is not None
     assert "next login" in on.text and "exit 5" in on.text
+
+
+def test_a_bootout_launchctl_could_not_run_is_an_off_switch_that_says_so(client, mac_agent):
+    """TASK-112.05 review. The plist is gone before launchctl is asked, so
+    the switch is off whatever launchctl did: a 200 with what went wrong,
+    not a 500 that says the entry could not be changed."""
+    mac_agent.write(AT_LOGIN)
+    mac_agent.off_note = ("launchctl could not be asked to stop it now (Permission denied); "
+                          "the MyScribe launchd started runs until you quit it or log out.")
+
+    off = client.post("/settings/autostart", data={"enabled": "0"}, headers=HX, follow_redirects=False)
+
+    assert off.status_code == 200
+    assert mac_agent.value is None
+    assert "Permission denied" in off.text and "log out" in off.text
 
 
 def test_the_settings_switch_loads_the_agent_now(client, mac_agent):

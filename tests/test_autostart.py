@@ -1333,6 +1333,39 @@ def test_switching_off_removes_the_plist_then_boots_out_without_waiting(tmp_path
     assert real.calls == []
 
 
+def test_a_bootout_that_cannot_be_started_still_leaves_the_switch_off(tmp_path):
+    """TASK-112.05 review. The plist is already gone when launchctl is asked,
+    so a launchctl that cannot even be started (OSError from Popen) does not
+    make the switch fail: it is off, and the note says the running MyScribe
+    was not stopped now."""
+    agent = _agent(tmp_path)
+    autostart.enable(agent, command=MAC_COMMAND)
+
+    def broken(args, *, wait=True):
+        raise PermissionError(13, "Permission denied", "/bin/launchctl")
+
+    agent.run = broken
+
+    off = autostart.disable(agent, command=MAC_COMMAND)
+
+    assert off.on is False and not agent.path.exists()
+    assert "Permission denied" in off.note and "log out" in off.note
+
+
+def test_a_plist_that_will_not_parse_is_still_switched_off(tmp_path):
+    """A corrupt plist (plistlib raises ValueError) was removable before
+    disable() read it first. It still is: it is removed, and launchd is
+    asked to boot out whatever it loaded under the label."""
+    agent = _agent(tmp_path, uid=501)
+    agent.folder.mkdir(parents=True)
+    agent.path.write_bytes(b"not a plist at all")
+
+    off = autostart.disable(agent, command=MAC_COMMAND)
+
+    assert off.on is False and not agent.path.exists()
+    assert agent.run.calls == [(("bootout", f"gui/501/{autostart.LABEL}"), False)]
+
+
 def test_only_the_launch_agent_says_switching_off_stops_myscribe(tmp_path):
     """The card's warning comes from the entry. A Windows Run value, a desktop
     file and a disabled user unit stop nothing that is running."""
