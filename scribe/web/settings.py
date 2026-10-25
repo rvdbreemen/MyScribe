@@ -437,18 +437,26 @@ def autostart_context(*, flash: str | None = None) -> dict:
         entry = autostart.status()
     except (OSError, ValueError) as refused:
         return {"autostart": None, "autostart_error": str(refused), "flash": flash}
+    running = os.environ.get(autostart.LAUNCHER_VARIABLE, "")
+    translocated = autostart.translocated(running)
     return {
         "autostart": {
             "on": entry.on,
             "where": entry.where,
             "command": entry.command,
             "can_switch": entry.on or bool(entry.command),
+            # Why switching on is refused, when that is known - a translocated
+            # Mac copy (ADR-026 Must Not; TASK-112.05, TASK-119) - and whether
+            # switching off also stops MyScribe now (the LaunchAgent's bootout).
+            # `translocated` is asked of the running copy whatever the entry
+            # holds, so an entry that is on still gets the reason, not "switch
+            # it off and on", which would register the temporary path.
+            "refused": entry.refused or (autostart.TRANSLOCATED if translocated else ""),
+            "translocated": translocated,
+            "stops_now": entry.stops_now,
             # The entry starts another file than the one running (TASK-119).
             "elsewhere": entry.elsewhere,
-            "running": os.environ.get(autostart.LAUNCHER_VARIABLE, ""),
-            # A Mac copy macOS translocated: switching on is refused, so the
-            # card says to move it rather than to switch (ADR-026 Must Not).
-            "translocated": autostart.translocated(os.environ.get(autostart.LAUNCHER_VARIABLE)),
+            "running": running,
         },
         "autostart_error": None,
         "flash": flash,
@@ -865,18 +873,27 @@ async def set_autostart(request: Request) -> Response:
     """
     fields = transcribe_dialog._fields(await request.form())
     wanted = library._truthy(fields.get(FIELD_AUTOSTART))
+    note = ""
     try:
         if wanted:
             autostart.enable()
+            # Loaded now from here only: this app is serving, so the launcher
+            # launchd's RunAtLoad starts finds it and exits 0 (TASK-112.05).
+            note = autostart.load_now()
         else:
-            autostart.disable()
+            note = autostart.disable().note
     except autostart.NothingToStart as nothing:
         raise HTTPException(status_code=409, detail=str(nothing)) from None
     except (OSError, ValueError) as refused:
         raise HTTPException(
             status_code=500, detail=f"the login entry could not be changed: {refused}"
         ) from None
-    return _autostart_answer(request, flash=FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF)
+    # On a Mac the plist can be written while launchd would not load it now,
+    # or removed while launchctl could not be asked to stop the job; the
+    # switch is where it was put all the same, and the line says both
+    # (TASK-112.05).
+    flash = FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF
+    return _autostart_answer(request, flash=f"{flash} {note}" if note else flash)
 
 
 @router.post("/settings/stop", include_in_schema=False)

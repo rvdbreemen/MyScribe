@@ -39,6 +39,33 @@
 
 ### Changed
 
+- **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
+  runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser
+  --headless` instead of `open -a`, which returned at once. launchd restarts
+  it after any exit that is not 0. The launcher means one with code 70, when
+  the app died under it; a clean stop, a busy port or another MyScribe
+  already running exit 0. An error in the launcher itself (code 1) is
+  restarted too. launchd starts it at most once every 10 seconds, but unlike
+  systemd on Linux it never gives up: a MyScribe that fails every time, or
+  was deleted while its plist stayed, is retried every 10 seconds, at every
+  login, until the plist is removed (not seen on a Mac). launchd writes its output to
+  `~/Library/Logs/MyScribe/launchd.log`. It waits 240 seconds for a
+  stop before it kills MyScribe. Switching it on in Settings also loads it at
+  once with `launchctl bootstrap`. If launchd refuses, the plist stays, it
+  loads at your next login, and Settings shows what launchd said. A Yes in
+  the first-start setup only writes the plist, which loads at your next
+  login: the setup runs before MyScribe starts, and loading it then would
+  start a second MyScribe. Switching it off
+  deletes the plist and then runs `launchctl bootout`. That stops a MyScribe
+  launchd started right away. If launchctl cannot be started, the switch is
+  off all the same and Settings says MyScribe runs until you quit it or log
+  out. A plist that will not parse is removed too. A job that is running is not put back in the
+  queue; per ADR-028 its runner may go on working without MyScribe until it
+  ends. The card warns about the stop first. A MyScribe opened from the disk image or Downloads
+  runs from a temporary copy (App Translocation). It is not registered, and
+  Settings says to move it to Applications. A plist an earlier version wrote
+  for the same app is rewritten at the next start. None of this has been run
+  on a Mac yet (TASK-112.05).
 - **On Linux, Start at login is a systemd user unit.** Where your login runs
   a systemd user session, switching it on writes
   `~/.config/systemd/user/myscribe.service` and enables it. MyScribe then

@@ -122,17 +122,60 @@ marker file appears in the data directory (`ls "$SCRIBE_DATA_DIR"` or
 
 ## 6. Start at login
 
-TASK-089.21 criterion 6. Built from Apple's launchd documentation; no login
-has honoured it anywhere.
+TASK-089.21 criterion 6, TASK-112.05 criteria 1-4. **Not run.** Built from
+Apple's launchd documentation and checked on Windows with unit tests and
+plistlib only. No launchd, `launchctl`, real login or App Translocation has
+run any of it.
 
-1. Settings > Start at login: switch it on.
-2. `ls -l ~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist && plutil -p ~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist`
-   Expected: the file exists, `RunAtLoad` is true, and `ProgramArguments`
-   is `/usr/bin/open -a <the .app> --args --at-login --no-browser`.
-3. Log out and in. Expected: `curl -s http://127.0.0.1:4242/health` answers
-   without anybody having started MyScribe.
-4. Switch it off in Settings, log out and in. Expected: the plist is gone and
-   `/health` does not answer.
+Use a release build that has TASK-112.05, installed in `/Applications`. The
+label is `io.github.rvdbreemen.myscribe`, so in the commands below:
+
+    P=~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist
+    J=gui/$(id -u)/io.github.rvdbreemen.myscribe
+
+1. Open MyScribe from `/Applications`. Settings > Start at login: switch it
+   on. Then run `plutil -lint "$P" && plutil -p "$P"`.
+   Expected: the file is OK. `ProgramArguments` is
+   `/Applications/MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser --headless`,
+   with no `/usr/bin/open`. `KeepAlive` is `{SuccessfulExit => 0}`.
+   `ExitTimeOut` is 240. `ProcessType` is Interactive and
+   `LimitLoadToSessionType` is Aqua. `AssociatedBundleIdentifiers` holds the
+   label. `StandardOutPath` and `StandardErrorPath` are both
+   `~/Library/Logs/MyScribe/launchd.log`.
+2. Run `launchctl print "$J" | head -20`. Expected: the job is there (the
+   switch bootstrapped it). Its last exit is 0, because the launcher it
+   started found this MyScribe already serving. If the card's line said
+   "launchd did not load it now", paste that line.
+3. Quit MyScribe and log out and in. Expected: no window opens, and
+   `curl -s http://127.0.0.1:4242/health` answers.
+   `ls -l ~/Library/Logs/MyScribe/launchd.log` exists. `launchctl print "$J"`
+   shows a pid.
+4. Crash the app, not the launcher. Run `pgrep -fl scribe` and `kill -9` the
+   python process of the app (not `Contents/MacOS/MyScribe`). Expected: the
+   launcher exits 70, and launchd starts it again. Within about 10 seconds
+   `launchctl print "$J"` shows a new pid and "last exit code = 70", and
+   `/health` answers again. Then use Settings > Stop. Expected: MyScribe stops
+   and is not restarted, because a clean stop exits 0.
+5. Start MyScribe again, so launchd starts it: `launchctl kickstart "$J"`.
+   Then switch Start at login off in Settings. Expected: before the click,
+   the card warns that switching off also stops MyScribe now, and the
+   browser asks once more. After it, the page loses its server, `$P` is gone,
+   and `launchctl print "$J"` says it could not find the service. Log out
+   and in: `/health` does not answer.
+6. Translocation. Download the dmg again, so it carries the quarantine flag.
+   Open MyScribe straight from the dmg, without dragging it to Applications.
+   Settings > Start at login. Expected: no switch, and a line that says
+   MyScribe runs from a temporary copy and must be moved to Applications.
+   `ls "$P"` shows nothing new. Paste what `ps -o command= -p $(pgrep -f
+   'Contents/MacOS/MyScribe' | head -1)` prints, so we can see the
+   AppTranslocation path.
+7. The first-start setup. Switch it off in Settings and quit MyScribe.
+   Start it with `/Applications/MyScribe.app/Contents/MacOS/MyScribe --setup`
+   and answer Yes to start at login. Expected: `$P` exists, but
+   `launchctl print "$J"` says it could not find the service: the setup
+   writes the plist and does not load it, because nothing serves yet.
+   `pgrep -fl 'Contents/MacOS/MyScribe'` shows one launcher, not two. Log
+   out and in: `/health` answers.
 
 ## 7. What an uninstall leaves behind
 

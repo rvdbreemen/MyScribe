@@ -229,8 +229,11 @@ then removes
   Advanced system settings > Environment Variables, for your account.
 
 **macOS** - drag `MyScribe.app` to the Bin. Switch *Start at login* off in
-Settings first, or delete
-`~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist` by hand. Your
+Settings first; if MyScribe was started at login, that also stops it at
+once. By hand: run
+`launchctl bootout gui/$(id -u)/io.github.rvdbreemen.myscribe` and delete
+`~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist`. The log
+launchd wrote stays in `~/Library/Logs/MyScribe`. Your
 home stays in `~/Library/Application Support/MyScribe` (or the folder you
 chose), with `~/Library/Application Support/MyScribe.location` beside it. An
 Ollama installed through MyScribe is `/Applications/Ollama.app`; its models

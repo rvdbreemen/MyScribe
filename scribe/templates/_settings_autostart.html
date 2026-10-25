@@ -4,13 +4,17 @@
 
   Context (from scribe.web.settings.autostart_context):
 
-      autostart        {on, where, command, can_switch, elsewhere, running}
-                       read from the OS on this very request, or nothing at
-                       all when the OS refused to answer. `elsewhere`: the
-                       entry starts another file than `running`, the
-                       launcher this MyScribe was started from (TASK-119).
-                       `translocated`: `running` is a Mac copy under
-                       AppTranslocation, which is never registered (ADR-026)
+      autostart        {on, where, command, can_switch, refused,
+                       translocated, stops_now, elsewhere, running} read from
+                       the OS on this very request, or nothing at all when
+                       the OS refused to answer. `elsewhere`: the entry
+                       starts another file than `running`, the launcher this
+                       MyScribe was started from (TASK-119). `translocated`:
+                       `running` is a Mac copy under AppTranslocation, which
+                       is never registered (ADR-026); `refused` is then the
+                       one sentence that says so (autostart.TRANSLOCATED).
+                       `stops_now`: switching off also stops MyScribe now
+                       (TASK-112.05)
       autostart_error  what it said when it refused
       flash            a line for the page's status region, or none
       oob              whether this is a fragment response carrying the flash
@@ -20,6 +24,12 @@
   "On" is the one thing about a login entry a user cannot check for himself:
   he can compare these two lines with what regedit, Finder or `cat` shows and
   see the same thing, or see that they differ.
+
+  On a Mac, switching off unloads the LaunchAgent at once, which stops a
+  MyScribe launchd started - this very page's - so the card says so first:
+  in text, which a post without JavaScript shows too, and once more with
+  hx-confirm. A translocated Mac app gets its own reason instead of a switch
+  (TASK-112.05).
 
   No switch at all where nothing is known to start MyScribe again. A button
   that registered a path which is wrong at the next login would be worse than
@@ -38,6 +48,8 @@
   <p class="hint fail">
     This machine would not say whether MyScribe starts at login: {{ autostart_error }}
   </p>
+  {% elif not autostart.can_switch and autostart.refused %}
+  <p class="hint fail">{{ autostart.refused }}</p>
   {% elif not autostart.can_switch %}
   <p class="hint fail">
     Nothing here is known to start MyScribe again after a login, so there is nothing to
@@ -59,9 +71,7 @@
   </dl>
   {% if autostart.translocated %}
   <p class="hint fail">
-    macOS runs this MyScribe from a temporary copy (App Translocation), at
-    <code>{{ autostart.running }}</code>, and that copy is gone at the next login, so it cannot
-    be registered. Move MyScribe.app into Applications and open it from there.
+    {{ autostart.refused }} This copy runs from <code>{{ autostart.running }}</code>.
   </p>
   {% elif autostart.on and autostart.elsewhere %}
   <p class="hint fail">
@@ -70,9 +80,16 @@
   </p>
   {% endif %}
 
+  {% if autostart.on and autostart.stops_now %}
+  <p class="hint warn">
+    Switching this off also stops MyScribe now, if it was started at login: macOS unloads it
+    at once. A job that is running is not put back in the queue.
+  </p>
+  {% endif %}
   {% if autostart.on or not autostart.translocated %}
   <form method="post" action="/settings/autostart"
-        hx-post="/settings/autostart" hx-target="#start-at-login" hx-swap="outerHTML">
+        hx-post="/settings/autostart" hx-target="#start-at-login" hx-swap="outerHTML"
+        {% if autostart.on and autostart.stops_now %}hx-confirm="Switching this off also stops MyScribe now, if it was started at login. Switch it off?"{% endif %}>
     <input type="hidden" name="enabled" value="{{ '0' if autostart.on else '1' }}">
     <button type="submit" class="{{ '' if autostart.on else 'primary' }}">
       {{ 'Do not start at login' if autostart.on else 'Start MyScribe when I log in' }}

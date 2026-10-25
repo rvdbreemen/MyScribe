@@ -1063,6 +1063,134 @@ def test_the_settings_page_survives_an_os_that_will_not_answer(client, monkeypat
     assert "Start at login" in page.text
 
 
+# --- macOS: the reason, the warning and launchd's answer (TASK-112.05) ---------------
+
+
+class _FakeAgent(_FakeMechanism):
+    """The fake entry with the two things only the LaunchAgent has: switching
+    it off stops MyScribe now, and switching it on asks launchd, which may say
+    no while the file is written anyway."""
+
+    where = "/Users/me/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist"
+    stops_when_switched_off = True
+
+    def __init__(self):
+        super().__init__()
+        self.note = ""
+        self.booted_out = 0
+        self.loaded = 0
+        self.off_note = ""
+
+    def switch_on(self) -> str:
+        self.loaded += 1
+        return self.note
+
+    def switch_off(self) -> str:
+        self.booted_out += 1
+        return self.off_note
+
+
+@pytest.fixture
+def mac_agent(monkeypatch):
+    from scribe import autostart
+
+    mechanism = _FakeAgent()
+    monkeypatch.setattr(autostart, "default_mechanism", lambda *args, **kwargs: mechanism)
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: AT_LOGIN)
+    return mechanism
+
+
+TRANSLOCATED = "/private/var/folders/xy/abc/T/AppTranslocation/0F1E-2D3C/d/MyScribe.app"
+
+
+def test_a_translocated_mac_app_gets_the_reason_on_the_card(client, monkeypatch, login_entry):
+    """AC #2: the card says why there is no switch - the temporary copy and
+    what to do about it - rather than the generic "nothing is known"."""
+    from scribe import autostart
+
+    real = autostart.refusal
+    monkeypatch.setattr(autostart, "start_command", lambda **kwargs: None)
+    monkeypatch.setattr(autostart, "refusal", lambda **kwargs: real(
+        environ={autostart.LAUNCHER_VARIABLE: TRANSLOCATED}, platform="darwin"))
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert "temporary" in card and "Applications" in card
+    assert "Nothing here is known" not in card
+    assert 'name="enabled" value="1"' not in card
+
+    refused = client.post("/settings/autostart", data={"enabled": "1"}, follow_redirects=False)
+    assert refused.status_code == 409 and "Applications" in refused.json()["detail"]
+
+
+def test_on_a_mac_the_off_switch_warns_that_it_stops_myscribe_now(client, mac_agent):
+    """Robert's decision of 2026-10-24: off boots the agent out, which stops
+    a MyScribe launchd started - this one, mid-request. The card says so
+    before the click, in text a form post without JavaScript shows too, and
+    htmx asks once more."""
+    mac_agent.write(AT_LOGIN)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    # In the page's text, not only in the confirm attribute: a post without
+    # JavaScript never shows that one.
+    shown = re.sub(r"<[^>]*>", " ", card)
+    assert "also stops MyScribe now" in shown
+    assert "hx-confirm=" in card and "also stops MyScribe now" in card.split("hx-confirm=", 1)[1]
+
+    off = client.post("/settings/autostart", data={"enabled": "0"}, follow_redirects=False)
+    assert off.status_code in (200, 303)
+    assert mac_agent.value is None and mac_agent.booted_out == 1
+
+
+def test_elsewhere_the_off_switch_does_not_warn(client, login_entry):
+    """A Run value or a user unit that is switched off stops nothing."""
+    login_entry.write(AT_LOGIN)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert "stops MyScribe now" not in card
+    assert "hx-confirm=" not in card
+
+
+def test_what_launchd_said_on_switching_on_reaches_the_page(client, mac_agent):
+    """A bootstrap launchd refused leaves the plist, which loads at the next
+    login - so the answer is a 200 that says both, not a 500."""
+    mac_agent.note = "launchd did not load it now (exit 5); it starts at your next login."
+
+    on = client.post("/settings/autostart", data={"enabled": "1"}, headers=HX, follow_redirects=False)
+
+    assert on.status_code == 200
+    assert mac_agent.value is not None
+    assert "next login" in on.text and "exit 5" in on.text
+
+
+def test_a_bootout_launchctl_could_not_run_is_an_off_switch_that_says_so(client, mac_agent):
+    """TASK-112.05 review. The plist is gone before launchctl is asked, so
+    the switch is off whatever launchctl did: a 200 with what went wrong,
+    not a 500 that says the entry could not be changed."""
+    mac_agent.write(AT_LOGIN)
+    mac_agent.off_note = ("launchctl could not be asked to stop it now (Permission denied); "
+                          "the MyScribe launchd started runs until you quit it or log out.")
+
+    off = client.post("/settings/autostart", data={"enabled": "0"}, headers=HX, follow_redirects=False)
+
+    assert off.status_code == 200
+    assert mac_agent.value is None
+    assert "Permission denied" in off.text and "log out" in off.text
+
+
+def test_the_settings_switch_loads_the_agent_now(client, mac_agent):
+    """AC #3. The Settings door is the one that loads the agent at once: the
+    app answering the click is already serving, so the launcher RunAtLoad
+    starts finds it and exits 0. `enable()` alone loads nothing - the
+    first-start sitting calls it before anything serves (TASK-112.05 review)."""
+    on = client.post("/settings/autostart", data={"enabled": "1"}, headers=HX, follow_redirects=False)
+
+    assert on.status_code == 200
+    assert mac_agent.value is not None and mac_agent.loaded == 1
+
+
 def test_the_card_says_when_the_entry_starts_another_file_than_the_running_one(client, monkeypatch, login_entry):
     """TASK-119, Robert's option C. An entry naming another file - an older
     AppImage in another folder, say - starts that file at the next login. The
@@ -1099,7 +1227,6 @@ def test_the_card_says_nothing_extra_when_the_entry_starts_the_running_file(clie
     assert "starts another file" not in card
 
 
-TRANSLOCATED = "/private/var/folders/x1/abc123/T/AppTranslocation/1F2E3D4C-0000-4ABC-9DEF-0123456789AB/d/MyScribe.app"
 AT_LOGIN_MAC = ("/usr/bin/open", "-a", "/Applications/MyScribe.app", "--args", "--at-login", "--no-browser", "--headless")
 
 
