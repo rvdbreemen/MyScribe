@@ -38,6 +38,20 @@ from test_phone_door import FakeClock, FakePublisher
 V1 = "/api/v1"
 
 
+@pytest.fixture(autouse=True)
+def tmp_inside_the_roots(tmp_path, monkeypatch):
+    """pytest's tmp_path has to lie under a browse root, or every watch folder
+    these tests add is the 403 a folder outside the roots gets - by design,
+    the same rule the Settings page applies (`settings.parse_watch_path`).
+    On Windows the default root is the whole profile drive and the temp
+    directory is on it; on Linux and macOS the default is the home directory
+    and the temp directory is /tmp or /private/var, which is outside. So the
+    roots are widened to include tmp_path, as test_ingest_watching does.
+    Tests that want a folder outside the roots set them explicitly.
+    test_cli and test_mcp_server import this fixture for the same reason."""
+    monkeypatch.setattr(fsbrowse, "ALLOWED_ROOTS", (*fsbrowse.ALLOWED_ROOTS, tmp_path))
+
+
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     data = tmp_path / "data"

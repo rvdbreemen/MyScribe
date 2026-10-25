@@ -28,7 +28,7 @@ import pytest
 
 from scribe import cli, db, mcp_server
 from seed import seed_job, seed_media, seed_run
-from test_api_v1 import tiny_wav
+from test_api_v1 import tiny_wav, tmp_inside_the_roots  # noqa: F401
 from test_cli import ClientTransport, app, conn, data_dir, db_path, jobs_of, live, transport  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent

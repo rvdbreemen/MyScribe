@@ -31,7 +31,7 @@ from fastapi.testclient import TestClient
 from scribe import cli, db, paths
 from scribe.app import create_app
 from seed import seed_job, seed_media, seed_run
-from test_api_v1 import tiny_wav
+from test_api_v1 import tiny_wav, tmp_inside_the_roots  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent
 E = cli.Exit
