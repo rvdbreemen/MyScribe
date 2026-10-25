@@ -2188,7 +2188,7 @@
       "title": "A login start that cannot serve shows one notice on Windows",
       "path": "ADR-039-a-login-start-that-cannot-serve-shows-one-notice-on-windows.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-10-25",
       "decision_summary": "Chosen option: C, decided by Robert on 2026-10-24 and kept on 2026-10-25.",
       "topics": [

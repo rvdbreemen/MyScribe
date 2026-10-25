@@ -1,7 +1,7 @@
 ---
 id: "ADR-039"
 title: "A login start that cannot serve shows one notice on Windows"
-status: "Proposed"
+status: "Accepted"
 date: "2026-10-25"
 binding: false
 gate: null
@@ -32,7 +32,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-10-25.
+Accepted, 2026-10-25.
 
 ## Status History
 
@@ -47,6 +47,11 @@ status_history:
     status: Proposed
     changed_by: Claude (agent, session 2026-10-25)
     reason: ADR-039 amends ADR-026's no-window Must for a failed login start
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
+    reason: "Robert accepted ADR-039 in the session of 2026-10-25: 'Ja, schrijven + accepteren'"
     changed_via: adr-kit lifecycle
 ```
 
