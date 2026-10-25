@@ -104,8 +104,11 @@ notes, which carry no `format`, so its combine is backed by the probes only.
 
 On 2026-10-25 (library copy, media 61) `qwen3.5:9b` ran minutes twice:
 both combines valid JSON, each action's time a real transcript moment (3 of
-3, jobs 430 and 431), every call answered with thinking off. The same day
-`qwen3.5:4b` action items ended done with no time on any of 49 items.
+3, both runs). The server log shows every call asked twice, the ADR-029
+pattern of a retry with thinking off. The same day `qwen3.5:4b` action
+items ended done with no time on any of 49 items. Notes kept neither the
+30-note limit nor, on the 9B's first chunk, the rule against copying: that
+part is the prompt's.
 
 ## Decision Contract
 
@@ -142,7 +145,7 @@ both combines valid JSON, each action's time a real transcript moment (3 of
   `{hello world}`, the 4B wrote `"1234567890"` (2 of 2, review probe of
   2026-10-25), so a required `chapters.start` can get an unchecked made-up time.
 * Bad: thinking off, the 4B wrote null for a time; minutes and action items think.
-  The 9B, also thinking off, wrote real times (Confirmation): a model limit.
+  The 9B, also thinking off, wrote real times (Confirmation): a 4B limit.
 * Neutral: a daemon without structured outputs ignores `format`, as before.
 
 ## Related Decisions
