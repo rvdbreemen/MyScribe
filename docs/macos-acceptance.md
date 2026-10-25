@@ -185,6 +185,35 @@ reading. Remove `/Applications/MyScribe.app`, then check that the home
 there, and that the LaunchAgent from point 6 is gone if you switched it off
 first. Say what you found.
 
+## 8. The tray icon
+
+TASK-112.11 criteria 3 and 4, ADR-038. **Not run.** The macOS path is wired
+and unit-tested on Windows with a fake AppKit; no Mac has shown it. Use a
+release build that has TASK-112.11, with Start at login on (point 6).
+
+1. Log out and in. Expected: an icon in the menu bar, and no MyScribe in the
+   Dock. `grep -i tray ~/Library/Application\ Support/MyScribe/logs/launcher.log`
+   says "MyScribe shows a tray icon". If it says "No tray icon (...)", paste
+   that line.
+2. Click the icon. Expected: a menu with **Open MyScribe** (bold) and
+   **Stop MyScribe**. Take a screenshot. **Open MyScribe** opens
+   `http://127.0.0.1:4242/` in the browser.
+3. Queue a transcription, and while it runs choose **Stop MyScribe**.
+   Expected: the icon goes within about a minute, `/health` stops answering,
+   `launchctl print "$J"` shows last exit code 0 and no new pid, and the
+   app's log (`~/Library/Application Support/MyScribe/data/logs/app.log`)
+   has `app.stop_requested` with that job. At the next start the job is back
+   at the front of the queue.
+4. Start it again (`launchctl kickstart "$J"`). Run
+   `pkill -INT -f Contents/MacOS/MyScribe`, and on a third start
+   `pkill -TERM -f Contents/MacOS/MyScribe`. Expected each time: the icon
+   goes, `app.stop_requested` is in the app's log, nothing answers `/health`,
+   and `pgrep -fl scribe` shows no python left. A MyScribe still serving
+   after the icon went is the bug ADR-038 guards against: pystray's own
+   Ctrl+C handler exits without stopping the app.
+5. Crash the app as in point 6.4. Expected: the icon goes with the launcher,
+   and comes back when launchd restarts it.
+
 ---
 
 ## What to send back

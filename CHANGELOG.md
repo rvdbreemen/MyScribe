@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Added
+
+- **A tray icon while MyScribe runs in the background.** Started at login,
+  MyScribe now shows an icon in the tray (the notification area on Windows,
+  the menu bar on macOS) with **Open MyScribe** and **Stop MyScribe**. Stop
+  works like the Stop button in Settings: a running job goes back to the front
+  of the queue. On Windows 11 a new icon starts in the overflow beside the
+  clock. A Linux desktop without a system tray gets no icon, and the launcher's
+  log says so. The installed MyScribe now includes pystray (LGPL-3.0) for the
+  icon, shipped as replaceable source with its licence (TASK-112.11).
+
 ### Fixed
 
 - **After a Linux update, Start at login starts the new AppImage.** Each

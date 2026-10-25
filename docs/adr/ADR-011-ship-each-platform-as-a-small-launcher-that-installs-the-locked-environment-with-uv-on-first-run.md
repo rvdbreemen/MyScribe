@@ -12,6 +12,7 @@ superseded_by: null
 related:
   - "ADR-015"
   - "ADR-017"
+  - "ADR-038"
 topics:
   - "packaging"
   - "release"
@@ -63,6 +64,11 @@ status_history:
     status: Accepted
     changed_by: Claude (agent, session 2026-09-20)
     reason: Related to ADR-017
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Claude (agent, session 2026-10-25)
+    reason: ADR-038 amends ADR-011's standard-library-only rule for the frozen launcher's tray (TASK-112.11)
     changed_via: adr-kit lifecycle
 ```
 

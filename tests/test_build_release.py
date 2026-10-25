@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "packaging"))
 try:
@@ -85,3 +87,86 @@ def test_the_ad_hoc_signature_is_deep_forced_and_verified():
     build_release.sign_ad_hoc(Path("MyScribe.app"), run=commands.append)
     assert commands == [["codesign", "--force", "--deep", "--sign", "-", Path("MyScribe.app")],
                         ["codesign", "--verify", "--deep", "--strict", Path("MyScribe.app")]]
+
+
+# --- TASK-112.11: the tray ships as replaceable source (ADR-038) ------------------
+
+
+def _frozen_args(tmp_path, monkeypatch, target="windows-x64"):
+    commands = []
+    monkeypatch.setattr(build_release, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(build_release, "run", commands.append)
+    monkeypatch.setattr(build_release, "replaceable_tray", lambda frozen: frozen)
+    monkeypatch.setattr(build_release, "stamp_bundle_version", lambda app, value: None)
+    build_release.freeze(Path("pyinstaller"), tmp_path / "payload", target)
+    return [str(part) for part in commands[0]]
+
+
+def test_the_freeze_names_pystray_and_the_hooks_that_keep_it_source(tmp_path, monkeypatch):
+    """The launcher imports pystray inside a function, and the hooks beside it
+    collect it as loose files; without both flags the frozen build would carry
+    no tray, or one compiled into the executable."""
+    for target in ("windows-x64", "macos-arm64", "linux-x64"):
+        args = _frozen_args(tmp_path, monkeypatch, target)
+        hidden = args.index("--hidden-import")
+        assert args[hidden + 1] == "pystray"
+        hooks = args.index("--additional-hooks-dir")
+        assert Path(args[hooks + 1]) == REPO / "packaging" / "launcher" / "hooks"
+
+
+def test_the_freeze_checks_the_bundle_it_made(tmp_path, monkeypatch):
+    checked = []
+    monkeypatch.setattr(build_release, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(build_release, "run", lambda command: None)
+    monkeypatch.setattr(build_release, "replaceable_tray", checked.append)
+
+    out = build_release.freeze(Path("pyinstaller"), tmp_path / "payload", "linux-x64")
+
+    assert checked == [out]
+
+
+def _bundle_with(tmp_path, *files):
+    frozen = tmp_path / "frozen"
+    for name in files:
+        path = frozen / "MyScribe" / "_internal" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    frozen.mkdir(exist_ok=True)
+    return frozen
+
+
+def test_a_bundle_with_pystray_as_source_and_its_licence_passes(tmp_path):
+    frozen = _bundle_with(tmp_path, "pystray/__init__.py", "pystray-0.19.5.dist-info/COPYING.LGPL")
+    assert build_release.replaceable_tray(frozen) == frozen / "MyScribe" / "_internal" / "pystray"
+
+
+def test_a_bundle_without_pystray_as_source_fails_the_build(tmp_path):
+    frozen = _bundle_with(tmp_path, "pystray-0.19.5.dist-info/COPYING.LGPL")
+    with pytest.raises(SystemExit, match="loose .py files"):
+        build_release.replaceable_tray(frozen)
+
+
+def test_a_bundle_without_pystrays_licence_fails_the_build(tmp_path):
+    frozen = _bundle_with(tmp_path, "pystray/__init__.py")
+    with pytest.raises(SystemExit, match="COPYING.LGPL"):
+        build_release.replaceable_tray(frozen)
+
+
+def test_the_hooks_collect_the_lgpl_modules_as_source():
+    import ast
+
+    for hook, package in (("hook-pystray.py", "pystray"), ("hook-Xlib.py", "python-xlib")):
+        tree = ast.parse((REPO / "packaging" / "launcher" / "hooks" / hook).read_text(encoding="utf-8"))
+        values = {node.targets[0].id: node.value for node in tree.body
+                  if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)}
+        assert ast.literal_eval(values["module_collection_mode"]) == "py", hook
+        assert ast.unparse(values["datas"]) == f"copy_metadata({package!r})", hook
+
+
+def test_the_build_requirements_pin_the_tray_with_hashes():
+    pins = (REPO / "packaging" / "build-requirements.txt").read_text(encoding="utf-8")
+    for line in ("pystray==0.19.5 ;", "pillow==13.0.0 ;", "python-xlib==0.33 ; platform_machine == 'x86_64' and sys_platform == 'linux'",
+                 "pyobjc-framework-quartz==12.2.2 ; platform_machine == 'arm64' and sys_platform == 'darwin'"):
+        assert line in pins
+    block = pins.split("pystray==0.19.5", 1)[1].split("\n    # via", 1)[0]
+    assert "--hash=sha256:" in block

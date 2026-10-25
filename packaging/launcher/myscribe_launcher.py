@@ -2902,6 +2902,174 @@ EX_SOFTWARE from sysexits.h, clear of the 1 Python itself exits with on an
 uncaught exception (TASK-112.02)."""
 
 
+# --- the tray icon (TASK-112.11, ADR-038) ----------------------------------------
+#
+# The one place the launcher may use more than the standard library: pystray,
+# with Pillow and its backend (python-xlib on Linux, pyobjc on macOS), shipped
+# in the frozen builds only (`packaging/build-requirements.in`). Every one of
+# them is imported inside a function, so the launcher still starts from source
+# and in every door without them; the headless door then serves without a
+# tray and says so in launcher.log. Only the headless door has a tray: it is
+# what a login entry starts, and the window has its own Open and Quit.
+
+TRAY_OPEN = "Open MyScribe"
+TRAY_STOP = "Stop MyScribe"
+TRAY_RUNNING = "MyScribe is running at {url}"
+TRAY_STOPPING = "MyScribe is stopping..."
+TRAY_SHOWN = "MyScribe shows a tray icon; Open MyScribe and Stop MyScribe are in its menu."
+TRAY_NONE = ("No tray icon ({reason}). MyScribe runs without one: Stop MyScribe in Settings > "
+             "Start at login, or MyScribe --stop, stops it.")
+TRAY_NO_HOST = "nothing on this desktop shows tray icons (no X11 system tray)"
+
+
+def _load_pystray():
+    """pystray, or what importing it raised. Not only ImportError: its xorg
+    backend opens the display at import time, and without one python-xlib
+    raises its own error."""
+    import pystray
+
+    return pystray
+
+
+def xembed_tray_present() -> bool:
+    """Whether an X11 system tray will take the xorg backend's icon.
+
+    That backend docks into whatever owns ``_NET_SYSTEM_TRAY_S<screen>``, and
+    with nobody owning it - GNOME without an extension that hosts tray icons -
+    it runs an icon nobody can see, without a word (pystray 0.19.5,
+    ``_xorg.py``). Asked here first, so the log can say there is no tray."""
+    import Xlib.X
+    import Xlib.display
+
+    display = Xlib.display.Display()
+    try:
+        atom = display.intern_atom(f"_NET_SYSTEM_TRAY_S{display.get_default_screen()}")
+        return display.get_selection_owner(atom) != Xlib.X.NONE
+    finally:
+        display.close()
+
+
+def tray_image():
+    """The icon: a filled circle with an M in it, drawn in memory. Nothing is
+    read from a file, so Pillow never parses anything it was handed."""
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((2, 2, 61, 61), fill=(37, 99, 235, 255))
+    draw.line([(17, 46), (17, 18), (32, 36), (47, 18), (47, 46)], fill=(255, 255, 255, 255),
+              width=6, joint="curve")
+    return image
+
+
+class Tray:
+    """The icon and its menu: Open MyScribe, and Stop MyScribe.
+
+    Stop only asks. The menu callback runs on the tray's own loop, and a stop
+    done there would hold that loop for the whole `STOP_WAIT`; the headless
+    door reads `stop_asked` and stops the way Ctrl+C does - through the stop
+    route first (ADR-028, ADR-032), the hard stop after it.
+
+    On Windows and Linux the icon runs on a thread of its own, because the
+    main thread is where Python runs its signal handlers, and a main thread
+    blocked in a Win32 or X11 loop would starve Ctrl+C and SIGTERM. AppKit
+    insists on the main thread, so on macOS the headless door hands it over
+    (`serve_on_main_thread`).
+    """
+
+    def __init__(self, pystray, image, url: str, open_url: Callable[[], None],
+                 platform: str = sys.platform):
+        self.stop_asked = threading.Event()
+        self.platform = platform
+        self._open_url = open_url
+        self.thread: threading.Thread | None = None
+        self.icon = pystray.Icon(
+            APP_NAME, image, TRAY_RUNNING.format(url=url),
+            menu=pystray.Menu(
+                pystray.MenuItem(TRAY_OPEN, self.open, default=True),
+                pystray.MenuItem(TRAY_STOP, self.ask_stop),
+            ),
+        )
+
+    @property
+    def main_thread(self) -> bool:
+        return self.platform == "darwin"
+
+    def open(self) -> None:
+        self._open_url()
+
+    def ask_stop(self) -> None:
+        self.stop_asked.set()
+        with contextlib.suppress(Exception):  # a title that cannot change stops nothing
+            self.icon.title = TRAY_STOPPING
+
+    def show(self) -> None:
+        self.thread = threading.Thread(target=self._run, name="myscribe-tray", daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        with contextlib.suppress(Exception):  # a tray that fails leaves MyScribe serving
+            self.icon.run()
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self.icon.stop()
+        if self.thread is not None:
+            self.thread.join(2.0)  # long enough for the icon to be taken out of the tray
+
+    def serve_on_main_thread(self, alive: Callable[[], bool]) -> bool:
+        """macOS: run the status item's loop here until the app ends or Stop
+        is asked; True when it was asked.
+
+        pystray's loop sets SIGINT to `NSApp.terminate_`, which exits the
+        process on the spot - before `launch.stop` has stopped the app. So
+        SIGINT and SIGTERM are taken back through `PyObjCTools.MachSignals`
+        once the loop runs (`callAfter` runs on that loop, after pystray set
+        its own), as a Stop. The accessory policy keeps a MyScribe without a
+        window out of the Dock."""
+        import AppKit
+        from PyObjCTools import AppHelper, MachSignals
+
+        AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+            AppKit.NSApplicationActivationPolicyAccessory)
+
+        def as_a_stop(_signum) -> None:
+            self.ask_stop()
+
+        def take_the_signals() -> None:
+            for number in (signal.SIGINT, signal.SIGTERM):
+                MachSignals.signal(number, as_a_stop)
+
+        def watch(icon) -> None:
+            icon.visible = True
+            AppHelper.callAfter(take_the_signals)
+            while alive() and not self.stop_asked.is_set():
+                time.sleep(0.5)
+            icon.stop()
+
+        self.icon.run(setup=watch)
+        return self.stop_asked.is_set()
+
+
+def tray_for(launch: Launch) -> Tray | None:
+    """The tray for this launch, or None with one line saying why.
+
+    No tray is never a failure: MyScribe serves the same without one."""
+    try:
+        pystray = _load_pystray()
+        if pystray.Icon.__module__.endswith("_xorg") and not xembed_tray_present():
+            reason = TRAY_NO_HOST
+        else:
+            url = launch.url()
+            tray = Tray(pystray, tray_image(), url, lambda: open_in_browser(url, launch.report))
+            launch.report("busy", TRAY_SHOWN)
+            return tray
+    except Exception as error:  # every way a tray has of not being there
+        reason = f"{type(error).__name__}: {error}"
+    launch.report("busy", TRAY_NONE.format(reason=reason))
+    return None
+
+
 def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = False) -> int:
     """The console door, and every build without Tk; the exit code is
     `APP_DIED`'s contract.
@@ -2927,15 +3095,29 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             keep_login_problem(launch.layout.home, launch.problem)
         return 0
     interrupted = False
+    # After the start, so a first sync at login has no icon that offers to
+    # stop a MyScribe that is not there yet (TASK-112.11).
+    tray = tray_for(launch)
     try:
-        with stop_on_sigterm():
-            while launch.app.alive():
-                time.sleep(0.5)
+        if tray is not None and tray.main_thread:
+            with stop_on_sigterm(then=tray.ask_stop):
+                interrupted = tray.serve_on_main_thread(launch.app.alive)
+        else:
+            if tray is not None:
+                tray.show()
+            with stop_on_sigterm():
+                while launch.app.alive():
+                    if tray is not None and tray.stop_asked.is_set():
+                        interrupted = True  # Stop in the tray: a stop somebody asked for
+                        break
+                    time.sleep(0.5)
     except KeyboardInterrupt:
         interrupted = True
     finally:
         with signals_held():
             launch.stop()  # says what happened to the running job (TASK-112.09)
+        if tray is not None:
+            tray.close()  # after the stop: the icon says "stopping" while it runs
     if interrupted:
         return 0
     code = launch.app.exit_code()

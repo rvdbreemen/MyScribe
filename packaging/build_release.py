@@ -7,8 +7,10 @@ Four steps, all from a clean checkout:
 1. the payload (`build_payload.py`): the app source, `uv.lock`, uv and
    ffmpeg, each download checked against its pinned sha256;
 2. a build environment: the payload's own verified uv makes a venv and
-   installs PyInstaller from `build-requirements.txt` with `--require-hashes`;
-3. the frozen launcher: one windowed onedir build, the payload inside it;
+   installs PyInstaller and the tray's pystray from `build-requirements.txt`
+   with `--require-hashes`;
+3. the frozen launcher: one windowed onedir build, the payload inside it,
+   and pystray as replaceable source beside it (ADR-038);
 4. the native artifact: an Inno Setup installer (Windows), a dmg (macOS), an
    AppImage (Linux).
 
@@ -83,6 +85,10 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
         "--name", FROZEN_NAME, "--onedir", "--windowed",
         "--distpath", out, "--workpath", BUILD / "pyinstaller", "--specpath", BUILD,
         "--add-data", f"{payload}{os.pathsep}payload",
+        # The tray (TASK-112.11, ADR-038): imported inside a function, so named
+        # here, and collected by the hooks beside the launcher as loose files.
+        "--hidden-import", "pystray",
+        "--additional-hooks-dir", REPO / "packaging" / "launcher" / "hooks",
     ]
     if target == "macos-arm64":
         args += ["--osx-bundle-identifier", BUNDLE_ID, "--target-architecture", "arm64"]
@@ -90,9 +96,24 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
         args += ["--icon", "NONE"]
     args.append(REPO / "packaging" / "launcher" / "myscribe_launcher.py")
     run(args)
+    replaceable_tray(out)
     if target == "macos-arm64":
         stamp_bundle_version(out / "MyScribe.app", version())
     return out
+
+
+def replaceable_tray(frozen: Path) -> Path:
+    """Fail the build unless pystray sits in the bundle as source, with its
+    licence: LGPL-3.0 lets us ship it frozen only if somebody can replace it
+    (ADR-038). A hook that stopped applying would otherwise compile it into
+    the archive inside the executable without a word. Returns its folder."""
+    found = next((init.parent for init in frozen.rglob("pystray/__init__.py")), None)
+    if found is None:
+        raise SystemExit(f"the tray is not in {frozen} as loose .py files (packaging/launcher/hooks)")
+    if not any(frozen.rglob("pystray-*.dist-info/COPYING.LGPL")):
+        raise SystemExit(f"pystray's licence (COPYING.LGPL) is not in {frozen}")
+    print(f"tray: pystray as source at {found}")
+    return found
 
 
 def sign_ad_hoc(app: Path, run: Callable = run) -> None:
