@@ -67,6 +67,26 @@
   below. The notes and a recording short enough for one step are asked as
   before (TASK-124, ADR-035).
 
+- **Two starts at once start one MyScribe.** When the start at login and a
+  start by hand came within the same seconds, both could install into the
+  same environment and both started the app. Now the second one waits for
+  the first and opens it in your browser, also when you gave it another
+  `--port`; with a window it says at once that MyScribe is already starting.
+  A window left open after MyScribe stopped or could not start does not hold
+  up the next start, and `--doctor` does not install into an environment
+  another start is still installing. When MyScribe started on its own, at
+  login or after an update, and could not start, for example because another
+  program had its port, the next start you make yourself says so once
+  (TASK-112.07).
+  For this MyScribe keeps two small files beside your home, not in it:
+  `MyScribe.lock`, and `MyScribe-at-login.txt` while such a problem waits to
+  be shown, next to the default `%LOCALAPPDATA%\MyScribe`. The Windows
+  uninstaller lists those two to delete; a real uninstall has not been run
+  yet to confirm it. When your home is in a folder you chose, say
+  `D:\Data\MyScribe`, they are
+  `D:\Data\MyScribe.lock` and `D:\Data\MyScribe-at-login.txt`, and an
+  uninstall leaves them there with the home.
+
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget
   thinking and returned nothing (speakers and minutes on a long recording).
@@ -77,6 +97,35 @@
   into an effort level. A request refused with an error that names the
   reasoning field is sent once more without it. Each answer records the
   limit it was sent with (TASK-123, ADR-030).
+
+- **A short glossary name no longer replaces small words like "het" or
+  "the".** With *Hetty* or *Opa* in the glossary, a lone "het" or "op"
+  anywhere in a transcript was corrected to that name. A word that stands
+  alone is now left as Whisper wrote it when it has three letters or fewer,
+  or when it is a Dutch or English function word such as "door" or "maar".
+  The exceptions: a word you listed as a variant (capitals aside), and a
+  word that differs only in case from a listed term with two or more
+  capitals. With *API*, *GPU* or *NOS* listed, a lone "api", "gpu" or "nos"
+  still becomes *API*, *GPU* or *NOS*. A function word never does: with
+  *IT*, *US*, *BEN* or *CAN* listed, "it", "us", "ben" and "can" stay as
+  written. For this "us", "will", "can", "may" and "must" are on the list
+  too, so a lone "will" is no longer corrected to a listed *Will* or
+  *WILL*, nor "must" to *MUST*. The cost: a short name is no longer guessed,
+  and its capitals are not fixed either. "Ari" is not corrected to *Arie*
+  and "ida" is not corrected to *Ida*, unless you list that spelling as a
+  variant. Only a word that stands alone is protected: with *Isa* listed,
+  "I saw it" still becomes "Isa it".
+  A word between the parts of a name is no longer deleted: "Marieke en
+  Vermeulen" stays as written with *Marieke Vermeulen* listed. A function
+  word next to a name now counts as part of it only when it is spelled as
+  that part. So "are Vermeulen" is no longer corrected to *Marieke
+  Vermeulen*, while "Linked In" still becomes *LinkedIn*.
+  With both *Niels* and *Nielsen* listed, "Niels en" is no longer joined
+  into *Nielsen*. With only *Nielsen* listed it still is. A listed name is
+  never joined to function words alone after it, so with both *Linked* and
+  *LinkedIn* listed, "Linked In" stays as written. When more of a name
+  follows, it is still joined: with *Jan* and *Jan de Vries* listed, "Jan de
+  Fries" becomes *Jan de Vries* (TASK-111).
 
 ### Changed
 
