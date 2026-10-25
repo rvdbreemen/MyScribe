@@ -84,14 +84,14 @@ A measured cost: the Windows onedir build went from 33 MB to 47 MB, of which Pil
 
 ### Confirmation
 
-On Windows, from source and frozen (port 4540, a scratch home): the menu shows, Open MyScribe asks the browser for the URL, and Stop MyScribe logs `app.stop_requested`, exits 0 and removes the icon. `--stop` exits 0; a killed app exits 70. macOS and Linux get their own walks.
+On Windows, from source and from a local frozen build (port 4540, a scratch home): the shell registered the icon, the menu opened (a posted right-click), Open MyScribe asked the browser for the URL, and Stop MyScribe logged `app.stop_requested`, exited 0 and removed the icon. From source only: `--stop` exits 0, a killed app exits 70. macOS and Linux get their own walks.
 
 ## Decision Contract
 
 ### Must
 
 * Only the headless door shows the icon, after the app answers `/health`. The window keeps its own Open and Quit.
-* pystray, Pillow, python-xlib and pyobjc are imported inside functions only. When any of them fails, for any exception, the door serves without a tray and writes one `No tray icon (...)` line to launcher.log.
+* pystray, Pillow, python-xlib and pyobjc are imported inside functions only, AppKit and PyObjCTools already in `tray_for`. When any import, the icon or its loop fails, for any exception, the door serves without a tray and writes one `No tray icon (...)` line to launcher.log.
 * Stop in the menu only sets a flag. The headless loop then calls `Launch.stop`: the stop route first (ADR-028, ADR-032), the hard stop after. A stop asked from the tray exits 0, and a dead app still exits `APP_DIED`.
 * The icon runs on a thread of its own on Windows and Linux, so Python's signal handlers keep the main thread.
 * On macOS the icon takes the main thread. It takes SIGINT and SIGTERM back through `PyObjCTools.MachSignals` as a stop, because pystray's own SIGINT handler calls `NSApp.terminate_`, which exits without stopping the app. It sets the accessory activation policy, so the Dock shows no icon.

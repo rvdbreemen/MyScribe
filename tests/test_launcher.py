@@ -4629,3 +4629,53 @@ def test_the_tray_and_its_dependencies_are_imported_lazily():
     at the top of the file."""
     source = LAUNCHER_PATH.read_text(encoding="utf-8")
     assert not re.search(r"^(import|from)\s+(pystray|PIL|Xlib|AppKit|PyObjCTools)\b", source, re.M)
+
+
+def test_on_macos_a_missing_appkit_helper_is_no_tray_and_not_a_crash(monkeypatch):
+    """`serve_on_main_thread` needs AppKit and PyObjCTools; a bundle that left
+    one out must say so and serve, not exit 1 into a launchd restart loop."""
+    monkeypatch.setattr(launcher, "_load_pystray", lambda: _fake_pystray("pystray._darwin"))
+    monkeypatch.setattr(launcher, "tray_image", lambda: object())
+    monkeypatch.setitem(sys.modules, "AppKit", types.ModuleType("AppKit"))
+    monkeypatch.setitem(sys.modules, "PyObjCTools", None)  # import fails
+    said: list[tuple[str, str]] = []
+
+    assert launcher.tray_for(_reporting_launch(said), platform="darwin") is None
+    assert any("No tray icon" in text and "PyObjCTools" in text for _state, text in said)
+
+
+def test_a_main_thread_tray_that_fails_leaves_the_headless_door_serving(layout, monkeypatch):
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+
+    class BrokenTray(_ServingTray):
+        main_thread = True
+
+        def serve_on_main_thread(self, alive):
+            raise RuntimeError("no status bar")
+
+    tray = BrokenTray(after=None)
+    monkeypatch.setattr(launcher, "tray_for", lambda _launch: tray)
+    threading.Timer(1.0, child.kill).start()
+
+    code = launcher.run_headless(launch)
+
+    assert code == launcher.APP_DIED, "the door served on until the app died, and said why it ended"
+    said = _launcher_log(layout)
+    assert "No tray icon (RuntimeError: no status bar)" in said
+    assert "stopped unexpectedly" in said
+
+
+def test_a_tray_loop_that_fails_says_so(monkeypatch):
+    said: list[tuple[str, str]] = []
+    tray = launcher.Tray(_fake_pystray(), object(), "http://127.0.0.1:4242/", lambda: None,
+                         platform="win32", report=lambda state, text: said.append((state, text)))
+
+    def broken(setup=None):
+        raise OSError("Shell_NotifyIcon failed")
+
+    tray.icon.run = broken
+    tray.show()
+    tray.thread.join(5)
+
+    assert any("No tray icon" in text and "Shell_NotifyIcon failed" in text for _state, text in said)

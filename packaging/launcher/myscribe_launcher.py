@@ -2978,9 +2978,10 @@ class Tray:
     """
 
     def __init__(self, pystray, image, url: str, open_url: Callable[[], None],
-                 platform: str = sys.platform):
+                 platform: str = sys.platform, report: Callable[[str, str], None] | None = None):
         self.stop_asked = threading.Event()
         self.platform = platform
+        self._report = report
         self._open_url = open_url
         self.thread: threading.Thread | None = None
         self.icon = pystray.Icon(
@@ -3008,8 +3009,11 @@ class Tray:
         self.thread.start()
 
     def _run(self) -> None:
-        with contextlib.suppress(Exception):  # a tray that fails leaves MyScribe serving
+        try:
             self.icon.run()
+        except Exception as error:  # a tray that fails leaves MyScribe serving, and says so
+            if self._report is not None:
+                self._report("busy", TRAY_NONE.format(reason=f"{type(error).__name__}: {error}"))
 
     def close(self) -> None:
         with contextlib.suppress(Exception):
@@ -3051,17 +3055,24 @@ class Tray:
         return self.stop_asked.is_set()
 
 
-def tray_for(launch: Launch) -> Tray | None:
+def tray_for(launch: Launch, platform: str = sys.platform) -> Tray | None:
     """The tray for this launch, or None with one line saying why.
 
-    No tray is never a failure: MyScribe serves the same without one."""
+    No tray is never a failure: MyScribe serves the same without one. On
+    macOS what `serve_on_main_thread` imports is imported here too, so a
+    bundle without it is this line and not a launcher that exits 1 into a
+    launchd restart."""
     try:
         pystray = _load_pystray()
+        if platform == "darwin":
+            import AppKit  # noqa: F401
+            from PyObjCTools import AppHelper, MachSignals  # noqa: F401
         if pystray.Icon.__module__.endswith("_xorg") and not xembed_tray_present():
             reason = TRAY_NO_HOST
         else:
             url = launch.url()
-            tray = Tray(pystray, tray_image(), url, lambda: open_in_browser(url, launch.report))
+            tray = Tray(pystray, tray_image(), url, lambda: open_in_browser(url, launch.report),
+                        platform=platform, report=launch.report)
             launch.report("busy", TRAY_SHOWN)
             return tray
     except Exception as error:  # every way a tray has of not being there
@@ -3100,11 +3111,16 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
     tray = tray_for(launch)
     try:
         if tray is not None and tray.main_thread:
-            with stop_on_sigterm(then=tray.ask_stop):
-                interrupted = tray.serve_on_main_thread(launch.app.alive)
-        else:
-            if tray is not None:
-                tray.show()
+            try:
+                with stop_on_sigterm(then=tray.ask_stop):
+                    interrupted = tray.serve_on_main_thread(launch.app.alive)
+            except Exception as error:  # no status bar after all: serve on without one
+                launch.report("busy", TRAY_NONE.format(reason=f"{type(error).__name__}: {error}"))
+                tray.close()
+                tray = None
+        elif tray is not None:
+            tray.show()
+        if not interrupted:
             with stop_on_sigterm():
                 while launch.app.alive():
                     if tray is not None and tray.stop_asked.is_set():
