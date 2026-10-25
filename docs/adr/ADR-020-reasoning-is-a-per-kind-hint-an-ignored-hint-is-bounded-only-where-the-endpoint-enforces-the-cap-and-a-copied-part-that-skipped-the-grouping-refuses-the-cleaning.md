@@ -645,6 +645,22 @@ the part rule, the second asks them again.
 * `scripts/task029_headroom.py` (`enforcement_check`, `hint_state`),
   `scripts/task029_acceptance.py`.
 
+## More Information
+
+Note added 2026-10-25, after acceptance. It changes no decision above, and
+the rule it describes is recorded by no ADR yet.
+
+* `TaskSpec.combine_reasoning_off` (TASK-124, Robert's decision of
+  2026-10-25) sends the hint on a kind's combine call alone, beside the
+  "every call" of the Decision Outcome. Only `blog` sets it; its
+  `reasoning_off` stays False, so its notes and a one-call post go unhinted.
+* Measured with Ollama only: media 61, `qwen3.5:4b`, three combines on one
+  set of notes finished, against two baselines on their own notes, of which
+  one stopped at the 6000-token cap after thinking. That is one input against
+  two, not three of three.
+* On OpenRouter the blog combine now carries `reasoning: {enabled: false}`,
+  and so, by ADR-030, no reasoning limit. That path is not measured.
+
 ## Enforcement
 
 ```json

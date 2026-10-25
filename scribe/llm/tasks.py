@@ -360,8 +360,13 @@ class TaskSpec:
     asks for, on media 61 with qwen3.5:4b. Without the hint, one combine of
     two finished (5057 tokens) and one stopped at the 6000-token cap after
     16,866 characters of thinking. With it, three of three finished in
-    1599-1996 tokens with no thinking, 23-31 s each (round-6 library copy;
-    those three shared one set of notes)."""
+    1599-1996 tokens with no thinking, 23-31 s each (round-6 library copy).
+    Those three shared one set of notes (jobs 431 and 432 reused job 430's,
+    prompt 2731 tokens) while each baseline had its own (3477 and 4334): one
+    input against two, not three independent runs. Measured on Ollama only;
+    on OpenRouter the hint means ADR-030's reasoning limit is not sent, which
+    is unmeasured. No ADR records this combine-only rule yet (ADR-020's
+    dated note)."""
     apply: Callable[[sqlite3.Connection, "TaskPlan", Any, int], dict] | None = None
     """What to do with the answer once it is stored, for the kinds that change
     something rather than only report.

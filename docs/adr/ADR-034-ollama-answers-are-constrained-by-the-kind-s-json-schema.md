@@ -89,7 +89,7 @@ reports `runner: llamacpp`, so that path is the one used.
 
 Chosen option: **B**. A turns a parse error into a silent wrong value; C
 fixes one malformation and leaves the rest to chance; B has the daemon
-enforce the shape and keeps a timestamp to what the model copied.
+enforce the shape, and a timestamp is at least a time, not a cut-off number.
 
 `Provider.schema_clock_as_text` is True for Ollama and False for the cloud
 providers, whose request stays byte-identical. Timestamp fields are found by
@@ -132,10 +132,11 @@ notes, which carry no `format`, so its combine is backed by the probes only.
 
 ## Consequences
 
-* Good: a local schema answer is valid JSON, thinking or not, and a timestamp
-  is the one the model copied or null, never a cut-off number.
-* Bad: with thinking off the 4B wrote null where it could have given a time.
-  Minutes and action items run with thinking on, and there it wrote the time.
+* Good: a local schema answer is valid JSON; a timestamp is time-shaped or null.
+* Bad: the grammar forces digits, not the copied moment. Asked to copy
+  `{hello world}`, the 4B wrote `"1234567890"` (2 of 2, review probe of
+  2026-10-25), so a required `chapters.start` can get an unchecked made-up time.
+* Bad: thinking off, the 4B wrote null for a time; minutes and action items think.
 * Neutral: a daemon without structured outputs ignores `format`, as before.
 
 ## Related Decisions
@@ -144,7 +145,6 @@ notes, which carry no `format`, so its combine is backed by the probes only.
 
 ## References
 
-* TASK-124; job 431 on the 2026-10-24 library copy; probe output in the
-  session scratchpad (`run-124/r6/formatprobe*.out`).
+* TASK-124; job 431; probes `run-124/r6/formatprobe*.out`, `rev5-probe/probe.out`.
 * Ollama v0.40.8 `llm/llama_server.go` (format and `ThinkingClose` handling);
   Ollama `docs/api.md`, `format` on `POST /api/chat`.
