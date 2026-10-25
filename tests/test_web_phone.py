@@ -620,3 +620,41 @@ def test_a_phone_file_is_counted_while_it_is_stored_and_queued(client, monkeypat
     assert phone_ui.accept_for(app)(io.BytesIO(b"x"), "memo.m4a") == 7
     assert seen == [1]
     assert app.state.ingests.busy == 0
+
+
+def test_a_countdown_that_finds_the_door_due_does_not_wait_for_the_upload(app, clock, publisher):
+    """The panel's countdown and the door's watchdog both tick once a second;
+    when the countdown gets to the fifteen minutes first, it must not be the
+    request that waits up to half a minute for a phone upload to finish, or
+    the panel shows 0:00 instead of *Closing* all that time. Found by review
+    of this round (the door tests' watchdog polls every 10 ms and always won)."""
+    import time
+
+    from test_phone_door import _half_an_upload, _rest_and_answer
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        door = install_door(app, clock, publisher, poll=3600)  # the watchdog never gets there
+        try:
+            client.post("/phone/open", headers=HX)
+            sock, rest = _half_an_upload(door.opening, b"\x00audio" * 40_000)
+            time.sleep(0.3)
+            clock.advance(phone_door.OPEN_SECONDS + 1)
+            started = time.monotonic()
+            first = client.get("/phone/countdown", headers=HX)
+            assert time.monotonic() - started < phone_door.GRACE_SECONDS, "the countdown waited for the upload"
+            assert first.status_code == 200
+            deadline = time.monotonic() + 5
+            while not door.closing and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert "may still arrive" in client.get("/phone/countdown", headers=HX).text
+            answer = _rest_and_answer(sock, rest)
+            assert answer.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK", answer[:200]
+            assert door.wait_closed(60)
+            deadline = time.monotonic() + 5
+            while door.closing and time.monotonic() < deadline:
+                time.sleep(0.05)
+            tick = client.get("/phone/countdown", headers=HX)
+            assert tick.status_code == phone_ui.STOP_POLLING
+            assert "Received Voice memo 42.m4a" in tick.text
+        finally:
+            door.close()

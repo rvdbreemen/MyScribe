@@ -119,7 +119,7 @@ A real `python -m scribe` with the slow fake job gets SIGTERM (POSIX) or Ctrl+Br
 
 ### Exceptions
 
-* An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after `APP_SIGTERM_WAIT` and says the job can keep running. A SIGKILL can also cut a file still being stored.
+* An app that ends without its lifespan can leave a runner on any OS: a crash, a kill of the app's process alone, or uvicorn's forced exit on a second Ctrl+C. The Windows hard stop ends the tree; the POSIX one SIGKILLs after `APP_SIGTERM_WAIT` and says the job can keep running. A SIGKILL can also cut a file still being stored. Other threaded routes that use the database (exports, previews, the feeds, a ticked feed's episodes) are not counted in `Ingests`; one still running at the close fails on the closed database (by reading, not run).
 
 ### Verification
 

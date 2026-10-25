@@ -215,7 +215,7 @@ def close_door(request: Request) -> Response:
 @router.get("/phone/countdown", include_in_schema=False)
 def countdown(request: Request) -> Response:
     door = _door(request)
-    if not door.close_if_due():
+    if not door.close_if_due(wait=False):
         return render(
             request, "_phone_countdown.html",
             countdown=_clock(door.remaining()), received=list(door.received),

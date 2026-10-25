@@ -93,6 +93,10 @@ ROUTE_PROBE = ("192.0.2.1", 9)
 # door gets the app's deadline, never less than this grace.
 GRACE_SECONDS = 2.0
 
+# How long the panel's countdown waits for a due door to close before it
+# answers *Closing* instead (`Door.close_if_due(wait=False)`).
+CLOSE_ANSWER_SECONDS = 1.0
+
 Accept = Callable[[BinaryIO, str], object]
 
 
@@ -480,8 +484,15 @@ class Door:
             self._closing = False
             self._closed.set()
 
-    def close_if_due(self) -> bool:
+    def close_if_due(self, *, wait: bool = True) -> bool:
         """Close the door if its time is up; True when it is closed now.
+
+        ``wait=False``: the close runs on a thread of its own and this waits
+        `CLOSE_ANSWER_SECONDS` at most, for a caller that answers a request -
+        the panel's countdown - and must not be the one that waits up to
+        `stopping.UPLOAD_FINISH_SECONDS` for a phone upload to finish
+        (TASK-112.09). A door with nothing in flight is closed by then; with
+        an upload it is `closing`, and the panel says so.
 
         The watchdog calls this once a second, and so does anybody about to
         say the door is closed: the panel's countdown once answered "closed"
@@ -489,8 +500,16 @@ class Door:
         the watchdog's next tick (real run, 2026-09-26).
         """
         opening = self._opening
-        if opening is not None and self._clock() >= opening.closes_at:
+        due = opening is not None and self._clock() >= opening.closes_at
+        if due and wait:
             self.close("timeout", only=opening)
+        elif due:
+            threading.Thread(
+                target=self.close, args=("timeout",), kwargs={"only": opening},
+                name="scribe-phone-door-close", daemon=True,
+            ).start()
+        if not wait and (due or self._closing):
+            self._closed.wait(CLOSE_ANSWER_SECONDS)  # this close, or one under way
         return self._opening is None and not self._closing
 
     def _watch(self, opening: Opening, stop: threading.Event) -> None:
