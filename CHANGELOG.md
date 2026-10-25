@@ -54,7 +54,7 @@
   export is written to that file or folder, replacing a file already there. `add_recording` sends the file's bytes,
   or its path with `by_path`, and takes an `idempotency_key`; a replayed
   answer is marked `myscribe/replayed`. The server is written on Python's
-  standard library and adds no package to the install (ADR-031, Proposed).
+  standard library and adds no package to the install (ADR-033, Proposed).
   How to register it is in [Configuration](docs/configuration.md)
   (TASK-108).
 - The library database moves to schema version 19 for the idempotency keys;

@@ -1,5 +1,5 @@
 ---
-id: "ADR-031"
+id: "ADR-033"
 title: "The MCP server is hand-written JSON-RPC on the standard library, not the official SDK"
 status: "Proposed"
 date: "2026-10-25"
@@ -27,11 +27,11 @@ context_scope: "selective"
 
 <!-- markdownlint-disable MD025 -->
 
-# ADR-031 The MCP server is hand-written JSON-RPC on the standard library, not the official SDK
+# ADR-033 The MCP server is hand-written JSON-RPC on the standard library, not the official SDK
 
 ## Status
 
-Proposed, 2026-10-25.
+Proposed, 2026-10-25. Option A chosen by Robert on 2026-10-25; not yet accepted.
 
 ## Status History
 
@@ -125,7 +125,7 @@ real routes, and spawns the entry point. On 2026-10-25 the SDK 2.3.0 client
 
 ## Open Questions
 
-- [ ] Accept hand-written JSON-RPC (A), or take the SDK's weight (B) for protocol upkeep it does for us?
+- [x] Hand-written JSON-RPC (A) or the SDK (B)? Robert chose A on 2026-10-25.
 
 ## Related Decisions
 
@@ -141,8 +141,8 @@ real routes, and spawns the entry point. On 2026-10-25 the SDK 2.3.0 client
 ```json
 {
   "forbid_import": [
-    {"pattern": "^\\s*(?:import|from)\\s+(?:mcp|fastmcp)\\b", "path_glob": "scribe/**", "message": "The MCP server is stdlib JSON-RPC, not an SDK (ADR-031)."},
-    {"pattern": "^\\s*(?:import|from)\\s+(?:sqlite3|scribe\\.db)\\b|^\\s*from\\s+scribe\\s+import\\s+.*\\bdb\\b", "path_glob": "scribe/mcp_server.py", "message": "The MCP server is a client of /api/v1; the app is the only writer (ADR-031, ADR-013)."}
+    {"pattern": "^\\s*(?:import|from)\\s+(?:mcp|fastmcp)\\b", "path_glob": "scribe/**", "message": "The MCP server is stdlib JSON-RPC, not an SDK (ADR-033)."},
+    {"pattern": "^\\s*(?:import|from)\\s+(?:sqlite3|scribe\\.db)\\b|^\\s*from\\s+scribe\\s+import\\s+.*\\bdb\\b", "path_glob": "scribe/mcp_server.py", "message": "The MCP server is a client of /api/v1; the app is the only writer (ADR-033, ADR-013)."}
   ],
   "forbid_pattern": [],
   "require_pattern": []

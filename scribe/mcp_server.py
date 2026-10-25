@@ -10,7 +10,7 @@ proxy-free transport, the same error messages. It never opens the database
 or the library: the running app stays the only writer (ADR-013), and what
 a tool answers is what the API answers (TASK-108 phase 2, ADR-025).
 
-Hand-written on the standard library, not the official SDK (ADR-031): a
+Hand-written on the standard library, not the official SDK (ADR-033): a
 stdio server needs ``initialize``, ``ping``, ``tools/list`` and
 ``tools/call``, a few hundred lines; the SDK would put twelve packages,
 four of them native, into every user's frozen environment. The price is

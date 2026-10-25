@@ -3,7 +3,7 @@
 The server is a thin client of the JSON API, exactly as the CLI is: it
 reuses `scribe.cli`'s `Api` and transport and never opens the database, so
 ADR-013's single writer stays the running app. It is hand-written JSON-RPC
-on the standard library (ADR-031): the official SDK would add twelve
+on the standard library (ADR-033): the official SDK would add twelve
 packages to every user's frozen environment for a few hundred lines of
 protocol.
 

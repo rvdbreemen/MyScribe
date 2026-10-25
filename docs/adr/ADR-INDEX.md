@@ -36,4 +36,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-028 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-21. |
 | ADR-029 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-23 with the three options and the A/B in front of him. |
 | ADR-030 | Accepted | - | Chosen option: B, decided by Robert on 2026-10-24. |
-| ADR-031 | Proposed | `scribe/**`, `scribe/mcp_server.py` | Chosen option: A. |
+| ADR-033 | Proposed | `scribe/**`, `scribe/mcp_server.py` | Chosen option: A. |
