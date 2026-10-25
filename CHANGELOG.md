@@ -292,7 +292,12 @@
   library. On macOS and Linux the first start asks the same question, before
   anything is downloaded. The speech engine now always goes to the per-user
   folder; `--home` or `MYSCRIBE_HOME` still put it elsewhere. The free-space
-  check before the download asks each drive for its own part (TASK-097).
+  check before the download asks each drive for its own part. A folder the
+  library cannot go in is refused with a sentence; when MyScribe starts
+  without its window (at login, or from a console), it starts with the
+  library in the default folder instead and says the folder asked for was
+  not used. The request is kept: the next start with its window asks again,
+  until the first setup questions have been answered (TASK-097).
 
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser

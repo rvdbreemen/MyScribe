@@ -1539,9 +1539,14 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
     not (ADR-019). ``(None, None)`` is today's layout, ``<home>/data``.
 
     Called only for a pointer that names no ``"data"`` yet, and never under a
-    home given by hand. A request that cannot be used stops a door where
-    nobody is at the screen, with a sentence: starting a library somewhere
-    else instead is the one answer that must not happen quietly.
+    home given by hand. A request that cannot be used does not stop a door
+    where nobody is at the screen (Robert, 2026-10-25): it starts on
+    ``<home>/data`` and says, with the refusal's sentence, that the request
+    was not used. The request stays in the pointer. While no sitting has
+    ended, the next start with its window asks the question again with that
+    sentence; a door without one says the same again; once a sitting has
+    ended the request is dropped, as any request is beside a library that is
+    already there.
     """
     platform = sys.platform if platform is None else platform
     install = install_dir() if install is None else install
@@ -1567,7 +1572,12 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
             report("status", f"{offered} already holds a {APP_NAME} library; the setup questions "
                              "offer it again, and it is used only when you choose it there.")
             return None, offered
-        if held is not None:
+        if kind == "refuse" and setup_needed(Layout(home, payload)):
+            # A door without a window started on <home>/data over this request
+            # (Robert, 2026-10-25). No sitting has ended, so it is still asked:
+            # the question below says that library stays where it is.
+            pass
+        elif held is not None:
             # An update of an install that never moved anything has no pointer
             # file, so the installer may have asked. A library is already
             # here, and a request is never a reason to swap it for another.
@@ -1601,11 +1611,21 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
             break
         report("error", sentence)
         if ask is None:
-            report("error", f"{APP_NAME} cannot start: {pointer} asks for a library folder it cannot "
-                            "use. Start it with its window to choose another, or remove "
-                            f'"{REQUEST_KEY}" from that file to keep the default.')
-            return None
-        question = question or library_question(Layout(home, payload), pointer, volumes, platform)
+            # Robert, 2026-10-25: nobody is at the screen, so start on the
+            # default and say so; the request stays for a start with a window.
+            report("error", f"{APP_NAME} starts with its library in {Path(home) / 'data'}: the library "
+                            f"folder asked for, {answer}, was not used. The request stays in {pointer}; "
+                            "the next start with its window asks again, until the first setup "
+                            f"questions have been answered. Remove \"{REQUEST_KEY}\" from that file "
+                            "to keep the default without being asked.")
+            return None, None
+        if not question:
+            question = library_question(Layout(home, payload), pointer, volumes, platform)
+            held = library_database(Path(home) / "data")
+            if held is not None:
+                question = (f"A {APP_NAME} library is already in {held}; it stays where it is "
+                            "whatever you choose, and keeping the default keeps using it.\n\n"
+                            + question)
         answer = ask(f"{sentence}\n\n{question}")
         if answer is None:
             if request:

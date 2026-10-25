@@ -83,11 +83,15 @@ Before anything is downloaded, `locate_library` settles the request:
 * **A library** (`myscribe.db` or `scribe.db` in it or in its `data\`, as in a
   former home). Handed to the first sitting with `--library`; the engine shows
   its numbers and adopts it only when chosen. A decision removes the request.
-* **Anything else.** Refused with a sentence: asked again in a window, a stop
-  without one.
+* **Anything else.** Refused with a sentence and asked again in a window.
+  Without one (console, at login) MyScribe starts on `<home>\data` and says
+  the request was not used; the request stays in the pointer (Robert,
+  2026-10-25).
 
 While `<home>\data` holds a library, a request is dropped with a sentence,
-except an offered library while no sitting has ended: it is offered again.
+except while no sitting has ended: an offered library is offered again, and a
+refused request is asked again in a window (the question says the library in
+`<home>\data` stays where it is) or said again without one.
 
 This amends ADR-019's first Must for one case: the launcher writes `"data"` for
 a new, empty library it made. Existing libraries stay the engine's.
@@ -107,6 +111,8 @@ ASCII JSON, written before the launcher starts); ISCC compiles the Pascal.
 * The default home, or its `data`, as a request means `<home>/data`.
 * A folder holding `myscribe.db` or `scribe.db` is adopted only by the engine.
 * A request is never used while `<home>/data` holds a library.
+* A door without a window starts on `<home>/data` over a request it cannot
+  use, says so, and keeps the request.
 
 ### Must Not
 
@@ -135,10 +141,14 @@ ASCII JSON, written before the launcher starts); ISCC compiles the Pascal.
   disk check asks the home's volume for the environment and the library's for
   the weights and working room, and its refusal names `--home`.
 * `launcher.log` and the stdout `app.log` stay in the home; `scribe.applog`'s log moves.
+* A window asked again over a kept request can move to a new folder away from
+  the library a login start made in `<home>\data`, which may hold recordings.
+  The person chooses at the screen and the question names that library; it
+  stays where it is.
 
 ## Open Questions
 
-- [ ] Should a door without a window stop on a request it cannot use, rather than start on `<home>/data`? Stopping matches ADR-019's rule for a missing library. Robert decides.
+- [x] Should a door without a window stop on a request it cannot use, rather than start on `<home>/data`? Stopping matches ADR-019's rule for a missing library. Robert decides. — **Answered 2026-10-25 by Robert van den Breemen (decided in session 2026-10-25; recorded by Claude):** No. Robert decided on 2026-10-25 (recorded in TASK-097's notes): a door without a window starts on <home>/data, says the request was not used, and keeps the request for a start with its window.
 
 ## Related Decisions
 

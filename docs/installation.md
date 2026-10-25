@@ -82,7 +82,11 @@ takes the folder from `/LIBRARY=D:\Data\MyScribe`.
   home with `data\myscribe.db`) is shown with its recordings and size after
   the download, and used only when you choose it there.
 - A network share, a file, a folder inside the program folder or one inside
-  the home (other than its `data`) is refused with the reason.
+  the home (other than its `data`) is refused with the reason. With its
+  window MyScribe asks again; started without one (at login, or from a
+  console) it starts with the library in the home's `data` and says the
+  folder was not used. The request is kept, and the next start with the
+  window asks again until the first setup questions have been answered.
 - If the first start does not get to the setup questions, a library you chose
   is offered again at the next start.
 

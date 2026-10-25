@@ -2215,7 +2215,8 @@
           "The installer writes \"libraryrequest\" only with no MyScribe.location and no {localappdata}\\MyScribe\\env; uninstall deletes neither library nor pointer.",
           "The default home, or its data, as a request means /data.",
           "A folder holding myscribe.db or scribe.db is adopted only by the engine.",
-          "A request is never used while /data holds a library."
+          "A request is never used while /data holds a library.",
+          "A door without a window starts on /data over a request it cannot use, says so, and keeps the request."
         ],
         "must_not": [
           "Let the launcher open, migrate or move a library.",

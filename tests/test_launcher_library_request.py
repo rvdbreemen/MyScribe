@@ -155,6 +155,19 @@ def test_a_folder_that_holds_other_things_gets_a_myscribe_subfolder(tmp_path, pa
     assert sorted(p.name for p in chosen.iterdir()) == ["MyScribe", "taxes-2025.pdf"]
 
 
+def _started_on_the_default_and_kept(tmp_path, machine, started, chosen) -> str:
+    """A door where nobody is at the screen, with a request it cannot use,
+    starts on <home>/data and says the request was not used (Robert,
+    2026-10-25). The request stays recorded for a start with its window."""
+    [layout] = started
+    assert layout.data_dir == machine.default.absolute() / "data" and layout.offer is None
+    assert _pointer(machine) == {launcher.REQUEST_KEY: str(chosen)}
+    said = (tmp_path / "local" / "MyScribe-launcher.log").read_text(encoding="utf-8")
+    assert "was not used" in said and str(machine.default / "data") in said
+    assert "stays in" in said and str(machine.pointer) in said
+    return said
+
+
 def test_a_myscribe_subfolder_that_already_holds_other_things_is_refused_with_a_sentence(
     tmp_path, payload, machine, started
 ):
@@ -166,8 +179,7 @@ def test_a_myscribe_subfolder_that_already_holds_other_things_is_refused_with_a_
 
     assert _main(payload) == 0, "a configuration problem, not a crash"
 
-    assert started == []
-    said = (tmp_path / "local" / "MyScribe-launcher.log").read_text(encoding="utf-8")
+    said = _started_on_the_default_and_kept(tmp_path, machine, started, chosen)
     assert str(chosen / "MyScribe") in said and "holds other files" in said
     assert sorted(p.name for p in (chosen / "MyScribe").iterdir()) == ["somebody-elses.txt"]
 
@@ -317,16 +329,17 @@ def test_a_home_given_by_hand_ignores_the_request(tmp_path, payload, machine, st
     assert _pointer(machine) == {launcher.REQUEST_KEY: str(tmp_path / "elsewhere")}
 
 
-def test_a_request_inside_the_install_folder_is_refused_and_nothing_starts(tmp_path, payload, machine, started):
+def test_a_request_inside_the_install_folder_is_refused_and_starts_on_the_default(
+    tmp_path, payload, machine, started
+):
     install = tmp_path / "Programs" / "MyScribe"
     install.mkdir(parents=True)
     _request(machine, install / "library")
 
     assert _main(payload) == 0
 
-    assert started == []
+    said = _started_on_the_default_and_kept(tmp_path, machine, started, install / "library")
     assert not (install / "library").exists()
-    said = (tmp_path / "local" / "MyScribe-launcher.log").read_text(encoding="utf-8")
     assert "belongs to the installer" in said
 
 
@@ -479,9 +492,8 @@ def test_a_folder_inside_the_engine_home_is_refused_with_a_sentence(
 
     assert _main(payload) == 0
 
-    assert started == []
+    said = _started_on_the_default_and_kept(tmp_path, machine, started, chosen)
     assert not chosen.exists()
-    said = (tmp_path / "local" / "MyScribe-launcher.log").read_text(encoding="utf-8")
     assert "speech engine" in said and str(machine.default.absolute()) in said
 
 
@@ -527,5 +539,73 @@ def test_an_offered_library_is_dropped_once_a_sitting_has_ended(tmp_path, payloa
 
     [layout] = started
     assert layout.offer is None
+    assert launcher.REQUEST_KEY not in _pointer(machine)
+    assert "is not used" in capsys.readouterr().out
+
+
+# --- a refused request kept by a door without a window (Robert, 2026-10-25) ------------
+
+
+def _refused_request_after_a_headless_start(tmp_path, machine):
+    """The request a headless first start could not use, and the library
+    that start then made in <home>/data. No sitting has ended."""
+    chosen = tmp_path / "Programs" / "MyScribe" / "library"
+    chosen.parent.mkdir(parents=True)
+    _request(machine, chosen)
+    _library(machine.default / "data")
+    return chosen
+
+
+def test_a_start_with_its_window_asks_again_for_a_request_a_headless_start_kept(
+    tmp_path, payload, machine
+):
+    chosen = _refused_request_after_a_headless_start(tmp_path, machine)
+    asked: list[str] = []
+    picked = tmp_path / "Picked"
+
+    def ask(message: str):
+        asked.append(message)
+        return str(picked)
+
+    settled = launcher.locate_library(ask, lambda s, t: None, payload, machine.pointer, machine.default,
+                                      install=tmp_path / "Programs" / "MyScribe", volumes=[], platform="linux")
+
+    assert settled == (picked.resolve(), None)
+    [question] = asked
+    assert "belongs to the installer" in question
+    assert str(machine.default / "data") in question and "stays where it is" in question
+    assert _pointer(machine) == {launcher.DATA_KEY: str(picked.resolve())}
+    assert (machine.default / "data" / "myscribe.db").exists(), "the library already made is never touched"
+    assert not chosen.exists()
+
+
+def test_closing_that_question_keeps_the_default_and_drops_the_request(tmp_path, payload, machine):
+    _refused_request_after_a_headless_start(tmp_path, machine)
+
+    settled = launcher.locate_library(lambda m: None, lambda s, t: None, payload, machine.pointer,
+                                      machine.default, install=tmp_path / "Programs" / "MyScribe",
+                                      volumes=[], platform="linux")
+
+    assert settled == (None, None)
+    assert _pointer(machine) == {}
+
+
+def test_a_second_headless_start_keeps_the_request_and_says_so_again(tmp_path, payload, machine, started):
+    chosen = _refused_request_after_a_headless_start(tmp_path, machine)
+
+    assert _main(payload) == 0
+
+    _started_on_the_default_and_kept(tmp_path, machine, started, chosen)
+
+
+def test_a_refused_request_is_dropped_once_a_sitting_has_ended(tmp_path, payload, machine, started, capsys):
+    _refused_request_after_a_headless_start(tmp_path, machine)
+    (machine.default / "data" / "setup.json").write_text(
+        json.dumps({"contract": 5, "ended": "2026-10-25T10:00:00"}), encoding="utf-8")
+
+    assert _main(payload) == 0
+
+    [layout] = started
+    assert layout.data_dir == machine.default.absolute() / "data"
     assert launcher.REQUEST_KEY not in _pointer(machine)
     assert "is not used" in capsys.readouterr().out
