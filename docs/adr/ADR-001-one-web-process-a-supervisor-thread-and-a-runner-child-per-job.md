@@ -65,11 +65,6 @@ status_history:
     changed_by: Claude (agent, session 2026-09-26)
     reason: Related to ADR-022
     changed_via: adr-kit lifecycle
-  - date: 2026-10-24
-    status: Accepted
-    changed_by: Claude (agent, session 2026-10-24)
-    reason: ADR-032 relies on ADR-001's reconcile for a shutdown nobody asked for
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

@@ -10,23 +10,36 @@ request; it decides nothing about prompts. That keeps it testable as
 arithmetic, which is the only way the properties below can be *asserted*
 rather than hoped for.
 
-**The estimate is deliberately pessimistic**: three characters per token, at
-least one token per whitespace-separated word - the same budget
-`stages/transcribe.estimate_tokens` uses for hotwords, and for the same
-reason. Real BPE averages closer to four characters, so this over-counts by
-roughly a fifth. That asymmetry is chosen: erring long costs one extra chunk
-boundary, and erring short costs a failed call after the money has been spent
-and, on Ollama, a *silently truncated* prompt answered as though it were whole
-(see `ollama._answer`). The count is duplicated rather than imported because
-the hotword copy lives in a GPU stage module that loads Whisper machinery;
-this one has to be importable anywhere, and the two budgets are free to drift
-apart if Whisper's tokenizer and a chat model's ever disagree.
+**The estimate is deliberately pessimistic**, and calibrated against what the
+tokenizers actually counted. A run of letters costs three characters a token;
+every other character - digit, colon, bracket, comma, underscore - costs a
+token of its own; and every non-blank line costs one more, for its line break.
+Erring long costs one extra chunk boundary; erring short costs a failed call
+after the money has been spent, or on an Ollama that ignores `truncate` a
+prompt answered from its second half (see `ollama._answer`).
 
-Being additive is the property everything here rests on: because the estimate
-counts whitespace-separated words, and lines are joined with a newline, the
-estimate of a chunk is exactly the sum of the estimates of its segments. So
-`plan` can accumulate per-segment costs and know the total is the truth about
-the text it is building, without re-counting a growing string on every step.
+Measured 2026-10-24 (TASK-124), because the rule before this one - three
+characters a token for every word - was under, not over: 1,000 lines of
+`[mm:ss]` read 8,000 tokens on qwen3.5:4b and gemma4:12b alike (a token a
+character, the line break included), where that rule priced each at three. On
+media 61 (2h28m, Dutch, display names) six slices of the transcript read 2.34
+to 2.64 characters a token on qwen3.5:4b; the old rule was 14-26% under on
+every slice and this one is 15-19% over. Cloud tokenizers count fewer, not
+more: deepseek read media 61's labels prompt as 58,100 tokens and glm its
+speakers prompt as 75,320 (this rule: 75,989 and 100,773; the old one 51,297
+and 65,594 - under for cloud too). One rule for every provider, therefore.
+
+The count is duplicated rather than imported from
+`stages/transcribe.estimate_tokens` because the hotword copy lives in a GPU
+stage module that loads Whisper machinery; this one has to be importable
+anywhere, and the two budgets measure different tokenizers.
+
+Being additive is the property everything here rests on: the estimate counts
+whitespace-separated words and non-blank lines, and joining lines with a
+newline merges neither, so the estimate of a chunk is exactly the sum of the
+estimates of its segments. So `plan` can accumulate per-segment costs and know
+the total is the truth about the text it is building, without re-counting a
+growing string on every step.
 
 **The seams are segment boundaries, never anything else.** Whisper's segments
 are its own view of where the speech pauses; cutting inside one would hand a
@@ -56,6 +69,7 @@ so both are contracts of this module rather than accidents of the loop.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Literal, Union
 
@@ -63,7 +77,11 @@ from scribe import render
 from scribe.exports.doc import TranscriptDoc
 
 CHARS_PER_TOKEN = 3
-"""Pessimistic on purpose; see the module docstring."""
+"""For a run of letters only; see the module docstring."""
+
+_LETTERS = re.compile(r"[^\W\d_]+")
+"""A run of letters, accented ones included - what a BPE merges into words.
+Everything outside such a run is priced at a token a character."""
 
 MAP_REDUCE_PROMPTS: dict[str, str] = {"chunk": "map_chunk", "combine": "map_combine"}
 """The two templates a chunked task needs beyond its own: one that answers
@@ -72,14 +90,23 @@ Named here so `tasks.py` reads them rather than spelling the strings in the
 one place a rename would not reach."""
 
 
-def estimate_tokens(text: str) -> int:
-    """A pessimistic token count: three characters a token, one token minimum
-    per whitespace-separated word.
+def _word_tokens(word: str) -> int:
+    runs = _LETTERS.findall(word)
+    letters = sum(len(run) for run in runs)
+    return (len(word) - letters) + sum(math.ceil(len(run) / CHARS_PER_TOKEN) for run in runs)
 
-    Additive over a whitespace join, which is what `plan` relies on:
+
+def estimate_tokens(text: str) -> int:
+    """A pessimistic token count: three characters a token inside a run of
+    letters, a token for every other character, and a token per non-blank
+    line for its line break.
+
+    Additive over a newline join, which is what `plan` relies on:
     `estimate_tokens(a + "\\n" + b) == estimate_tokens(a) + estimate_tokens(b)`.
     """
-    return sum(max(1, math.ceil(len(word) / CHARS_PER_TOKEN)) for word in text.split())
+    words = sum(_word_tokens(word) for word in text.split())
+    lines = sum(1 for line in text.split("\n") if line.strip())
+    return words + lines
 
 
 def timestamped_line(segment: dict, text: str, speaker: str | None = None) -> str:

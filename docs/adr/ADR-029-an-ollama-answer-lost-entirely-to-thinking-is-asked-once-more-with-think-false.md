@@ -12,6 +12,7 @@ superseded_by: null
 related:
   - "ADR-020"
   - "ADR-023"
+  - "ADR-031"
 topics:
   - "ollama"
   - "reasoning"

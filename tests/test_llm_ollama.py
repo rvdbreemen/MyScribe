@@ -191,6 +191,55 @@ def test_the_hint_is_think_false_and_its_absence_sends_no_think():
     assert "think" not in plain.body()
 
 
+MINUTES_SCHEMA = {
+    "name": "minutes",
+    "schema": {"type": "object", "properties": {"agenda": {"type": "array"}}},
+    "strict": True,
+}
+
+
+def test_the_kinds_schema_goes_out_as_format_so_the_daemon_enforces_it():
+    """TASK-124, ADR-034. Measured 2026-10-25 on Ollama 0.40.8, qwen3.5:4b,
+    think off: without `format` the minutes answer carried `"evidence_ts":
+    2:16:10` unquoted and did not parse; with the schema as `format` the same
+    request came back valid JSON. `format` takes the bare JSON Schema, not the
+    OpenAI wrapper with `name` and `strict`."""
+    assert ollama.OllamaProvider.supports_json_schema is True
+
+    rec = Recorder(chat_answer('{"agenda": []}'))
+    provider(rec).complete(
+        base.ChatRequest(system="", user="minutes", model="qwen3.5:4b", json_schema=MINUTES_SCHEMA)
+    )
+    assert rec.body()["format"] == MINUTES_SCHEMA["schema"]
+
+    plain = Recorder(chat_answer())
+    provider(plain).complete(REQUEST)
+    assert "format" not in plain.body(), "a call with no schema - a note - is not constrained"
+
+
+def test_the_schema_rides_along_when_an_answer_lost_to_thinking_is_asked_again():
+    """ADR-029's second call is the same request with `think: false`; dropping
+    the schema there would trade an empty answer for an unparseable one."""
+    rec = Recorder(
+        chat_answer("", done_reason="length", thinking="Thinking Process: ..."),
+        chat_answer('{"agenda": []}'),
+    )
+    provider(rec).complete(
+        base.ChatRequest(system="", user="minutes", model="qwen3.5:4b", json_schema=MINUTES_SCHEMA)
+    )
+    assert rec.calls == 2
+    assert rec.body(1)["think"] is False
+    assert rec.body(1)["format"] == MINUTES_SCHEMA["schema"]
+
+
+def test_ollama_asks_for_timestamps_as_text():
+    """The grammar constrains every token from the first: measured 2026-10-25,
+    a timestamp field typed `number` let qwen3.5:4b start `2:16:10` as the
+    number 2 and close it as `2.0` - valid JSON, wrong moment."""
+    assert ollama.OllamaProvider.schema_clock_as_text is True
+    assert base.Provider.schema_clock_as_text is False
+
+
 def test_thinking_is_reported_in_characters_never_as_a_token_count():
     """Ollama reports one `eval_count` for thinking and answer together, so the
     thinking is measured in the only unit the answer carries - its characters -
@@ -389,6 +438,139 @@ def test_a_prompt_that_overflowed_the_requested_window_is_context_too_long():
 def test_a_prompt_that_fits_the_requested_window_is_not_refused():
     rec = Recorder(chat_answer("Paris", prompt_eval=511))
     assert provider(rec, num_ctx=512).complete(REQUEST).text == "Paris"
+
+
+# --- a truncated prompt is refused, by the daemon or by its signature (TASK-124) ----------
+
+REFUSED_TO_TRUNCATE = {
+    # Measured 2026-10-24 on Ollama 0.40.8, qwen3.5:4b, `num_ctx: 512` (the
+    # daemon allocated its 2048 minimum) and `"truncate": false`: HTTP 400.
+    "error": "request (7909 tokens) exceeds the available context size (2048 tokens), "
+    "try increasing it"
+}
+
+
+def test_the_body_asks_the_daemon_never_to_truncate():
+    """Without the key the daemon drops the front of a prompt that does not fit
+    and answers 200 (measured 2026-10-24: 7,909 tokens into a 2,048 window gave
+    `prompt_eval_count: 1026`); with `"truncate": false` the same request is a
+    400 that names both numbers. `shift` is not sent: with or without it a
+    generation that fills the window stopped at prompt + answer == 2048."""
+    rec = Recorder(chat_answer())
+
+    provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert rec.body(0)["truncate"] is False
+    assert "shift" not in rec.body(0)
+
+
+def test_a_daemon_that_refuses_to_truncate_is_context_too_long():
+    rec = Recorder(httpx2.Response(400, json=REFUSED_TO_TRUNCATE))
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert "7909" in str(exc.value) and "2048" in str(exc.value), str(exc.value)
+    assert rec.calls == 1, "chunking is the fix; the same prompt again is the same 400"
+
+
+def test_another_400_is_still_a_bad_response_not_a_window_problem():
+    """Only the window refusal is ContextTooLong: a 400 about anything else -
+    a `think` the model cannot do - would send a caller off to chunk a prompt
+    that fits."""
+    rec = Recorder(httpx2.Response(400, json={"error": '"qwen2:0.5b" does not support thinking'}))
+
+    with pytest.raises(base.BadResponse) as exc:
+        provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert not isinstance(exc.value, base.ContextTooLong)
+
+
+def test_a_prompt_the_daemon_halved_is_refused():
+    """The signature the 2026-09-03 measurement recorded: a prompt over the
+    window comes back with `prompt_eval_count` exactly `num_ctx / 2 + 2` (4098
+    at 8192) and HTTP 200. A daemon that ignores `truncate` - older than the
+    key - still does that, so the count is checked as well."""
+    rec = Recorder(chat_answer("a summary of the second half", prompt_eval=4098))
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec, num_ctx=8192).complete(REQUEST)
+
+    assert "4098" in str(exc.value) and "8192" in str(exc.value), str(exc.value)
+    assert "half" in str(exc.value), str(exc.value)
+
+
+def test_a_prompt_halved_in_a_measured_window_is_refused_against_that_window():
+    """TASK-123's minutes job on media 61: two notes of 87,180 and 89,374
+    characters read `prompt_eval_count: 16386` = 32768 / 2 + 2 and the job
+    ended 'done' on half a transcript."""
+    rec = Recorder(chat_answer("notes on the second half", prompt_eval=16386),
+                   show=show(32768, arch="qwen35"))
+    request = base.ChatRequest(system="s", user="lots of words", model="qwen3.5:4b")
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec).complete(request)
+
+    assert "16386" in str(exc.value) and "32768" in str(exc.value), str(exc.value)
+    assert "half" in str(exc.value), str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("num_ctx", "prompt_eval"),
+    [
+        # Measured 2026-10-24, Ollama 0.40.8, qwen3.5:4b, a 7,909-token prompt
+        # and no `truncate` key: an odd window keeps the rounded-up half.
+        (6001, 3003),
+        (2049, 1027),
+        # Below 2048 the daemon runs a 2048 window whatever was asked and
+        # halves into that: 1500 asked read 1026, which is under 1500.
+        (1500, 1026),
+    ],
+)
+def test_the_halving_signature_is_the_window_the_daemon_really_ran(num_ctx, prompt_eval):
+    """Review of TASK-124: `window // 2 + 2` of the window asked for is the
+    signature only for an even window of 2048 or more. Measured: 2049 read
+    1027 and 6001 read 3003 (the half rounds up), and 1000, 1500 and 2047 all
+    read 1026 (the daemon's 2048 minimum). Above the minimum the cut follows
+    the window asked for even when the cache is padded larger - 5000 asked
+    read 2502 while the 400 named 5120 - so the asked window is the one."""
+    rec = Recorder(chat_answer("a summary of the second half", prompt_eval=prompt_eval))
+
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec, num_ctx=num_ctx).complete(REQUEST)
+
+    assert str(prompt_eval) in str(exc.value) and "half" in str(exc.value), str(exc.value)
+
+
+def test_a_count_next_to_the_signature_is_not_refused():
+    """The check is one exact number, not a band: a prompt one token either
+    side of half the window is a prompt that fitted."""
+    for prompt_eval in (3002, 3004):
+        rec = Recorder(chat_answer("a summary", prompt_eval=prompt_eval))
+        assert provider(rec, num_ctx=6001).complete(REQUEST).text == "a summary"
+
+
+def test_the_window_guards_use_the_window_that_was_asked_for_not_the_floor():
+    """The body asks the daemon for `context_tokens(model)` - up to 32768 on
+    this machine - and both overflow checks have to compare against that, not
+    the 8192 floor, or a prompt planned for the measured window is refused
+    before it is sent. Reverted once (1401d3c) because the planner then
+    under-counted and the daemon halved; with `truncate: false` and the
+    signature check it is safe to compare against the real window again."""
+    rec = Recorder(chat_answer("a summary", prompt_eval=12000), show=show(32768, arch="gemma4"))
+    request = base.ChatRequest(
+        system="s", user=" ".join(f"word{i}" for i in range(9000)), model="gemma4:12b"
+    )
+
+    assert provider(rec).complete(request).text == "a summary"
+    assert rec.body(0)["options"]["num_ctx"] == 32768
+
+    too_long = base.ChatRequest(
+        system="s", user=" ".join(f"word{i}" for i in range(40000)), model="gemma4:12b"
+    )
+    with pytest.raises(base.ContextTooLong) as exc:
+        provider(rec).complete(too_long)
+    assert "32768" in str(exc.value)
 
 
 # --- what the daemon offers -------------------------------------------------------------
