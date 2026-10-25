@@ -60,6 +60,11 @@ dependencies = [
     "zeroconf==0.151.3",
 ]
 
+# No [project.scripts]: with `package = false` below uv installs no entry
+# point and warns about it on every sync, a line the launcher shows in its
+# setup window. The CLI is `python -m scribe.cli` until the project is
+# packaged (TASK-108; tests/test_cli.py keeps the two apart).
+
 [dependency-groups]
 dev = [
     "httpx==0.28.1",

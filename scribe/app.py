@@ -52,7 +52,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 import scribe
-from scribe import applog, autostart, db, env, fsbrowse, guard, jobs, media, paths, supervisor, web
+from scribe import applog, autostart, db, env, fsbrowse, guard, idempotency, jobs, media, paths, supervisor, web
 from scribe import shutdown as shutdown_module
 from scribe.ingest import feeds, recording, watching
 from scribe.options import OPTION_FIELDS, PARAM_KEYS, parse_options, replayable
@@ -144,7 +144,9 @@ def _ingest_options(source: dict) -> tuple[str | None, int | None, dict]:
     return title, folder_id, params
 
 
-def _stored_and_queued(conn: sqlite3.Connection, store, /, *args, params: dict, **kwargs) -> dict:
+def _stored_and_queued(
+    conn: sqlite3.Connection, store, /, *args, params: dict, queued=None, **kwargs
+) -> dict:
     """Store a file and queue its job, as one call in one worker thread.
 
     A stop cuts an upload's request at its bound by cancelling the task, and
@@ -152,13 +154,23 @@ def _stored_and_queued(conn: sqlite3.Connection, store, /, *args, params: dict, 
     job queued after that `await` was never queued, and the recording stayed
     in the library without it (TASK-112.09, red in
     `tests/test_stop_cuts_ingest.py`). Run together, the thread does both.
+
+    ``queued(body)``, when given, runs in the same thread under the database
+    lock, right after the job is queued: the v1 door remembers its
+    idempotency key there, so a request cut after its job was queued still
+    leaves the key answered rather than free for a second job.
     """
     row = store(conn, *args, **kwargs)
-    job_id = jobs.enqueue(conn, _INGEST_JOB_TYPE, media_id=row["id"], params=params)
-    return {**row, "job_id": job_id}
+    with db.LOCK:
+        body = enqueue_ingested(conn, row, params)
+        if queued is not None:
+            queued(body)
+    return body
 
 
-async def _ingest_upload(request: Request, conn: sqlite3.Connection) -> dict:
+async def _ingest_upload(
+    request: Request, conn: sqlite3.Connection, admit=None, queued=None
+) -> dict:
     """Multipart: the bytes are already spooled, so this only hashes and files
     them, and queues the job."""
     form = await request.form()
@@ -178,11 +190,15 @@ async def _ingest_upload(request: Request, conn: sqlite3.Connection) -> dict:
         upload.filename or "upload",
         title=title,
         folder_id=folder_id,
+        admit=_admit_with(admit, params),
         params=params,
+        queued=queued,
     )
 
 
-async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> dict:
+async def _ingest_local_path(
+    request: Request, conn: sqlite3.Connection, admit=None, queued=None
+) -> dict:
     """JSON `{"path": ...}`: a file already on this machine, left where it is,
     and its job queued."""
     try:
@@ -222,6 +238,7 @@ async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> dict
         return await run_in_threadpool(
             request.app.state.ingests.run, _stored_and_queued, conn, media.ingest_path, src,
             title=title, folder_id=folder_id, params=params,
+            admit=_admit_with(admit, params), queued=queued,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"no file at {src}")
@@ -241,6 +258,91 @@ def _event_out(row: sqlite3.Row) -> dict:
         "kind": row["kind"],
         "payload": json.loads(row["payload_json"]),
     }
+
+
+def _admit_with(admit, params: dict):
+    return None if admit is None else (lambda sha256: admit(sha256, params))
+
+
+async def ingest_request(request: Request, admit=None, queued=None) -> dict:
+    """The recording a request carries, filed, with its transcribe job queued.
+
+    Both doors that take a recording from a program - `POST /api/media` and
+    `POST /api/v1/media` - come through here, so they cannot disagree about
+    what a body may say (ADR-025: one helper per action, whichever door).
+    Filing and queueing run as one call in one worker thread
+    (`_stored_and_queued`, TASK-112.09). ``admit(sha256, params)``, when
+    given, runs once the content is hashed and the body checked, before
+    anything is filed: the v1 door's idempotency key is decided there, so a
+    refusal files nothing. ``queued(body)`` runs right after the job is
+    queued, in that same thread.
+    """
+    conn = request.app.state.conn
+    content_type = (request.headers.get("content-type") or "").lower()
+    if content_type.startswith("multipart/form-data"):
+        return await _ingest_upload(request, conn, admit, queued)
+    return await _ingest_local_path(request, conn, admit, queued)
+
+
+def enqueue_ingested(conn: sqlite3.Connection, row: dict, params: dict) -> dict:
+    """Queue the transcribe job for a filed recording; the answer both doors give."""
+    job_id = jobs.enqueue(conn, _INGEST_JOB_TYPE, media_id=row["id"], params=params)
+    return {**row, "job_id": job_id}
+
+
+def job_rows(conn: sqlite3.Connection, status: str | None, limit: int) -> list[dict]:
+    """Jobs newest first, ``limit`` clamped to 1-`JOBS_LIST_LIMIT`, optionally by status."""
+    # Newest first, and never the whole table: the board's own fragment
+    # limits itself, and this endpoint answers polls - an unbounded read
+    # of a table that only grows was an unbounded request.
+    limit = min(max(1, limit), JOBS_LIST_LIMIT)
+    with db.LOCK:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM job WHERE status=? ORDER BY id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM job ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+    return [_job_out(conn, row) for row in rows]
+
+
+def job_with_events(conn: sqlite3.Connection, job_id: int) -> dict:
+    """One job, with its last 100 events oldest first; a 404 when there is none."""
+    row = _get_job(conn, job_id)
+    with db.LOCK:
+        events = conn.execute(
+            "SELECT * FROM job_event WHERE job_id=? ORDER BY seq DESC LIMIT 100",
+            (job_id,),
+        ).fetchall()
+    out = _job_out(conn, row)
+    out["events"] = [_event_out(e) for e in reversed(events)]
+    return out
+
+
+def cancel(conn: sqlite3.Connection, job_id: int, sup: "supervisor.Supervisor | None") -> dict:
+    """Ask a job to stop, and end a runner nobody else is watching."""
+    row = _get_job(conn, job_id)
+    jobs.request_cancel(conn, job_id)
+    # The flag is cooperative and the supervisor enforces it - but only for
+    # a child it spawned. A runner left behind by an earlier app is watched
+    # by nobody, so the flag sat in the row while the work carried on and
+    # the board said "cancelled" (jobs 127 and 129). Here the pid is known
+    # and the answer is simple: end it.
+    if row["status"] == "running" and not (sup and sup.owns(job_id)):
+        if row["pid"] is None:
+            # A claim whose runner never came (GitHub #29): nothing to
+            # signal, and nobody left to write a verdict.
+            if not supervisor.claim_is_fresh(row):
+                jobs.finish(conn, job_id, "cancelled")
+        elif not supervisor.runner_alive(row) or supervisor.kill_orphan(
+                row["pid"], job_started_at=row["started_at"]):
+            # Gone already, or a pid reused by a stranger, which is
+            # never signalled (GitHub #32); or ended just now.
+            jobs.finish(conn, job_id, "cancelled")
+    return _job_out(conn, _get_job(conn, job_id))
 
 
 def _refresh_login_entry() -> None:
@@ -309,6 +411,11 @@ def create_app(
                    supervisor=start_supervisor, watcher=start_watcher)
         conn = db.connect(db_path)
         db.migrate(conn)
+        # An /api/v1 upload's claimed idempotency key that never got its
+        # answer was held by a request of the last life, and a retry must not
+        # wait on it. A second instance (--no-supervisor) on the same library
+        # does this too and can free a key the first one's upload still holds.
+        idempotency.forget_pending(conn)
         # Three questions about what a previous life of this process left
         # behind, asked in the order their answers cost: an orphaned job row,
         # an abandoned microphone session's chunks, and - inside the watcher's
@@ -434,70 +541,24 @@ def create_app(
         transcribe a file you already have is a perfectly good request and runs
         are append-only anyway.
         """
-        conn = request.app.state.conn
-        content_type = (request.headers.get("content-type") or "").lower()
-        if content_type.startswith("multipart/form-data"):
-            return await _ingest_upload(request, conn)
-        return await _ingest_local_path(request, conn)
+        return await ingest_request(request)
 
     @app.get("/api/jobs")
     def list_jobs(request: Request, status: str | None = None, limit: int = 200) -> list[dict]:
         """Jobs newest first: ``limit`` 1-1000, default 200, a filter by
         ``status`` included; outside that range it is clamped, not refused
         (GitHub #48)."""
-        conn = request.app.state.conn
-        # Newest first, and never the whole table: the board's own fragment
-        # limits itself, and this endpoint answers polls - an unbounded read
-        # of a table that only grows was an unbounded request.
-        limit = min(max(1, limit), JOBS_LIST_LIMIT)
-        with db.LOCK:
-            if status:
-                rows = conn.execute(
-                    "SELECT * FROM job WHERE status=? ORDER BY id DESC LIMIT ?",
-                    (status, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM job ORDER BY id DESC LIMIT ?", (limit,)
-                ).fetchall()
-        return [_job_out(conn, row) for row in rows]
+        return job_rows(request.app.state.conn, status, limit)
 
     @app.get("/api/jobs/{job_id}")
     def job_detail(job_id: int, request: Request) -> dict:
-        conn = request.app.state.conn
-        row = _get_job(conn, job_id)
-        with db.LOCK:
-            events = conn.execute(
-                "SELECT * FROM job_event WHERE job_id=? ORDER BY seq DESC LIMIT 100",
-                (job_id,),
-            ).fetchall()
-        out = _job_out(conn, row)
-        out["events"] = [_event_out(e) for e in reversed(events)]
-        return out
+        return job_with_events(request.app.state.conn, job_id)
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: int, request: Request) -> dict:
-        conn = request.app.state.conn
-        row = _get_job(conn, job_id)
-        jobs.request_cancel(conn, job_id)
-        # The flag is cooperative and the supervisor enforces it - but only for
-        # a child it spawned. A runner left behind by an earlier app is watched
-        # by nobody, so the flag sat in the row while the work carried on and
-        # the board said "cancelled" (jobs 127 and 129). Here the pid is known
-        # and the answer is simple: end it.
-        sup = getattr(request.app.state, "supervisor", None)
-        if row["status"] == "running" and not (sup and sup.owns(job_id)):
-            if row["pid"] is None:
-                # A claim whose runner never came (GitHub #29): nothing to
-                # signal, and nobody left to write a verdict.
-                if not supervisor.claim_is_fresh(row):
-                    jobs.finish(conn, job_id, "cancelled")
-            elif not supervisor.runner_alive(row) or supervisor.kill_orphan(
-                    row["pid"], job_started_at=row["started_at"]):
-                # Gone already, or a pid reused by a stranger, which is
-                # never signalled (GitHub #32); or ended just now.
-                jobs.finish(conn, job_id, "cancelled")
-        return _job_out(conn, _get_job(conn, job_id))
+        return cancel(
+            request.app.state.conn, job_id, getattr(request.app.state, "supervisor", None)
+        )
 
     @app.post("/api/jobs/{job_id}/retry")
     def retry_job(job_id: int, request: Request) -> dict:
@@ -588,6 +649,12 @@ def create_app(
         return jobs.events_after(conn, job_id, after)
 
     web.mount(app)
+    # The versioned JSON twins for programs (ADR-025, option B): the same
+    # helpers as the routes above and the pages, behind the same guard.
+    # Imported here because it builds on this module's helpers.
+    from scribe import api_v1
+
+    api_v1.install(app)
     # Localhost is not a login: a page on any site can post to 127.0.0.1
     # from the user's own browser. The guards refuse a foreign Host header
     # and a mutating request from another origin (scribe.guard).

@@ -951,15 +951,27 @@ def _export(
     request: Request, conn: sqlite3.Connection, row: Mapping[str, Any], form: Mapping[str, Any],
     options: ExportOptions,
 ) -> Response:
-    document = _load(conn, row["id"])
-    try:
-        members = members_for(document, options, audio_for(document.media, options))
-    except UnicodeEncodeError as exc:
-        raise refused_encoding(document, options, exc)
+    document, members = media_members(conn, row["id"], options)
     return _deliver(
         request, conn, form, members, [], options,
         zip_name=filename_for(document, options, "zip"), rows=[row], bulk=False,
     )
+
+
+def media_members(
+    conn: sqlite3.Connection, media_id: int, options: ExportOptions
+) -> tuple[TranscriptDoc, list[Member]]:
+    """One media's document and the files ``options`` make of it.
+
+    A 409 for a media with no transcript, a 400 for a character the encoding
+    cannot hold. The dialog's export and `POST /api/v1/media/{id}/export` both
+    build their files here (ADR-025).
+    """
+    document = _load(conn, media_id)
+    try:
+        return document, members_for(document, options, audio_for(document.media, options))
+    except UnicodeEncodeError as exc:
+        raise refused_encoding(document, options, exc)
 
 
 async def bulk_export(

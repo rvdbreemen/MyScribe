@@ -163,3 +163,12 @@ def test_a_file_added_by_its_path_in_the_dialog_is_an_upload_too():
     gets the uploads' bound."""
     assert stopping.is_app_upload({"type": "http", "method": "POST", "path": "/transcribe/path"})
     assert not stopping.is_app_upload({"type": "http", "method": "GET", "path": "/transcribe/path"})
+
+
+def test_the_automation_api_upload_is_an_upload_too():
+    """`POST /api/v1/media` (TASK-108, ADR-025) carries a recording in like
+    `/api/media`; without it a script's upload in flight was cut at the 3 s
+    grace instead of the uploads' bound (Robert, 2026-10-25: uploads finish)."""
+    assert stopping.is_app_upload({"type": "http", "method": "POST", "path": "/api/v1/media"})
+    assert not stopping.is_app_upload({"type": "http", "method": "GET", "path": "/api/v1/media"})
+    assert not stopping.is_app_upload({"type": "http", "method": "POST", "path": "/api/v1/media/1/transcribe"})

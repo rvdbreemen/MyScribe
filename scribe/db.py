@@ -17,7 +17,7 @@ from scribe import paths
 # Imported everywhere else, never re-created.
 LOCK = threading.RLock()
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _SCHEMA_V1 = """
 CREATE TABLE folder(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES folder(id) ON DELETE CASCADE);
@@ -548,11 +548,25 @@ CREATE TABLE watch_existing(
   PRIMARY KEY(folder_id, path_key));
 """
 
+_SCHEMA_V19 = """
+-- v19 (TASK-108, ADR-025): the idempotency keys of /api/v1.
+--
+-- A client that retries a POST after a timeout sends the same
+-- `Idempotency-Key` again and gets the first answer back instead of a second
+-- GPU job. `fingerprint` is what the first request asked for (route, content
+-- hash, params), so the same key with another request is refused rather than
+-- answered with somebody else's job. In the database rather than in memory:
+-- a retry across an app restart is the case the key exists for.
+CREATE TABLE api_idempotency(
+  key TEXT PRIMARY KEY, route TEXT NOT NULL, fingerprint TEXT NOT NULL,
+  status INTEGER NOT NULL, response_json TEXT NOT NULL, created_at REAL NOT NULL);
+"""
+
 # One entry per schema version; _MIGRATIONS[n - 1] migrates to user_version n.
 _MIGRATIONS: list[str] = [
     _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6,
     _SCHEMA_V7, _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13, _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16,
-    _SCHEMA_V17, _SCHEMA_V18,
+    _SCHEMA_V17, _SCHEMA_V18, _SCHEMA_V19,
 ]
 
 

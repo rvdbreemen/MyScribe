@@ -2390,9 +2390,11 @@ def apply(
         else:
             report["wrote"].append("watch_folder")
             # Said, because the folder is watched for what arrives from now
-            # on: what it already held is left alone (TASK-107.01).
+            # on: what it already held is left alone (TASK-107.01). Printed in
+            # a terminal, so the off-page sentence: no button below (TASK-108).
             if left.taken or left.skipped_video:
-                report["notes"].append(f"watch_folder: {settings_ui.watch_added_sentence(left, False)}")
+                sentence = settings_ui.watch_added_sentence(left, False, on_page=False)
+                report["notes"].append(f"watch_folder: {sentence}")
             answered.append("watch_folder")
     # TASK-089.22: start at login. A No is an answer too and is recorded as
     # one, or it would come back at every start (criterion 3). A Yes makes the

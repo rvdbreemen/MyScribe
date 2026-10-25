@@ -2489,6 +2489,19 @@ def test_nothing_is_ingested_in_the_sitting_and_the_watcher_takes_what_arrives_a
     assert (job["type"], job["status"], job["media_id"]) == ("transcribe", "queued", media_row["id"]), (
         "queued, and never claimed: no supervisor runs here")
     assert recording.read_bytes() == body, "the user's file is left as it was"
+
+
+def test_the_left_alone_note_points_at_settings_and_not_at_a_button_below(library, no_weights, inbox):
+    """The setup's notes are printed in a terminal (and read by a script), where
+    there is no "Transcribe them" button below the sentence. The note says where
+    that button lives instead, the sentence the API answers (TASK-108)."""
+    (inbox / "meeting.mp3").write_bytes(b"a recording of something")
+
+    report = apply_watch(library, str(inbox))
+
+    (note,) = [note for note in report["notes"] if note.startswith("watch_folder: ")]
+    assert "below" not in note, note
+    assert note.endswith(settings_page.TAKE_EXISTING_OFF_PAGE), note
 # --- start MyScribe at login (TASK-089.22) --------------------------------------------
 #
 # A thin layer over `scribe.autostart` (TASK-089.21): the engine asks only while

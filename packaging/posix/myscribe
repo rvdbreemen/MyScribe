@@ -1,0 +1,69 @@
+#!/bin/sh
+# myscribe: the command line of an installed MyScribe (TASK-108).
+#
+# Shipped in the AppImage as usr/bin/myscribe-cli (run it as
+# `MyScribe.AppImage cli ...`; AppRun hands `cli` to this script) and in
+# the Mac app as Contents/Resources/myscribe (link it into your PATH).
+# It runs `python -m scribe.cli` with the Python of the environment the
+# launcher installed, in MyScribe's home, found the way the launcher finds
+# it (myscribe_launcher.home_dir): MYSCRIBE_HOME, then "home" in the pointer
+# file beside the default home, then the default home.
+set -u
+
+self=$0
+while [ -h "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+here=$(cd "$(dirname "$self")" && pwd -P)
+
+# The program files: beside the frozen launcher on Linux (_internal), the
+# bundle's Resources on a Mac.
+app=""
+for candidate in "$here/_internal/payload/app" "$here/payload/app"; do
+    if [ -f "$candidate/scribe/cli.py" ]; then
+        app=$candidate
+        break
+    fi
+done
+if [ -z "$app" ]; then
+    echo "myscribe: MyScribe's program files are not next to $self. Reinstall MyScribe." >&2
+    exit 1
+fi
+
+case $(uname -s) in
+    Darwin) default="$HOME/Library/Application Support/MyScribe" ;;
+    *) default="${XDG_DATA_HOME:-$HOME/.local/share}/MyScribe" ;;
+esac
+
+home=${MYSCRIBE_HOME:-}
+if [ -z "$home" ] && [ -f "$default.location" ]; then
+    # The pointer is the launcher's json.dumps(indent=2): one "home" line.
+    home=$(sed -n 's/^[[:space:]]*"home":[[:space:]]*"\(.*\)",\{0,1\}[[:space:]]*$/\1/p' \
+        "$default.location" | head -n 1)
+    case $home in
+        *\\*)
+            echo "myscribe: $default.location names a folder this script cannot read" \
+                "(it holds an escaped character). Set MYSCRIBE_HOME to MyScribe's folder." >&2
+            exit 2
+            ;;
+    esac
+fi
+[ -n "$home" ] || home=$default
+
+python="$home/env/bin/python"
+if [ ! -x "$python" ]; then
+    echo "myscribe: MyScribe's engine is not installed in $home. Start MyScribe once, then try again." >&2
+    exit 3
+fi
+
+unset PYTHONHOME VIRTUAL_ENV
+PYTHONPATH=$app
+PYTHONUTF8=1
+PYTHONPYCACHEPREFIX="$home/pycache"
+export PYTHONPATH PYTHONUTF8 PYTHONPYCACHEPREFIX
+# -P: never a scribe package from the folder the command is typed in.
+exec "$python" -P -m scribe.cli "$@"

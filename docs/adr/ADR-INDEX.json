@@ -8,7 +8,7 @@
       "path": "ADR-001-one-web-process-a-supervisor-thread-and-a-runner-child-per-job.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-09-26",
       "decision_summary": "Chosen option: one FastAPI process + supervisor thread + runner child per job, because it keeps the GPU isolation the...",
       "topics": [
         "gpu",
@@ -1199,7 +1199,7 @@
       "path": "ADR-020-reasoning-is-a-per-kind-hint-an-ignored-hint-is-bounded-only-where-the-endpoint-enforces-the-cap-and-a-copied-part-that-skipped-the-grouping-refuses-the-cleaning.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-10-23",
       "decision_summary": "Chosen option: A.",
       "topics": [
         "llm",
@@ -1541,9 +1541,9 @@
       "title": "How an outside program drives MyScribe without the web pages",
       "path": "ADR-025-how-an-outside-program-drives-myscribe-without-the-web-pages.md",
       "format": "madr",
-      "status": "Proposed",
-      "date": "2026-10-06",
-      "decision_summary": "Not decided; Robert decides.",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen: B (Robert, 2026-10-24), as recommended, because the token in A stops no one the guard does not already stop.",
       "topics": [
         "api",
         "automation",
@@ -1566,9 +1566,9 @@
       "context_scope": "selective",
       "decision_contract": {
         "must": [
-          "Each /api/v1 route calls the same helper its HTML route calls; neither holds logic of its own.",
-          "Errors are JSON with a stable code and the detail the pages already show.",
-          "POST /api/v1/media honours an idempotency key, so a retried request queues no second job.",
+          "Each /api/v1 route calls the same helper its HTML route calls; neither holds business logic of its own (the Exceptions name what a route adds).",
+          "Errors under /api/v1 are JSON with a stable code and the detail the pages already show, an unhandled exception included (internalerror, without its text); other paths keep {\"detail\": ...} and the plain-text 500.",
+          "POST /api/v1/media honours an idempotency key, kept in the database, so a retried request queues no second job; the key compares content and options, and is decided after hashing and before filing, so a refused reuse or a replay files no...",
           "The routes appear in /openapi.json."
         ],
         "must_not": [
@@ -1577,10 +1577,15 @@
           "Change an HTML route's path or form fields."
         ],
         "exceptions": [
-          "None."
+          "The guard's refusals answer before any route, in their own shape (see Confirmation).",
+          "GET /api/v1/settings assembles its answer from the settings helpers through an allowlist: no page returns this JSON, and the setting table holds keys and tokens.",
+          "POST /api/v1/media/{id}/transcribe refuses a body field outside the dialog's options and params (400), as ingestoptions refuses a foreign params key; an empty body repeats the last request.",
+          "POST /api/v1/watch-folders refuses a field outside path, includevideo and the dialog's options (400), and answers a folder already watched with its own code, alreadywatched.",
+          "GET /api/v1/doctor adds ok, doctor.exitcode over the checks the page's doctorcontext shows."
         ],
         "verification": [
-          "tests/testwebphone.py::testnorouteofthemainappanswersthroughthedoor."
+          "tests/testwebphone.py::testnorouteofthemainappanswersthroughthedoor.",
+          "tests/testapiv1.py."
         ]
       },
       "scope": {
@@ -1718,7 +1723,7 @@
       "path": "ADR-028-a-deliberate-stop-puts-the-running-job-back-at-the-front-of-the-queue.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-10-21",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-21.",
       "topics": [
         "background",
@@ -1883,6 +1888,67 @@
       }
     },
     {
+      "id": "ADR-031",
+      "title": "Ollama is asked never to truncate, and the token estimate is calibrated against measured tokenizer counts",
+      "path": "ADR-031-ollama-is-asked-never-to-truncate-and-the-token-estimate-is-calibrated-against-measured-tokenizer-counts.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A, proposed by the agent.",
+      "topics": [
+        "chunking",
+        "context-window",
+        "ollama"
+      ],
+      "aliases": [
+        "estimate_tokens",
+        "halving signature",
+        "truncate"
+      ],
+      "components": [
+        "scribe/llm/chunking.py",
+        "scribe/llm/ollama.py"
+      ],
+      "symbols": [
+        "CONTEXT_REFUSAL",
+        "estimate_tokens",
+        "halved_prompt_tokens"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Every Ollama /api/chat body carries \"truncate\": false.",
+          "An HTTP 400 carrying the daemon's context refusal (CONTEXTREFUSAL) is ContextTooLong.",
+          "A promptevalcount equal to halvedprompttokens(window) is ContextTooLong, with the window this call asked for.",
+          "estimatetokens prices a run of letters at three characters a token, every other character at one token, and each non-blank line at one more.",
+          "The estimate is at least the measured qwen3.5:4b count of the test fixture; a new tokenizer measurement that beats it changes the estimate, not the test."
+        ],
+        "must_not": [
+          "Send shift; it was measured to change nothing.",
+          "Store an answer whose prompt count matches the halving signature.",
+          "Ask the daemon for a token count while planning."
+        ],
+        "exceptions": [
+          "A prompt whose real count is exactly the halving signature is refused too; one count in half a window is the accepted price."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testthebodyasksthedaemonnevertotruncate, ::testadaemonthatrefusestotruncateiscontexttoolong, ::testapromptthedaemonhalvedisrefused, ::testthehalvingsignatureisthewindowthedaemonreallyran, ::testacountnexttothesign...",
+          "tests/testllmchunking.py::testestimatetokensispessimisticatthreelettersatoken, ::testtheestimateisnotbelowwhatthelocaltokenizercounted, ::testatimestampandaspeakerlabelcostatokenacharacter."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
       "id": "ADR-032",
       "title": "Every shutdown the app lives through ends the running runner, and only a requested stop requeues",
       "path": "ADR-032-every-shutdown-the-app-lives-through-ends-the-running-runner-and-only-a-requested-stop-requeues.md",
@@ -1932,6 +1998,177 @@
         ],
         "verification": [
           "tests/testappsignalstop.py, tests/teststopping.py, tests/teststopcutsingest.py, tests/testphonedoor.py, tests/testwebphone.py::testwhileaclosewaitsforanuploadthepanelsaysitmaystillarrive, tests/testapp.py (the stop route's tests), tests/..."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-033",
+      "title": "The MCP server is hand-written JSON-RPC on the standard library, not the official SDK",
+      "path": "ADR-033-the-mcp-server-is-hand-written-json-rpc-on-the-standard-library-not-the-official-sdk.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "automation",
+        "dependencies",
+        "mcp"
+      ],
+      "aliases": [
+        "mcp server",
+        "model context protocol"
+      ],
+      "components": [
+        "scribe.mcp_server"
+      ],
+      "symbols": [
+        "PROTOCOL_VERSIONS",
+        "serve"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "scribe/mcpserver.py imports only the standard library and scribe.cli.",
+          "Every tool is one or a few /api/v1 requests through scribe.cli.Api.",
+          "An unknown method is answered with -32601, never with silence."
+        ],
+        "must_not": [
+          "Import mcp, fastmcp or any other protocol library at runtime.",
+          "Open the database or the library; the app stays the only writer (ADR-013)."
+        ],
+        "exceptions": [
+          "None. (A scratch venv with the SDK, to check interop, is not shipped.)"
+        ],
+        "verification": [
+          "tests/testmcpserver.py: testtheserverloadsnothingbutthestandardlibrary, testanunknownmethodismethodnotfound."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "scribe/**",
+          "scribe/mcp_server.py"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-034",
+      "title": "Ollama answers are constrained by the kind's JSON schema",
+      "path": "ADR-034-ollama-answers-are-constrained-by-the-kind-s-json-schema.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: B.",
+      "topics": [
+        "json-schema",
+        "ollama",
+        "structured-output"
+      ],
+      "aliases": [
+        "ollama format",
+        "timestamps as text"
+      ],
+      "components": [
+        "scribe/llm/ollama.py",
+        "scribe/llm/tasks.py"
+      ],
+      "symbols": [
+        "CLOCK_TEXT",
+        "OllamaProvider._body",
+        "Provider.schema_clock_as_text"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Send format as the bare JSON Schema whenever ChatRequest.jsonschema is set, and keep it on the ADR-029 retry.",
+          "Give a provider with schemaclockastext every timestamp field as text bound by CLOCKTEXT, plus null exactly where the field is nullable.",
+          "Write the pattern with [0-9]."
+        ],
+        "must_not": [
+          "Offer a number type for a timestamp to such a provider.",
+          "Send format on a note or a part, which are prose.",
+          "Change the schema a cloud provider receives."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testthekindsschemagoesoutasformatsothedaemonenforcesit",
+          "tests/testllmollama.py::testtheschemaridesalongwhenananswerlosttothinkingisaskedagain",
+          "tests/testllmtasks.py::testagrammarproviderisneverofferedanumberforatimestamp",
+          "tests/testllmtasks.py::testthecloudschemaisunchangedbytheclockmarker",
+          "tests/testllmtasks.py::testthecombinecarriesthetexttimestampsandthenotesnoschema"
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-035",
+      "title": "On a local model, blog's combine asks for no reasoning",
+      "path": "ADR-035-on-a-local-model-blog-s-combine-asks-for-no-reasoning.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: B.",
+      "topics": [
+        "map-reduce",
+        "ollama",
+        "reasoning"
+      ],
+      "aliases": [
+        "blog combine think false",
+        "combine reasoning off"
+      ],
+      "components": [
+        "scribe/llm/tasks.py"
+      ],
+      "symbols": [
+        "TaskPlan.provider_is_local",
+        "TaskSpec.combine_reasoning_off"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Send reasoningoff on a combinereasoningoff kind's combine call only when the provider is local.",
+          "Keep the notes and a one-call answer at the provider's default."
+        ],
+        "must_not": [
+          "Send the combine hint to a cloud provider.",
+          "Read locality from a provider name instead of islocal."
+        ],
+        "exceptions": [
+          "A kind with reasoningoff (cleanup) sends the hint on every call, on every provider, as ADR-020 decides."
+        ],
+        "verification": [
+          "tests/testllmtasks.py::testablogasksonlyitscombinenottoreasonandonlyonalocalmodel"
         ]
       },
       "scope": {
@@ -2480,6 +2717,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-020",
+      "target": "ADR-035",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-021",
       "target": "ADR-015",
       "type": "related",
@@ -2618,6 +2861,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-029",
+      "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-030",
       "target": "ADR-020",
       "type": "related",
@@ -2630,6 +2879,18 @@
       "resolved": true
     },
     {
+      "source": "ADR-030",
+      "target": "ADR-035",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-031",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-032",
       "target": "ADR-001",
       "type": "related",
@@ -2638,6 +2899,48 @@
     {
       "source": "ADR-032",
       "target": "ADR-028",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-033",
+      "target": "ADR-013",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-033",
+      "target": "ADR-025",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-034",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-034",
+      "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-020",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-030",
       "type": "related",
       "resolved": true
     },

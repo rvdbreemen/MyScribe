@@ -11,6 +11,7 @@ supersedes: []
 superseded_by: null
 related:
   - "ADR-020"
+  - "ADR-035"
 topics:
   - "openrouter"
   - "reasoning"
