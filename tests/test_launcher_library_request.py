@@ -16,8 +16,10 @@ resolver in the launcher then settles it before anything is downloaded:
   its numbers first (ADR-019);
 - anything else is refused with a sentence.
 
-Every folder here is under the test's own tmp_path, and every library is an
-empty file with the right name: the launcher never opens one.
+Every folder here is under the test's own tmp_path, and almost every library
+is an empty file with the right name. The one database the launcher opens,
+read-only, is <home>/data's, to count its recordings before it asks again over
+a request a headless start kept.
 """
 
 from __future__ import annotations
@@ -588,6 +590,97 @@ def test_closing_that_question_keeps_the_default_and_drops_the_request(tmp_path,
 
     assert settled == (None, None)
     assert _pointer(machine) == {}
+
+
+def _recordings(folder: Path, live: int, trashed: int = 0) -> None:
+    """A real database in <home>/data, with the app's own count: media rows
+    that are not in the trash (`scribe.setup._recordings`)."""
+    import sqlite3
+
+    (folder / "myscribe.db").unlink(missing_ok=True)
+    conn = sqlite3.connect(folder / "myscribe.db")
+    try:
+        conn.execute("CREATE TABLE media (id INTEGER PRIMARY KEY, trashed_at TEXT)")
+        conn.executemany("INSERT INTO media (trashed_at) VALUES (?)",
+                         [(None,)] * live + [("2026-10-25T10:00:00",)] * trashed)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_start_with_its_window_does_not_ask_again_once_the_default_library_holds_recordings(
+    tmp_path, payload, machine
+):
+    """TASK-097 review: the headless start began on <home>/data and somebody
+    recorded into it before the first start with a window. Asking again then
+    offers to swap a library in use for another, which no start does: the
+    request is dropped with the sentence any request beside a library gets."""
+    chosen = _refused_request_after_a_headless_start(tmp_path, machine)
+    _recordings(machine.default / "data", live=1)
+    reports: list[tuple[str, str]] = []
+
+    def ask(message: str):
+        raise AssertionError(f"asked over a library that holds recordings: {message}")
+
+    settled = launcher.locate_library(ask, lambda s, t: reports.append((s, t)), payload, machine.pointer,
+                                      machine.default, install=tmp_path / "Programs" / "MyScribe",
+                                      volumes=[], platform="linux")
+
+    assert settled == (None, None)
+    assert launcher.REQUEST_KEY not in _pointer(machine)
+    [(state, text)] = reports
+    assert state == "status"
+    assert "is not used and nothing was moved" in text and str(chosen) in text
+    assert not chosen.exists()
+
+
+def test_a_default_library_that_cannot_be_read_is_taken_to_hold_recordings(tmp_path, payload, machine):
+    """'We do not know' moves nothing: the request is dropped, not asked again."""
+    _refused_request_after_a_headless_start(tmp_path, machine)
+    (machine.default / "data" / "myscribe.db").write_bytes(b"not a database, " * 64)
+
+    assert launcher.library_recordings(machine.default / "data") is None
+    settled = launcher.locate_library(lambda m: pytest.fail(m), lambda s, t: None, payload,
+                                      machine.pointer, machine.default,
+                                      install=tmp_path / "Programs" / "MyScribe", volumes=[],
+                                      platform="linux")
+
+    assert settled == (None, None)
+    assert launcher.REQUEST_KEY not in _pointer(machine)
+
+
+def test_a_default_library_whose_only_recordings_are_in_the_trash_is_asked_again(
+    tmp_path, payload, machine
+):
+    _refused_request_after_a_headless_start(tmp_path, machine)
+    _recordings(machine.default / "data", live=0, trashed=2)
+    asked: list[str] = []
+
+    def ask(message: str):
+        asked.append(message)
+        return None
+
+    launcher.locate_library(ask, lambda s, t: None, payload, machine.pointer, machine.default,
+                            install=tmp_path / "Programs" / "MyScribe", volumes=[], platform="linux")
+
+    assert len(asked) == 1
+
+
+def test_the_headless_start_over_a_refused_request_is_not_reported_as_a_failure(
+    tmp_path, payload, machine
+):
+    """The start succeeds, so the line that says where it starts is not an
+    error; it is a warning, which the early log keeps for a door with no
+    stdout."""
+    _refused_request_after_a_headless_start(tmp_path, machine)
+    reports: list[tuple[str, str]] = []
+
+    launcher.locate_library(None, lambda s, t: reports.append((s, t)), payload, machine.pointer,
+                            machine.default, install=tmp_path / "Programs" / "MyScribe",
+                            volumes=[], platform="linux")
+
+    [starts] = [(s, t) for s, t in reports if "starts with its library in" in t]
+    assert starts[0] == "warning"
 
 
 def test_a_second_headless_start_keeps_the_request_and_says_so_again(tmp_path, payload, machine, started):

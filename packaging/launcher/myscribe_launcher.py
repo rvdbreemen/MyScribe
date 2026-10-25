@@ -1471,6 +1471,36 @@ def library_database(folder: Path) -> Path | None:
     return None
 
 
+def library_recordings(folder: Path | None) -> int | None:
+    """How many recordings the library in ``folder`` holds - media rows not
+    in the trash, the count ``scribe.setup._recordings`` asks with - or None
+    when its database cannot be read. 0 for no folder, and for a database
+    without a media table yet.
+
+    Opened read-only: the launcher looks, and never writes into a library.
+    None is "we do not know", which the one caller reads as "it may hold
+    recordings" - the answer that moves nothing."""
+    if folder is None:
+        return 0
+    database = next((folder / name for name in LIBRARY_NAMES if (folder / name).is_file()), None)
+    if database is None:
+        return 0
+    # Here, so that a start that never asks again never loads it; PyInstaller
+    # finds an import inside a function as well and bundles the module.
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"{database.absolute().as_uri()}?mode=ro", uri=True, timeout=2)
+        try:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='media'").fetchone() is None:
+                return 0
+            return int(conn.execute("SELECT COUNT(*) FROM media WHERE trashed_at IS NULL").fetchone()[0])
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+
+
 def _empty(folder: Path) -> bool:
     """Not there yet, or a folder with nothing in it."""
     if not folder.exists():
@@ -1543,10 +1573,11 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
     where nobody is at the screen (Robert, 2026-10-25): it starts on
     ``<home>/data`` and says, with the refusal's sentence, that the request
     was not used. The request stays in the pointer. While no sitting has
-    ended, the next start with its window asks the question again with that
-    sentence; a door without one says the same again; once a sitting has
-    ended the request is dropped, as any request is beside a library that is
-    already there.
+    ended and ``<home>/data`` holds no recordings, the next start with its
+    window asks the question again with that sentence; a door without one
+    says the same again; once a sitting has ended, or somebody recorded into
+    ``<home>/data``, the request is dropped, as any request is beside a
+    library that is already there.
     """
     platform = sys.platform if platform is None else platform
     install = install_dir() if install is None else install
@@ -1572,10 +1603,13 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
             report("status", f"{offered} already holds a {APP_NAME} library; the setup questions "
                              "offer it again, and it is used only when you choose it there.")
             return None, offered
-        if kind == "refuse" and setup_needed(Layout(home, payload)):
+        if (kind == "refuse" and setup_needed(Layout(home, payload))
+                and library_recordings(held) == 0):
             # A door without a window started on <home>/data over this request
             # (Robert, 2026-10-25). No sitting has ended, so it is still asked:
-            # the question below says that library stays where it is.
+            # the question below says that library stays where it is. Only
+            # while that library holds no recordings (TASK-097 review): once
+            # somebody recorded into it, a start never offers to swap it.
             pass
         elif held is not None:
             # An update of an install that never moved anything has no pointer
@@ -1613,7 +1647,7 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
         if ask is None:
             # Robert, 2026-10-25: nobody is at the screen, so start on the
             # default and say so; the request stays for a start with a window.
-            report("error", f"{APP_NAME} starts with its library in {Path(home) / 'data'}: the library "
+            report("warning", f"{APP_NAME} starts with its library in {Path(home) / 'data'}: the library "
                             f"folder asked for, {answer}, was not used. The request stays in {pointer}; "
                             "the next start with its window asks again, until the first setup "
                             f"questions have been answered. Remove \"{REQUEST_KEY}\" from that file "
@@ -4220,10 +4254,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     before_home = [True]
 
     def console(state: str, text: str) -> None:
+        # A warning is a line the start goes on after, so it is no problem to
+        # show in a window; it is kept in the early log as an error is.
         if state == "error":
             problems.append(text)
-            if before_home[0]:  # no launcher.log to say it in yet (TASK-112.02)
-                write_early([text])
+        if state in ("error", "warning") and before_home[0]:
+            write_early([text])  # no launcher.log to say it in yet (TASK-112.02)
         print(text, flush=True)
 
     quiet = args.sync_only or args.doctor is not None or args.smoke
