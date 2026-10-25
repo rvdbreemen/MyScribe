@@ -7,6 +7,7 @@ loaded from its file.
 
 from __future__ import annotations
 
+import gc
 import http.server
 import importlib.util
 import json
@@ -3078,20 +3079,30 @@ def _argv(layout, port, *extra) -> list[str]:
 
 
 def test_a_second_start_while_the_first_still_installs_waits_and_opens_the_browser(
-        layout, a_second_start, capsys):
+        layout, a_second_start, capsys, monkeypatch):
     """AC #1, and the race the research named: the login entry is syncing,
     nothing answers yet, and a start by hand used to pass the probe and run a
-    second `uv sync` into the same environment."""
+    second `uv sync` into the same environment.
+
+    The first one starts serving when the second has looked and found nothing,
+    not a second after the test began: on a slow runner `main` took longer
+    than that to reach its first look, which then found it serving (CI run
+    40137186180, Windows). The probe itself stays the real one."""
     port = _free_port()
     holder = _hold_lock(a_second_start.lock)
     server: list = []
-    later = threading.Timer(1.0, lambda: server.append(_serve(port, {"ok": True})))
-    later.start()
+    probe = launcher.running_instance
+
+    def running_instance(port_, *args, **kwargs):
+        answers = probe(port_, *args, **kwargs)
+        if not answers and not server:
+            server.append(_serve(port, {"ok": True}))
+        return answers
+
+    monkeypatch.setattr(launcher, "running_instance", running_instance)
     try:
         code = launcher.main(_argv(layout, port, "--headless"))
     finally:
-        later.cancel()
-        later.join()
         _let_go(holder)
         for each in server:
             each.shutdown()
@@ -3427,10 +3438,28 @@ def test_a_window_holds_the_lock_only_while_its_myscribe_runs(layout, monkeypatc
     the app stopped, and it used to keep the lock for as long as it was open:
     the next double-click said "already starting" and started nothing. The
     real window, its pump and its worker; only `first_run` and the mainloop
-    are stand-ins."""
+    are stand-ins.
+
+    The stand-in loop runs until the lock was let go of - or, for a MyScribe
+    that keeps running, until the worker is done and the pump has looked a few
+    times - and not for a fixed two seconds. A worker that stalled held the
+    lock past those two seconds on macOS (CI run 40137186180). One stall we
+    found: the stand-in never sets _tkinter's "in the main loop" flag, so a
+    StringVar of an earlier window that the garbage collector frees on the
+    worker waits a second for it and then raises "main thread is not in main
+    loop". Those are freed here first, on this thread."""
     with capsys.disabled():
         tk = _tk_or_skip()
+    gc.collect()
     monkeypatch.setattr(launcher, "tkinter_present", lambda: True)
+    let_go = threading.Event()
+    release = launcher.InstanceLock.release
+
+    def release_and_say(self):
+        release(self)
+        let_go.set()
+
+    monkeypatch.setattr(launcher.InstanceLock, "release", release_and_say)
 
     def first_run(launch, *args, **kwargs):
         if end == "failed":
@@ -3446,9 +3475,19 @@ def test_a_window_holds_the_lock_only_while_its_myscribe_runs(layout, monkeypatc
     monkeypatch.setattr(launcher, "first_run", first_run)
     seen: list[str] = []
 
+    def worker_done() -> bool:
+        return not any(each.name == "myscribe-launch" for each in threading.enumerate())
+
     def mainloop(self, n=0):
-        until = time.monotonic() + 2.0
-        while time.monotonic() < until:
+        deadline = time.monotonic() + 30.0
+        settled = None  # when the worker of a MyScribe that keeps running was done
+        while time.monotonic() < deadline:
+            if end != "running" and let_go.is_set():
+                break
+            if end == "running" and settled is None and worker_done():
+                settled = time.monotonic()
+            if settled is not None and time.monotonic() > settled + 1.0:  # five pump ticks
+                break
             self.update()
             time.sleep(0.02)
         seen.append(_try_lock(layout.home.with_name("home.lock")))
@@ -3458,6 +3497,7 @@ def test_a_window_holds_the_lock_only_while_its_myscribe_runs(layout, monkeypatc
 
     with capsys.disabled():
         assert launcher.main(_argv(layout, _free_port(), "--no-browser")) == 0
+    gc.collect()  # this window's StringVars, here and not on the next test's worker
     assert seen == ["busy" if end == "running" else "held"]
 
 
