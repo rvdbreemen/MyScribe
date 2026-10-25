@@ -190,6 +190,41 @@ def test_the_hooks_collect_the_lgpl_modules_as_source():
         assert ast.unparse(values["datas"]) == f"copy_metadata({package!r})", hook
 
 
+def test_the_linux_tray_needs_python_xlib_in_the_bundle(tmp_path):
+    """pystray's _xorg.py alone is a tray that fails at import: python-xlib
+    has to ship too (review of TASK-112.11)."""
+    frozen = _bundle_with(tmp_path, "pystray/__init__.py", "pystray/_xorg.py")
+    missing = build_release.missing_tray_modules(frozen, "linux-x64", archived=set())
+    assert "Xlib.display" in missing and "pystray._xorg" not in missing
+
+    _bundle_with(tmp_path, "Xlib/__init__.py", "Xlib/display.py", "Xlib/threaded.py", "Xlib/XK.py")
+    assert build_release.missing_tray_modules(frozen, "linux-x64", archived=set()) == []
+
+
+def test_the_macos_tray_needs_appkit_and_quartz_in_the_app(tmp_path):
+    """The pyobjc pieces sit partly in the archive inside the executable
+    (their Python) and partly beside it (their compiled extensions)."""
+    frozen = _bundle_with(tmp_path, "pystray/__init__.py", "pystray/_darwin.py",
+                          inside="MyScribe.app/Contents/Resources")
+    archived = {"AppKit", "Foundation", "objc", "Quartz", "PyObjCTools.MachSignals",
+                "PyObjCTools.AppHelper"}
+    missing = build_release.missing_tray_modules(frozen, "macos-arm64", archived=archived)
+    assert "AppKit._AppKit" in missing and "Quartz.CoreGraphics._CoreGraphics" in missing
+
+    _bundle_with(tmp_path, "AppKit/_AppKit.cpython-312-darwin.so",
+                 "Foundation/_Foundation.cpython-312-darwin.so", "objc/_objc.cpython-312-darwin.so",
+                 "Quartz/CoreGraphics/_CoreGraphics.cpython-312-darwin.so",
+                 inside="MyScribe.app/Contents/Frameworks")
+    assert build_release.missing_tray_modules(frozen, "macos-arm64", archived=archived) == []
+    assert "AppKit" in build_release.missing_tray_modules(frozen, "macos-arm64", archived=set())
+
+
+def test_a_tray_module_outside_the_shipped_folder_does_not_count(tmp_path):
+    frozen = _bundle_with(tmp_path, "pystray/_win32.py", inside="elsewhere")
+    (frozen / "MyScribe").mkdir()
+    assert build_release.missing_tray_modules(frozen, "windows-x64", archived=set()) == ["pystray._win32"]
+
+
 def test_the_build_requirements_pin_the_tray_with_hashes():
     pins = (REPO / "packaging" / "build-requirements.txt").read_text(encoding="utf-8")
     for line in ("pystray==0.19.5 ;", "pillow==13.0.0 ;", "python-xlib==0.33 ; platform_machine == 'x86_64' and sys_platform == 'linux'",

@@ -4564,7 +4564,9 @@ def test_linux_without_a_tray_host_gets_no_tray_and_a_line_that_says_so(monkeypa
     monkeypatch.setattr(launcher, "xembed_tray_present", lambda: False)
     said: list[tuple[str, str]] = []
 
-    assert launcher.tray_for(_reporting_launch(said)) is None
+    # The platform is named: left to its default it is the runner's, and on
+    # macOS that imports AppKit, which the suite does not install.
+    assert launcher.tray_for(_reporting_launch(said), platform="linux") is None
     assert any("No tray icon" in text and launcher.TRAY_NO_HOST in text for _state, text in said)
 
 
@@ -4574,7 +4576,7 @@ def test_linux_with_a_tray_host_gets_the_tray(monkeypatch):
     monkeypatch.setattr(launcher, "tray_image", lambda: object())
     said: list[tuple[str, str]] = []
 
-    tray = launcher.tray_for(_reporting_launch(said))
+    tray = launcher.tray_for(_reporting_launch(said), platform="linux")
 
     assert isinstance(tray, launcher.Tray)
     assert ("busy", launcher.TRAY_SHOWN) in said
@@ -4585,7 +4587,7 @@ def test_windows_gets_the_tray_without_asking_for_a_tray_host(monkeypatch):
     monkeypatch.setattr(launcher, "xembed_tray_present", lambda: pytest.fail("not an X11 question"))
     monkeypatch.setattr(launcher, "tray_image", lambda: object())
 
-    assert isinstance(launcher.tray_for(_reporting_launch([])), launcher.Tray)
+    assert isinstance(launcher.tray_for(_reporting_launch([]), platform="win32"), launcher.Tray)
 
 
 def _fake_appkit(monkeypatch, handlers=None, after=None, policy=None):

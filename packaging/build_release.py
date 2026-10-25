@@ -133,6 +133,58 @@ def replaceable_tray(frozen: Path, target: str = "windows-x64") -> Path:
     return found
 
 
+# What each platform's tray imports besides pystray itself (TASK-112.11,
+# ADR-038): its backend, and what that backend imports. The pyobjc packages
+# are Python in the archive plus a compiled extension beside it; both count.
+TRAY_MODULES = {
+    "windows-x64": ("pystray._win32",),
+    "linux-x64": ("pystray._xorg", "Xlib.display", "Xlib.threaded", "Xlib.XK"),
+    "macos-arm64": ("pystray._darwin", "AppKit", "AppKit._AppKit", "Foundation",
+                    "Foundation._Foundation", "objc", "objc._objc", "PyObjCTools.MachSignals",
+                    "PyObjCTools.AppHelper", "Quartz", "Quartz.CoreGraphics._CoreGraphics"),
+}
+
+
+def _shipped(frozen: Path, target: str) -> Path:
+    return frozen / ("MyScribe.app" if target == "macos-arm64" else FROZEN_NAME)
+
+
+def archived_modules(frozen: Path, target: str) -> set[str]:
+    """The module names in the PYZ archive inside the frozen executable.
+
+    Needs PyInstaller importable, so only the build venv calls it."""
+    from PyInstaller.archive.readers import CArchiveReader
+
+    shipped = _shipped(frozen, target)
+    executable = (shipped / "Contents" / "MacOS" / FROZEN_NAME if target == "macos-arm64"
+                  else shipped / (FROZEN_NAME + (".exe" if target == "windows-x64" else "")))
+    package = CArchiveReader(str(executable))
+    names: set[str] = set()
+    for name, entry in package.toc.items():
+        if entry[-1] == "z":  # a PYZ archive
+            names.update(package.open_embedded_archive(name).toc)
+    return names
+
+
+def missing_tray_modules(frozen: Path, target: str, archived: set[str] | None = None) -> list[str]:
+    """The modules in TRAY_MODULES[target] that are not in what ships: not a
+    loose .py, package or compiled extension in the bundle, and not in the
+    archive inside the executable (`archived`, read from it when not given)."""
+    shipped = _shipped(frozen, target)
+    if archived is None:
+        archived = archived_modules(frozen, target)
+    loose: set[str] = set()
+    for path in shipped.rglob("*"):
+        if path.suffix not in (".py", ".so", ".pyd"):
+            continue
+        parts = list(path.relative_to(shipped).parts)
+        parts[-1] = parts[-1].split(".", 1)[0]  # _AppKit.cpython-312-darwin.so -> _AppKit
+        if parts[-1] == "__init__":
+            parts.pop()
+        loose.update(".".join(parts[i:]) for i in range(len(parts)))
+    return [name for name in TRAY_MODULES[target] if name not in archived and name not in loose]
+
+
 def finish_bundle(app: Path, value: str, sign: Callable[[Path], None] | None = None) -> None:
     """The ``myscribe`` script into Contents/Resources, then the version and
     the signature: anything added after signing breaks ``codesign --verify``.
