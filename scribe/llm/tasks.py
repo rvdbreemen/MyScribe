@@ -337,6 +337,15 @@ class TaskSpec:
     person and `speakers` writes names; the others have no recorded length
     failure. `effort: low` is used nowhere: on media 1 it dropped the [m:ss]
     stamps and the speaker labels."""
+    combine_reasoning_off: bool = False
+    """Ask the combine call alone not to reason - the notes and a recording
+    short enough for one call keep the provider's default. Set for `blog` by
+    Robert's decision of 2026-10-25 (TASK-124), after the A/B the line above
+    asks for, on media 61 with qwen3.5:4b. Without the hint, one combine of
+    two finished (5057 tokens) and one stopped at the 6000-token cap after
+    16,866 characters of thinking. With it, three of three finished in
+    1599-1996 tokens with no thinking, 23-31 s each (round-6 library copy;
+    those three shared one set of notes)."""
     apply: Callable[[sqlite3.Connection, "TaskPlan", Any, int], dict] | None = None
     """What to do with the answer once it is stored, for the kinds that change
     something rather than only report.
@@ -405,6 +414,7 @@ TASKS: dict[str, TaskSpec] = {
         # The one kind whose answer is meant to be long: a post is prose, not a
         # list, and the floor above only buys the thinking that precedes it.
         max_output_tokens=6000,
+        combine_reasoning_off=True,
     ),
     "speakers": TaskSpec(
         kind="speakers",
@@ -1804,6 +1814,7 @@ def _ask(
 
     The kind's reasoning hint rides on every call made here - a note, a part,
     a single answer, a combine - so no call of a hinted kind goes out without it.
+    A kind with `combine_reasoning_off` adds it to its combine alone.
     """
     request = ChatRequest(
         system=system,
@@ -1811,7 +1822,8 @@ def _ask(
         model=plan.model,
         max_output_tokens=max_output_tokens,
         json_schema=json_schema,
-        reasoning_off=plan.spec.reasoning_off,
+        reasoning_off=plan.spec.reasoning_off
+        or (phase == "combine" and plan.spec.combine_reasoning_off),
     )
     def watched(response: ChatResponse | None) -> None:
         """Tell the watcher, and never let it stop the work (ADR-014)."""

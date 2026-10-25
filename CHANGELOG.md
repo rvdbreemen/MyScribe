@@ -31,6 +31,12 @@
   version are not reused: the next run of any AI task on a long recording
   (summary, minutes, blog and the others; chat is not affected) asks every
   part again. Earlier results are kept (TASK-124).
+- **A blog post on a long recording is written without thinking first.** The
+  last step, which writes the post from the notes on each part, asks the model
+  not to think first, as cleanup does, with every provider. With qwen3.5:4b
+  that step had stopped at its answer limit after thinking; with the request
+  it finished three times out of three. The notes and a recording short
+  enough for one step are asked as before (TASK-124).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

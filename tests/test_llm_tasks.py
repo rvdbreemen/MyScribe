@@ -635,6 +635,44 @@ def test_the_hint_follows_the_kind(conn, media, monkeypatch):
     assert [c.reasoning_off for c in hinted_calls] == [True] * len(hinted_calls)
 
 
+def test_a_blog_asks_only_its_combine_not_to_reason(conn, media, monkeypatch):
+    """Robert's decision of 2026-10-25 (TASK-124): blog's combine carries the
+    reasoning hint, as cleanup's calls do. On media 61 qwen3.5:4b spent 16,866
+    characters thinking in the combine of job 430 on the round-5 library copy
+    and stopped at the 6000-token cap with half a post. The notes keep the
+    provider's default - they were not where the budget went - and so does a
+    recording short enough for one call, which has no combine."""
+    assert {kind: spec.combine_reasoning_off for kind, spec in tasks.TASKS.items()} == {
+        "summary": False,
+        "action_items": False,
+        "chapters": False,
+        "minutes": False,
+        "blog": True,
+        "speakers": False,
+        "labels": False,
+        "cleanup": False,
+        "custom": False,
+    }
+
+    long_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, long_id, n_segments=12)
+    provider, calls = fake_provider(map_reduce_script(ANSWERS["blog"]))
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1")
+    assert [c.reasoning_off for c in calls] == [False], "one call, no combine, no hint"
+
+    del calls[:]
+    tasks.run_task(
+        conn, media_id=long_id, kind="blog", provider_name="fake", model="fake-1", budget_tokens=100
+    )
+    notes = [c for c in calls if CHUNK_MARKER in c.user]
+    combines = [c for c in calls if CHUNK_MARKER not in c.user]
+    assert len(notes) >= 2 and len(combines) == 1
+    assert [c.reasoning_off for c in notes] == [False] * len(notes)
+    assert combines[0].reasoning_off is True
+
+
 @pytest.mark.parametrize(
     "answer, cap, expected",
     [
