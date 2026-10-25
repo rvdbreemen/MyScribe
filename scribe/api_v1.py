@@ -717,7 +717,8 @@ async def add_watch_folder(request: Request) -> dict:
     form) and the transcribe dialog's option fields for what it takes in.
     The function the page calls: what is already in the folder is left
     alone and counted (``left``, ``skipped_video``), and ``message`` is the
-    sentence the page shows. A folder already watched is a 409
+    sentence the page shows, except that it names Settings > Watch folders
+    where the page says "below". A folder already watched is a 409
     ``already_watched``."""
     body = await _json_body(request)
     unknown = sorted(set(body) - WATCH_FIELDS)
@@ -740,7 +741,7 @@ async def add_watch_folder(request: Request) -> dict:
         raise
     (row,) = [f for f in _watch_folders(request)["folders"] if f["path"] == str(added)]
     return {**row, "skipped_video": left.skipped_video,
-            "message": settings_page.watch_added_sentence(left, include_video)}
+            "message": settings_page.watch_added_sentence(left, include_video, on_page=False)}
 
 
 @router.delete("/watch-folders/{folder_id}", response_model=WatchFolderRemoved,

@@ -12,8 +12,9 @@
   result; it queues nothing, and its `ok` is false when a required check of
   that run failed. `POST /api/v1/watch-folders` calls the function the
   Settings page calls, with the same refusals; a folder already watched is
-  `already_watched`. Every route is in `/openapi.json`, and every
-  error under `/api/v1` is JSON with a stable `code` and a `detail`; an
+  `already_watched`. Its `message` says to transcribe the files it left
+  alone in Settings > Watch folders, where the page says "below". Every
+  route is in `/openapi.json`, and every error under `/api/v1` is JSON with a stable `code` and a `detail`; an
   unexpected server error is `internal_error`, without the exception's text.
   A re-transcribe refuses a field that is not one of the dialog's options or
   `params`; an empty body repeats the last request. An
@@ -81,6 +82,12 @@
   an older MyScribe refuses a library this version has opened.
 
 ### Fixed
+
+- **Run checks in Settings no longer loads torch into the web process.** The
+  button ran every quick check, the accelerator check among them, which
+  imports torch. It now runs the checks the page runs when it opens, as
+  `GET /api/v1/doctor` does; the accelerator check stays in
+  `python -m scribe.doctor` and the GPU check job.
 
 - **After a Linux update, Start at login starts the new AppImage.** Each
   release is a new file, and the login entry kept starting the old one. When

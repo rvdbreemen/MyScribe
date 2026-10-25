@@ -864,6 +864,25 @@ def test_adding_a_folder_says_what_it_left_alone(client, conn, inbox):
     assert jobs_of(conn) == []
 
 
+def test_the_left_alone_sentence_has_no_below_off_the_page(client, inbox, tmp_path):
+    """The page says "Transcribe them below": its button is under the
+    sentence. A script, the CLI and an MCP client have no below, so the API's
+    sentence says where the files can be transcribed instead (TASK-108,
+    Robert 2026-10-25). The page keeps its own sentence."""
+    settled_file(inbox, "old.mp3")
+    body = client.post(f"{V1}/watch-folders", json={"path": str(inbox)}).json()
+    assert body["left"] == 1
+    assert "1 audio file already in it was left alone" in body["message"]
+    assert "below" not in body["message"]
+    assert "Settings > Watch folders" in body["message"]
+
+    other = tmp_path / "other"
+    other.mkdir()
+    settled_file(other, "old.mp3")
+    page = client.post("/settings/watch", data={"path": str(other)}, headers={"HX-Request": "true"})
+    assert "Transcribe them below if you want them too." in page.text
+
+
 def test_the_watch_list_is_what_the_page_shows(client, conn, inbox, tmp_path):
     client.post(f"{V1}/watch-folders", json={"path": str(inbox), "include_video": True})
     gone = tmp_path / "gone"

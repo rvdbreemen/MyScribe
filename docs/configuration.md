@@ -189,7 +189,7 @@ not read; set `MYSCRIBE_HOME` to it instead.
 | `transcript ID` | The transcript as JSON, word by word, to stdout or `--out` |
 | `doctor` | Check this computer: the checks the Settings page runs, and the last GPU check's result. Exit 9 when a required check failed. It starts nothing: run the GPU check from Settings |
 | `watch list` | The watch folders: on or off, audio only or with video, and why one may be doing nothing (missing, outside the browse roots) |
-| `watch add FOLDER` | Watch a folder, with `--include-video` and `--option` (repeatable) for what it takes in. What is already in it is left alone and counted, as in Settings |
+| `watch add FOLDER` | Watch a folder, with `--include-video` and `--option` (repeatable) for what it takes in. What is already in it is left alone and counted, as in Settings; transcribe those files with *Transcribe them* in Settings > Watch folders |
 | `watch remove ID` | Stop watching a folder; its recordings stay in the library |
 | `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout. In a folder the file gets the app's name for it; a file that is already there is replaced, with a `replaced` line on stderr |
 | `mcp` | Serve these actions as MCP tools on stdin and stdout, for an AI agent; see [below](#letting-an-ai-agent-use-myscribe-mcp) |

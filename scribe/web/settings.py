@@ -3,8 +3,10 @@
 Everything about this machine on one page, and none of it loads a model in
 the web process (ADR-001):
 
-* **The doctor.** The CPU checks (`doctor.CPU_CHECKS`: python, sqlite,
-  ffmpeg, the data directory, disk, database) run in the request; they take
+* **The doctor.** The CPU checks the web process may run (`doctor.web_checks`:
+  python, sqlite, ffmpeg, the data directory, disk, database, models on disk;
+  not the accelerator, diarization or Ollama ones) run in the request, on
+  opening the page and on Run checks alike; they take
   under a second and touch nothing a browser could not. The GPU checks load a
   model and transcribe a clip, which is exactly what this process never does,
   so they are a job: `POST /settings/doctor` with `gpu=1` queues a `doctor`
@@ -126,16 +128,25 @@ def _what(found: "watching.Preview", include_video: bool) -> str:
     return _count(audio, "audio file")
 
 
-def watch_added_sentence(left: "watching.Preview", include_video: bool) -> str:
+# Where the left-alone files can be transcribed, by who reads the sentence:
+# on the page the "Transcribe them" button is right under it; a script, the
+# CLI and an MCP client read it from POST /api/v1/watch-folders and have no
+# "below" (TASK-108). The API has no twin of that button, so it names the page.
+TAKE_EXISTING_ON_PAGE = "Transcribe them below if you want them too."
+TAKE_EXISTING_OFF_PAGE = "Transcribe them in MyScribe's Settings > Watch folders if you want them too."
+
+
+def watch_added_sentence(left: "watching.Preview", include_video: bool, *, on_page: bool = True) -> str:
     """What a new watch folder does with what it already holds, said right
     after adding it (TASK-107.01). 'Picked up shortly' told nobody that
     ~/Downloads was 882 jobs; now the folder takes what arrives, and what was
-    there is counted here and left alone until somebody asks for it."""
+    there is counted here and left alone until somebody asks for it.
+    ``on_page=False`` is the API's sentence, for a reader with no button below."""
     sentence = "Watching that folder for new recordings."
     if left.taken:
         verb = "was" if left.taken == 1 else "were"
         sentence += (f" {_what(left, include_video)} already in it {verb} left alone; "
-                     "Transcribe them below if you want them too.")
+                     + (TAKE_EXISTING_ON_PAGE if on_page else TAKE_EXISTING_OFF_PAGE))
     if left.skipped_video:
         sentence += f" {_count(left.skipped_video, 'video file')} ignored: video is off for this folder."
     return sentence
@@ -662,7 +673,10 @@ async def run_doctor(request: Request) -> Response:
     if not library._is_htmx(request):
         return _back_to("machine")
 
-    results = await run_in_threadpool(doctor.checks, include_gpu=False)
+    # `web_checks`, as on opening the page and in GET /api/v1/doctor: the
+    # full CPU set includes `check_accelerators`, which imports torch, and
+    # this is the web process (ADR-001).
+    results = await run_in_threadpool(doctor.web_checks)
     response = render(
         request,
         "_doctor_panel.html",

@@ -598,6 +598,42 @@ def test_the_web_process_never_imports_a_model_runtime(tmp_path):
     assert json.loads(proc.stdout.strip().splitlines()[-1]) == []
 
 
+def test_running_the_doctor_from_the_page_imports_no_model_runtime(tmp_path):
+    """The page's Run checks button asked `doctor.checks(include_gpu=False)`,
+    which is every CPU check - `check_accelerators` among them, and that one
+    imports torch into the web process (ADR-001). GET /api/v1/doctor already
+    asked `web_checks`; the button now asks the same. Measured as above, in a
+    fresh interpreter, after a real POST: no test seam stands in for the
+    checks, because the seam is what was wrong."""
+    script = textwrap.dedent(
+        f"""
+        import json, sys
+        from fastapi.testclient import TestClient
+        from scribe.app import create_app
+        app = create_app(db_path={str(tmp_path / "web.db")!r}, start_supervisor=False)
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            resp = client.post("/settings/doctor", headers={{"HX-Request": "true"}})
+            assert resp.status_code == 200, resp.status_code
+            assert 'id="doctor-panel"' in resp.text
+        runtimes = {MODEL_RUNTIMES!r}
+        print(json.dumps(sorted(m for m in sys.modules if m.split(".")[0] in runtimes)))
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+        # Offline, so nothing the CPU checks ask can wait on the network.
+        env={**os.environ, "SCRIBE_DATA_DIR": str(tmp_path / "data"), "HF_HUB_OFFLINE": "1"},
+        timeout=300,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == []
+
+
 # --- the sidebar of categories --------------------------------------------------------
 
 
