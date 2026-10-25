@@ -575,7 +575,7 @@ def cmd_doctor(api: Api, args, out: Out) -> Exit:
         for line in _check_lines(last["checks"]):
             out.line(line)
     else:
-        out.line("GPU checks: never run. Run them from Settings > This computer.")
+        out.line("GPU checks: never run. Run them from Settings > This machine.")
     if waiting:
         out.line(f"GPU checks {waiting['status']} as job {waiting['id']}")
     out.line("All required checks passed." if body["ok"] else "A required check did not pass.")

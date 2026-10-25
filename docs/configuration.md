@@ -255,14 +255,16 @@ with the same `idempotency_key` returns the first answer. Its result carries
 `"_meta": {"myscribe/replayed": true}`.
 
 With an installed MyScribe, register the `myscribe` command above with
-the argument `mcp`. On Windows a client starts a `.cmd` through `cmd /c`;
-with the default install folder, in Claude Code:
+the argument `mcp`. On Windows a client starts a `.cmd` through `cmd /c`.
+Write the whole path out, not `%LOCALAPPDATA%`: the client passes the
+variable unquoted, and a user folder with a space in its name then splits
+it. With the default install folder, in Claude Code:
 
 ```sh
-claude mcp add myscribe -- cmd /c "%LOCALAPPDATA%\Programs\MyScribe\bin\myscribe.cmd" mcp
+claude mcp add myscribe -- cmd /c "C:\Users\me\AppData\Local\Programs\MyScribe\bin\myscribe.cmd" mcp
 ```
 
-In a JSON configuration, write the whole path out:
+In a JSON configuration:
 `"command": "cmd", "args": ["/c", "C:\\Users\\me\\AppData\\Local\\Programs\\MyScribe\\bin\\myscribe.cmd", "mcp"]`.
 On Linux the command is the AppImage with the arguments `cli mcp`; on
 macOS the `myscribe` script in the bundle with `mcp`.
