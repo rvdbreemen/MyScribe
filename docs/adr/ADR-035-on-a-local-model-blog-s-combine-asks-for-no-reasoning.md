@@ -103,6 +103,9 @@ provider, on this machine or on the local network (ADR-024).
 ### Confirmation
 
 The test below runs the same blog plan against a local and a cloud fake.
+Live on 2026-10-25 (round-7 library copy, own notes, ending the shared-notes
+confound for one more run): blog job 434 ended done; its combine carried the
+hint, read 3147 prompt tokens and wrote 2626 with no thinking in 40.6 s.
 
 ## Decision Contract
 
