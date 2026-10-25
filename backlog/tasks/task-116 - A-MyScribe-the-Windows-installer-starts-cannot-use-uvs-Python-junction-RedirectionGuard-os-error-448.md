@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-22T18:38:00Z'
-updated_date: '2026-10-23T05:04:00Z'
+updated_date: '2026-10-24T11:15:00Z'
 labels:
   - packaging
   - windows
@@ -27,7 +27,7 @@ Found 2026-10-22 on Robert's machine (TASK-115). Inno Setup 6.7.1 enables Window
 <!-- AC:BEGIN -->
 - [x] #1 myscribe.iss sets RedirectionGuard=no with the reason, and a test fails without it
 - [ ] #2 In Windows Sandbox the MyScribe that the fixed installer restarts has Enforce=0 and serves; the released 0.9.0 without the flag reproduces Enforce=1 and the failed start
-- [ ] #3 The CHANGELOG says who was hit and what to do on 0.9.0 (start MyScribe from the Start menu)
+- [x] #3 The CHANGELOG says who was hit and what to do on 0.9.0 (start MyScribe from the Start menu)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -38,4 +38,6 @@ Found 2026-10-22 on Robert's machine (TASK-115). Inno Setup 6.7.1 enables Window
 2026-10-22 23:22, Robert's real machine, with his OK: the 0.9.1 rehearsal installer (run 39843057516, sha256 d1378ae2...a9e7) with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG over his running 0.9.0 (no job running or queued). Setup exit 0; setup log 'Setup version: Inno Setup version 6.7.1', 'RedirectionGuard status for current process: Not enabling' (no command-line flag); MyScribe-launcher.log 'setup: MyScribe is running (process 33548); asking it to stop.' and 'MyScribe stopped; a job that was running starts over at the next start.'; /health 0.9.1 after 15 s with launcher_pid 22404 = MyScribe.exe --at-login --no-browser --headless; launcher and both python children Enforce=0 hwnd=0; launcher.log 'Checked 124 packages' then 'MyScribe is running'. Log: scratchpad itest/results-real/setup-091-over-090.log.
 
 Final: the published v0.9.1 installer over Robert's running MyScribe logged 'RedirectionGuard status for current process: Not enabling' and the restarted launcher served 0.9.1 headless. AC2 (a Sandbox reproduction) not done: Windows Sandbox is not present on build 26300 and the second-user run was not executed before the release. Released in 0.9.1 (tag v0.9.1, tree 05defa7d, the same tree as the tested candidate 51ea3e2).
+
+2026-10-24 review: AC3 met. CHANGELOG.md [0.9.1] Fixed, first entry: who was hit (a MyScribe the installer starts, since 0.8.0, GitHub #16, 'untrusted mount point (os error 448)') and what to do on 0.9.0 or earlier (close it and start MyScribe from the Start menu); the published release notes say the same.
 <!-- SECTION:NOTES:END -->

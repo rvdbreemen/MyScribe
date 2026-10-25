@@ -3,11 +3,11 @@ id: TASK-096
 title: >-
   A phone can send a recording to the laptop through a door that opens on
   request and closes by itself after 15 minutes
-status: In Progress
+status: Done
 assignee:
   - '@claude'
-created_date: '2026-09-26 20:11'
-updated_date: '2026-09-27 07:32'
+created_date: 2026-09-26 20:11
+updated_date: '2026-10-25T17:06:00Z'
 labels:
   - web
   - ingest
@@ -34,8 +34,8 @@ Robert wants to move a recording from his iPhone to the laptop without any cloud
 - [x] #6 The laptop shows the QR code, the URL, the IP fallback and a countdown, and a close button; the phone page is plain HTML that works in Safari on an iPhone without JavaScript frameworks or anything from the internet
 - [x] #7 myscribe.local is published over mDNS while the door is open and withdrawn when it closes; if publishing fails the IP URL still works and the page says so
 - [x] #8 Whatever Windows Firewall needs for a phone to connect is stated from a measurement on this machine, not assumed; MyScribe never adds a firewall rule that outlives the door without saying so
-- [ ] #9 Red first for every behaviour, mutants on a copy, the per-file suite green, and a real run: a phone (or a second device on the LAN) sends a file, it becomes a recording, and the door closes on time. The phone half is Robert's
-- [ ] #10 The phone page shows a progress bar from 0 to 100% while the file uploads, then the laptop's answer for 3 seconds, then a done screen (Safari does not let a page close a tab it did not open, so the page tries and otherwise says the tab can be closed); without JavaScript the plain form still works (Robert, 2026-09-26)
+- [x] #9 Red first for every behaviour, mutants on a copy, the per-file suite green, and a real run: a phone (or a second device on the LAN) sends a file, it becomes a recording, and the door closes on time. The phone half is Robert's
+- [x] #10 The phone page shows a progress bar from 0 to 100% while the file uploads, then the laptop's answer for 3 seconds, then a done screen (Safari does not let a page close a tab it did not open, so the page tries and otherwise says the tab can be closed); without JavaScript the plain form still works (Robert, 2026-09-26)
 - [x] #11 The door closes by itself once the answer to an accepted file has been sent; a refused file leaves it open for another try
 - [x] #12 When the door closed on a received file, the laptop panel says so for 3 seconds, naming the file and whether its transcription is running or queued, and then the library reloads and shows the recording
 <!-- AC:END -->
@@ -73,4 +73,16 @@ Robert wants to move a recording from his iPhone to the laptop without any cloud
 
 2026-09-27, Robert's iPhone run (read from MyScribe-wt-096/data/logs/app.log; code of commit f115637 with the accept filter removed, before the progress bar): phone.open 23:34:47 on 192.168.1.234:4243 with mDNS; ingest.phone 23:35:33 "Audio Terrein sessie ..m4a", 252,638,391 bytes; closed on the laptop 23:35:55; job 1 transcribed, runner.exited status done after 1146 s. So Safari on an iPhone sends a real recording through the door and it is transcribed like a laptop upload (AC6; the phone half of AC9). The progress bar (AC10) has not been seen in Safari yet.
 One line in that log came from a pytest process (pid 23224, no proc, 23:53:39, phone.close reason received, 0 files): the close race fixed in 5a19140 let a test's closing thread log after the test had restored paths.LOGS_DIR, whose default is the checkout's data dir. Five phone-test runs after the fix wrote nothing there. Tests that do not fence LOGS_DIR themselves still default to the checkout's data dir; that is wider than this task.
+
+2026-10-24 Robert's iPhone, Safari, against the installed 0.9.1 (pid 17716): Robert saw the progress bar run 0 to 100%, the laptop's answer, then the done screen. data/logs/app.log: 13:17:24 phone.open 192.168.88.32:4243 seconds=900 mdns=true; 13:18:49 ingest.phone 'De Baak.m4a' media 62, 25,758,830 bytes, job.enqueued 429 transcribe; phone.received; 13:18:50 phone.close reason=received (AC11 again). Access log: GET /phone/done, GET /, then /media/62/status polls (the laptop panel then the library reload, AC12). The bar itself is Robert's observation; the log proves the upload, not the bar.
+
+2026-10-24 mutants, round 2 completed (PR #90, merged): the four never run - no-hx-refresh, running-said-as-queued, timed-out-door-reloads, accept-filter-back - were applied on a copy and all killed. An independent reviewer then found a surviving non-equivalent mutant (_arrived without 'or door.closed_reason != received'); new test test_a_door_closed_otherwise_after_a_file_neither_claims_it_nor_reloads (by hand, by timeout) is red on that mutant and green on real code. tests/test_phone_door.py + tests/test_web_phone.py: 96 passed, three runs by the builder and three by the reviewer. Known: 'reload': reload and bool(arrived) -> reload is equivalent (template nests it under if arrived), no own test. The door closing on time in a real run: the 4299 run with a 60 s door (2026-09-26); both iPhone runs closed on 'received'. AC9's last part, the per-file suite green, follows on main after the merges.
+
+2026-10-25 AC9 complete: red first per behaviour (earlier notes); mutants on a copy - all round-1/2 mutants killed plus the closed_reason survivor now killed by the test in PR #90; the whole suite green in CI on macOS, Ubuntu and Windows on every merge since (latest PR #104: Windows halves, macOS ~4580, Ubuntu ~4575 passed); real runs: the 4299 run with a 60 s door closing on time (2026-09-26) and Robert's iPhone uploads 2026-09-27 and 2026-10-24 (media 62, phone.close reason=received).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A phone sends a recording to the laptop through an upload-only door with a secret URL, QR code and mDNS name, that opens on request and closes after 15 minutes or after a received file (ADR-022). Proven with Robert's iPhone in Safari (progress bar seen, file transcribed) and the full test suite in CI.
+<!-- SECTION:FINAL_SUMMARY:END -->
