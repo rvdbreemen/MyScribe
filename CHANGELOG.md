@@ -39,17 +39,20 @@
   blaming the answer limit; a cloud answer that stopped before its limit says
   that too. Long recordings are split into a few more parts than before,
   locally and for cleanup in the cloud (TASK-124).
-- **Notes on a long recording are written, not copied.** A recording
-  too long for one call is read in parts, with notes taken on each. For a blog
-  post, minutes, action items and chapters, local models wrote a part's
-  transcript back line by line until they ran out of room, and the job failed.
-  Those notes are now asked as at most 30 points in the model's own words,
-  each with its timestamp (for minutes and action items also the speaker),
-  quoting only a few words where they matter. Such a note that runs out of
-  room with most of its lines copied from the transcript now says so. The prompts changed, so notes stored by an earlier
-  version are not reused: the next run of any AI task on a long recording
-  (summary, minutes, blog and the others; chat is not affected) asks every
-  part again. Earlier results are kept (TASK-124).
+- **Notes on a long recording for a blog post, minutes, action items and
+  chapters are asked for in the model's own words.** A recording too long
+  for one call is read in parts, with notes taken on each. For these four
+  tasks, local models wrote a part's transcript back line by line until they
+  ran out of room, and the job failed. Those notes are now asked as at most
+  30 points in the model's own words, each with its timestamp (for minutes
+  and action items also the speaker), quoting only a few words where they
+  matter. This is a request, not a limit: a model can still write more.
+  Such a note that runs out of room with most of its lines copied from the
+  transcript now says so. Notes for the other tasks are asked as before.
+  The shared notes prompt changed, so notes stored by an earlier version
+  are not reused: the next run of any AI task on a long recording (summary, minutes,
+  blog and the others; chat is not affected) asks every part again. Earlier
+  results are kept (TASK-124).
 - **A local AI answer comes back in the shape it was asked for.** With
   Ollama, every AI task that answers in a fixed shape (summary, action items,
   chapters, minutes, blog post, who is speaking, labels) now sends that shape
