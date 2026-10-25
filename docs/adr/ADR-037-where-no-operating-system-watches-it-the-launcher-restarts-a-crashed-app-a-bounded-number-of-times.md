@@ -48,11 +48,6 @@ status_history:
     changed_by: Claude (agent, session 2026-10-25)
     reason: "TASK-112.10: the launcher-side restart"
     changed_via: adr-kit lifecycle
-  - date: 2026-10-25
-    status: Proposed
-    changed_by: Claude (agent, session 2026-10-25)
-    reason: "TASK-112.10: the launcher-side restart"
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

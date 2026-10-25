@@ -1601,7 +1601,7 @@
       "path": "ADR-026-myscribe-runs-in-the-background-as-a-per-user-login-item-started-headless-not-as-an-operating-system-service.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-25",
+      "date": "2026-10-19",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-19, with a systemd user unit on Linux and the XDG autostart file as fa...",
       "topics": [
         "autostart",

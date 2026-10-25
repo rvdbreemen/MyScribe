@@ -84,11 +84,6 @@ status_history:
     changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
     reason: Robert accepted ADR-032 in the session of 2026-10-25, with the upload window, ingest window and stop order in front of him
     changed_via: adr-kit lifecycle
-  - date: 2026-10-25
-    status: Accepted
-    changed_by: Claude (agent, session 2026-10-25)
-    reason: "TASK-112.10: the launcher-side restart"
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
