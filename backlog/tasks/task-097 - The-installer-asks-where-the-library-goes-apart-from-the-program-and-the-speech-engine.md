@@ -3,10 +3,11 @@ id: TASK-097
 title: >-
   The installer asks where the library goes, apart from the program and the
   speech engine
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: 2026-09-27 08:29
-updated_date: '2026-10-25T18:08:00Z'
+updated_date: '2026-10-25T19:16:00Z'
 labels:
   - installer
   - library
