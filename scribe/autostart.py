@@ -224,7 +224,8 @@ class LaunchAgent:
       launchd throttles a respawn to one per 10 s (`ThrottleInterval`'s
       default, launchd.plist(5)) but has no ceiling like systemd's
       `StartLimitBurst`: a launcher that fails every time, or a bundle that
-      was deleted, is retried until logout. Not seen on a Mac.
+      was deleted, is retried every 10 s, at every login, until the plist is
+      removed. Not seen on a Mac.
     * `StandardOutPath` and `StandardErrorPath` in `~/Library/Logs/MyScribe`,
       beside the `LaunchAgents` folder, made before the plist is written.
     * `ExitTimeOut` longer than the launcher's longest stop (`EXIT_TIMEOUT`).
