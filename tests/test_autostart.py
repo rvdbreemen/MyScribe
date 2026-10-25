@@ -1044,7 +1044,8 @@ def test_a_rewrite_the_manager_refused_keeps_the_unit_that_was_on(tmp_path):
 # --- macOS: a LaunchAgent that starts the binary itself (TASK-112.05) -------------
 #
 # Robert's decisions of 2026-10-24: the agent names Contents/MacOS/<binary>,
-# headless, with its own log; KeepAlive restarts only APP_DIED; a path under
+# headless, with its own log; KeepAlive restarts a non-zero exit, which the
+# launcher means for APP_DIED alone (an uncaught error exits 1); a path under
 # AppTranslocation is refused with a sentence; switching on bootstraps it now,
 # switching off removes the plist and boots it out, which stops MyScribe now.
 # Every launchctl call goes through an injected runner. Nothing in this
@@ -1100,10 +1101,12 @@ def test_the_launch_agent_plist_has_the_research_notes_keys(tmp_path):
 
 
 def test_keep_alive_restarts_only_the_exit_that_means_the_app_died():
-    """`SuccessfulExit: false` restarts every non-zero exit, so it is only
-    safe because the launcher exits non-zero for one reason alone, `APP_DIED`
-    (TASK-112.02): a clean stop, another instance and a busy port all exit 0.
-    The module spells that code again; this reads the launcher's own."""
+    """`SuccessfulExit: false` restarts every non-zero exit. The one the
+    launcher chooses is `APP_DIED` (TASK-112.02): a clean stop, another
+    instance and a busy port all exit 0. An uncaught Python error in the
+    launcher exits 1 and is restarted as well - launchd has no start limit,
+    only its 10 s throttle. The module spells the code again; this reads the
+    launcher's own."""
     assert autostart.APP_DIED == _launcher().APP_DIED != 0
 
 

@@ -24,8 +24,13 @@
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser
   --headless` instead of `open -a`, which returned at once. launchd restarts
-  it after an exit that is not clean; the launcher exits that way only when
-  the app died under it (code 70). launchd writes its output to
+  it after any exit that is not 0. The launcher means one with code 70, when
+  the app died under it; a clean stop, a busy port or another MyScribe
+  already running exit 0. An error in the launcher itself (code 1) is
+  restarted too. launchd starts it at most once every 10 seconds, but unlike
+  systemd on Linux it never gives up: a MyScribe that fails every time, or
+  was deleted while its plist stayed, is retried until you log out (not seen
+  on a Mac). launchd writes its output to
   `~/Library/Logs/MyScribe/launchd.log`. It waits 240 seconds for a
   stop before it kills MyScribe. Switching it on in Settings also loads it at
   once with `launchctl bootstrap`. If launchd refuses, the plist stays, it

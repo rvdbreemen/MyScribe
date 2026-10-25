@@ -217,9 +217,14 @@ class LaunchAgent:
     * `ProgramArguments` names the launcher's binary inside the bundle, so
       launchd watches the launcher itself - not `open -a`, which returns at
       once and left launchd nothing to watch or log (0.9.x and earlier).
-    * `KeepAlive` with `SuccessfulExit` false: restarted after a non-zero
-      exit only, and the launcher exits non-zero only when the app died under
-      it (`APP_DIED`, TASK-112.02).
+    * `KeepAlive` with `SuccessfulExit` false: restarted after any non-zero
+      exit. The launcher's own is `APP_DIED`, when the app died under it
+      (TASK-112.02); a clean stop, a busy port and another instance exit 0.
+      An uncaught error in the frozen launcher exits 1 and is restarted too.
+      launchd throttles a respawn to one per 10 s (`ThrottleInterval`'s
+      default, launchd.plist(5)) but has no ceiling like systemd's
+      `StartLimitBurst`: a launcher that fails every time, or a bundle that
+      was deleted, is retried until logout. Not seen on a Mac.
     * `StandardOutPath` and `StandardErrorPath` in `~/Library/Logs/MyScribe`,
       beside the `LaunchAgents` folder, made before the plist is written.
     * `ExitTimeOut` longer than the launcher's longest stop (`EXIT_TIMEOUT`).
