@@ -656,6 +656,7 @@ def test_an_accented_vowel_is_a_vowel():
         ("it is on the table at noon", "Ito"),
         ("it is on the table at noon", "Ona"),
         ("it is on the table at noon", "Ata"),
+        ("we will see what you must do", "Will"),
     ],
 )
 def test_a_lone_function_word_is_never_respelled_as_a_short_term(sentence, name):
@@ -716,6 +717,10 @@ def test_a_lone_word_gets_the_capitals_of_an_acronym_it_differs_from_only_in_cas
         # A function word never takes an acronym's capitals.
         ("it is on the table", term("IT"), "it is on the table"),
         ("Tell us more", term("US"), "Tell us more"),
+        ("I can do it", term("CAN"), "I can do it"),
+        ("you may go", term("MAY"), "you may go"),
+        ("you must go", term("MUST"), "you must go"),
+        ("we will see", term("WILL"), "we will see"),
         ("Ik ben er", term("BEN"), "Ik ben er"),
         ("Ik ben er", term("Ben"), "Ik ben er"),
         ("dat is het", term("DAT"), "dat is het"),

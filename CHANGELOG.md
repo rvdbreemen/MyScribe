@@ -28,8 +28,10 @@
   word that differs only in case from a listed term with two or more
   capitals. With *API*, *GPU* or *NOS* listed, a lone "api", "gpu" or "nos"
   still becomes *API*, *GPU* or *NOS*. A function word never does: with
-  *IT*, *US* or *BEN* listed, "it", "us" and "ben" stay as written ("us" is
-  added to the list for this). The cost: a short name is no longer guessed,
+  *IT*, *US*, *BEN* or *CAN* listed, "it", "us", "ben" and "can" stay as
+  written. For this "us", "will", "can", "may" and "must" are on the list
+  too, so a lone "will" is no longer corrected to a listed *Will* or
+  *WILL*, nor "must" to *MUST*. The cost: a short name is no longer guessed,
   and its capitals are not fixed either. "Ari" is not corrected to *Arie*
   and "ida" is not corrected to *Ida*, unless you list that spelling as a
   variant. Only a word that stands alone is protected: with *Isa* listed,

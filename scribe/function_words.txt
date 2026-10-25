@@ -7,11 +7,13 @@
 #   algorithms/dutch/stop.txt   (commit 013d96b2fcaee7caf78846656d2146b4a0cd82e8)
 #   algorithms/english/stop.txt (commit ce80856f7574e040b191328062433247c67690e8)
 # The comments and the commented-out entries of those files are left out
-# (the English list comments out will/can/may/must/us as homonyms).
-# Two words added by hand, not in either list: "den" (Dutch, "the", as in
-# "Henk den"), which TASK-111's decision names next to en/een/men, and "us",
-# so that with "US" listed a lone "us" keeps its case (the acronym rule,
-# Robert's decision 2026-10-25). will/can/may/must stay out.
+# (the English list comments out will/can/may/must/us as homonyms; the
+# Dutch list comments nothing out).
+# Added by hand, not in either list: "den" (Dutch, "the", as in "Henk
+# den"), which TASK-111's decision names next to en/een/men; and the five
+# English homonyms back, us/will/can/may/must, because Robert's acronym rule
+# (2026-10-25) says a function word never takes a term's capitals: "us"
+# stays with "US" listed, "can" with "CAN", "will" with "Will" or "WILL".
 #
 # The Snowball lists are covered by the 3-clause BSD License:
 #
@@ -324,3 +326,7 @@ than
 too
 very
 us
+will
+can
+may
+must
