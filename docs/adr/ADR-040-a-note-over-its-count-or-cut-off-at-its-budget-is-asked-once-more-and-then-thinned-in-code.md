@@ -54,21 +54,19 @@ one combine call over all of them. Blog, minutes, action items and chapters
 ask their notes as "at most 30 notes" (TASK-124). On media 61 (2h28m, Dutch,
 round-8 library copy, 2026-10-25) the request did not hold: `qwen3.5:9b` wrote
 85 minutes notes on one chunk, and `qwen3.5:4b` wrote chapters fragments until
-its 4000-token note budget ran out at 31:15 of a 60-minute chunk, so the job
-failed. Wanted (TASK-126): the count held in code, so a chunk's notes cannot
-outgrow the combine, and the chunk still read to its end.
+its 4000-token note budget ran out at 31:15 of a 60-minute chunk; the job
+failed. Wanted (TASK-126): the count held in code, each chunk read to its end.
 
 ## Decision Drivers
 
-* The notes must reach the chunk's last minutes, not stop where the count did.
-* No stored note may be cut mid-sentence (the refusal TASK-124 kept).
+* Notes reach the chunk's last minutes; none is stored cut off (TASK-124).
 * The same rule on every provider; `speakers` keeps its quotes, unbounded.
 
 ## Considered Options
 
 * **A.** Keep the first 30 lines of the reply.
 * **B.** Ask once more, saying what the first notes did; a second reply still
-  over the count keeps 30 lines spread evenly over it, first and last kept.
+  over the count keeps 30 points spread evenly over it, first and last kept.
 * **C.** An Ollama JSON schema with `maxItems: 30` on the notes.
 
 ## Decision Outcome
@@ -78,25 +76,27 @@ the rest; it cannot help a note cut off at its budget either, which never
 wrote its second half. C applies to Ollama only, turns prose notes into JSON,
 and bounds the count without making the model cover the excerpt. B gives the
 model one chance to obey (as ADR-023 and ADR-029 ask once more), then holds
-the bound itself without losing the chunk's end. Each kept line is untouched,
-so it keeps its `[m:ss]`. A finished first note is never lost to its second
-ask: when that one comes back empty or cut off, the first is kept and thinned.
-Only a note cut off on both asks is refused, as before.
+the bound itself without losing the chunk's end. A point is a stamped line
+and the unstamped lines under it; text before the first stamp is a lead-in,
+not a point; a note stamped on under a third of its lines counts by line.
+Kept points are untouched, so a stamped point keeps its `[m:ss]`. A finished
+first note is never lost to its second ask (empty or cut off): it is kept and
+thinned. A cut-off note whose second ask is cut off or empty is refused.
 
 ### Confirmation
 
 Unit tests with a scripted provider, and one live chapters run on media 61
 with `qwen3.5:4b` on a library copy (TASK-126, job 430 at ab378fa): done in
-408 s where TASK-124's job 433 failed. Chunk 0's first ask stopped at the
-4000-token budget; the second finished with 116 points, thinned to 30, the
-last at 57:12 of a chunk ending 1:00:16. That run did not take the path where
-the first note is kept.
+408 s where TASK-124's job 433 failed. Chunk 0's second ask wrote 116 points,
+thinned to 30, the last at 57:12 of a chunk ending 1:00:16. The notes reached
+each chunk's end; the result did not: all 11 chapters started by 54:40 of
+2:28:04, so they are not usable chapters. Chunks 1 and 2 were not thinned.
 
 ## Decision Contract
 
 ### Must
 
-* Count a note's points as its non-empty lines, by `note_points`.
+* Count points by stamp with `note_points`, a stamped line with its sub-lines.
 * Ask a kind with a `note_rule` once more when its note has more than
   `MAX_NOTE_POINTS` points or stopped at its budget.
 * Thin a note still over the count with `bounded_points`.
@@ -105,7 +105,7 @@ the first note is kept.
 
 ### Must Not
 
-* Keep only the first `MAX_NOTE_POINTS` lines.
+* Keep only the first `MAX_NOTE_POINTS` points.
 * Store a note that stopped at its budget, asked again or not.
 * Fail a chunk whose first note finished because its second ask did not.
 * Ask or thin the notes of a kind without a `note_rule`.
@@ -118,8 +118,9 @@ the first note is kept.
 
 * `tests/test_llm_tasks.py::test_an_85_note_chunk_is_asked_again_and_then_bounded`
 * `tests/test_llm_tasks.py::test_a_note_cut_off_at_its_cap_is_asked_again_and_the_finished_one_stored`
-* `tests/test_llm_tasks.py::test_bounded_points_spreads_the_kept_lines_over_the_whole_note`
 * `tests/test_llm_tasks.py::test_a_finished_note_over_the_bound_is_kept_when_the_second_ask_fails`
+* `tests/test_llm_tasks.py::test_forty_two_line_points_are_thinned_by_point_not_by_line`
+* `tests/test_llm_tasks.py::test_one_point_over_the_bound_is_asked_again_and_cut_to_it`
 
 ## Consequences
 
@@ -131,14 +132,16 @@ the first note is kept.
 
 ### Negative
 
-* A disobeying chunk costs a second call (time not measured on its own).
+* A disobeying chunk costs a second call, paid for on a cloud provider (time
+  not measured); its row names the unstored ask's tokens in `other_ask`.
 * Thinning drops points by position, not by weight: a decision can be lost.
   The second ask exists so that this is the rare path.
 
 ## Related Decisions
 
-* ADR-023 and ADR-029 (an answer lost to reasoning is asked once more);
-  ADR-031 (truncation refused); ADR-034 (Ollama answers follow a schema).
+* ADR-023, ADR-029 (an answer lost to reasoning is asked once more); ADR-031
+  (Ollama never truncates the prompt); ADR-034 (Ollama answers follow a
+  schema). Refusing a cut-off note is TASK-124's code, not an ADR.
 
 ## References
 

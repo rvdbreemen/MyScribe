@@ -172,11 +172,15 @@
   30 points in the model's own words, each with its timestamp (for minutes
   and action items also the speaker), quoting only a few words where they
   matter. A note with more than 30 points, or one that runs out of room
-  before the end of its part, is asked once more. If the second note still
-  has more than 30, MyScribe keeps 30 of them, spread over the whole part,
-  each with its timestamp (TASK-126, ADR-040). A note that ran out of room
-  both times fails the job, as before. Such a note that runs out of room
-  with most of its lines copied from the transcript now says so. Notes for the other tasks are asked as before.
+  before the end of its part, is asked once more; on a cloud provider that
+  is a second paid call. If the second note still has more than 30 points,
+  MyScribe keeps 30 of them, spread over the whole part. A point written
+  over two lines stays whole, and a point with a timestamp keeps it
+  (TASK-126, ADR-040). A finished note is kept if its second ask fails. A
+  note that ran out of room fails the job when its second ask runs out of
+  room too or says nothing, and the error says both. Such a note that runs
+  out of room with most of its lines copied from the transcript now says
+  so. Notes for the other tasks are asked as before.
   The shared notes prompt changed, so notes stored by an earlier version
   are not reused: the next run of any AI task on a long recording (summary, minutes,
   blog and the others; chat is not affected) asks every part again. Earlier
@@ -202,8 +206,8 @@
   model such as qwen3.5:4b may leave them without timestamps. Settings says
   so beside the Ollama model. Measured on one 2h28m Dutch recording, where
   qwen3.5:9b gave minutes with real timestamps. On the same recording,
-  chapters on qwen3.5:4b finished, but its chapters covered only the first
-  hour (TASK-124, TASK-126).
+  chapters on qwen3.5:4b finished, but all 11 of its chapters started in
+  the first 55 minutes, so the rest had none (TASK-124, TASK-126).
 - **Quit no longer costs you the running job.** Quit in the MyScribe window,
   Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
   (on macOS and Linux) now stop MyScribe the way the Stop button in Settings

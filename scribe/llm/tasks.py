@@ -295,7 +295,7 @@ alone was measured not to hold on media 61 (round-8 library copy, 2026-10-25):
 qwen3.5:9b wrote 85 minutes notes on one chunk, and qwen3.5:4b wrote chapters
 fragments until its 4000-token note budget ran out halfway through the chunk.
 A note over the bound, or cut off at its budget, is asked once more; a second
-answer still over it keeps this many lines, spread over the whole note. A
+answer still over it keeps this many points, spread over the whole note. A
 finished first note whose second ask comes back empty or cut off is kept,
 thinned the same way; only a note cut off on both asks is refused."""
 
@@ -891,21 +891,46 @@ def chunk_prompt(
     )
 
 
+_POINT_STAMP = re.compile(r"^\s*(?:\d+[.)]\s+|[-*•]\s*)?\**\s*\[?\d+(?::\d{2}){1,2}")
+"""A line that opens with a clock: `[m:ss]` or `[h:mm:ss]`, also behind a
+bullet, a list number or bold. The closing bracket is not required, because
+qwen3.5:4b writes `[2:26:09 Henry:` without it (TASK-124 round 8) and that is
+still a point's stamp."""
+
+
 def note_points(note: str) -> list[str]:
-    """A note's points: its non-empty lines, as written. Counted by line rather
-    than by a parsed `[m:ss]`, because qwen3.5:4b writes `[2:26:09 Henry:`
-    without the closing bracket (TASK-124 round 8) and that is still a point."""
-    return [line.rstrip() for line in note.splitlines() if line.strip()]
+    """A note's points, as written: each stamped line with the unstamped lines
+    under it (a sub-bullet, a wrapped sentence), so a point written on two
+    lines is one point, not two (TASK-126 review).
+
+    Text before the first stamp - a lead-in like 'Hier zijn de notities ...',
+    which opened chunk 1 of the TASK-126 live run - is not a point and is left
+    out. A note in which fewer than a third of the lines carry a stamp is not
+    made of stamped points at all (a 4B note that left its clocks out): each
+    of its lines is a point, and nothing is left out."""
+    lines = [line.rstrip() for line in note.splitlines() if line.strip()]
+    stamped = sum(1 for line in lines if _POINT_STAMP.match(line))
+    if not stamped or stamped * 3 < len(lines):
+        return lines
+    points: list[str] = []
+    for line in lines:
+        if _POINT_STAMP.match(line):
+            points.append(line)
+        elif points:
+            points[-1] += "\n" + line
+    return points
 
 
 def bounded_points(note: str, limit: int) -> str:
-    """At most `limit` of a note's points, spread evenly over the whole note,
-    the first and the last always kept, every kept line untouched.
+    """At most `limit` of a note's points (`note_points`), spread evenly over
+    the whole note, the first and the last always kept, every kept point
+    untouched together with the lines under it.
 
     Spread rather than the first `limit`: notes run in the order of the
     excerpt, so the first 30 of job 430's 85 would end about a third of the way
     into a 52-minute chunk, and the combine would never hear of the rest.
-    Untouched, so each kept point keeps its `[m:ss]`."""
+    Untouched, so each kept stamped point keeps its `[m:ss]`; a lead-in before
+    the first stamp is not a point and is not kept."""
     points = note_points(note)
     if len(points) <= limit:
         return "\n".join(points)
@@ -2119,9 +2144,9 @@ def _ask_note(
     provider_kwargs: dict[str, Any],
     again: str | None = None,
 ) -> tuple[ChatResponse, str]:
-    """One ask for one chunk's notes, and its text; nothing at all is refused.
-    `again` is the second ask's sentence (`chunk_prompt`)."""
-    where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
+    """One ask for one chunk's notes, and its text, stripped and possibly empty:
+    the caller decides what an empty answer means (`_nothing`). `again` is the
+    second ask's sentence (`chunk_prompt`)."""
     response = _ask(
         conn,
         plan,
@@ -2144,13 +2169,25 @@ def _ask_note(
         phase="note",
         on_call=on_call,
     )
-    text = (response.text or "").strip()
-    if not text:
-        raise base.BadResponse(
-            f"the model returned nothing for chunk {chunk.index} of the {plan.kind!r} task "
-            f"{where}"
-        )
-    return response, text
+    return response, (response.text or "").strip()
+
+
+def _nothing(plan: TaskPlan, chunk: Chunk) -> str:
+    """What an empty note answer says."""
+    where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
+    return f"the model returned nothing for chunk {chunk.index} of the {plan.kind!r} task {where}"
+
+
+def _other_ask(response: ChatResponse | None) -> dict[str, Any] | None:
+    """The ask whose answer was not stored, for its row: on a cloud provider it
+    was paid for too, and only `on_call` would otherwise see its tokens."""
+    if response is None:
+        return None
+    return {
+        "prompt_tokens": response.prompt_tokens,
+        "completion_tokens": response.completion_tokens,
+        "finish_reason": response.raw_finish_reason,
+    }
 
 
 def _collect_notes(
@@ -2185,6 +2222,8 @@ def _collect_notes(
         where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
         response, text = _ask_note(conn, plan, chunk, on_call, provider_kwargs)
         calls += 1
+        if not text:
+            raise base.BadResponse(_nothing(plan, chunk))
         first_points = len(note_points(text))
         # The bound is held in code, not only asked (TASK-126, ADR-040): a kind
         # with a note rule whose note broke `MAX_NOTE_POINTS`, or ran out of its
@@ -2195,29 +2234,34 @@ def _collect_notes(
         cut_off = response.raw_finish_reason == TRUNCATED_FINISH
         asked_again = bounded and (cut_off or first_points > MAX_NOTE_POINTS)
         stored_from_ask = 1
+        other: ChatResponse | None = None
+        second_failed = ""
         if asked_again:
             calls += 1
-            try:
-                second: tuple[ChatResponse, str] | None = _ask_note(
-                    conn,
-                    plan,
-                    chunk,
-                    on_call,
-                    provider_kwargs,
-                    "ran out of room before the end of the excerpt"
-                    if cut_off
-                    else f"were {first_points} notes, more than the {MAX_NOTE_POINTS} asked for",
-                )
-            except base.BadResponse:
-                if cut_off:
-                    raise
-                second = None
+            second_response, second_text = _ask_note(
+                conn,
+                plan,
+                chunk,
+                on_call,
+                provider_kwargs,
+                "ran out of room before the end of the excerpt"
+                if cut_off
+                else f"were {first_points} notes, more than the {MAX_NOTE_POINTS} asked for",
+            )
             # A finished first note is never lost to its second ask: when that
             # one says nothing or runs out of room, the first is kept and
             # thinned below. Without this, a job that finished before the bound
             # existed (TASK-124 round 8, job 430's 85 notes) could now fail.
-            if second is not None and (cut_off or second[0].raw_finish_reason != TRUNCATED_FINISH):
-                (response, text), stored_from_ask = second, 2
+            # A cut-off first note gives way to any second one that said
+            # something; one that said nothing leaves the first to be refused
+            # below, on the cause that started it (TASK-126 review).
+            second_finished = second_response.raw_finish_reason != TRUNCATED_FINISH
+            if second_text and (cut_off or second_finished):
+                other = response
+                response, text, stored_from_ask = second_response, second_text, 2
+            else:
+                other = second_response
+                second_failed = "returned nothing" if not second_text else "ran out of room too"
         # Emptiness used to be the only thing checked, and a note that stopped
         # mid-word because it hit `note_budget` looks exactly like a short one.
         # Storing it is what makes it permanent: the row is the cache, so every
@@ -2233,7 +2277,8 @@ def _collect_notes(
                 "notes are cut off mid-sentence and have not been stored."
                 + (
                     f" It was asked twice, the second time for at most {MAX_NOTE_POINTS} notes "
-                    "over the whole excerpt."
+                    "over the whole excerpt"
+                    + (f", and the second answer {second_failed}." if second_failed else ".")
                     if asked_again
                     else ""
                 )
@@ -2285,6 +2330,9 @@ def _collect_notes(
                     "points_kept": len(note_points(text)),
                     "asked_again": asked_again,
                     "stored_from_ask": stored_from_ask,
+                    # The ask not stored, when there were two: its tokens were
+                    # spent (on a cloud provider, paid for) all the same.
+                    "other_ask": _other_ask(other),
                     # Judged against the note budget this call was asked with.
                     **reasoning_record(response, note_budget),
                 },

@@ -2446,14 +2446,14 @@
       "context_scope": "selective",
       "decision_contract": {
         "must": [
-          "Count a note's points as its non-empty lines, by notepoints.",
+          "Count points by stamp with notepoints, a stamped line with its sub-lines.",
           "Ask a kind with a noterule once more when its note has more than MAXNOTEPOINTS points or stopped at its budget.",
           "Thin a note still over the count with boundedpoints.",
           "Keep a finished first note when its second ask is empty or cut off.",
           "Render the number in every note rule from MAXNOTEPOINTS."
         ],
         "must_not": [
-          "Keep only the first MAXNOTEPOINTS lines.",
+          "Keep only the first MAXNOTEPOINTS points.",
           "Store a note that stopped at its budget, asked again or not.",
           "Fail a chunk whose first note finished because its second ask did not.",
           "Ask or thin the notes of a kind without a noterule."
@@ -2464,8 +2464,9 @@
         "verification": [
           "tests/testllmtasks.py::testan85notechunkisaskedagainandthenbounded",
           "tests/testllmtasks.py::testanotecutoffatitscapisaskedagainandthefinishedonestored",
-          "tests/testllmtasks.py::testboundedpointsspreadsthekeptlinesoverthewholenote",
-          "tests/testllmtasks.py::testafinishednoteovertheboundiskeptwhenthesecondaskfails"
+          "tests/testllmtasks.py::testafinishednoteovertheboundiskeptwhenthesecondaskfails",
+          "tests/testllmtasks.py::testfortytwolinepointsarethinnedbypointnotbyline",
+          "tests/testllmtasks.py::testonepointovertheboundisaskedagainandcuttoit"
         ]
       },
       "scope": {

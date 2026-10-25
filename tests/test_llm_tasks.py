@@ -2750,3 +2750,126 @@ def test_a_finished_note_over_the_bound_is_kept_when_the_second_ask_fails(
         assert len(kept) == tasks.MAX_NOTE_POINTS and kept[-1] == written[-1], row["content"]
         params = json.loads(row["params_json"])
         assert params["stored_from_ask"] == 1 and params["finish_reason"] == "stop", params
+
+
+# --- a point is a stamped line and what hangs under it (TASK-126 review) ---------------------
+
+LEAD_IN = "Hier zijn de notities uit het transcript, gericht op de onderwerpen:"
+"""The line qwen3.5:4b opened chunk 1 of job 430 with (TASK-126 live run): not a
+point, so it may neither count against the bound nor take a kept slot."""
+
+
+def _two_line_points(n: int) -> str:
+    """A lead-in, then `n` points of a stamped head and an unstamped sub-bullet:
+    the shape the review probed, `2n + 1` lines for `n` notes."""
+    body = "\n".join(
+        f"[{k // 60}:{k % 60:02d}] Point {k} in the model's own words.\n  - detail of point {k}"
+        for k in range(n)
+    )
+    return f"{LEAD_IN}\n\n{body}"
+
+
+def test_a_point_is_its_stamped_line_and_the_lines_under_it():
+    points = tasks.note_points(_two_line_points(20))
+
+    assert len(points) == 20
+    assert all(p.startswith("[") and "\n  - detail of point" in p for p in points)
+    # qwen3.5:4b writes the clock without its closing bracket (TASK-124 round 8):
+    # still a stamp, so still a point of its own.
+    assert len(tasks.note_points("[2:26:09 Henry: one\n[2:27:10 Ruud: two")) == 2
+
+
+def test_a_note_without_stamps_is_counted_by_line():
+    """No stamp to group by - a 4B note that left them out: each line is a point,
+    and nothing is dropped as a lead-in."""
+    note = "\n".join(f"Christel: point {k} in her own words." for k in range(40))
+    assert len(tasks.note_points(note)) == 40
+    # One stamp among forty lines is not a note made of stamped points either.
+    assert len(tasks.note_points("[0:01] first\n" + note)) == 41
+
+
+def test_twenty_two_line_points_after_a_lead_in_are_asked_once_and_stored_whole(
+    conn, monkeypatch
+):
+    """Twenty notes written as head plus sub-bullet were 41 lines, and 41 lines
+    were asked again as if they were 41 notes."""
+    note = _two_line_points(20)
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, note, _points(5))
+
+    assert not [c for c in calls if ASKED_AGAIN in c.user]
+    for row in chunk_rows:
+        assert row["content"] == note
+        assert json.loads(row["params_json"])["points_written"] == 20
+
+
+def test_forty_two_line_points_are_thinned_by_point_not_by_line(conn, monkeypatch):
+    note = _two_line_points(40)
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, note, note)
+
+    heads = [line for line in note.splitlines() if line.startswith("[")]
+    for row in chunk_rows:
+        lines = row["content"].splitlines()
+        assert LEAD_IN not in row["content"], "the lead-in took a kept slot"
+        assert lines[0].startswith("["), lines[0]
+        kept_heads = [line for line in lines if line.startswith("[")]
+        assert len(kept_heads) == tasks.MAX_NOTE_POINTS
+        assert kept_heads[-1] == heads[-1], "the chunk's last point is kept"
+        # Every head keeps its own sub-bullet, and no sub-bullet is kept alone.
+        assert len(lines) == 2 * tasks.MAX_NOTE_POINTS
+        for head, sub in zip(lines[::2], lines[1::2]):
+            k = head.split("Point ")[1].split(" ")[0]
+            assert sub == f"  - detail of point {k}", (head, sub)
+        params = json.loads(row["params_json"])
+        assert (params["points_written"], params["points_kept"]) == (40, tasks.MAX_NOTE_POINTS)
+
+
+def test_one_point_over_the_bound_is_asked_again_and_cut_to_it(conn, monkeypatch):
+    """The edge: 31 is over, 30 is not (a `MAX_NOTE_POINTS + 1` slip survived
+    the 85- and 20-point tests)."""
+    over = _points(tasks.MAX_NOTE_POINTS + 1)
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, over, over)
+
+    again = [c for c in calls if ASKED_AGAIN in c.user]
+    assert len(again) == len(chunk_rows)
+    assert f"{tasks.MAX_NOTE_POINTS + 1} notes" in again[0].user
+    for row in chunk_rows:
+        assert len(row["content"].splitlines()) == tasks.MAX_NOTE_POINTS
+        params = json.loads(row["params_json"])
+        assert params["points_kept"] == tasks.MAX_NOTE_POINTS
+
+
+def test_a_cut_off_note_whose_second_ask_is_empty_says_it_ran_out_of_room(conn, monkeypatch):
+    """The first ask ran out of room, the second said nothing: the job fails on
+    the cause that started it, not on 'returned nothing' as if asked once."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    cut = truncated(_points(20) + "\n[0:20] Sti")
+    provider, calls = fake_provider(_notes(cut, "", "chapters"))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="chapters", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    message = str(caught.value)
+    assert "ran out of room" in message and "asked twice" in message, message
+    assert "second answer" in message and "returned nothing" in message, message
+    assert not message.startswith("the model returned nothing"), message
+    assert rows(conn, media_id) == []
+
+
+def test_a_second_ask_records_what_the_other_ask_cost(conn, monkeypatch):
+    """Both asks are paid for on a cloud provider; the stored row carries one
+    response's tokens, so it names the other ask's too."""
+    first = base.ChatResponse(text=_points(85), model="fake-1-2026-09-02", provider="fake",
+                              prompt_tokens=900, completion_tokens=850,
+                              raw_finish_reason="stop")
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, first, _points(20))
+
+    for row in chunk_rows:
+        params = json.loads(row["params_json"])
+        assert params["stored_from_ask"] == 2
+        assert params["other_ask"] == {"prompt_tokens": 900, "completion_tokens": 850,
+                                       "finish_reason": "stop"}, params
+    chunk_rows, _ = _run_minutes(conn, monkeypatch, _points(5), _points(5))
+    assert json.loads(chunk_rows[-1]["params_json"])["other_ask"] is None
