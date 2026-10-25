@@ -141,3 +141,163 @@ instance on another port:
 ```sh
 python -m scribe --port 4299 --no-supervisor --no-browser
 ```
+
+## Driving MyScribe from a script
+
+`python -m scribe.cli` is a small client for a MyScribe that is already
+running. It sends every request to the JSON API at
+`http://127.0.0.1:4242/api/v1` (`--port` for another port) and to nothing
+else; it never opens the library itself. It needs only Python's standard
+library, and ignores `HTTP_PROXY`, because a proxy cannot reach this
+computer's 127.0.0.1. The full API is described at
+`http://127.0.0.1:4242/openapi.json`.
+
+In a clone, call it as `python -m scribe.cli` with the environment's
+Python: the project is not packaged (`tool.uv.package = false`), so the
+environment installs no console script. An installed MyScribe has a
+`myscribe` command instead, a small script that runs the same thing with
+the Python the launcher installed:
+
+* **Windows**: `myscribe.cmd` in the `bin` folder of the install folder,
+  `%LOCALAPPDATA%\Programs\MyScribe\bin` by default. Setup puts that folder
+  on your PATH only when you tick *Add the myscribe command to my PATH*; it
+  is off by default, and an uninstall takes the entry out again. Open a new
+  terminal after installing.
+* **Linux**: `MyScribe.AppImage cli`, followed by the command. For a plain
+  `myscribe`, add `alias myscribe='/path/to/MyScribe.AppImage cli'` to your
+  shell's startup file.
+* **macOS**: `/Applications/MyScribe.app/Contents/Resources/myscribe`. Link
+  it into a folder on your PATH:
+  `ln -s /Applications/MyScribe.app/Contents/Resources/myscribe /usr/local/bin/myscribe`.
+
+The script finds the environment the way the launcher does: `MYSCRIBE_HOME`,
+then a home you moved at the first start, then the default. Until MyScribe
+has been started once there is no environment, and it says so (exit 3). On
+Linux and macOS, a moved home whose path holds a character outside ASCII is
+not read; set `MYSCRIBE_HOME` to it instead.
+
+| Command | What it does |
+| --- | --- |
+| `status` | Whether the app answers, how many jobs run and wait, the AI provider |
+| `list` | The library. `--view`, `--folder`, `--sort`, `--q`, `--label` |
+| `search WORDS` | Transcript segments that contain every word |
+| `upload FILE` | Send a recording in and queue its transcription. `--title`, `--folder-id`, `--option language=nl` (repeatable), `--params JSON`, `--idempotency-key KEY`; `--by-path` sends the path instead of the bytes, for a file under the browse roots |
+| `transcribe ID` | Transcribe a recording again; `--option` and `--params` as for upload, none repeats the last request |
+| `jobs [ID]` | Jobs, newest first (`--status`, `--limit`); with an id, that job and its events |
+| `cancel ID` | Cancel a job |
+| `wait ID` | Wait until a job ends. `--timeout SECONDS`, `--interval SECONDS`, `--quiet` |
+| `transcript ID` | The transcript as JSON, word by word, to stdout or `--out` |
+| `doctor` | Check this computer: the checks the Settings page runs, and the last GPU check's result. Exit 9 when a required check failed. It starts nothing: run the GPU check from Settings |
+| `watch list` | The watch folders: on or off, audio only or with video, and why one may be doing nothing (missing, outside the browse roots) |
+| `watch add FOLDER` | Watch a folder, with `--include-video` and `--option` (repeatable) for what it takes in. What is already in it is left alone and counted, as in Settings; transcribe those files with `watch existing ID` or *Transcribe them* in Settings > Watch folders |
+| `watch remove ID` | Stop watching a folder; its recordings stay in the library |
+| `watch existing ID` | Transcribe the files a folder already held when it was added, which it left alone. Only what the folder takes: an audio-only folder still leaves its video alone |
+| `export ID` | Download an export: `--format srt,txt`, `--option speakers=false`, `--out` a file or folder (default the current folder), `-` for stdout. In a folder the file gets the app's name for it; a file that is already there is replaced, with a `replaced` line on stderr |
+| `mcp` | Serve these actions as MCP tools on stdin and stdout, for an AI agent; see [below](#letting-an-ai-agent-use-myscribe-mcp) |
+
+`--json`, before the command, prints the API's answer instead of text.
+
+```sh
+python -m scribe.cli upload talk.mp3 --option language=nl --idempotency-key talk-1 --json
+python -m scribe.cli wait 12 --timeout 3600 && python -m scribe.cli export 7 --format srt,txt
+```
+
+With `--idempotency-key`, running the same upload or transcribe again after
+a lost answer gives the first answer back and queues nothing new.
+
+### Exit codes
+
+| Code | Name | When |
+| --- | --- | --- |
+| 0 | `OK` | It worked; for `wait`, the job is done |
+| 1 | `SERVER_ERROR` | The app answered with a server error, with something that is not the API's answer, or with an answer that broke off |
+| 2 | `USAGE` | A wrong command line (a negative `--timeout`, say), a file that is not there or cannot be read, or an `--out` that cannot be written |
+| 3 | `NOT_RUNNING` | Nothing answers on 127.0.0.1 at that port |
+| 4 | `NOT_FOUND` | No such recording or job |
+| 5 | `CONFLICT` | No transcript yet, or an idempotency key that is in use or was used for another request |
+| 6 | `REFUSED` | The app refused the request itself: a wrong option, an empty search, a path outside the browse roots |
+| 7 | `JOB_UNSUCCESSFUL` | `wait`: the job ended failed, cancelled or interrupted |
+| 8 | `TIMEOUT` | `wait`: the job had not ended when `--timeout` ran out |
+| 9 | `CHECK_FAILED` | `doctor`: a required check failed or was not tested |
+
+An error goes to stderr as the API's `code` and `detail`, for example
+`myscribe: error 409 no_transcript: media 7 has no transcript yet`.
+
+## Letting an AI agent use MyScribe (MCP)
+
+`python -m scribe.cli mcp` is an MCP (Model Context Protocol) server for an
+agent such as Claude Code or Claude Desktop. The agent starts it and talks
+to it over stdin and stdout. Each tool is one request to the JSON API of a
+MyScribe that is already running. Like the other commands it reaches only
+127.0.0.1 and never opens the library itself. `--port`, before `mcp`, picks
+another port.
+
+| Tool | What it does |
+| --- | --- |
+| `list_recordings` | The library: `view`, `folder`, `sort`, `q`, `label` |
+| `get_recording` | One recording, whether it has a transcript, its latest job |
+| `search_transcripts` | Transcript segments that contain every word of `query` |
+| `get_transcript` | The transcript as the JSON export, word by word |
+| `export_transcript` | `formats` (default `["srt"]`) and `options`. One text format comes back as text. A docx, or several formats (a ZIP), needs `save_to`, the absolute path of a file or folder on this computer |
+| `add_recording` | Send the file at `path` (absolute) in and queue its transcription: the bytes, or with `by_path` the path, for a file under the browse roots. Takes the transcription options, `title`, `folder_id` and `idempotency_key` |
+| `transcribe_again` | Queue a new transcription of a recording. No options repeats the last request |
+| `ask_ai` | Queue an AI job (`kind` summary, chapters, ... or custom with a `prompt`) |
+| `list_jobs`, `get_job`, `cancel_job` | Follow and cancel jobs |
+| `get_settings` | The transcription defaults, browse roots, watch folders and AI provider. Never a key |
+| `doctor` | The checks the Settings page runs, each with its fix, and the last GPU check's result. Starts nothing |
+| `list_watch_folders`, `add_watch_folder`, `remove_watch_folder` | The watch folders. `add_watch_folder` takes an absolute `path`, `include_video` and the transcription options |
+| `transcribe_left_alone` | Transcribe the files a watch folder held when it was added, which it left alone, as *Transcribe them* in Settings |
+
+A failed action comes back as a tool result marked as an error. The text is
+the API's error, for example `error 404 not_found: no job with id 999`, so
+the agent can read it and try again. The nine tools that change nothing
+carry MCP's read-only flag, which a client may use to decide what needs
+your approval. A repeated `add_recording` or `transcribe_again`
+with the same `idempotency_key` returns the first answer. Its result carries
+`"_meta": {"myscribe/replayed": true}`.
+
+With an installed MyScribe, register the `myscribe` command above with
+the argument `mcp`. On Windows a client starts a `.cmd` through `cmd /c`.
+Write the whole path out, not `%LOCALAPPDATA%`: the client passes the
+variable unquoted, and a user folder with a space in its name then splits
+it. With the default install folder, in Claude Code:
+
+```sh
+claude mcp add myscribe -- cmd /c "C:\Users\me\AppData\Local\Programs\MyScribe\bin\myscribe.cmd" mcp
+```
+
+In a JSON configuration:
+`"command": "cmd", "args": ["/c", "C:\\Users\\me\\AppData\\Local\\Programs\\MyScribe\\bin\\myscribe.cmd", "mcp"]`.
+On Linux the command is the AppImage with the arguments `cli mcp`; on
+macOS the `myscribe` script in the bundle with `mcp`.
+
+From a source checkout, give the client the Python of the checkout's
+environment, the arguments `-m scribe.cli mcp`, and `PYTHONPATH` set to the
+folder that holds `scribe`. On Windows, Claude Code takes it as:
+
+```sh
+claude mcp add myscribe --env PYTHONPATH=C:/src/myscribe -- C:/src/myscribe/.venv/Scripts/python.exe -m scribe.cli mcp
+```
+
+Claude Desktop, and most other clients, read the same thing from their JSON
+configuration (`claude_desktop_config.json` for Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "myscribe": {
+      "command": "C:/src/myscribe/.venv/Scripts/python.exe",
+      "args": ["-m", "scribe.cli", "mcp"],
+      "env": {"PYTHONPATH": "C:/src/myscribe"}
+    }
+  }
+}
+```
+
+On macOS and Linux the Python is `.venv/bin/python`. Pass `PYTHONPATH`
+through `env` rather than relying on a working directory, because not every
+client sets one. For the same reason `add_recording`'s `path` and
+`export_transcript`'s `save_to` must be absolute paths: a relative one is
+refused with a tool error rather than read or written in whatever folder the
+client started the server in. MyScribe itself must be running: when it is not, every
+tool answers `MyScribe is not answering on 127.0.0.1:4242`.

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import replace
 
 import pytest
@@ -266,10 +267,19 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "a310926f0070f31dbea4fd3814a19efd7eb87e8ea37a9c1e2f7a65d84a044c4e"
-"""sha256 over everything a prompt is made of, for PROMPT_VERSION "3": the
-templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal, and the
-source line `source_label` writes. Line endings are normalised first, because
+PROMPTS_DIGEST = "80f59da4962055e099a2408282d2139875a397f3f6277436726d69737308715e"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "5": the
+templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal and note
+rule, and the source line `source_label` writes.
+
+Version "5" (TASK-124, 2026-10-25): minutes, action_items and chapters got a
+note rule like blog's (points in their own words, no line copied from the
+excerpt), after live notes on media 61 copied the excerpt. Was fe13c07f...
+under "4".
+
+Version "4" (TASK-124, 2026-10-25): map_chunk.md gained the note-rule slot,
+blog got a new goal and a note rule (points in its own words, no line copied
+from the excerpt). Was a310926f... under "3". Line endings are normalised first, because
 git rewrites them on checkout here.
 
 Until TASK-105.02 (2026-10-06) only the templates were hashed, so a change to
@@ -294,6 +304,8 @@ def prompt_material() -> bytes:
     parts += ["SYSTEM", tasks.SYSTEM, "JSON_SYSTEM", tasks.JSON_SYSTEM, "LANGUAGE_SYSTEM", tasks.LANGUAGE_SYSTEM]
     for kind in sorted(tasks.TASKS):
         parts += [f"goal:{kind}", tasks.TASKS[kind].goal]
+        if tasks.TASKS[kind].note_rule:  # only set kinds, so version "3"'s material is unchanged
+            parts += [f"note_rule:{kind}", tasks.TASKS[kind].note_rule]
     parts += ["source_label", tasks.source_label("Title", 61.0),
               tasks.source_label("Title", 61.0, notes_from=3)]
     return chr(0).join(parts).encode("utf-8")
@@ -305,8 +317,8 @@ def test_editing_a_prompt_means_bumping_the_prompt_version():
     comparable. The plan states the rule; without something that fails, it is a
     rule nobody is told they broke.
 
-    If this fails and you did edit a prompt - a template, SYSTEM, a goal, the
-    source line: bump `tasks.PROMPT_VERSION`, then put the new digest above. If
+    If this fails and you did edit a prompt - a template, SYSTEM, JSON_SYSTEM,
+    LANGUAGE_SYSTEM, a goal, a note rule, the source line: bump `tasks.PROMPT_VERSION`, then put the new digest above. If
     you did not edit one, something else did.
 
     *Adding* a kind is the other case, and it has the opposite answer: record
@@ -627,6 +639,51 @@ def test_the_hint_follows_the_kind(conn, media, monkeypatch):
     )
     assert any(CHUNK_MARKER in c.user for c in hinted_calls), "notes were asked for"
     assert [c.reasoning_off for c in hinted_calls] == [True] * len(hinted_calls)
+
+
+@pytest.mark.parametrize("is_local", [True, False])
+def test_a_blog_asks_only_its_combine_not_to_reason_and_only_on_a_local_model(
+    conn, media, monkeypatch, is_local
+):
+    """Robert's decisions of 2026-10-25 (TASK-124, ADR-035): blog's combine
+    carries the reasoning hint on a local model. On media 61 qwen3.5:4b spent
+    16,866 characters thinking in the combine of job 430 on the round-5 library
+    copy and stopped at the 6000-token cap with half a post. The notes keep the
+    provider's default - they were not where the budget went - and so does a
+    recording short enough for one call, which has no combine. A cloud model
+    keeps ADR-030's behaviour: no hint, so the reasoning limit is sent."""
+    assert {kind: spec.combine_reasoning_off for kind, spec in tasks.TASKS.items()} == {
+        "summary": False,
+        "action_items": False,
+        "chapters": False,
+        "minutes": False,
+        "blog": True,
+        "speakers": False,
+        "labels": False,
+        "cleanup": False,
+        "custom": False,
+    }
+
+    long_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, long_id, n_segments=12)
+    provider, calls = fake_provider(map_reduce_script(ANSWERS["blog"]), is_local=is_local)
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1")
+    assert [c.reasoning_off for c in calls] == [False], "one call, no combine, no hint"
+
+    del calls[:]
+    # A window as roomy as Ollama's 32768 is in practice, so the local plan is
+    # not refused for the 8192 default before the hint is ever asked about.
+    tasks.run_task(
+        conn, media_id=long_id, kind="blog", provider_name="fake", model="fake-1",
+        budget_tokens=100, context_tokens=32768,
+    )
+    notes = [c for c in calls if CHUNK_MARKER in c.user]
+    combines = [c for c in calls if CHUNK_MARKER not in c.user]
+    assert len(notes) >= 2 and len(combines) == 1
+    assert [c.reasoning_off for c in notes] == [False] * len(notes)
+    assert combines[0].reasoning_off is is_local
 
 
 @pytest.mark.parametrize(
@@ -1137,7 +1194,11 @@ def test_the_shipped_cloud_window_admits_a_chunked_task(kind, chunks):
 def test_the_note_budget_checked_is_the_note_budget_spent(conn, monkeypatch):
     """The number `plan_task` proved would fit is the number `generate` asks
     for. Two computations of one budget is how a check passes on one value and
-    the calls go out with another."""
+    the calls go out with another.
+
+    24,000 tokens rather than the 16,000 this had before TASK-124: `word07`
+    costs four tokens now (its digits are a token each), so 16,000 no longer
+    leaves a full note per chunk, which is the case this test is about."""
     media_id = seed_media(conn, title="A long meeting")
     seed_long_run(conn, media_id, n_segments=150, words_per=50)
     provider, calls = fake_provider(map_reduce_script(ANSWERS["summary"]))
@@ -1149,7 +1210,7 @@ def test_the_note_budget_checked_is_the_note_budget_spent(conn, monkeypatch):
         kind="summary",
         provider_name="fake",
         model="fake-1",
-        context_tokens=16_000,
+        context_tokens=24_000,
     )
     tasks.generate(conn, plan)
 
@@ -1157,7 +1218,7 @@ def test_the_note_budget_checked_is_the_note_budget_spent(conn, monkeypatch):
     assert plan.note_budget >= tasks.MIN_NOTE_TOKENS
     assert plan.note_budget * len(plan.chunks) <= tasks.combine_capacity(
         plan.spec,
-        context_tokens=16_000,
+        context_tokens=24_000,
         max_output_tokens=plan.max_output_tokens,
         chunks=len(plan.chunks),
         title=plan.title,
@@ -1412,6 +1473,82 @@ def test_the_strict_rewrite_leaves_the_pydantic_model_alone():
     fresh = tasks.ActionItems.model_json_schema()
     assert "additionalProperties" not in fresh
     assert tasks.ActionItems.model_validate({"items": [{"text": "still optional"}]}).items[0].owner is None
+
+
+CLOCK_FIELDS = {"action_items": ["items", "evidence_ts"], "minutes": ["actions", "evidence_ts"],
+                "chapters": ["chapters", "start"]}
+
+
+def clock_node(schema: dict, kind: str) -> dict:
+    """The schema node of the one timestamp field `kind` carries."""
+    array, field = CLOCK_FIELDS[kind]
+    ref = schema["properties"][array]["items"]["$ref"].rsplit("/", 1)[-1]
+    return schema["$defs"][ref]["properties"][field]
+
+
+def types_of(node: dict) -> set[str]:
+    return {node["type"]} if "type" in node else {alt["type"] for alt in node["anyOf"]}
+
+
+@pytest.mark.parametrize("kind", sorted(CLOCK_FIELDS))
+def test_a_grammar_provider_is_never_offered_a_number_for_a_timestamp(kind):
+    """TASK-124, ADR-034, measured 2026-10-25 on Ollama 0.40.8 with qwen3.5:4b:
+    with `evidence_ts` typed `number` (or `number` or text) the grammar let the
+    model start `2:16:10` as the number 2 and finish it as `2.0` - valid JSON,
+    a moment two hours off. As a pattern-bound string it wrote `"2:16:10"`,
+    which `parse_answer` reads as 8170 s. Text only: no number type at all."""
+    schema = tasks.schema_payload(tasks.TASKS[kind], True, clock_as_text=True)["schema"]
+    node = clock_node(schema, kind)
+
+    assert "number" not in types_of(node)
+    texts = [alt for alt in node.get("anyOf", [node]) if alt["type"] == "string"]
+    assert len(texts) == 1
+    pattern = re.compile(texts[0]["pattern"])
+    for written in ("2:16:29", "1:23", "83.0", "83", "0:00"):
+        assert pattern.fullmatch(written), written
+        assert tasks._clock_seconds(written) >= 0
+    for written in ("{2:16:10}", "[1:23]", "2:16:", "about an hour in", ""):
+        assert not pattern.fullmatch(written), written
+    # `[0-9]`, never `\d`: with `\d` the daemon let `"{2:16:10}"` through
+    # (measured 2026-10-25), so the class it does honour is spelt out.
+    assert r"\d" not in texts[0]["pattern"]
+    assert ("null" in types_of(node)) is (kind != "chapters"), "nullable exactly where pydantic is"
+    assert "x-myscribe-clock" not in json.dumps(schema)
+
+
+@pytest.mark.parametrize("kind", SCHEMA_KINDS)
+def test_the_cloud_schema_is_unchanged_by_the_clock_marker(kind):
+    """The strict schema OpenRouter validated live keeps `number` timestamps
+    and carries no private keyword: a strict validator may refuse one."""
+    schema = tasks.schema_payload(tasks.TASKS[kind], True)["schema"]
+
+    assert "x-myscribe-clock" not in json.dumps(schema)
+    assert '"pattern"' not in json.dumps(schema)
+    if kind in CLOCK_FIELDS:
+        assert "number" in types_of(clock_node(schema, kind))
+
+
+def test_the_combine_carries_the_text_timestamps_and_the_notes_no_schema(conn, media, monkeypatch):
+    """Through the front door: a provider that says its schema is a grammar
+    gets the clock-as-text schema on the combine, and the notes stay prose."""
+    strict, calls = fake_provider(
+        map_reduce_script(ANSWERS["minutes"]), name="grammar", supports_json_schema=True
+    )
+    strict.schema_clock_as_text = True
+    register(monkeypatch, strict)
+    long_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, long_id, n_segments=12)
+
+    tasks.run_task(
+        conn, media_id=long_id, kind="minutes", provider_name="grammar", model="grammar-1",
+        budget_tokens=100,
+    )
+
+    notes = [c for c in calls if CHUNK_MARKER in c.user]
+    combines = [c for c in calls if CHUNK_MARKER not in c.user]
+    assert notes and all(c.json_schema is None for c in notes)
+    assert len(combines) == 1
+    assert "number" not in types_of(clock_node(combines[0].json_schema["schema"], "minutes"))
 
 
 def test_a_custom_task_never_sends_a_schema(conn, media, monkeypatch):
@@ -2017,9 +2154,233 @@ def test_notes_keep_the_speaker_when_the_lines_carry_one(speakers, kept):
     could drop it - and the speaker pass, which reads those notes, then has no
     SPEAKER_XX left to name."""
     text = tasks.render_prompt("map_chunk", index=1, count=2, start="0:00", end="5:00",
-                               goal="g", transcript="[0:01] x", speakers=speakers)
+                               goal="g", transcript="[0:01] x", speakers=speakers,
+                               note_rule="")
 
     assert ("speaker" in text.lower()) is kept
+
+
+# --- a blog note says it in its own words; it does not copy the excerpt (TASK-124) ------
+
+BLOG_NOTE_RULE = (
+    "Write at most 30 notes. Each note is one point in your own words, starting with the "
+    "`[m:ss]` of the moment it is about. Never copy a line from the excerpt: a note that "
+    "repeats a line word for word is not a note. Where the exact words matter, quote only "
+    "those few words, in quotation marks, inside your own sentence."
+)
+"""Pinned word for word. Jobs 430-432 on a copy of Robert's library
+(2026-10-24): qwen3.5:4b and :9b, asked for blog notes on media 61, wrote the
+excerpt back line for line from `[0:01] is deze licht en ze ligt?` until the
+4000-token note budget ran out - the shared instruction 'plain lines, each
+keeping the [m:ss] it came from' plus the goal 'gather the material' read as
+'copy the lines'. Robert's choice (option A): the blog notes are asked as a
+bounded number of points in the model's own words, with a short quote allowed
+and a whole line not."""
+
+
+def _blog_chunk_prompt(kind: str = "blog") -> str:
+    return tasks.chunk_prompt(tasks.task_spec(kind), index=1, count=3, start="0:01",
+                              end="55:37", transcript="[0:01] is deze licht en ze ligt?")
+
+
+def test_a_blog_note_is_asked_as_points_in_its_own_words_never_a_copied_line():
+    text = _blog_chunk_prompt()
+
+    assert BLOG_NOTE_RULE in text, text
+    assert "own words" in tasks.chunk_goal(tasks.task_spec("blog"))
+    assert "gather the material" not in tasks.chunk_goal(tasks.task_spec("blog"))
+
+
+MINUTES_NOTE_RULE = (
+    "Write at most 30 notes. Each note is one point in your own words, written as "
+    "`[m:ss] Name: point` - the moment it is about and who it is about, as the excerpt names "
+    "them - saying what was discussed, decided or agreed to do. Never copy a line from the "
+    "excerpt: a note that repeats a line word for word is not a note. Where the exact words "
+    "matter, such as a decision or a promise, quote only those few words, in quotation "
+    "marks, inside your own sentence."
+)
+"""Pinned word for word. Job 433 on the round-6 library copy (2026-10-25):
+qwen3.5:4b, asked for minutes notes on media 61, wrote chunk 2 back line for
+line from `[1:38:25] Henry: Het is goed.` until the 4000-token note budget ran
+out, and chunk 1 came back as 93 lines for a 47-minute stretch. Robert's
+decision of 2026-10-25: minutes gets a note rule like blog's. The order
+`[m:ss] Name:` is the transcript's own, so the stamp `copied_lines` strips
+still leads and the speaker clause of map_chunk.md is not contradicted."""
+
+
+def test_a_minutes_note_is_asked_as_points_in_its_own_words_never_a_copied_line():
+    text = _blog_chunk_prompt("minutes")
+
+    assert MINUTES_NOTE_RULE in text, text
+    # Still asked to name who spoke: an owner is part of what minutes need.
+    assert "Begin every note with the speaker" in text
+
+
+def test_a_minutes_note_cut_off_while_copying_the_excerpt_says_it_was_copying(
+    conn, monkeypatch
+):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    # Chunk 0 of this plan is one line once the speaker name is on it, so the
+    # note is that line alone: one of one copied.
+    provider, _ = fake_provider(_copying(own=0))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="minutes", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "copied word for word" in str(caught.value), str(caught.value)
+
+
+def test_which_kinds_ask_their_notes_in_their_own_words():
+    """Every kind that combines notes shares map_chunk.md, and its sentence
+    'plain lines, each keeping the [m:ss]' read as 'copy the lines' to
+    qwen3.5:4b on media 61 for each kind measured (round-7 library copy,
+    2026-10-25: action_items job 430 copied 21 of 24 note lines, chapters job
+    431 copied 25 of 26, both until the 4000-token cap). `speakers` must keep
+    its quotes; `summary` and `labels` were not measured, so they stay as they
+    were; `cleanup` and `custom` take no such notes."""
+    assert {kind: bool(spec.note_rule) for kind, spec in tasks.TASKS.items()} == {
+        "summary": False,
+        "action_items": True,
+        "chapters": True,
+        "minutes": True,
+        "blog": True,
+        "speakers": False,
+        "labels": False,
+        "cleanup": False,
+        "custom": False,
+    }
+
+
+@pytest.mark.parametrize("kind", ["action_items", "chapters"])
+def test_action_items_and_chapters_notes_are_never_a_copied_line(kind):
+    text = _blog_chunk_prompt(kind)
+
+    assert tasks.task_spec(kind).note_rule in text
+    assert "Never copy a line from the excerpt" in text
+    assert "Write at most 30 notes" in text
+
+
+def test_the_speaker_notes_keep_their_quotes():
+    """The other kinds share map_chunk. `speakers` asks for 'the quote and its
+    time', so a rule against copying words would take away what it needs."""
+    assert "Never copy a line" not in _blog_chunk_prompt("speakers")
+
+
+def test_copied_lines_counts_note_lines_that_are_transcript_lines_word_for_word():
+    """A line under four words ('Ja.') says nothing about copying, so it is not
+    counted either way; a bullet or the stamp in front of a line does not
+    disguise it."""
+    transcript = (
+        "[0:01] is deze licht en ze ligt?\n"
+        "[0:02] ik heb hem net in de signal van Terrein gegooid\n"
+        "[0:08] Ja.\n"
+    )
+    note = (
+        "[0:01] is deze licht en ze ligt?\n"
+        "- [0:02]  ik heb hem net in de signal van Terrein gegooid\n"
+        "[0:08] Ja.\n"
+        "[0:02] Iemand deelt de link naar het terrein in Signal.\n"
+    )
+
+    assert tasks.copied_lines(note, transcript) == (2, 3)
+    assert tasks.copied_lines("notes 0", transcript) == (0, 0)
+
+
+def _copying(own: int = 0, cut_off: bool = True):
+    """A note that writes the excerpt's own lines back, and `own` of its own."""
+
+    def answer(req: base.ChatRequest):
+        if CHUNK_MARKER not in req.user:
+            return ANSWERS["blog"]
+        excerpt = req.user.split("Excerpt:", 1)[1]
+        lines = [line for line in excerpt.splitlines() if line.startswith("[")]
+        text = "\n".join(lines + ["[0:00] Somebody counts to nine, twice over."] * own)
+        return truncated(text) if cut_off else replace(truncated(text), raw_finish_reason="stop")
+
+    return answer
+
+
+def test_a_note_cut_off_while_copying_the_excerpt_says_it_was_copying(conn, monkeypatch):
+    """Job 430's refusal said only 'it stopped at the 4000-token cap', which
+    reads as 'raise the budget'. The note was the transcript written back; a
+    bigger budget buys a longer copy."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(_copying(own=1))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="blog", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    message = str(caught.value)
+    # Chunk 0 of this plan is two transcript lines, both written back.
+    assert "2 of its 3 lines" in message and "copied word for word" in message, message
+
+
+def test_a_note_cut_off_in_its_own_words_does_not_say_copying(conn, monkeypatch):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(
+        map_reduce_script(ANSWERS["blog"], note=lambda i: truncated(
+            "[0:00] Somebody counts to nine, twice over, and then stops mid-"))
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="blog", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "copied" not in str(caught.value), str(caught.value)
+
+
+def test_a_speaker_note_cut_off_on_its_quotes_is_not_called_copying(conn, monkeypatch):
+    """Only blog's note rule forbids copying. `speakers` is asked for 'the
+    quote and its time', so its notes are transcript lines by design, and a
+    refusal saying it 'was writing the transcript back' would blame it for
+    doing what it was asked."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+
+    def answer(req: base.ChatRequest):
+        excerpt = req.user.split("Excerpt:", 1)[1]
+        lines = [line for line in excerpt.splitlines() if line.startswith("[")]
+        return truncated(chr(10).join(lines))
+
+    provider, _ = fake_provider(answer)
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="speakers", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "ran out of room writing its notes" in str(caught.value), str(caught.value)
+    assert "copied word for word" not in str(caught.value), str(caught.value)
+
+
+def test_a_finished_note_records_how_much_of_it_was_copied(conn, monkeypatch):
+    """Reported, not refused: a copied note that finished is the excerpt's own
+    words, which the combine can still use, and refusing it would fail a job
+    that can finish. The chunk row says how much was copied, so a run shows
+    whether a model follows the note instruction."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(_copying(own=1, cut_off=False))
+    register(monkeypatch, provider)
+
+    tasks.run_task(conn, media_id=media_id, kind="blog", provider_name="fake", model="fake-1",
+                   budget_tokens=100)
+
+    chunk_rows = [r for r in rows(conn, media_id) if tasks.is_chunk_kind(r["kind"])]
+    assert chunk_rows
+    for row in chunk_rows:
+        params = json.loads(row["params_json"])
+        excerpt_lines = len(params["segment_ids"])
+        assert (params["copied_lines"], params["note_lines"]) == (
+            excerpt_lines, excerpt_lines + 1), params
 
 
 # --- a cut-off object answer says it was cut off, and who answered (TASK-123) ------------
@@ -2077,6 +2438,135 @@ def test_a_refused_cut_off_part_names_the_model_that_answered(conn, monkeypatch)
         tasks.run_task(conn, media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1")
 
     assert "model='z/model'" in str(caught.value), str(caught.value)
+
+
+# --- a full window is not a spent cap (TASK-124) ---------------------------------------------
+
+WINDOW = 32768
+
+
+def window_full(text: str, *, prompt: int, completion: int) -> base.ChatResponse:
+    """An answer that stopped because prompt + answer filled the window.
+
+    Job 436 on a copy of Robert's library (2026-10-23): a blog answer read
+    32,016 prompt tokens and wrote 752 = 32,768, `done_reason: length`, and the
+    board said it 'stopped at the 4000-token cap' - which it never reached.
+    """
+    return replace(truncated(text), prompt_tokens=prompt, completion_tokens=completion)
+
+
+def assert_says_window(message: str, *numbers: int) -> None:
+    assert "window" in message, message
+    assert "-token cap" not in message, message
+    for number in numbers:
+        assert str(number) in message, message
+
+
+def test_an_object_answer_that_filled_the_window_says_the_window_not_the_cap(
+    conn, media, monkeypatch
+):
+    provider, _ = fake_provider(
+        [window_full('{"title": "Terrein", "body": "## Wat', prompt=32016, completion=752)]
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1",
+                       context_tokens=WINDOW)
+
+    assert_says_window(str(caught.value), WINDOW, 32016, 752)
+
+
+def test_a_note_that_filled_the_window_says_the_window_not_the_cap(conn, monkeypatch):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, _ = fake_provider(
+        map_reduce_script(
+            ANSWERS["summary"],
+            note=lambda i: window_full(f"notes {i} which stop", prompt=32568, completion=200),
+        )
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="summary", provider_name="fake",
+                       model="fake-1", budget_tokens=100, context_tokens=WINDOW)
+
+    assert_says_window(str(caught.value), WINDOW, 32568, 200)
+
+
+def test_a_part_that_filled_the_window_says_the_window_not_the_cap(conn, monkeypatch):
+    media_id = seed_media(conn, title="Guide")
+    seed_run(conn, media_id)
+    provider, _ = fake_provider([window_full("[0:01] Ford: Don't", prompt=32016, completion=752)])
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="cleanup", provider_name="fake",
+                       model="fake-1", context_tokens=WINDOW)
+
+    assert_says_window(str(caught.value), WINDOW, 32016, 752)
+
+
+def test_an_answer_that_spent_its_cap_still_says_the_cap_even_past_the_planned_window(
+    conn, media, monkeypatch
+):
+    """The cap is checked first. On a cloud provider the plan's window is the
+    128k planning floor, not the model's, so a prompt past it with the whole
+    cap spent is a cap, and calling it a full window would send Robert after
+    the wrong number."""
+    plan_cap = tasks.task_spec("blog").max_output_tokens
+    provider, _ = fake_provider(
+        [window_full('{"title": "x", "body": "y', prompt=130_000, completion=plan_cap)]
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1")
+
+    assert f"{plan_cap}-token cap" in str(caught.value), str(caught.value)
+
+
+def test_a_cloud_answer_cut_short_past_the_planning_floor_is_not_called_a_full_window(
+    conn, media, monkeypatch
+):
+    """Review of TASK-124: on a cloud provider the plan's 128k is a planning
+    floor, not the model's window, so prompt + answer past it proves nothing
+    about a window. A routed model whose own output limit is below our cap
+    stops at `length` with the cap unspent; saying 'the window was full' would
+    send Robert to shorten a prompt the model never refused, and saying 'the
+    4000-token cap' names a number it never reached."""
+    plan_cap = tasks.task_spec("blog").max_output_tokens
+    provider, _ = fake_provider(
+        [window_full('{"title": "x", "body": "y', prompt=127_000, completion=2_000)]
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="fake", model="fake-1")
+
+    message = str(caught.value)
+    assert "window was full" not in message, message
+    assert f"stopped at the {plan_cap}-token cap" not in message, message
+    assert "2000" in message and str(plan_cap) in message, message
+
+
+def test_a_local_answer_past_the_floor_window_still_says_the_window(conn, media, monkeypatch):
+    """The other side: a local provider runs the window it was planned for, so
+    there a full window is a fact and is named as one."""
+    window = tasks.LOCAL_CONTEXT_TOKENS
+    provider, _ = fake_provider(
+        [window_full('{"title": "x", "body": "y', prompt=window - 500, completion=500)],
+        name="localfake",
+        is_local=True,
+    )
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media, kind="blog", provider_name="localfake",
+                       model="fake-1")
+
+    assert_says_window(str(caught.value), window, window - 500, 500)
 
 
 def test_repair_json_accepts_a_raw_newline_inside_a_string():

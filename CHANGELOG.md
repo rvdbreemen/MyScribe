@@ -1,5 +1,88 @@
 ## [Unreleased]
 
+### Added
+
+- **A JSON API for programs, under `/api/v1`.** A script or an agent can list
+  and search the library, read a transcript as JSON, send a recording in
+  (multipart, or a path under the browse roots), transcribe a recording again,
+  queue an AI question, read and cancel jobs, download an export, read the
+  settings (never a key or token), read the doctor's checks, and list, add
+  and remove watch folders. `GET /api/v1/doctor` runs the checks the Settings
+  page runs when it opens and returns them with the last GPU check's stored
+  result; it queues nothing, and its `ok` is false when a required check of
+  that run failed. `POST /api/v1/watch-folders` calls the function the
+  Settings page calls, with the same refusals; a folder already watched is
+  `already_watched`. Its `message` says to transcribe the files it left
+  alone in Settings > Watch folders, where the page says "below";
+  `POST /api/v1/watch-folders/{id}/existing` transcribes them, as that
+  page's *Transcribe them* button does. Every
+  route is in `/openapi.json`, and every error under `/api/v1` is JSON with a stable `code` and a `detail`; an
+  unexpected server error is `internal_error`, without the exception's text.
+  A re-transcribe refuses a field that is not one of the dialog's options or
+  `params`; an empty body repeats the last request. An
+  `Idempotency-Key` header on an upload or a re-transcribe makes a retry give
+  the first answer back without queueing a second job. The same key with
+  another recording or other transcription options is refused with
+  `idempotency_key_reused`, and an upload is checked before the recording is
+  filed, so a refused one adds nothing to the library; a different title or
+  folder alone is not compared. The same key while its first upload is still
+  running is refused with `idempotency_key_in_progress`. When the job a key
+  answered with is gone (its recording was deleted), the key is forgotten and
+  the retry runs as a new request. Keys are kept for 24 hours. There is no token: the API answers only on 127.0.0.1 and behind the
+  same Host and same-site checks as the pages, and the phone door does not
+  reach it. The pages and the unversioned `/api/...` routes answer as before
+  (TASK-108, ADR-025).
+- **A command line for the JSON API: `python -m scribe.cli`.** It talks to a
+  running MyScribe on 127.0.0.1 (`--port`, default 4242), only to `/api/v1`,
+  and never through a proxy. Commands: `status`, `list`, `search`, `upload`
+  (the file's bytes, or `--by-path` for a file under the browse roots),
+  `transcribe`, `jobs`, `cancel`, `wait`, `transcript`, `export`, `doctor`
+  and `watch list|add|remove|existing`;
+  `--idempotency-key` on `upload` and `transcribe`, `--json` for the API's
+  own answer. `export` and `transcript --out` replace a file that is
+  already there and say so on stderr. An `upload` of a file that cannot be
+  read, or that disappears while it is sent, ends with `cannot read <file>`
+  and the usage exit code, not with "MyScribe is not answering". Each outcome has its own exit code
+  (not running, not found, conflict, refused, job not done, wait timed
+  out, a required doctor check failed), listed in
+  [Configuration](docs/configuration.md). `watch add` sends the folder as
+  an absolute path, resolved where the command runs (TASK-108).
+- **A `myscribe` command in the installed app.** Windows: `myscribe.cmd` in
+  the install folder's `bin`, which Setup adds to your PATH only when you
+  tick that task (off by default); an uninstall, or an update with it
+  unticked, takes the entry out of PATH again. Linux: `MyScribe.AppImage cli
+  <command>`. macOS: `MyScribe.app/Contents/Resources/myscribe`, to link
+  into your PATH. Each runs `python -P -m scribe.cli` with the Python the
+  launcher installed, in the home the launcher uses (`MYSCRIBE_HOME`, a
+  moved home, or the default), and says to start MyScribe once when that
+  environment is not there yet (exit 3). In a clone it stays
+  `python -m scribe.cli` (TASK-108).
+- **An MCP server for AI agents: `python -m scribe.cli mcp`.** An agent such
+  as Claude Code or Claude Desktop starts it and talks MCP to it over stdin
+  and stdout. It offers seventeen tools, each one or a few requests to a running
+  MyScribe's `/api/v1`: `list_recordings`, `get_recording`,
+  `search_transcripts`, `get_transcript`, `export_transcript`,
+  `add_recording`, `transcribe_again`, `ask_ai`, `list_jobs`, `get_job`,
+  `cancel_job`, `get_settings`, `doctor`, `list_watch_folders`,
+  `add_watch_folder`, `remove_watch_folder` and `transcribe_left_alone`. Like the CLI it reaches only 127.0.0.1 and
+  never opens the library itself. A failed action comes back as a tool
+  result marked as an error, with the API's status, code and detail;
+  arguments that do not fit a tool's schema come back the same way, with
+  what was wrong, and so does a file the tool cannot read. The `path` of
+  `add_recording` and `add_watch_folder`, and `save_to`, must be absolute:
+  a relative one is refused, because the client
+  chooses the folder the server runs in. `export_transcript` returns one text format as text; a
+  docx or several formats (a ZIP) need `save_to`, and with `save_to` any
+  export is written to that file or folder, replacing a file already there. `add_recording` sends the file's bytes,
+  or its path with `by_path`, and takes an `idempotency_key`; a replayed
+  answer is marked `myscribe/replayed`. The server is written on Python's
+  standard library and adds no package to the install (ADR-033, Proposed).
+  With an installed MyScribe, the client starts the `myscribe` command with
+  the argument `mcp`. How to register it is in [Configuration](docs/configuration.md)
+  (TASK-108).
+- The library database moves to schema version 19 for the idempotency keys;
+  an older MyScribe refuses a library this version has opened.
+
 ### Fixed
 
 - **A port Windows has reserved is no longer called "used by another
@@ -16,6 +99,18 @@
   makes after an update; it closes by itself after 10 minutes. On every system
   the next start says it once, as before, and **Settings → Start at login**
   now shows it too, until you dismiss it or MyScribe stops (TASK-120).
+
+- **Run checks in Settings no longer loads torch into the web process.** The
+  button ran every quick check, the accelerator check among them, which
+  imports torch. It now runs the checks the page runs when it opens, as
+  `GET /api/v1/doctor` does; the accelerator check stays in
+  `python -m scribe.doctor` and the GPU check job.
+
+- **The first-start setup in a terminal no longer says "Transcribe them
+  below".** A watch folder added there with recordings already in it now
+  says to transcribe them in Settings > Watch folders; a terminal has no
+  button below.
+
 - **After a Linux update, Start at login starts the new AppImage.** Each
   release is a new file, and the login entry kept starting the old one. When
   an AppImage starts, a login entry (the systemd user unit or the autostart
@@ -39,6 +134,55 @@
   weights and never mentioned the larger ones *Max* loads. It now checks the
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
+- **Local AI reads all of a long recording, or says it cannot.**
+  MyScribe under-counted how much of a model's window a transcript fills: each
+  timestamp and speaker name costs more than it allowed for. So a local model
+  could get a part of a long recording too big for its window, read only the
+  second half, and report the job as done. MyScribe now uses a deliberately
+  pessimistic estimate, calibrated on token counts measured with qwen3.5 and
+  gemma4 on Dutch text. Text written without spaces, such as Chinese or
+  Japanese, can still be under-counted. It asks Ollama to refuse a prompt
+  that does not fit instead of shortening it, and it refuses one that was
+  shortened anyway. A
+  note that stopped because the window was full now says so, instead of
+  blaming the answer limit; a cloud answer that stopped before its limit says
+  that too. Long recordings are split into a few more parts than before,
+  locally and for cleanup in the cloud (TASK-124).
+- **Notes on a long recording for a blog post, minutes, action items and
+  chapters are asked for in the model's own words.** A recording too long
+  for one call is read in parts, with notes taken on each. For these four
+  tasks, local models wrote a part's transcript back line by line until they
+  ran out of room, and the job failed. Those notes are now asked as at most
+  30 points in the model's own words, each with its timestamp (for minutes
+  and action items also the speaker), quoting only a few words where they
+  matter. This is a request, not a limit: a model can still write more.
+  Such a note that runs out of room with most of its lines copied from the
+  transcript now says so. Notes for the other tasks are asked as before.
+  The shared notes prompt changed, so notes stored by an earlier version
+  are not reused: the next run of any AI task on a long recording (summary, minutes,
+  blog and the others; chat is not affected) asks every part again. Earlier
+  results are kept (TASK-124).
+- **A local AI answer comes back in the shape it was asked for.** With
+  Ollama, every AI task that answers in a fixed shape (summary, action items,
+  chapters, minutes, blog post, who is speaking, labels) now sends that shape
+  along, and Ollama lets the model write only JSON of that shape. Minutes on a
+  long recording failed when the model wrote a timestamp without quotes.
+  Timestamps are asked for as text, such as `2:16:29`, and an action item may
+  still come back without one. Cloud providers are asked as before (TASK-124,
+  ADR-034).
+- **A local model writes a blog post on a long recording without thinking
+  first.** The last step, which writes the post from the notes on each part,
+  asks a local model (Ollama) not to think first, as cleanup does. With
+  qwen3.5:4b that step had stopped at its answer limit after thinking once in
+  two runs; with the request it finished in three runs, all on the same notes.
+  Cloud providers are asked as before; OpenRouter keeps the thinking limit
+  below. The notes and a recording short enough for one step are asked as
+  before (TASK-124, ADR-035).
+- **Known limit: a small local model on a long recording.** On a 4B model
+  such as qwen3.5:4b, minutes and action items may come back without
+  timestamps, and chapters can stop at the model's note budget. qwen3.5:9b
+  gave minutes with real timestamps (measured on one 2h28m Dutch recording)
+  (TASK-124).
 - **Quit no longer costs you the running job.** Quit in the MyScribe window,
   Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
   (on macOS and Linux) now stop MyScribe the way the Stop button in Settings

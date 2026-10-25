@@ -44,11 +44,12 @@ launcher's waits are sized on this (`APP_SIGTERM_WAIT`, `STOP_WAIT`);
 `tests/test_launcher.py` adds them up."""
 
 _RECORDING_ROUTE = re.compile(r"/record/[^/]+/(chunk|finish)")
-APP_UPLOAD_PATHS = frozenset({"/api/media", "/transcribe/upload", "/transcribe/path"})
+APP_UPLOAD_PATHS = frozenset({"/api/media", "/api/v1/media", "/transcribe/upload", "/transcribe/path"})
 """The app's routes that carry a recording in: the API's and the transcribe
 dialog's upload, the dialog's file added by its path (hashed and linked in a
 worker thread, like the API's JSON path), plus the microphone's chunks and
-its finish, which turns the chunks into a media row (`_RECORDING_ROUTE`)."""
+its finish, which turns the chunks into a media row (`_RECORDING_ROUTE`), and
+the automation API's upload (`/api/v1/media`, TASK-108)."""
 
 
 def is_app_upload(scope: dict) -> bool:

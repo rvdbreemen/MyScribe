@@ -85,3 +85,46 @@ def test_the_ad_hoc_signature_is_deep_forced_and_verified():
     build_release.sign_ad_hoc(Path("MyScribe.app"), run=commands.append)
     assert commands == [["codesign", "--force", "--deep", "--sign", "-", Path("MyScribe.app")],
                         ["codesign", "--verify", "--deep", "--strict", Path("MyScribe.app")]]
+
+
+# --- TASK-108: the myscribe command in the AppImage and the Mac bundle -------------
+
+CLI_SCRIPT = REPO / "packaging" / "posix" / "myscribe"
+
+
+def _frozen(tmp_path: Path) -> Path:
+    frozen = tmp_path / "frozen"
+    (frozen / build_release.FROZEN_NAME / "_internal").mkdir(parents=True)
+    (frozen / build_release.FROZEN_NAME / build_release.FROZEN_NAME).write_bytes(b"launcher")
+    return frozen
+
+
+def test_the_appdir_ships_the_cli_script_beside_the_launcher(tmp_path):
+    appdir = tmp_path / "MyScribe.AppDir"
+    build_release.write_appdir(_frozen(tmp_path), appdir)
+    script = appdir / "usr" / "bin" / "myscribe-cli"
+    assert script.read_bytes() == CLI_SCRIPT.read_bytes()
+    assert (appdir / "usr" / "bin" / build_release.FROZEN_NAME).read_bytes() == b"launcher"
+
+
+def test_apprun_hands_cli_to_the_script_and_everything_else_to_the_launcher(tmp_path):
+    appdir = tmp_path / "MyScribe.AppDir"
+    build_release.write_appdir(_frozen(tmp_path), appdir)
+    apprun = (appdir / "AppRun").read_text(encoding="utf-8")
+    assert apprun.startswith("#!/bin/sh\n")
+    assert 'if [ "${1-}" = cli ]; then shift; exec "$HERE/usr/bin/myscribe-cli" "$@"; fi' in apprun
+    assert apprun.rstrip().endswith('exec "$HERE/usr/bin/MyScribe" "$@"')
+
+
+def test_the_mac_bundle_gets_the_cli_script_before_it_is_signed(tmp_path):
+    """Contents/Resources, not Contents/MacOS: a resource is sealed by the
+    bundle's signature, while a script among the executables would have to
+    be signed as code itself, and codesign --verify --strict checks that."""
+    app = _bundle(tmp_path)
+    seen = []
+
+    def sign(path):
+        seen.append((app / "Contents" / "Resources" / "myscribe").read_bytes())
+
+    build_release.finish_bundle(app, "9.8.7", sign=sign)
+    assert seen == [CLI_SCRIPT.read_bytes()]
