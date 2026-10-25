@@ -341,6 +341,33 @@ def test_the_default_door_binds_the_lan_address_on_4243_and_publishes_with_zeroc
     assert isinstance(door._publisher, phone_door.ZeroconfPublisher)
 
 
+def test_the_door_as_built_closes_on_the_app_stop_deadline(db_path, data_dir, monkeypatch):
+    """Review of TASK-112.09: whoever closes the door once the app is
+    stopping - the fifteen minutes, Close, a received file, the lifespan -
+    hands its listener the deadline the app's stop gave uploads
+    (`app.state.upload_deadline`, set by `scribe.__main__._stopping`), so a
+    phone upload never gets a second bound (ADR-032)."""
+    stops: list[float | None] = []
+
+    class SpyListener(phone_door.UvicornListener):
+        def stop(self, timeout=phone_door.UvicornListener.STOP_JOIN_SECONDS, *, upload_deadline=None):
+            stops.append(upload_deadline)
+            super().stop(timeout, upload_deadline=upload_deadline)
+
+    monkeypatch.setattr(phone_door, "UvicornListener", SpyListener)
+    monkeypatch.setattr(phone_door, "lan_address", lambda: "127.0.0.1")
+    monkeypatch.setattr(phone_door, "ZeroconfPublisher", FakePublisher)
+    monkeypatch.setattr(phone_door, "DEFAULT_PORT", 0)
+    app = create_app(db_path=db_path, start_supervisor=False)
+    door = phone_ui.build_door(app)
+    door.open()
+    door.close("closed on the laptop")  # no stop yet: the whole bound
+    app.state.upload_deadline = 4242.0  # the app's stop has begun
+    door.open()
+    door.close("timeout")  # not the lifespan's close: it names no deadline
+    assert stops == [None, 4242.0]
+
+
 def test_a_restart_finds_the_door_closed_and_the_old_port_released(db_path, data_dir, clock, publisher):
     first = create_app(db_path=db_path, start_supervisor=False)
     with TestClient(first, base_url="http://127.0.0.1") as client:
@@ -462,10 +489,13 @@ def test_a_door_that_timed_out_does_not_reload_the_library(client, clock):
 
 
 @pytest.mark.parametrize("close", ["by hand", "by timeout"])
-def test_a_door_closed_otherwise_after_a_file_neither_claims_it_nor_reloads(client, clock, monkeypatch, close):
-    # The window between the phone's answer and the door closing itself on
-    # it: the laptop's Close or the timer gets there first. The reason is
-    # then not "received", and the panel must not report an arrival.
+def test_a_door_closed_otherwise_after_a_file_names_it_and_reloads(client, clock, monkeypatch, close):
+    """The window between the phone's answer and the door closing itself on
+    it: the laptop's Close or the timer gets there first. Since a Close lets
+    an upload in flight finish (Robert, 2026-10-25, TASK-112.09), that window
+    is up to half a minute, and the file is in the library: the panel names
+    it and reloads the library once, as for a door closed on its file.
+    Before, it said nothing about a file that had arrived."""
     door = door_of(client)
     monkeypatch.setattr(door, "_close_after_answer", lambda opening: None)
     client.post("/phone/open", headers=HX)
@@ -474,14 +504,54 @@ def test_a_door_closed_otherwise_after_a_file_neither_claims_it_nor_reloads(clie
     if close == "by hand":
         panel = client.post("/phone/close", headers=HX)
         assert door.closed_reason == "closed on the laptop"
-        assert "Received Meeting.m4a" not in panel.text
+        assert "Received Meeting.m4a" in panel.text
+        assert 'hx-get="/phone/done"' in panel.text
     else:
         clock.advance(15 * 60)
     tick = client.get("/phone/countdown", headers=HX)
     assert tick.status_code == phone_ui.STOP_POLLING
     assert door.closed_reason == ("closed on the laptop" if close == "by hand" else "timeout")
-    assert "Received Meeting.m4a" not in tick.text
-    assert "/phone/done" not in tick.text
+    assert "Received Meeting.m4a" in tick.text
+
+
+def test_while_a_close_waits_for_an_upload_the_panel_says_it_may_still_arrive(client):
+    """What the laptop shows while a Close lets a phone upload finish: the
+    countdown's place says the door takes nothing new and the recording on its
+    way may still arrive, for up to the bound; the panel offers no Open (the
+    port is still the old listener's). Once the file is in, the countdown
+    swaps in the closed panel that names it and reloads the library."""
+    import threading
+    import time
+
+    from scribe.web import stopping
+    from test_phone_door import _half_an_upload, _rest_and_answer
+
+    door = door_of(client)
+    client.post("/phone/open", headers=HX)
+    sock, rest = _half_an_upload(door.opening, b"\x00audio" * 40_000)
+    time.sleep(0.3)
+    closing = threading.Thread(target=door.close, args=("closed on the laptop",), daemon=True)
+    closing.start()
+    time.sleep(0.5)
+    try:
+        assert door.closing
+        seconds = f"{stopping.UPLOAD_FINISH_SECONDS:g} seconds"
+        tick = client.get("/phone/countdown", headers=HX)
+        assert tick.status_code == 200
+        assert "may still arrive" in tick.text and seconds in tick.text
+        assert "Closes by itself" not in tick.text
+        panel = client.get("/phone", headers=HX)
+        assert "may still arrive" in panel.text
+        assert 'hx-post="/phone/open"' not in panel.text
+        assert 'hx-get="/phone/countdown"' in panel.text
+    finally:
+        answer = _rest_and_answer(sock, rest)
+        closing.join(60)
+    assert answer.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK", answer[:200]
+    tick = client.get("/phone/countdown", headers=HX)
+    assert tick.status_code == phone_ui.STOP_POLLING
+    assert "Received Voice memo 42.m4a" in tick.text
+    assert 'hx-get="/phone/done"' in tick.text
 
 
 def test_opening_the_panel_later_does_not_reload_the_library(client):
@@ -557,3 +627,61 @@ def test_a_countdown_that_says_closed_means_the_port_is_closed(app, clock, publi
         assert door_of(client).is_open() is False
         assert refused("127.0.0.1", opening.port)
         assert publisher.withdrawn == 1
+
+
+def test_a_phone_file_is_counted_while_it_is_stored_and_queued(client, monkeypatch):
+    """The lifespan closes the database only once no file is being stored
+    (TASK-112.09, ADR-032). The door's own server is stopped inside the app's
+    stop, and its worker thread may still be storing a phone's file; it is
+    counted like the app's own uploads."""
+    import io
+
+    app = client.app
+    seen: list[int] = []
+
+    def stored(conn, stream, name, **kwargs):
+        seen.append(app.state.ingests.busy)
+        return {"id": 7}
+
+    monkeypatch.setattr(transcribe_dialog, "file_upload", stored)
+    assert phone_ui.accept_for(app)(io.BytesIO(b"x"), "memo.m4a") == 7
+    assert seen == [1]
+    assert app.state.ingests.busy == 0
+
+
+def test_a_countdown_that_finds_the_door_due_does_not_wait_for_the_upload(app, clock, publisher):
+    """The panel's countdown and the door's watchdog both tick once a second;
+    when the countdown gets to the fifteen minutes first, it must not be the
+    request that waits up to half a minute for a phone upload to finish, or
+    the panel shows 0:00 instead of *Closing* all that time. Found by review
+    of this round (the door tests' watchdog polls every 10 ms and always won)."""
+    import time
+
+    from test_phone_door import _half_an_upload, _rest_and_answer
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        door = install_door(app, clock, publisher, poll=3600)  # the watchdog never gets there
+        try:
+            client.post("/phone/open", headers=HX)
+            sock, rest = _half_an_upload(door.opening, b"\x00audio" * 40_000)
+            time.sleep(0.3)
+            clock.advance(phone_door.OPEN_SECONDS + 1)
+            started = time.monotonic()
+            first = client.get("/phone/countdown", headers=HX)
+            assert time.monotonic() - started < phone_door.GRACE_SECONDS, "the countdown waited for the upload"
+            assert first.status_code == 200
+            deadline = time.monotonic() + 5
+            while not door.closing and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert "may still arrive" in client.get("/phone/countdown", headers=HX).text
+            answer = _rest_and_answer(sock, rest)
+            assert answer.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK", answer[:200]
+            assert door.wait_closed(60)
+            deadline = time.monotonic() + 5
+            while door.closing and time.monotonic() < deadline:
+                time.sleep(0.05)
+            tick = client.get("/phone/countdown", headers=HX)
+            assert tick.status_code == phone_ui.STOP_POLLING
+            assert "Received Voice memo 42.m4a" in tick.text
+        finally:
+            door.close()

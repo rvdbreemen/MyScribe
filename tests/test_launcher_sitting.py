@@ -1939,3 +1939,51 @@ def test_a_choice_waiting_in_another_window_is_said_in_the_main_one(layout, monk
 
     assert seen_while_open == [launcher.CHOICE_WAITING]
     assert launcher.CHOICE_WAITING in window.appended
+
+
+def test_window_quit_goes_through_the_stop_route_and_says_what_happens_to_the_job(layout, monkeypatch):
+    """TASK-112.09. Quit used to tree-kill the app on the Tk thread, so the
+    running job came back interrupted (Windows) or its runner ran on as an
+    orphan (macOS, Linux). Quit now asks the stop route, which requeues the
+    job, waits for the app on a worker so the window keeps talking, says what
+    happens to the job before and after, and only then closes. A second Quit
+    meanwhile starts nothing."""
+    asked: list[str] = []
+    hard: list = []
+
+    def ask_to_stop(port):
+        asked.append(threading.current_thread().name)
+        time.sleep(0.3)  # the requeue join, shortened
+        return {"stopping": True, "pid": 4242, "running_job": 7}
+
+    monkeypatch.setattr(launcher, "read_health", lambda port, timeout=2.0: {"ok": True, "pid": 4242})
+    monkeypatch.setattr(launcher, "ask_to_stop", ask_to_stop)
+    monkeypatch.setattr(launcher, "pid_alive", lambda pid: not asked)
+    windows = []
+    real_window = _Window
+
+    def capture():
+        window = real_window()
+        windows.append(window)
+        return window
+
+    monkeypatch.setattr(sys.modules[__name__], "_Window", capture)
+
+    def serving(launch, ask, report, force_setup, at_login, retry):
+        launch.app = types.SimpleNamespace(alive=lambda: not asked, proc=object(), exit_code=lambda: 0,
+                                           stop=lambda *a, **k: hard.append(True))
+        quit_app = windows[0].protocols["WM_DELETE_WINDOW"]
+        windows[0].scheduled.append(lambda: (quit_app(), quit_app()))  # on the Tk thread, twice
+        return True
+
+    window = _window_with(layout, monkeypatch, serving)
+
+    assert asked == ["myscribe-stop"], "Quit did not ask the stop route once, from a worker"
+    assert hard == [], "the hard stop ran although the app stopped through its route"
+    before = launcher.STOPPING_JOB.format(job=7)
+    after = launcher.STOPPED_JOB.format(job=7)
+    assert before in window.appended and after in window.appended
+    assert window.appended.index(before) < window.appended.index(after)
+    assert window.status.get() == after, "the last thing the window says is what happened to the job"
+    assert window.destroyed
+    assert window.after_threads == {"MainThread"}, "a worker called Tk"

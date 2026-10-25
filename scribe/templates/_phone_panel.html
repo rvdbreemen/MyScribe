@@ -9,6 +9,8 @@
       error          why the door did not open, or None
       firewall_note  one sentence about Windows Firewall, on Windows only
       minutes        how long an opening lasts
+      closing        closed to anything new, an upload on its way still finishing
+      closing_seconds  how long that upload may still take, at most
 
   The QR code carries the IP-address URL: it is scanned, not typed, and a
   number needs nothing from mDNS. The myscribe.local URL is there to type.
@@ -29,11 +31,16 @@
   <form method="post" action="/phone/close" hx-post="/phone/close" hx-target="#phone-panel" hx-swap="outerHTML">
     <button type="submit">Close the door now</button>
   </form>
+  {% elif closing %}
+  {# A Close waits for an upload already on its way; the port is still the
+     old listener's, so there is no Open here until it is done. #}
+  {% with countdown=None, received=[] %}{% include "_phone_countdown.html" %}{% endwith %}
   {% else %}
   {% if arrived %}
-  {# The door closed on a file (one recording per opening). The countdown
-     that saw it close asks for a library reload after three seconds; any
-     later look at this panel only reports. #}
+  {# The door closed on a file (one recording per opening), or a Close let
+     one finish. The countdown that saw it close, or the Close's own answer,
+     asks for a library reload after three seconds; any later look at this
+     panel only reports. #}
   <div class="flash ok" role="status">
     {% for item in arrived %}<p>✓ Received {{ item.name }} from the phone. {{ item.job }}</p>{% endfor %}
   </div>
