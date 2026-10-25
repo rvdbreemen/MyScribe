@@ -988,10 +988,26 @@ def disk_probe_path(layout: Layout) -> Path:
     ``D:\\MyScribe`` exists and ``shutil.disk_usage`` raises on a path that is
     not there.
     """
-    for candidate in (layout.data_dir, *layout.data_dir.parents):
+    return nearest_existing(layout.data_dir)
+
+
+def nearest_existing(path: Path) -> Path:
+    """``path``, or the nearest parent of it that exists: what
+    ``shutil.disk_usage`` can be asked about before a first run."""
+    for candidate in (path, *path.parents):
         if candidate.exists():
             return candidate
-    return layout.data_dir
+    return path
+
+
+def same_volume(first: Path, second: Path) -> bool:
+    """Are two existing paths on one volume? ``st_dev`` is the volume serial
+    number on Windows and the device on POSIX. True when either cannot be
+    read: one volume asked for everything is the stricter answer."""
+    try:
+        return os.stat(first).st_dev == os.stat(second).st_dev
+    except OSError:
+        return True
 
 
 def free_gb(path: Path) -> float | None:
@@ -1076,14 +1092,35 @@ def enough_disk(layout: Layout, report: Callable[[str, str], None], *, floor: bo
     needed = size["needed_gb"]
     if not floor:
         needed = needed - size["floor_gb"] if needed else needed
-    probe = disk_probe_path(layout)
-    free = free_gb(probe)
-    if not needed or free is None or free >= needed:
+    if not needed:
         return True
-    floor = size["floor_gb"]
+    floor = size["floor_gb"] if floor else 0
+    probe = disk_probe_path(layout)
+    engine_probe = nearest_existing(layout.home)
+    if not same_volume(engine_probe, probe):
+        # TASK-097: the library may sit on another volume than the engine
+        # home. The environment goes to the home; the weights and the working
+        # room go to the library. Each volume is asked for its own part.
+        library_needed = size["weights_gb"] + floor
+        engine_needed = needed - library_needed
+        engine_free = free_gb(engine_probe)
+        if engine_needed > 0 and engine_free is not None and engine_free < engine_needed:
+            report("error", f"There is not enough room for the speech engine: it needs about "
+                            f"{engine_needed:.0f} GB in {layout.home}, and {engine_probe} has "
+                            f"{engine_free:.1f} GB free. Nothing was downloaded. Free up space, or "
+                            f"start MyScribe with --home PATH (or set {HOME_VARIABLE}) to put the "
+                            "speech engine on another drive.")
+            return False
+        needed = library_needed
+        part = f"the library in {layout.data_dir}"
+    else:
+        part = "this install"
+    free = free_gb(probe)
+    if free is None or free >= needed:
+        return True
     keeps = (f", plus the {floor} GB MyScribe keeps free for your recordings" if floor else "")
-    report("error", f"There is not enough room: MyScribe needs about {needed:.0f} GB for this "
-                    f"install{keeps}, and {probe} has {free:.1f} GB free. Nothing was downloaded. "
+    report("error", f"There is not enough room: MyScribe needs about {needed:.0f} GB for {part}"
+                    f"{keeps}, and {probe} has {free:.1f} GB free. Nothing was downloaded. "
                     "Free up space, or start MyScribe again and put it on another drive.")
     return False
 
@@ -1197,9 +1234,12 @@ def refuse_location(chosen: str, install: Path | None = None, payload: Path | No
     # path with a typo in it would otherwise leave an empty tree behind on a
     # disk nobody meant to touch, written while the question is still open.
     # `exists` and not `is_dir`, so a file where a folder should be stops the
-    # walk and fails the probe, which is the answer.
+    # walk and is refused as a file (TASK-097 review: the write probe's Errno 2
+    # under it said "cannot write" and not why).
     here = next((candidate for candidate in (resolved, *resolved.parents) if candidate.exists()),
                 resolved)
+    if not here.is_dir():
+        return f"{here} is a file, not a folder. Choose a folder, or a new one."
     probe = here / ".myscribe-write-test"
     try:
         probe.write_text("", encoding="utf-8")
@@ -1461,9 +1501,18 @@ def judge_library(text: str, home: Path, install: Path | None = None,
     if refusal:
         return "refuse", None, refusal
     chosen = Path(str(text).strip().strip('"')).resolve()
-    if _today(str(chosen), Path(home)):
-        return "today", None, ""
+    home = Path(home)
     for folder in (chosen, chosen / APP_NAME):
+        # The home, or its data, is today's layout - also when it is reached
+        # through the MyScribe subfolder of the folder above it. Anywhere else
+        # under the home is the engine's: env/, cache/ and logs/ live there.
+        if _today(str(folder), home):
+            return "today", None, ""
+        if _inside(folder, home):
+            return "refuse", None, (
+                f"{folder} is inside {home.absolute()}, where the speech engine lives. Choose a "
+                f"folder outside it, or keep {home.absolute()} to keep the library where it "
+                f"always was, in {home.absolute() / 'data'}.")
         held = library_database(folder)
         if held is not None:
             return "offer", held, ""
@@ -1508,6 +1557,16 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
             # library, which the guard below would otherwise call "another".
             return None, None
         held = library_database(Path(home) / "data")
+        kind, offered, _sentence = (judge_library(request, Path(home), install, payload)
+                                    if held is not None else ("", None, ""))
+        if kind == "offer" and setup_needed(Layout(home, payload)):
+            # TASK-097 review: the first start was headless, or its sitting was
+            # closed, and the app made its own library in <home>/data. No
+            # sitting has ended, so the offer still stands: the engine decides,
+            # and it offers a library only while this one holds no recordings.
+            report("status", f"{offered} already holds a {APP_NAME} library; the setup questions "
+                             "offer it again, and it is used only when you choose it there.")
+            return None, offered
         if held is not None:
             # An update of an install that never moved anything has no pointer
             # file, so the installer may have asked. A library is already

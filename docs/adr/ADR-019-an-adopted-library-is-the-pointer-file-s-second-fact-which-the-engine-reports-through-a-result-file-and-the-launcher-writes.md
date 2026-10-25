@@ -54,11 +54,6 @@ status_history:
     changed_by: "User: Robert van den Breemen"
     reason: Accepted by Robert on 2026-09-24, asked for in the session as 'Accepteer beide ADR', after answering its open question in the same session.
     changed_via: adr-kit lifecycle
-  - date: 2026-10-25
-    status: Accepted
-    changed_by: Claude (agent, session 2026-10-25)
-    reason: ADR-036 amends ADR-019 for a new, empty library
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement

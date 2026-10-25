@@ -2185,15 +2185,36 @@ def test_a_folder_that_is_not_there_yet_is_accepted_and_not_created(tmp_path):
     assert not (tmp_path / "MyScrbie").exists()
 
 
-def test_a_folder_that_cannot_be_written_is_refused(tmp_path):
+def test_a_folder_that_cannot_be_written_is_refused(tmp_path, monkeypatch):
     """Refused with what the operating system said, because "choose another
-    folder" without a reason is the sort of dialog people photograph."""
+    folder" without a reason is the sort of dialog people photograph.
+
+    The folder is made unwritable by the probe's own write failing: a file
+    stood in for it until TASK-097's review, and a file now has a sentence of
+    its own (below)."""
+    real_write = Path.write_text
+
+    def write_text(self, *args, **kwargs):
+        if self.name == ".myscribe-write-test":
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+    refusal = launcher.refuse_location(str(tmp_path / "MyScribe"))
+
+    assert "cannot write in" in refusal and "Access is denied" in refusal
+
+
+def test_a_file_where_a_folder_should_be_is_refused_as_a_file(tmp_path):
+    """TASK-097 review: the write probe under a file said "Errno 2 ... cannot
+    write in", which does not say the path is a file."""
     blocker = tmp_path / "a-file"
     blocker.write_text("not a folder", encoding="utf-8")
 
-    refusal = launcher.refuse_location(str(blocker / "MyScribe"))
-
-    assert "cannot write in" in refusal
+    for chosen in (blocker, blocker / "MyScribe"):
+        refusal = launcher.refuse_location(str(chosen))
+        assert f"{blocker} is a file, not a folder" in refusal
 
 
 def test_a_refused_answer_writes_no_pointer_and_asks_again(tmp_path, layout):
@@ -2337,6 +2358,84 @@ def test_the_working_room_is_asked_of_a_person_and_not_of_ci(layout, monkeypatch
     assert person is False, "a person installing this is still asked for the working room"
     assert ci is True, "CI is asked only for the install it actually makes"
     assert len(refused) == 1 and "not enough room" in refused[0]
+
+
+def _two_volumes(layout, tmp_path, monkeypatch, *, engine_free: float, library_free: float):
+    """The engine home on one volume ("C") and the library on another ("D"),
+    told apart by the top folder under tmp_path - the `same_volume` the
+    launcher asks, and the free space each one has."""
+    _shipped_install_numbers(layout)  # environment 4 GB, weights 2 GB, floor 10 GB
+    home, library = tmp_path / "C" / "MyScribe", tmp_path / "D" / "Library"
+    home.mkdir(parents=True, exist_ok=True)
+    library.mkdir(parents=True, exist_ok=True)
+    split = launcher.Layout(home, layout.payload, data=library)
+
+    def drive(path):
+        return Path(path).resolve().relative_to(tmp_path.resolve()).parts[0]
+
+    free = {"C": engine_free, "D": library_free}
+    monkeypatch.setattr(launcher, "same_volume", lambda a, b: drive(a) == drive(b), raising=False)
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda path: _usage(free[drive(path)]))
+    return split, home, library
+
+
+def test_a_library_on_another_volume_leaves_the_engine_asking_its_own_volume(layout, tmp_path, monkeypatch):
+    """TASK-097 review: the engine home stays on C: while the library goes to
+    D:. Only D: was measured, so a C: with 1 GB free passed the check and ran
+    out halfway through the environment download - the one thing this check
+    exists to prevent."""
+    split, home, _library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=1, library_free=400)
+    refused: list[str] = []
+
+    assert launcher.enough_disk(split, lambda state, text: refused.append(text)) is False
+    assert len(refused) == 1 and str(home) in refused[0] and "--home" in refused[0]
+
+
+def test_a_library_on_another_volume_is_asked_only_for_what_lands_there(layout, tmp_path, monkeypatch):
+    """The other half: D: holds the weights and the working room (2 + 10 GB),
+    not the 4 GB environment that goes to C:. Asking D: for all 16 refused a
+    library that fits."""
+    split, _home, library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=400, library_free=13)
+
+    assert launcher.enough_disk(split, lambda state, text: pytest.fail(f"refused: {text}")) is True
+
+    split, _home, library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=400, library_free=11)
+    refused: list[str] = []
+    assert launcher.enough_disk(split, lambda state, text: refused.append(text)) is False
+    assert len(refused) == 1 and str(library) in refused[0]
+
+
+def test_same_volume_reads_the_device_of_each_path(tmp_path, monkeypatch):
+    """The tests above replace `same_volume`; this holds the real one to its
+    word: one device is one volume, two are two, and a path it cannot read
+    counts as the same volume - the stricter of the two checks."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert launcher.same_volume(tmp_path / "a", tmp_path / "b") is True
+
+    real_stat = launcher.os.stat
+    devices = {"a": 1, "b": 2}
+
+    def stat(path, *args, **kwargs):
+        name = Path(path).name
+        if name in devices:
+            return types.SimpleNamespace(st_dev=devices[name])
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(launcher.os, "stat", stat)
+    assert launcher.same_volume(tmp_path / "a", tmp_path / "b") is False
+    assert launcher.same_volume(tmp_path / "a", tmp_path / "missing") is True
+
+
+def test_one_volume_is_still_asked_for_everything(layout, tmp_path, monkeypatch):
+    """Home and library on one disk: 16 GB on that disk, as before - two
+    separate checks of 4 and 12 would let 13 GB through."""
+    split, _home, _library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=13, library_free=13)
+    monkeypatch.setattr(launcher, "same_volume", lambda a, b: True, raising=False)
+    refused: list[str] = []
+
+    assert launcher.enough_disk(split, lambda state, text: refused.append(text)) is False
+    assert len(refused) == 1
 
 
 def test_a_footprint_whose_numbers_are_not_numbers_still_asks(layout):

@@ -452,3 +452,80 @@ def test_the_prefilled_default_says_nothing_at_the_second_start_either(
 
     assert [layout.data_dir for layout in started] == [machine.default.absolute() / "data"] * 2
     assert "is not used" not in capsys.readouterr().out
+
+
+# --- review findings (TASK-097, round 2) ------------------------------------------------
+
+
+def test_the_folder_above_the_default_home_means_todays_layout(tmp_path, payload, machine, started):
+    """Browsing up one level on the page - to %LOCALAPPDATA%, which holds
+    other things - made `<chosen>/MyScribe` the library. That folder is the
+    engine home itself, so the library landed beside env/, cache/ and logs/."""
+    _request(machine, machine.default.parent)
+
+    assert _main(payload) == 0
+
+    [layout] = started
+    assert layout.data_dir == machine.default.absolute() / "data"
+    assert launcher.DATA_KEY not in _pointer(machine)
+
+
+@pytest.mark.parametrize("inside", [("data", "sub"), ("env",), ("logs", "library")])
+def test_a_folder_inside_the_engine_home_is_refused_with_a_sentence(
+    tmp_path, payload, machine, started, inside
+):
+    chosen = machine.default.joinpath(*inside)
+    _request(machine, chosen)
+
+    assert _main(payload) == 0
+
+    assert started == []
+    assert not chosen.exists()
+    said = (tmp_path / "local" / "MyScribe-launcher.log").read_text(encoding="utf-8")
+    assert "speech engine" in said and str(machine.default.absolute()) in said
+
+
+def test_a_file_is_refused_as_a_file(tmp_path, payload):
+    afile = tmp_path / "afile.txt"
+    afile.write_text("", encoding="utf-8")
+
+    kind, folder, sentence = launcher.judge_library(str(afile), tmp_path / "home")
+
+    assert (kind, folder) == ("refuse", None)
+    assert "is a file" in sentence and str(afile) in sentence
+
+
+def test_an_offered_library_is_offered_again_while_the_first_sitting_has_not_been_held(
+    tmp_path, payload, machine, started
+):
+    """Review finding: the first start was headless (or the sitting was
+    closed), so the app made its own empty library in <home>/data. The next
+    start dropped the request and the library chosen at install was never
+    offered. While no sitting has ended, the engine is still the one to
+    decide, and it offers a library only while the current one holds no
+    recordings."""
+    existing = _library(tmp_path / "Library")
+    _request(machine, existing)
+    _library(machine.default / "data")  # what the app's own first start leaves
+
+    assert _main(payload) == 0
+
+    [layout] = started
+    assert layout.offer == existing.resolve()
+    assert layout.data_dir == machine.default.absolute() / "data"
+    assert _pointer(machine) == {launcher.REQUEST_KEY: str(existing)}
+
+
+def test_an_offered_library_is_dropped_once_a_sitting_has_ended(tmp_path, payload, machine, started, capsys):
+    existing = _library(tmp_path / "Library")
+    _request(machine, existing)
+    _library(machine.default / "data")
+    (machine.default / "data" / "setup.json").write_text(
+        json.dumps({"contract": 5, "ended": "2026-10-25T10:00:00"}), encoding="utf-8")
+
+    assert _main(payload) == 0
+
+    [layout] = started
+    assert layout.offer is None
+    assert launcher.REQUEST_KEY not in _pointer(machine)
+    assert "is not used" in capsys.readouterr().out

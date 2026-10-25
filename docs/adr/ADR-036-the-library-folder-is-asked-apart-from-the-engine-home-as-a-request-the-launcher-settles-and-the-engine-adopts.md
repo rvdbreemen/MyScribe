@@ -46,11 +46,6 @@ status_history:
     changed_by: Claude (agent, session 2026-10-25)
     reason: Initial proposal
     changed_via: adr-kit
-  - date: 2026-10-25
-    status: Proposed
-    changed_by: Claude (agent, session 2026-10-25)
-    reason: ADR-036 amends ADR-019 for a new, empty library
-    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
@@ -81,7 +76,8 @@ where there is no page.
 
 Before anything is downloaded, `locate_library` settles the request:
 
-* **The default home, or its `data`.** Today's layout; no `"data"` is written.
+* **The default home, or its `data`** (also as `<chosen>\MyScribe`). Today's
+  layout; no `"data"` is written. Elsewhere under the home is refused.
 * **An empty or new folder.** Made, written as `"data"`, request removed.
 * **A folder with other files.** Its `MyScribe` subfolder is judged instead.
 * **A library** (`myscribe.db` or `scribe.db` in it or in its `data\`, as in a
@@ -90,7 +86,8 @@ Before anything is downloaded, `locate_library` settles the request:
 * **Anything else.** Refused with a sentence: asked again in a window, a stop
   without one.
 
-While `<home>\data` holds a library, a request is dropped with a sentence.
+While `<home>\data` holds a library, a request is dropped with a sentence,
+except an offered library while no sitting has ended: it is offered again.
 
 This amends ADR-019's first Must for one case: the launcher writes `"data"` for
 a new, empty library it made. Existing libraries stay the engine's.
@@ -134,7 +131,9 @@ ASCII JSON, written before the launcher starts); ISCC compiles the Pascal.
 ### Negative
 
 * An existing library chosen at install is used only after the engine download.
-* Where the engine goes is no longer asked: a small C: needs `--home`.
+* Where the engine goes is no longer asked: a small C: needs `--home`. The
+  disk check asks the home's volume for the environment and the library's for
+  the weights and working room, and its refusal names `--home`.
 * `launcher.log` and the stdout `app.log` stay in the home; `scribe.applog`'s log moves.
 
 ## Open Questions

@@ -148,7 +148,8 @@
   update keeps the choice without asking, and uninstalling never deletes the
   library. On macOS and Linux the first start asks the same question, before
   anything is downloaded. The speech engine now always goes to the per-user
-  folder; `--home` or `MYSCRIBE_HOME` still put it elsewhere (TASK-097).
+  folder; `--home` or `MYSCRIBE_HOME` still put it elsewhere. The free-space
+  check before the download asks each drive for its own part (TASK-097).
 
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser

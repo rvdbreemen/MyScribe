@@ -1138,7 +1138,7 @@
       "path": "ADR-019-an-adopted-library-is-the-pointer-file-s-second-fact-which-the-engine-reports-through-a-result-file-and-the-launcher-writes.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-25",
+      "date": "2026-09-24",
       "decision_summary": "Chosen option: the pointer's second fact, reported through a result file, because it is the only one that reaches bot...",
       "topics": [
         "installer",

@@ -81,11 +81,15 @@ takes the folder from `/LIBRARY=D:\Data\MyScribe`.
 - A folder that already holds a MyScribe library (`myscribe.db`, or a former
   home with `data\myscribe.db`) is shown with its recordings and size after
   the download, and used only when you choose it there.
-- A network share, or a folder inside the program folder, is refused with the
-  reason.
+- A network share, a file, a folder inside the program folder or one inside
+  the home (other than its `data`) is refused with the reason.
+- If the first start does not get to the setup questions, a library you chose
+  is offered again at the next start.
 
 The speech engine and its caches always go to the home; start MyScribe with
-`--home PATH`, or set `MYSCRIBE_HOME`, to put them elsewhere:
+`--home PATH`, or set `MYSCRIBE_HOME`, to put them elsewhere. Before the
+download MyScribe checks the free space on the home's drive for the engine and
+on the library's drive for the models and working room:
 
 ```
 <home>\                  %LOCALAPPDATA%\MyScribe by default
