@@ -40,12 +40,13 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 APP_NAME = "MyScribe"
 # What a release launcher tells the app about itself. Set by the launcher's
@@ -73,6 +74,11 @@ START_LIMIT_INTERVAL_SEC = 300
 # Long enough for a user manager that is slow to answer, short enough that a
 # Settings page waiting on it still loads.
 SYSTEMCTL_TIMEOUT = 15
+# What the Linux release is called (`packaging/build_release.py`:
+# MyScribe-<version>-<platform>.AppImage). An update is a new file by this
+# name, so an entry starting one of these from the running AppImage's own
+# folder is this install's, a version older or newer (TASK-119).
+RELEASE_APPIMAGE = re.compile(r"MyScribe-.+-linux-x64\.AppImage")
 
 
 class NothingToStart(RuntimeError):
@@ -91,6 +97,9 @@ class Entry:
     where: str
     command: str
     on: bool
+    # On, and it starts another file than the launcher that is running - an
+    # AppImage in another folder, say. The next login starts that file.
+    elsewhere: bool = False
 
 
 # --- the mechanisms ----------------------------------------------------------------
@@ -558,10 +567,77 @@ def start_command(
     return None
 
 
+# --- whose entry this is -----------------------------------------------------------
+
+
+def _first_word(held: str) -> str:
+    """The program a Linux entry starts: its first word, out of the quotes.
+
+    Both Linux mechanisms quote a word with double quotes and escape inside
+    them with a backslash (`XdgAutostart.render`, `_unit_word`); a word
+    without quotes ends at the first blank.
+    """
+    held = held.lstrip(" \t")
+    if not held.startswith('"'):
+        return held.split(None, 1)[0] if held.strip() else ""
+    word, escaped = [], False
+    for char in held[1:]:
+        if escaped:
+            word.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            break
+        else:
+            word.append(char)
+    return "".join(word)
+
+
+def _program(mechanism, held: str) -> str:
+    """`_first_word`, with the doubling each Linux mechanism adds undone: `%`
+    in both, and `$` in a unit too."""
+    word = _first_word(held)
+    if isinstance(mechanism, SystemdUserUnit):
+        word = word.replace("$$", "$")
+    return word.replace("%%", "%")
+
+
+def _names_launcher(mechanism, held: str, launcher: str) -> bool:
+    """Whether the entry names this very launcher, spelled the way this
+    mechanism spells it. On Windows a path is the same path in any case."""
+    named = mechanism.render((launcher,))
+    if isinstance(mechanism, WindowsRun):
+        named, held = named.casefold(), held.casefold()
+    return named in held
+
+
+def _is_ours(mechanism, held: str, launcher: str) -> bool:
+    """Whether the start may rewrite this entry (TASK-119).
+
+    Everywhere: it names this same launcher. On Linux also: what it starts is
+    a release AppImage, `MyScribe-<anything>-linux-x64.AppImage`, in the
+    folder of the AppImage that is running - an update is a new file next to
+    the old one. Only the program counts, not a path further along the
+    command, and the folder is compared as text: no link is followed. Windows
+    and macOS keep the strict rule: a second install there is a second
+    install, not an update.
+    """
+    if _names_launcher(mechanism, held, launcher):
+        return True
+    if not isinstance(mechanism, (XdgAutostart, SystemdUserUnit)):
+        return False
+    program = PurePosixPath(_program(mechanism, held))
+    return (
+        program.parent == PurePosixPath(launcher).parent
+        and RELEASE_APPIMAGE.fullmatch(program.name) is not None
+    )
+
+
 # --- on, off, and what the OS says -------------------------------------------------
 
 
-def status(mechanism=None, command=None) -> Entry:
+def status(mechanism=None, command=None, environ: dict | None = None) -> Entry:
     """What the OS holds right now.
 
     An entry that is there is reported exactly as the OS spells it, whatever
@@ -569,11 +645,23 @@ def status(mechanism=None, command=None) -> Entry:
     that the desktop still starts. An entry that is not there reports the command switching it on
     would write, so the card can show that before anything is written; where
     there is nothing to start, that is the empty string.
+
+    `elsewhere` asks the strict question - does the entry name the launcher
+    that is running? - and not `_is_ours`: an older AppImage in this folder
+    that the start failed to rewrite still starts the older file. A clone has
+    no launcher to compare with and is never elsewhere.
     """
+    environ = os.environ if environ is None else environ
+    launcher = environ.get(LAUNCHER_VARIABLE)
     mechanism = mechanism or default_mechanism()
+
+    def on(where, registered) -> Entry:
+        elsewhere = bool(launcher) and not _names_launcher(where, registered, launcher)
+        return Entry(where=where.where, command=registered, on=True, elsewhere=elsewhere)
+
     registered = mechanism.read()
     if registered is not None:
-        return Entry(where=mechanism.where, command=registered, on=True)
+        return on(mechanism, registered)
     if isinstance(mechanism, SystemdUserUnit):
         # A desktop file the unit did not take over - one naming another
         # launcher path, or one a refused migration left - still starts
@@ -581,8 +669,8 @@ def status(mechanism=None, command=None) -> Entry:
         # removes it, switching on replaces it.
         legacy = mechanism.legacy.read()
         if legacy is not None:
-            return Entry(where=mechanism.legacy.where, command=legacy, on=True)
-    command = command or start_command()
+            return on(mechanism.legacy, legacy)
+    command = command or start_command(environ=environ)
     return Entry(
         where=mechanism.where,
         command=mechanism.render(command) if command else "",
@@ -611,7 +699,9 @@ def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     * only a process the launcher started rewrites, so a clone on the same
       machine cannot point a release's entry at its start script;
     * only an entry that already names this same launcher, so a second
-      install does not take over somebody else's.
+      install does not take over somebody else's - or, on Linux, one that
+      starts a release AppImage from the running AppImage's own folder: an
+      update there is a new file beside the old one (`_is_ours`, TASK-119).
     """
     environ = os.environ if environ is None else environ
     launcher = environ.get(LAUNCHER_VARIABLE)
@@ -621,10 +711,7 @@ def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     registered = mechanism.read()
     if registered is None:
         return None
-    named, held = mechanism.render((launcher,)), registered
-    if isinstance(mechanism, WindowsRun):  # a path there is the same path in any case
-        named, held = named.casefold(), held.casefold()
-    if named not in held:
+    if not _is_ours(mechanism, registered, launcher):
         return None
     command = command or start_command(environ)
     if not command or mechanism.render(command) == registered:
@@ -641,9 +728,10 @@ def migrate(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     next start writes and enables the unit and removes the file; a unit that
     is already on only loses the leftover file. Returns the unit's entry when
     anything moved, None when nothing did. The same guards as `refresh()`:
-    only a process the launcher started, only a desktop file that names this
-    same launcher, and a file the desktop was told to ignore stays off with
-    no unit beside it.
+    only a process the launcher started, only a desktop file that is this
+    install's (`_is_ours`: this same launcher, or a release AppImage in its
+    folder), and a file the desktop was told to ignore stays off with no unit
+    beside it.
     """
     environ = os.environ if environ is None else environ
     launcher = environ.get(LAUNCHER_VARIABLE)
@@ -653,7 +741,7 @@ def migrate(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     if not isinstance(mechanism, SystemdUserUnit):
         return None
     held = mechanism.legacy.read()
-    if held is None or mechanism.legacy.render((launcher,)) not in held:
+    if held is None or not _is_ours(mechanism.legacy, held, launcher):
         return None
     registered = mechanism.read()
     if registered is not None:

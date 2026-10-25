@@ -443,6 +443,9 @@ def autostart_context(*, flash: str | None = None) -> dict:
             "where": entry.where,
             "command": entry.command,
             "can_switch": entry.on or bool(entry.command),
+            # The entry starts another file than the one running (TASK-119).
+            "elsewhere": entry.elsewhere,
+            "running": os.environ.get(autostart.LAUNCHER_VARIABLE, ""),
         },
         "autostart_error": None,
         "flash": flash,

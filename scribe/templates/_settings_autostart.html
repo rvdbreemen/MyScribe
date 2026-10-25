@@ -4,9 +4,11 @@
 
   Context (from scribe.web.settings.autostart_context):
 
-      autostart        {on, where, command, can_switch} read from the OS on
-                       this very request, or nothing at all when the OS
-                       refused to answer
+      autostart        {on, where, command, can_switch, elsewhere, running}
+                       read from the OS on this very request, or nothing at
+                       all when the OS refused to answer. `elsewhere`: the
+                       entry starts another file than `running`, the
+                       launcher this MyScribe was started from (TASK-119)
       autostart_error  what it said when it refused
       flash            a line for the page's status region, or none
       oob              whether this is a fragment response carrying the flash
@@ -53,6 +55,12 @@
     <dt>{{ 'Runs' if autostart.on else 'Would run' }}</dt>
     <dd class="mono">{{ autostart.command }}</dd>
   </dl>
+  {% if autostart.on and autostart.elsewhere %}
+  <p class="hint fail">
+    This entry starts another file than the MyScribe running now, which is
+    <code>{{ autostart.running }}</code>. Switch it off and on to point it here.
+  </p>
+  {% endif %}
 
   <form method="post" action="/settings/autostart"
         hx-post="/settings/autostart" hx-target="#start-at-login" hx-swap="outerHTML">
