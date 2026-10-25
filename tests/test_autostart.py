@@ -1191,6 +1191,26 @@ def test_a_bundle_path_with_a_space_still_matches_its_own_plist(tmp_path):
     assert autostart.refresh(agent, environ=other, command=autostart.start_command(other, platform="darwin")) is None
 
 
+def test_a_sibling_bundle_that_shares_the_prefix_is_not_this_launcher(tmp_path):
+    """The guard is a path boundary, not a string prefix: a plist for
+    `/Applications/MyScribe.app.old/...` starts with `/Applications/MyScribe.app`
+    as text, but it is another install, and a start of this one must leave it
+    exactly as it is (TASK-112.05 review)."""
+    agent = _agent(tmp_path)
+    agent.folder.mkdir(parents=True)
+    agent.path.write_bytes(plistlib.dumps({
+        "Label": autostart.LABEL,
+        "ProgramArguments": [f"{BUNDLE}.old/Contents/MacOS/MyScribe", "--at-login"],
+        "RunAtLoad": True,
+    }))
+    held = agent.path.read_bytes()
+
+    assert agent.names(BUNDLE) is False
+    assert agent.names(f"{BUNDLE}.old") is True
+    assert autostart.refresh(agent, environ=MAC_RELEASE, command=MAC_COMMAND) is None
+    assert agent.path.read_bytes() == held
+
+
 def test_a_translocated_app_is_not_registered_and_says_why(tmp_path):
     """AC #2. An app opened from the dmg or Downloads with the quarantine flag
     runs from a random read-only path under AppTranslocation that is gone at
