@@ -149,8 +149,8 @@
   for (the Stop button in Settings, `--stop`, Ctrl+C) is never restarted.
   On Linux with the systemd user unit and on macOS with the LaunchAgent,
   the system restarts MyScribe as before and the launcher does not add a
-  restart of its own. A start with the MyScribe window open does not
-  restart (TASK-112.10).
+  restart of its own (on macOS not seen on a Mac yet). A start with the
+  MyScribe window open does not restart (TASK-112.10).
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser
   --headless` instead of `open -a`, which returned at once. launchd restarts
