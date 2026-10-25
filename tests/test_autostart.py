@@ -1144,3 +1144,43 @@ def test_status_says_when_the_entry_starts_another_file_than_the_one_running(tmp
     unit.legacy.write(("/home/me/Elsewhere/MyScribe-0.9.0-linux-x64.AppImage", "--at-login"))
     shown = autostart.status(unit, command=NEW_AT_LOGIN, environ=NEW_RELEASE)
     assert shown.on is True and shown.where == str(unit.legacy.path) and shown.elsewhere is True
+
+
+# --- a Mac copy running from App Translocation (ADR-026 Must Not) ------------------
+
+# Where macOS runs an unsigned, quarantined app opened from Downloads or a disk
+# image: a random read-only path that is gone at the next login
+# (docs/reports/2026-10-19-background-server-research.md).
+TRANSLOCATED = "/private/var/folders/x1/abc123/T/AppTranslocation/1F2E3D4C-0000-4ABC-9DEF-0123456789AB/d/MyScribe.app"
+APPLICATIONS = "/Applications/MyScribe.app"
+
+
+def test_a_copy_running_from_app_translocation_is_never_registered(tmp_path):
+    """ADR-026 Must Not: register a macOS path under `AppTranslocation`. The
+    switch refuses with the way out, and writes nothing."""
+    agent = autostart.LaunchAgent(folder=tmp_path / "LaunchAgents")
+    command = autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: TRANSLOCATED}, platform="darwin")
+
+    with pytest.raises(autostart.Translocated) as refused:
+        autostart.enable(agent, command=command)
+
+    assert isinstance(refused.value, autostart.NothingToStart), "the settings route answers it with a 409"
+    assert "Applications" in str(refused.value)
+    assert agent.read() is None and not agent.path.exists()
+    assert autostart.translocated(TRANSLOCATED) is True
+    assert autostart.translocated(APPLICATIONS) is False
+    assert autostart.translocated(None) is False
+
+
+def test_a_translocated_copy_can_still_switch_an_entry_off_and_a_moved_one_on(tmp_path):
+    """Off removes the /Applications entry, which harms nothing; the same app
+    moved into Applications registers as before."""
+    agent = autostart.LaunchAgent(folder=tmp_path / "LaunchAgents")
+    applications = autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: APPLICATIONS}, platform="darwin")
+    translocated = autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: TRANSLOCATED}, platform="darwin")
+
+    autostart.enable(agent, command=applications)
+    assert agent.read() is not None and APPLICATIONS in agent.read()
+
+    assert autostart.disable(agent, command=translocated).on is False
+    assert agent.read() is None

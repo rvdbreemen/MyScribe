@@ -79,10 +79,26 @@ SYSTEMCTL_TIMEOUT = 15
 # name, so an entry starting one of these from the running AppImage's own
 # folder is this install's, a version older or newer (TASK-119).
 RELEASE_APPIMAGE = re.compile(r"MyScribe-.+-linux-x64\.AppImage")
+# Part of the path macOS runs an unsigned, quarantined app from when it was
+# opened from Downloads or a disk image. That copy is gone at the next login,
+# so ADR-026 forbids registering it (docs/reports/2026-10-19-background-
+# server-research.md: refuse when the path contains `AppTranslocation`).
+TRANSLOCATION = "/AppTranslocation/"
 
 
 class NothingToStart(RuntimeError):
     """Nothing on this machine is known to start MyScribe again at login."""
+
+
+class Translocated(NothingToStart):
+    """The running copy is one macOS translocated: registering it would name a
+    path that is gone at the next login (ADR-026 Must Not)."""
+
+
+def translocated(path: str | None) -> bool:
+    """Whether a launcher path is a copy macOS runs from App Translocation.
+    Asked of the path text, so it holds on any OS a test runs on."""
+    return bool(path) and TRANSLOCATION in path
 
 
 @dataclass(frozen=True)
@@ -684,6 +700,12 @@ def enable(mechanism=None, command=None) -> Entry:
     command = command or start_command()
     if not command:
         raise NothingToStart("nothing on this machine is known to start MyScribe at login")
+    if any(translocated(word) for word in command):
+        raise Translocated(
+            "macOS runs this MyScribe from a temporary copy (App Translocation) that is gone"
+            " at the next login: move MyScribe.app into Applications, open it from there,"
+            " and switch Start at login on again"
+        )
     mechanism.write(command)
     return Entry(where=mechanism.where, command=mechanism.render(command), on=True)
 

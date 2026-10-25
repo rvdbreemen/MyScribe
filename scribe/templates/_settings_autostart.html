@@ -8,7 +8,9 @@
                        read from the OS on this very request, or nothing at
                        all when the OS refused to answer. `elsewhere`: the
                        entry starts another file than `running`, the
-                       launcher this MyScribe was started from (TASK-119)
+                       launcher this MyScribe was started from (TASK-119).
+                       `translocated`: `running` is a Mac copy under
+                       AppTranslocation, which is never registered (ADR-026)
       autostart_error  what it said when it refused
       flash            a line for the page's status region, or none
       oob              whether this is a fragment response carrying the flash
@@ -55,13 +57,20 @@
     <dt>{{ 'Runs' if autostart.on else 'Would run' }}</dt>
     <dd class="mono">{{ autostart.command }}</dd>
   </dl>
-  {% if autostart.on and autostart.elsewhere %}
+  {% if autostart.translocated %}
+  <p class="hint fail">
+    macOS runs this MyScribe from a temporary copy (App Translocation), at
+    <code>{{ autostart.running }}</code>, and that copy is gone at the next login, so it cannot
+    be registered. Move MyScribe.app into Applications and open it from there.
+  </p>
+  {% elif autostart.on and autostart.elsewhere %}
   <p class="hint fail">
     This entry starts another file than the MyScribe running now, which is
     <code>{{ autostart.running }}</code>. Switch it off and on to point it here.
   </p>
   {% endif %}
 
+  {% if autostart.on or not autostart.translocated %}
   <form method="post" action="/settings/autostart"
         hx-post="/settings/autostart" hx-target="#start-at-login" hx-swap="outerHTML">
     <input type="hidden" name="enabled" value="{{ '0' if autostart.on else '1' }}">
@@ -69,6 +78,7 @@
       {{ 'Do not start at login' if autostart.on else 'Start MyScribe when I log in' }}
     </button>
   </form>
+  {% endif %}
   {% endif %}
 
   {% if oob and flash %}<div id="flash" class="flash ok" role="status" aria-live="polite" hx-swap-oob="innerHTML:#flash">{{ flash }}</div>{% endif %}
