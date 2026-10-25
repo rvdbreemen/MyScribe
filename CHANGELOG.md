@@ -57,14 +57,14 @@
   Timestamps are asked for as text, such as `2:16:29`, and an action item may
   still come back without one. Cloud providers are asked as before (TASK-124,
   ADR-034).
-- **A blog post on a long recording is written without thinking first.** The
-  last step, which writes the post from the notes on each part, asks the model
-  not to think first, as cleanup does, with every provider. With qwen3.5:4b
-  that step had stopped at its answer limit after thinking once in two runs;
-  with the request it finished in three runs, all on the same notes. Only
-  Ollama was measured; on OpenRouter this step no longer carries the thinking
-  limit below. The notes and a recording short enough for one step are asked
-  as before (TASK-124).
+- **A local model writes a blog post on a long recording without thinking
+  first.** The last step, which writes the post from the notes on each part,
+  asks a local model (Ollama) not to think first, as cleanup does. With
+  qwen3.5:4b that step had stopped at its answer limit after thinking once in
+  two runs; with the request it finished in three runs, all on the same notes.
+  Cloud providers are asked as before, with the thinking limit below. The
+  notes and a recording short enough for one step are asked as before
+  (TASK-124, ADR-035).
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

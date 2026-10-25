@@ -354,19 +354,20 @@ class TaskSpec:
     failure. `effort: low` is used nowhere: on media 1 it dropped the [m:ss]
     stamps and the speaker labels."""
     combine_reasoning_off: bool = False
-    """Ask the combine call alone not to reason - the notes and a recording
-    short enough for one call keep the provider's default. Set for `blog` by
-    Robert's decision of 2026-10-25 (TASK-124), after the A/B the line above
-    asks for, on media 61 with qwen3.5:4b. Without the hint, one combine of
+    """Ask the combine call alone not to reason, and only on a local model
+    (`base.Provider.is_local`, which today means Ollama) - the notes, a
+    recording short enough for one call and every cloud call keep the
+    provider's default. ADR-035. Set for `blog` by Robert's decisions of
+    2026-10-25 (TASK-124), after the A/B the line above asks for, on media 61
+    with qwen3.5:4b. Without the hint, one combine of
     two finished (5057 tokens) and one stopped at the 6000-token cap after
     16,866 characters of thinking. With it, three of three finished in
     1599-1996 tokens with no thinking, 23-31 s each (round-6 library copy).
     Those three shared one set of notes (jobs 431 and 432 reused job 430's,
     prompt 2731 tokens) while each baseline had its own (3477 and 4334): one
-    input against two, not three independent runs. Measured on Ollama only;
-    on OpenRouter the hint means ADR-030's reasoning limit is not sent, which
-    is unmeasured. No ADR records this combine-only rule yet (ADR-020's
-    dated note)."""
+    input against two, not three independent runs. Measured on Ollama only,
+    which is why a cloud combine does not get it: on OpenRouter the hint would
+    replace ADR-030's reasoning limit, and that trade was never measured."""
     apply: Callable[[sqlite3.Connection, "TaskPlan", Any, int], dict] | None = None
     """What to do with the answer once it is stored, for the kinds that change
     something rather than only report.
@@ -1205,6 +1206,9 @@ class TaskPlan:
     provider_supports_schema: bool = False
     provider_clock_as_text: bool = False
     """The provider's `schema_clock_as_text`, read when the plan is made."""
+    provider_is_local: bool = False
+    """The provider's `is_local`, read when the plan is made: whether a kind's
+    `combine_reasoning_off` applies (ADR-035)."""
     note_budget: int = 0
     """The answer cap for one chunk's notes, decided here rather than in
     `_collect_notes` so that the number `plan_task` proved would fit back
@@ -1368,6 +1372,7 @@ def plan_task(
         language=answer_language(doc.run),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
         provider_clock_as_text=bool(provider_cls.schema_clock_as_text),
+        provider_is_local=bool(provider_cls.is_local),
         note_budget=note_budget,
         context_tokens=_known_window(provider_cls, chosen_model, window, given=context_tokens),
     )
@@ -1865,7 +1870,8 @@ def _ask(
 
     The kind's reasoning hint rides on every call made here - a note, a part,
     a single answer, a combine - so no call of a hinted kind goes out without it.
-    A kind with `combine_reasoning_off` adds it to its combine alone.
+    A kind with `combine_reasoning_off` adds it to its combine alone, on a
+    local model alone (ADR-035).
     """
     request = ChatRequest(
         system=system,
@@ -1874,7 +1880,9 @@ def _ask(
         max_output_tokens=max_output_tokens,
         json_schema=json_schema,
         reasoning_off=plan.spec.reasoning_off
-        or (phase == "combine" and plan.spec.combine_reasoning_off),
+        or (
+            phase == "combine" and plan.spec.combine_reasoning_off and plan.provider_is_local
+        ),
     )
     def watched(response: ChatResponse | None) -> None:
         """Tell the watcher, and never let it stop the work (ADR-014)."""
