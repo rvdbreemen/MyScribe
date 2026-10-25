@@ -1,10 +1,11 @@
 ---
 id: TASK-112.05
 title: The macOS LaunchAgent starts the binary itself, headless, with its own log
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: 2026-10-19 05:51
-updated_date: '2026-10-25T11:20:00Z'
+updated_date: '2026-10-25T19:16:00Z'
 labels:
   - packaging
   - autostart
