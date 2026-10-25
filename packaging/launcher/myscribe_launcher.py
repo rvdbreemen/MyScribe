@@ -1325,6 +1325,221 @@ def running_instance(port: int, timeout: float = 1.0) -> bool:
         return False
 
 
+# TASK-112.07: the /health probe and the bind test below leave a window
+# between them and the app's own bind. A login entry and a start by hand in the
+# same seconds both passed the probe, both ran `uv sync` into one environment
+# and both started the app. One lock per home closes that window; the probe
+# still runs after it, because an app whose launcher was killed outlives it.
+
+
+def instance_lock_path(home: Path) -> Path:
+    """``<home>.lock``, beside the home and not in it.
+
+    Not in it, because on a first start the home does not exist yet and must
+    not be made before the disk and the location are checked - and the lock
+    has to be taken before any of that. Beside the default home that is next
+    to ``MyScribe.location``; beside a home given with ``--home X`` it is
+    ``X.lock``, so a test or a second install never waits on the one the
+    login entry started.
+    """
+    return beside_home(home, ".lock")
+
+
+def beside_home(home: Path, suffix: str) -> Path:
+    """``<home><suffix>`` beside the home, or ``<root>/MyScribe<suffix>`` in a
+    home that is a drive root: a root has no name to add to and nothing
+    beside it, and `refuse_location` allows one (review of TASK-112.07)."""
+    home = Path(home)
+    if not home.name:
+        return home / f"{APP_NAME}{suffix}"
+    return home.with_name(home.name + suffix)
+
+
+class InstanceLock:
+    """An exclusive, non-blocking lock on byte 0 of one file, held while this
+    launcher has a MyScribe starting or running, and released by the OS if it
+    dies.
+
+    After byte 0 the holder writes its port, so that a second start with
+    another ``--port`` opens the one that runs instead of waiting on its own
+    (`held_port`). After it and not on it: a Windows lock is mandatory, and
+    another process cannot even read the byte it covers.
+
+    Never unlinked: on POSIX a second launcher that opened the old file and a
+    third that made a new one would each hold a lock of their own. The handle
+    is not inheritable (PEP 446), so the app child never keeps it.
+
+    A window lets go of it while it stays open and takes it again for its
+    Setup button (`window_turn`), so `acquire` and `release` may be called
+    from two threads and again by a holder: both are guarded, and a second
+    `acquire` by the holder is a yes - a second handle in this process would
+    find its own lock held, per handle on Windows and per open file on POSIX.
+    """
+
+    def __init__(self, path: Path, port: int | None = None):
+        self.path = Path(path)
+        self.port = port
+        self.handle = None
+        self.problem = ""
+        self.guard = threading.Lock()
+
+    def acquire(self) -> bool:
+        """True when this launcher holds the lock - or could not take one at
+        all, which starts as before the lock existed rather than not at all;
+        False when another process holds it."""
+        with self.guard:
+            if self.handle is not None:
+                return True
+            return self._acquire()
+
+    def _acquire(self) -> bool:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(self.path, "a+b")
+        except OSError as error:
+            self.problem = f"{self.path} could not be opened ({error}); starting without the lock."
+            return True
+        try:
+            handle.seek(0)
+            if IS_WINDOWS:
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)  # never LK_LOCK: it retries 10 s
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return False
+        except OSError as error:
+            handle.close()
+            if IS_WINDOWS:  # msvcrt says "held" as a plain OSError (EACCES or EDEADLOCK)
+                return False
+            self.problem = f"{self.path} could not be locked ({error}); starting without the lock."
+            return True
+        self.handle = handle
+        if self.port is not None:
+            try:  # "a+b" appends: after the truncate that is byte 0, then the port
+                handle.truncate(0)
+                handle.write(b" " + str(self.port).encode("ascii"))
+                handle.flush()
+            except OSError:
+                pass  # a second start then waits on its own port, as before
+        return True
+
+    def release(self) -> None:
+        """Explicitly, and not by closing alone: Windows does not promise when
+        a lock goes on close, and `main()` may run again in the same process."""
+        with self.guard:
+            handle, self.handle = self.handle, None
+        if handle is None:
+            return
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            handle.close()
+
+
+def held_port(path: Path) -> int | None:
+    """The port the holder of the lock at `path` wrote after byte 0, or None
+    when there is none to read: no file, an older holder, or one that has not
+    written it yet."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(1)
+            text = handle.read(16).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return int(text) if text.isdigit() and 0 < int(text) < 65536 else None
+
+
+ALREADY_STARTING = ("MyScribe is already starting; installing or updating can take a few minutes. "
+                    "It will be at {url} when it is ready.")
+STILL_STARTING = "MyScribe is still starting and has not answered yet. Go to {url} in a few minutes."
+ONE_JOB_LOCKED = ("Another MyScribe is already running or installing in {home}; "
+                  "quit it first, then try again.")
+DOCTOR_LOCKED = ("MyScribe is installing or updating in {home}; run the doctor again "
+                 "when that is done.")
+
+
+def another_start(port: int, open_browser: bool, report: Callable[[str, str], None],
+                  windowed: bool) -> int:
+    """A start that found the lock held: open what the other one serves.
+
+    Exit 0 on every path, `APP_DIED`'s contract: a restart would find the same
+    lock. Behind a window there is no console, so a first start that is still
+    installing is answered at once with a window of its own - not with a
+    double-click that does nothing for minutes.
+    """
+    url = f"http://{HOST}:{port}/"
+    if not running_instance(port):
+        sentence = ALREADY_STARTING.format(url=url)
+        if windowed:
+            report("status", sentence)
+            show_error(sentence)
+            return 0
+        report("status", sentence)
+        deadline = time.monotonic() + READY_TIMEOUT
+        while not running_instance(port, timeout=0.5):
+            if time.monotonic() >= deadline:
+                report("status", STILL_STARTING.format(url=url))
+                return 0
+            time.sleep(0.5)
+    if open_browser:
+        open_in_browser(url, report)
+    report("done", f"MyScribe is already running at {url}")
+    return 0
+
+
+# AC 3 of TASK-112.07: a start at login has nobody at the screen, and the
+# sentence it ends on is a line in a log nobody reads. It is kept in a note
+# beside the home, which the next start somebody makes by hand says once and
+# removes. A note and not the log read back: ADR-014 keeps logs observation.
+
+# "On its own" and not "at login": the Windows installer starts the same
+# `--at-login --headless` after an update (myscribe.iss, ssPostInstall).
+LOGIN_PROBLEM = ("The last time MyScribe started on its own, at login or after an update, "
+                 "it could not start: {problem}")
+
+
+def login_note_path(home: Path) -> Path:
+    return beside_home(home, "-at-login.txt")
+
+
+def keep_login_problem(home: Path, problem: str) -> None:
+    try:
+        login_note_path(home).write_text(problem, encoding="utf-8")
+    except OSError:
+        pass  # the log has it too; a note that cannot be written stops nothing
+
+
+def take_login_problem(home: Path) -> str:
+    """The sentence for the last login's problem, once; "" when there was none."""
+    note = login_note_path(home)
+    try:
+        problem = note.read_text(encoding="utf-8").strip()
+        note.unlink()
+    except OSError:
+        return ""
+    return LOGIN_PROBLEM.format(problem=problem) if problem else ""
+
+
+def drop_login_problem(home: Path) -> None:
+    """A start at login that serves, or finds MyScribe serving, makes the
+    last one's problem history: the next start by hand must not say it."""
+    try:
+        login_note_path(home).unlink()
+    except OSError:
+        pass  # none there, the usual case
+
+
 # --- stopping the one that runs (TASK-112.03) ----------------------------------
 
 
@@ -1774,6 +1989,8 @@ class Launch:
         # (TASK-089.19): `data_dir` after an adoption, `library` for a folder
         # somebody named that the engine has looked at.
         self.result: dict = {}
+        # The last error said, for the note a start at login leaves (TASK-112.07).
+        self.problem = ""
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -1788,6 +2005,8 @@ class Launch:
         build a path from.
         """
         text = self.log.redact(text)
+        if state == "error":
+            self.problem = text
         if state != "progress":
             self.log.write(text)
         self.say(state, text)
@@ -2448,6 +2667,10 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
         launch.watching(run_prove, launch.layout, report, launch.port)
 
 
+SETUP_WHILE_RUNNING = ("MyScribe is already running; quit it first and start again "
+                       "with --setup to answer the questions.")
+
+
 def first_run(launch: Launch, ask: Callable[[dict], dict | None] | None,
               report: Callable[[str, str], None],
               force_setup: bool = False, at_login: bool = False,
@@ -2484,8 +2707,7 @@ def first_run(launch: Launch, ask: Callable[[dict], dict | None] | None,
     if launch.serving:  # another instance answers; nothing to set up or start
         if force_setup:
             # Short on purpose: the window closes three seconds after `done`.
-            report("status", "MyScribe is already running; quit it first and start again "
-                             "with --setup to answer the questions.")
+            report("status", SETUP_WHILE_RUNNING)
         return True
     if wants_setup(launch.layout, force=force_setup, at_login=at_login):
         # `ask` is None on every door with no dialog - the console, and a build
@@ -2524,11 +2746,17 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
     An app that never answered at start counts as a configuration problem and
     not as a crash: restarting it repeats the same failure.
     """
-    if not first_run(launch, None, launch.report, force_setup, at_login)             or launch.serving or launch.app is None:
+    started = first_run(launch, None, launch.report, force_setup, at_login)
+    if at_login and (launch.serving or (started and launch.app is not None)):
+        drop_login_problem(launch.layout.home)  # it serves now: the old problem is history
+    if not started or launch.serving or launch.app is None:
         # A busy port or a running instance is found before the home is made;
         # on a fresh machine launcher.log has no folder yet to hold the line.
         if launch.log.pending:
             write_early(launch.log.pending)
+        if at_login and launch.problem and not launch.serving:
+            # Nobody reads that log; the next start by hand says it (TASK-112.07).
+            keep_login_problem(launch.layout.home, launch.problem)
         return 0
     interrupted = False
     try:
@@ -3057,8 +3285,48 @@ def ask_failure(root, sentence: str) -> bool:
     return bool(again)
 
 
+def app_running(launch: Launch) -> bool:
+    app = launch.app
+    return app is not None and app.proc is not None and app.alive()
+
+
+def window_turn(lock: InstanceLock | None, launch: Launch, work: Callable[[], object],
+                report: Callable[[str, str], None]) -> None:
+    """One turn of the window's worker - the start, or a Setup sitting -
+    under the instance lock (review of TASK-112.07).
+
+    The window stays open after a failed start and after the app stopped. It
+    used to keep the lock for as long as it was open, so the next double-click
+    said "already starting" and started nothing. Now the lock is let go of
+    when no MyScribe of this window runs (here, and in `after_the_app`); a
+    turn takes it again first, and is refused when another start has it.
+    """
+    if lock is not None and not lock.acquire():
+        report("status", ONE_JOB_LOCKED.format(home=launch.layout.home))
+        return
+    try:
+        work()
+    finally:
+        if lock is not None and not app_running(launch):
+            lock.release()
+
+
+def after_the_app(launch: Launch, lock: InstanceLock | None, busy: bool) -> str:
+    """What the window says of an app that stopped under it; "" while it runs
+    and before there is one. The lock goes with it, unless a turn is `busy`,
+    which lets go itself when it ends."""
+    app = launch.app
+    if app is None or app.proc is None or app.alive():
+        return ""
+    if lock is not None and not busy:
+        lock.release()
+    # 0 is a stop somebody asked for, from Settings or --stop (TASK-112.03):
+    # not a crash, and app.log has nothing to say.
+    return STOPPED if app.exit_code() == 0 else f"MyScribe stopped; see {launch.layout.logs_dir / 'app.log'}"
+
+
 def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool = False,
-               at_login: bool = False) -> int:
+               at_login: bool = False, notice: str = "", lock: InstanceLock | None = None) -> int:
     import tkinter as tk
     from tkinter import scrolledtext, ttk
 
@@ -3173,11 +3441,17 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
                 leave_a_trace("in the setup window", traceback.format_exc())
                 result = None
             answer.put(result)
-        if launch.app is not None and launch.app.proc is not None and not launch.app.alive():
-            # 0 is a stop somebody asked for, from Settings or --stop
-            # (TASK-112.03): not a crash, and app.log has nothing to say.
-            status.set(STOPPED if launch.app.exit_code() == 0
-                       else f"MyScribe stopped; see {layout.logs_dir / 'app.log'}")
+        # Under `turning`, so a turn cannot take the lock between the look and
+        # the letting go; while one runs it lets go itself (TASK-112.07 review).
+        # Not under `sitting`: a Setup click that met the pump there was dropped.
+        free = turning.acquire(blocking=False)
+        try:
+            stopped = after_the_app(launch, lock, busy=not free)
+        finally:
+            if free:
+                turning.release()
+        if stopped:
+            status.set(stopped)
         root.after(200, pump)
 
     def on_tk(work: Callable):
@@ -3214,6 +3488,13 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         return bool(on_tk(waiting_then_ask))
 
     sitting = threading.Lock()
+    # A turn holds this for its whole run; the pump only looks while it is
+    # free, and never makes a turn give up - it waits a pump tick at most.
+    turning = threading.Lock()
+
+    def take_a_turn(work: Callable[[], object]) -> None:
+        with turning:
+            window_turn(lock, launch, work, launch.report)
 
     def in_a_worker(work: Callable, name: str) -> None:
         def guarded() -> None:
@@ -3238,7 +3519,8 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         model in the setup child (ADR-001, TASK-089.13).
         """
         in_a_worker(
-            lambda: open_sitting(launch, ask, launch.report, force_setup=True, retry=retry),
+            lambda: take_a_turn(
+                lambda: open_sitting(launch, ask, launch.report, force_setup=True, retry=retry)),
             "myscribe-setup",
         )
 
@@ -3253,8 +3535,11 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         children still inherit the environment the app was started with, which
         is started last either way (TASK-089.01).
         """
+        if notice:  # the last login's problem, before this start's own lines
+            launch.report("status", notice)
         in_a_worker(
-            lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry),
+            lambda: take_a_turn(
+                lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry)),
             "myscribe-launch",
         )
 
@@ -3396,6 +3681,47 @@ def main(argv: Iterable[str] | None = None) -> int:
         return stopped
     layout = Layout(home, payload, data=data, pointer=pointer)
     before_home[0] = False
+    # One launcher per home from here on (TASK-112.07): before the /health
+    # probe in `Launch.prepare`, before the sync, before the app.
+    lock = InstanceLock(instance_lock_path(layout.home), port=args.port)
+    if not lock.acquire():
+        if args.doctor is not None:
+            # The doctor is what you run while MyScribe runs, to ask why; it
+            # runs beside it, but never syncs into an environment another
+            # start is installing or updating (TASK-112.07 review).
+            if needs_sync(layout):
+                console("error", DOCTOR_LOCKED.format(home=layout.home))
+                return 1
+            return run_doctor(args, layout)
+        if quiet:
+            console("error", ONE_JOB_LOCKED.format(home=layout.home))
+            return 1
+        # The port of the one that holds it, which a different --port would
+        # otherwise wait two minutes beside (TASK-112.07 review).
+        port = held_port(lock.path) or args.port
+        code = another_start(port, not args.no_browser, console, windowed)
+        if args.setup:  # as `first_run` answers --setup against one that serves
+            console("status", SETUP_WHILE_RUNNING)
+        return code
+    if lock.problem:
+        console("status", lock.problem)
+    try:
+        return run_doors(args, layout, console, quiet, windowed, lock)
+    finally:
+        lock.release()
+
+
+def run_doctor(args: argparse.Namespace, layout: Layout) -> int:
+    _release_frozen_dll_directory()
+    command = [str(layout.env_python), "-m", "scribe.doctor", *args.doctor]
+    return subprocess.call(command, cwd=str(layout.app_dir), env=app_environment(layout))
+
+
+def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, str], None],
+              quiet: bool, windowed: bool, lock: InstanceLock | None = None) -> int:
+    """`main` past the home and the lock: the one-job doors, the console and
+    the window. The window lets go of the lock while it runs no MyScribe,
+    which is why it is handed on."""
     if args.setup:  # where everything is, and the three ways to move it (ADR-015)
         pointer = pointer_path()
         console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer)))
@@ -3428,19 +3754,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.sync_only:
             say(UP_TO_DATE)
         if args.doctor is not None:
-            command = [str(layout.env_python), "-m", "scribe.doctor", *args.doctor]
-            return subprocess.call(command, cwd=str(layout.app_dir), env=app_environment(layout))
+            # The lock was for the sync: a doctor that loads a model for
+            # minutes must not hold up the start at login.
+            if lock is not None:
+                lock.release()
+            return run_doctor(args, layout)
         if args.smoke:
             return smoke(layout, args.port)
         return 0
 
+    # The last login's problem, said once by the first start made by hand
+    # (TASK-112.07). Taken under the lock, so two starts never both say it.
+    notice = "" if args.at_login else take_login_problem(layout.home)
     if not windowed:
-        return run_headless(
-            Launch(layout, args.port, not args.no_browser, console),
-            force_setup=args.setup, at_login=args.at_login,
-        )
+        launch = Launch(layout, args.port, not args.no_browser, console)
+        if notice:
+            launch.report("status", notice)
+        return run_headless(launch, force_setup=args.setup, at_login=args.at_login)
+    extra = {"notice": notice} if notice else {}
     return run_window(
-        layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login
+        layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login,
+        lock=lock, **extra,
     )
 
 

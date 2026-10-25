@@ -80,6 +80,19 @@ Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 ; UNVERIFIED on a real uninstall until TASK-089.23 criterion 5 is run.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MyScribe"; Flags: uninsdeletevalue dontcreatekey
 
+[UninstallDelete]
+; The launcher's one-MyScribe lock and the note a failed start at login leaves
+; for the next start by hand (TASK-112.07): <home>.lock and
+; <home>-at-login.txt, beside the home and not in it. Robert, 2026-10-24: the
+; uninstaller removes both beside the default home only. Beside a home that was
+; put elsewhere they stay, because this script does not read
+; MyScribe.location - and MyScribe.location stays too. InitializeUninstall
+; runs the stop script first, which also ends what still runs from {app}: the
+; launcher that holds the lock is MyScribe.exe there.
+; UNVERIFIED on a real uninstall: only compiled with ISCC so far.
+Type: files; Name: "{localappdata}\MyScribe.lock"
+Type: files; Name: "{localappdata}\MyScribe-at-login.txt"
+
 [Code]
 // A headless MyScribe (ADR-026) keeps serving the old code after an update,
 // and its python.exe lives in the home, outside {app}, where Restart Manager
