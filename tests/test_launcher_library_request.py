@@ -435,3 +435,20 @@ def test_the_pointer_the_installer_writes_reads_back_byte_for_byte(tmp_path, pay
 
     [layout] = started
     assert layout.data_dir == chosen.resolve()
+
+
+def test_the_prefilled_default_says_nothing_at_the_second_start_either(
+    tmp_path, payload, machine, started, capsys
+):
+    """Review finding: the first start leaves the default request in place and
+    the app makes <home>/data/myscribe.db. The second start must not read that
+    as "a library is already here, so the folder you asked for is not used" -
+    the folder asked for *is* that library."""
+    _request(machine, machine.default)
+    assert _main(payload) == 0
+    _library(machine.default / "data")  # what the app's first start leaves
+
+    assert _main(payload) == 0
+
+    assert [layout.data_dir for layout in started] == [machine.default.absolute() / "data"] * 2
+    assert "is not used" not in capsys.readouterr().out

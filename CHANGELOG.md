@@ -1,19 +1,5 @@
 ## [Unreleased]
 
-### Changed
-
-- **The Windows installer asks where your library goes.** A page after the
-  program folder asks for the folder that holds your recordings, transcripts,
-  database and models, apart from the program; a silent install takes
-  `/LIBRARY=<folder>`. Leave it as it is and nothing changes. An empty or new
-  folder becomes the library, and a folder with other files gets a `MyScribe`
-  folder inside it. A folder that already holds a MyScribe library is shown
-  with its recordings at the first start and used only when you choose it. An
-  update keeps the choice without asking, and uninstalling never deletes the
-  library. On macOS and Linux the first start asks the same question, before
-  anything is downloaded. The speech engine now always goes to the per-user
-  folder; `--home` or `MYSCRIBE_HOME` still put it elsewhere (TASK-097).
-
 ### Fixed
 
 - **After a Linux update, Start at login starts the new AppImage.** Each
@@ -151,6 +137,18 @@
   Fries" becomes *Jan de Vries* (TASK-111).
 
 ### Changed
+
+- **The Windows installer asks where your library goes.** A page after the
+  program folder asks for the folder that holds your recordings, transcripts,
+  database and models, apart from the program; a silent install takes
+  `/LIBRARY=<folder>`. Leave it as it is and nothing changes. An empty or new
+  folder becomes the library, and a folder with other files gets a `MyScribe`
+  folder inside it. A folder that already holds a MyScribe library is shown
+  with its recordings at the first start and used only when you choose it. An
+  update keeps the choice without asking, and uninstalling never deletes the
+  library. On macOS and Linux the first start asks the same question, before
+  anything is downloaded. The speech engine now always goes to the per-user
+  folder; `--home` or `MYSCRIBE_HOME` still put it elsewhere (TASK-097).
 
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser

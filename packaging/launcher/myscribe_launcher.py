@@ -1298,7 +1298,7 @@ def install_lines(layout: Layout, volumes: Iterable[Path] | None = None,
 
 def location_note(home: Path, pointer: Path, source: str) -> str:
     """What ``--setup`` says about where everything is, and how to move it."""
-    return (f"{APP_NAME} keeps everything in {home}, which came from {source}. "
+    return (f"{APP_NAME} keeps its speech engine in {home}, which came from {source}. "
             + ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer))
 
 
@@ -1441,6 +1441,17 @@ def _empty(folder: Path) -> bool:
         return False
 
 
+def _today(text: str, home: Path) -> bool:
+    """Does this folder mean today's layout - the home itself, or its data?"""
+    try:
+        chosen = Path(str(text).strip().strip('"')).resolve()
+        home = Path(home).absolute()
+        return any(os.path.normcase(str(chosen)) == os.path.normcase(str(today.resolve()))
+                   for today in (home, home / "data"))
+    except OSError:
+        return False
+
+
 def judge_library(text: str, home: Path, install: Path | None = None,
                   payload: Path | None = None) -> tuple[str, Path | None, str]:
     """What a folder somebody asked for means: ``("today", None, "")``,
@@ -1450,10 +1461,8 @@ def judge_library(text: str, home: Path, install: Path | None = None,
     if refusal:
         return "refuse", None, refusal
     chosen = Path(str(text).strip().strip('"')).resolve()
-    home = Path(home).absolute()
-    for today in (home, home / "data"):
-        if os.path.normcase(str(chosen)) == os.path.normcase(str(today.resolve())):
-            return "today", None, ""
+    if _today(str(chosen), Path(home)):
+        return "today", None, ""
     for folder in (chosen, chosen / APP_NAME):
         held = library_database(folder)
         if held is not None:
@@ -1493,6 +1502,11 @@ def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[st
     question = ""
 
     if request:
+        if _today(request, Path(home)):
+            # The page left as it was prefilled: today's layout, at this start
+            # and every later one - also once the app has made <home>/data's
+            # library, which the guard below would otherwise call "another".
+            return None, None
         held = library_database(Path(home) / "data")
         if held is not None:
             # An update of an install that never moved anything has no pointer
@@ -4219,7 +4233,8 @@ def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, 
     which is why it is handed on."""
     if args.setup:  # where everything is, and the three ways to move it (ADR-015)
         pointer = pointer_path()
-        console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer)))
+        console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer))
+                + f" Your library is in {layout.data_dir}.")  # apart from the home since TASK-097
 
     if quiet:
         # `floor=False`: --smoke, --sync-only and --doctor install and then
