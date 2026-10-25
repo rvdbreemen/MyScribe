@@ -1855,8 +1855,7 @@ PORT_RESERVED = (
     "`netsh int ipv4 show excludedportrange protocol=tcp` lists them. "
     "Start MyScribe with --port and a port outside those blocks (a start at login always uses "
     f"{DEFAULT_PORT}), or, as an administrator, put the dynamic port range back to the Windows "
-    "default with `netsh int ipv4 set dynamicport tcp start=49152 num=16384` and restart Windows. "
-    "See docs/troubleshooting.md."
+    "default with `netsh int ipv4 set dynamicport tcp start=49152 num=16384` and restart Windows."
 )
 PORT_FORBIDDEN = (
     "This system does not let MyScribe use port {port} (permission denied). On Linux and macOS a "
