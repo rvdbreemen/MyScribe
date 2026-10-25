@@ -7,6 +7,7 @@ stop the app or on what the stop does to a running job.
 from __future__ import annotations
 
 import os
+import threading
 
 from fastapi import HTTPException, Request
 
@@ -48,3 +49,49 @@ def stop_requested(request: Request) -> dict:
     applog.log("app.stop_requested", running_job=running)
     request_exit()
     return {"stopping": True, "pid": os.getpid(), "running_job": running}
+
+
+INGEST_FINISH_SECONDS = 20.0
+"""How long the lifespan's end waits for a file still being stored, counted
+from the moment that end begins (an agent choice, ADR-032).
+
+A cut upload's request task is cancelled, but the worker thread storing its
+file goes on: a thread cannot be stopped from outside. The lifespan waits for
+it before it closes the database, alongside the supervisor's, the door's and
+the watchers' joins (42 s at most), so this wait adds nothing to the worst
+stop. A thread still going after it finds the database left open, not closed
+under it; the interpreter waits for that thread before the process ends."""
+
+
+class Ingests:
+    """The threaded calls that store a file and queue its job, in progress.
+
+    Each of the app's ways a file comes in runs its whole store-and-enqueue as
+    one call through `run`, in a worker thread (TASK-112.09, Robert,
+    2026-10-25), so a request cut at the bound cannot leave a recording
+    without its job; `wait` lets the lifespan close the database only once
+    no such call is inside it.
+    """
+
+    def __init__(self) -> None:
+        self._idle = threading.Condition()
+        self._busy = 0
+
+    @property
+    def busy(self) -> int:
+        return self._busy
+
+    def run(self, fn, /, *args, **kwargs):
+        with self._idle:
+            self._busy += 1
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with self._idle:
+                self._busy -= 1
+                self._idle.notify_all()
+
+    def wait(self, timeout: float) -> bool:
+        """True once no call is in progress; False after ``timeout`` seconds."""
+        with self._idle:
+            return self._idle.wait_for(lambda: self._busy == 0, max(0.0, timeout))

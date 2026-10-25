@@ -64,10 +64,10 @@ APP_SIGTERM_WAIT = 75.0
 """How long the POSIX hard stop waits after the app's SIGTERM before its
 SIGKILL (`AppProcess.stop`, `end_tree`). The app's stop cuts open reads off
 after 3 s and lets an upload in flight finish (Robert, 2026-10-25) for up to
-30 s (an agent choice); its lifespan then ends the runner's tree and joins
+30 s; its lifespan then ends the runner's tree and joins
 the supervisor for up to `STOP_JOIN_SECONDS` (20 s, ADR-032), the phone door
 (its 2 s grace), the feeds (10 s) and the watcher (10 s): 72 s at worst, 3 s
-inside this wait. 75 s is an agent choice still open for Robert.
+inside this wait. Robert kept the 30 s and this 75 s on 2026-10-25.
 A shorter wait SIGKILLed an app that had already ended its runner, and the
 sentence after it said the job could keep running (TASK-112.09). The cost is
 an app that hangs, which now gets this long before its SIGKILL instead of

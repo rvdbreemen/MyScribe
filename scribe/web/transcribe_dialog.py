@@ -206,7 +206,7 @@ async def upload(request: Request) -> Response:
 
     for part in uploads:
         await run_in_threadpool(
-            file_upload, conn, part.file, part.filename, params=params, folder_id=folder_id
+            request.app.state.ingests.run, file_upload, conn, part.file, part.filename, params=params, folder_id=folder_id
         )
     save_defaults(conn, options)
     return _queued(request, conn, len(uploads))
@@ -237,6 +237,16 @@ def file_upload(
     return row
 
 
+def path_upload(conn: sqlite3.Connection, src: Path, *, params: dict, folder_id: int | None) -> dict:
+    """A file on this machine in, one queued transcribe job out: one call in
+    one worker thread, like `file_upload`, so a stop that cuts the request
+    cannot leave the recording without its job (TASK-112.09)."""
+    row = media.ingest_path(conn, src, folder_id=folder_id)
+    applog.log("ingest.path", path=str(src), media=row["id"], bytes=row.get("size_bytes"))
+    jobs.enqueue(conn, JOB_TYPE, media_id=row["id"], params=params)
+    return row
+
+
 @router.post("/transcribe/path", include_in_schema=False)
 async def add_path(request: Request) -> Response:
     """A file already on this machine: hardlinked into the store and queued."""
@@ -258,14 +268,14 @@ async def add_path(request: Request) -> Response:
     if src.is_dir():
         raise HTTPException(status_code=400, detail=f"{src} is a directory; pick a file in it")
     try:
-        row = await run_in_threadpool(media.ingest_path, conn, src, folder_id=folder_id)
-        applog.log("ingest.path", path=str(src), media=row["id"], bytes=row.get("size_bytes"))
+        await run_in_threadpool(
+            request.app.state.ingests.run, path_upload, conn, src,
+            params=options.to_params(), folder_id=folder_id,
+        )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"no file at {src}")
     except PermissionError as exc:
         raise HTTPException(status_code=400, detail=f"cannot read {src}: {exc}")
-
-    jobs.enqueue(conn, JOB_TYPE, media_id=row["id"], params=options.to_params())
     save_defaults(conn, options)
     return _queued(request, conn, 1)
 

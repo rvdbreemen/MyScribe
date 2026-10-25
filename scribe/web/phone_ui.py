@@ -77,7 +77,10 @@ def accept_for(app):
     def accept(stream, name: str) -> int:
         conn = app.state.conn
         params = transcribe_dialog.read_defaults(conn).to_params()
-        row = transcribe_dialog.file_upload(conn, stream, name, params=params, folder_id=None, via="phone")
+        # Counted like the app's own uploads, so the lifespan closes the
+        # database only once this file is stored and queued (ADR-032).
+        row = app.state.ingests.run(
+            transcribe_dialog.file_upload, conn, stream, name, params=params, folder_id=None, via="phone")
         return row["id"]  # the door keeps it; the panel names its job
 
     return accept

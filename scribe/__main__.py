@@ -34,7 +34,7 @@ hour, and on macOS and Linux the launcher's hard stop SIGKILLed the app 15 s
 after its SIGTERM, leaving the runner to run on (TASK-112.09).
 
 An upload is not cut here (Robert, 2026-10-25: "exempt uploads"): it may
-finish until `stopping.UPLOAD_FINISH_SECONDS` (30 s, an agent choice) after
+finish until `stopping.UPLOAD_FINISH_SECONDS` (30 s, kept by Robert on 2026-10-25) after
 the stop began."""
 
 

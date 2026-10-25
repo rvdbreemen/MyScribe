@@ -34,8 +34,7 @@ from scribe import applog
 UPLOAD_FINISH_SECONDS = 30.0
 """How long after a stop begins an upload in flight may still finish.
 
-Robert exempted uploads from the 3 s cut (2026-10-25); this bound is an
-agent choice, still open for his approval.
+Robert exempted uploads from the 3 s cut and kept this bound (2026-10-25).
 
 A cap on the stop, not a promise for every file: an hour's voice memo
 (AAC at 128 kbit/s, about 58 MB) needs about 12 s at 5 MB/s on home Wi-Fi,
@@ -133,3 +132,4 @@ class StoppingServer(uvicorn.Server):
         if uploads:
             applog.log("server.stop_waits_for_uploads", server=self._name, uploads=uploads,
                        seconds=round(max(0.0, deadline - time.monotonic()), 1))
+

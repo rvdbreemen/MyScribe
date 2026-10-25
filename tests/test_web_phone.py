@@ -557,3 +557,23 @@ def test_a_countdown_that_says_closed_means_the_port_is_closed(app, clock, publi
         assert door_of(client).is_open() is False
         assert refused("127.0.0.1", opening.port)
         assert publisher.withdrawn == 1
+
+
+def test_a_phone_file_is_counted_while_it_is_stored_and_queued(client, monkeypatch):
+    """The lifespan closes the database only once no file is being stored
+    (TASK-112.09, ADR-032). The door's own server is stopped inside the app's
+    stop, and its worker thread may still be storing a phone's file; it is
+    counted like the app's own uploads."""
+    import io
+
+    app = client.app
+    seen: list[int] = []
+
+    def stored(conn, stream, name, **kwargs):
+        seen.append(app.state.ingests.busy)
+        return {"id": 7}
+
+    monkeypatch.setattr(transcribe_dialog, "file_upload", stored)
+    assert phone_ui.accept_for(app)(io.BytesIO(b"x"), "memo.m4a") == 7
+    assert seen == [1]
+    assert app.state.ingests.busy == 0

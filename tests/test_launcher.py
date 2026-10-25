@@ -3328,9 +3328,8 @@ def test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills()
 
     from scribe.web import stopping
 
-    # Open reads are cut after SHUTDOWN_GRACE_SECONDS and uploads exempt
-    # (Robert, 2026-10-25); uploads are cut at the bound (an agent choice),
-    # both counted from the stop. The door closes inside the lifespan with the
+    # Open reads are cut after SHUTDOWN_GRACE_SECONDS and uploads exempt, cut
+    # at the bound (Robert, 2026-10-25, both), both counted from the stop. The door closes inside the lifespan with the
     # app's deadline, so a phone upload is given what is left of it and at
     # least the door's grace.
     assert stopping.UPLOAD_FINISH_SECONDS >= scribe_main.SHUTDOWN_GRACE_SECONDS
@@ -3341,6 +3340,12 @@ def test_the_posix_hard_stop_waits_out_the_apps_whole_shutdown_before_it_kills()
                 + supervisor.STOP_JOIN_SECONDS  # the supervisor ends the runner's tree, joined
                 + phone_door.GRACE_SECONDS  # the door, its uploads' deadline passed
                 + default(feeds.FeedWatcher.stop) + default(watching.Watcher.stop))
+    # The wait for a file still being stored is counted from the lifespan's
+    # end and runs alongside the joins, so it adds nothing while it is shorter.
+    from scribe import shutdown as shutdown_module
+
+    joins = shutdown - stopping.UPLOAD_FINISH_SECONDS
+    assert shutdown_module.INGEST_FINISH_SECONDS <= joins
     assert default(launcher.AppProcess.stop) > shutdown, (
         f"AppProcess.stop SIGKILLs after {default(launcher.AppProcess.stop):g} s; "
         f"the app's shutdown may take {shutdown:g} s")

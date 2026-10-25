@@ -43,6 +43,7 @@ otherwise.
 import json
 import os
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -143,8 +144,23 @@ def _ingest_options(source: dict) -> tuple[str | None, int | None, dict]:
     return title, folder_id, params
 
 
-async def _ingest_upload(request: Request, conn: sqlite3.Connection) -> tuple[dict, dict]:
-    """Multipart: the bytes are already spooled, so this only hashes and files them."""
+def _stored_and_queued(conn: sqlite3.Connection, store, /, *args, params: dict, **kwargs) -> dict:
+    """Store a file and queue its job, as one call in one worker thread.
+
+    A stop cuts an upload's request at its bound by cancelling the task, and
+    the `await` around the worker thread gives up while the thread goes on: a
+    job queued after that `await` was never queued, and the recording stayed
+    in the library without it (TASK-112.09, red in
+    `tests/test_stop_cuts_ingest.py`). Run together, the thread does both.
+    """
+    row = store(conn, *args, **kwargs)
+    job_id = jobs.enqueue(conn, _INGEST_JOB_TYPE, media_id=row["id"], params=params)
+    return {**row, "job_id": job_id}
+
+
+async def _ingest_upload(request: Request, conn: sqlite3.Connection) -> dict:
+    """Multipart: the bytes are already spooled, so this only hashes and files
+    them, and queues the job."""
     form = await request.form()
     upload = form.get(_UPLOAD_FIELD)
     if upload is None or not hasattr(upload, "file"):
@@ -153,19 +169,22 @@ async def _ingest_upload(request: Request, conn: sqlite3.Connection) -> tuple[di
             detail=f"a multipart upload needs a {_UPLOAD_FIELD!r} part carrying the media",
         )
     title, folder_id, params = _ingest_options(dict(form))
-    row = await run_in_threadpool(
-        media.ingest_stream,
+    return await run_in_threadpool(
+        request.app.state.ingests.run,
+        _stored_and_queued,
         conn,
+        media.ingest_stream,
         upload.file,
         upload.filename or "upload",
         title=title,
         folder_id=folder_id,
+        params=params,
     )
-    return row, params
 
 
-async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> tuple[dict, dict]:
-    """JSON `{"path": ...}`: a file already on this machine, left where it is."""
+async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> dict:
+    """JSON `{"path": ...}`: a file already on this machine, left where it is,
+    and its job queued."""
     try:
         body = await request.json()
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -200,8 +219,9 @@ async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> tupl
         )
     title, folder_id, params = _ingest_options(body)
     try:
-        row = await run_in_threadpool(
-            media.ingest_path, conn, src, title=title, folder_id=folder_id
+        return await run_in_threadpool(
+            request.app.state.ingests.run, _stored_and_queued, conn, media.ingest_path, src,
+            title=title, folder_id=folder_id, params=params,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"no file at {src}")
@@ -210,7 +230,6 @@ async def _ingest_local_path(request: Request, conn: sqlite3.Connection) -> tupl
         # POSIX; a locked file is PermissionError on both. All three are the
         # caller's to fix, so none of them is a 500.
         raise HTTPException(status_code=400, detail=f"cannot read {src}: {exc}")
-    return row, params
 
 
 def _event_out(row: sqlite3.Row) -> dict:
@@ -334,6 +353,7 @@ def create_app(
         try:
             yield
         finally:
+            ending = time.monotonic()
             # The supervisor first: it ends the running runner's tree on every
             # shutdown (ADR-032), and on macOS and Linux the launcher's hard
             # stop SIGKILLs this app's group APP_SIGTERM_WAIT (75 s) after its
@@ -357,10 +377,18 @@ def create_app(
                 feed_watcher.stop()
             if watcher is not None:
                 watcher.stop()
-            conn.close()
+            # A file still being stored when its upload was cut goes on in its
+            # worker thread; the database closes only once none is (ADR-032).
+            # One still going after the wait finds it open, never closed under it.
+            ingests = app.state.ingests
+            if ingests.wait(ending + shutdown_module.INGEST_FINISH_SECONDS - time.monotonic()):
+                conn.close()
+            else:
+                applog.log("app.stop_leaves_db_open", level="warn", storing=ingests.busy)
             applog.log("app.stop")
 
     app = FastAPI(title="scribe", version=scribe.__version__, lifespan=lifespan)
+    app.state.ingests = shutdown_module.Ingests()
 
     @app.get("/health")
     def health() -> dict:
@@ -409,14 +437,8 @@ def create_app(
         conn = request.app.state.conn
         content_type = (request.headers.get("content-type") or "").lower()
         if content_type.startswith("multipart/form-data"):
-            row, params = await _ingest_upload(request, conn)
-        else:
-            row, params = await _ingest_local_path(request, conn)
-
-        job_id = jobs.enqueue(
-            conn, _INGEST_JOB_TYPE, media_id=row["id"], params=params
-        )
-        return {**row, "job_id": job_id}
+            return await _ingest_upload(request, conn)
+        return await _ingest_local_path(request, conn)
 
     @app.get("/api/jobs")
     def list_jobs(request: Request, status: str | None = None, limit: int = 200) -> list[dict]:
