@@ -56,10 +56,17 @@ install ends with MyScribe open in your browser. [Updating](docs/installation.md
 
 ### 2. First start
 
-The first start asks where MyScribe should keep its files, shows the free
-space on each drive, and downloads the speech engine (a few GB) with a
-progress bar. Then a short setup walks you through what is still open, one
-step at a time:
+Where your library goes - recordings, transcripts, the database and the
+speech models - is asked once: by the Windows installer, on a page after the
+program folder, and by the first start on macOS and Linux. The default is the
+per-user folder (`%LOCALAPPDATA%\MyScribe` on Windows,
+`~/Library/Application Support/MyScribe` on macOS, `~/.local/share/MyScribe`
+on Linux), never the program folder, and uninstalling never deletes it.
+[Where MyScribe keeps its files](docs/installation.md#the-first-start).
+
+The first start then downloads the speech engine (a few GB) into that
+per-user folder, with a progress bar. Then a short setup walks you through
+what is still open, one step at a time:
 
 1. **Your library** - start a new one, or use a MyScribe library you already
    have. MyScribe shows what it found before anything changes.

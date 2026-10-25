@@ -1621,8 +1621,12 @@ def test_the_location_is_asked_before_anything_is_written_or_downloaded(layout, 
     system volume.
 
     The assertion that matters sits inside the asker: at the moment the
-    question is put, neither home exists on disk and the fake uv has not run.
+    question is put, neither folder exists on disk and the fake uv has not run.
     Asserting afterwards would prove nothing about the order.
+
+    TASK-097 moved what the answer means: the question is where the library
+    goes, and the engine stays in the default home (ADR-036). Before, the
+    chosen folder became the home and the sync ran there.
     """
     default = tmp_path / "default-home"
     chosen = tmp_path / "second-drive" / "MyScribe"
@@ -1666,11 +1670,12 @@ def test_the_location_is_asked_before_anything_is_written_or_downloaded(layout, 
     code = launcher.main(["--payload", str(layout.payload), "--port", str(_free_port()), "--no-browser"])
 
     assert code == 0
-    assert len(asked) == 1
+    assert len(asked) == 1 and asked[0].startswith(launcher.LIBRARY_QUESTION)
     assert marker.exists(), "the sync never ran, so this proves nothing about the order"
-    assert (chosen / "env" / launcher.STAMP_NAME).exists()  # the sync ran on the chosen home
-    assert not default.exists(), "the default home was used after all"
-    assert json.loads(pointer.read_text(encoding="utf-8"))["home"] == str(chosen.resolve())
+    assert (default / "env" / launcher.STAMP_NAME).exists()  # the engine stays in the default home
+    assert not (chosen / "env").exists(), "the engine followed the library"
+    assert not (default / "data").exists(), "a second library was made in the default home"
+    assert json.loads(pointer.read_text(encoding="utf-8")) == {"data": str(chosen.resolve())}
 
 
 def _door(tmp_path, payload, *, answers=(), pointer=None, install=None, environ=None, ask=True):
@@ -1699,6 +1704,26 @@ def _door(tmp_path, payload, *, answers=(), pointer=None, install=None, environ=
         payload, platform="win32", environ=environ, pointer=pointer, install=install, volumes=[],
     )
     return home, reports, asked
+
+
+def _library_door(tmp_path, payload, *, answers=(), pointer=None, install=None):
+    """`locate_library` as the window door has it, on the same machine as
+    `_door`: the default home is `<tmp>/local/MyScribe`."""
+    pointer = (tmp_path / "local" / "MyScribe.location") if pointer is None else pointer
+    reports: list[tuple[str, str]] = []
+    asked: list[str] = []
+    queued = list(answers)
+
+    def asker(message: str):
+        asked.append(message)
+        assert queued, "the question was asked more often than this test has answers"
+        return queued.pop(0)
+
+    settled = launcher.locate_library(
+        asker, lambda state, text: reports.append((state, text)), payload, pointer,
+        tmp_path / "local" / "MyScribe", install=install, volumes=[], platform="win32",
+    )
+    return settled, reports, asked
 
 
 # --- the numbers come out of the payload (AC #2, AC #3) ----------------------------
@@ -1951,9 +1976,14 @@ def test_a_pointer_that_names_no_home_is_still_a_first_run(tmp_path, layout):
     chosen = tmp_path / "second-drive" / "MyScribe"
 
     assert launcher.wants_location(default, layout.payload, pointer) is True
-    home, _reports, asked = _door(tmp_path, layout.payload, answers=[str(chosen)], pointer=pointer)
+    # TASK-097: the home is the default without a question; the library is asked.
+    home, _reports, asked = _door(tmp_path, layout.payload, answers=[], pointer=pointer)
+    assert home == default and asked == []
+    settled, _reports, asked = _library_door(tmp_path, layout.payload, answers=[str(chosen)], pointer=pointer)
 
-    assert home == chosen.resolve() and len(asked) == 1
+    assert settled == (chosen.resolve(), None) and len(asked) == 1
+    assert json.loads(pointer.read_text(encoding="utf-8")) == {
+        "asked": "2026-09-22", "data": str(chosen.resolve())}
 
 
 def test_a_key_the_launcher_did_not_write_survives_the_answer(tmp_path, layout):
@@ -2021,9 +2051,9 @@ def test_closing_the_question_over_a_broken_pointer_starts_nothing(tmp_path, lay
 
 
 def test_skipping_keeps_todays_location_and_writes_no_pointer(tmp_path, layout):
-    home, reports, asked = _door(tmp_path, layout.payload, answers=[None])
+    settled, reports, asked = _library_door(tmp_path, layout.payload, answers=[None])
 
-    assert home == tmp_path / "local" / "MyScribe"
+    assert settled == (None, None)
     assert not (tmp_path / "local" / "MyScribe.location").exists()
     assert len(asked) == 1
     assert not [state for state, _ in reports if state == "error"]
@@ -2155,15 +2185,36 @@ def test_a_folder_that_is_not_there_yet_is_accepted_and_not_created(tmp_path):
     assert not (tmp_path / "MyScrbie").exists()
 
 
-def test_a_folder_that_cannot_be_written_is_refused(tmp_path):
+def test_a_folder_that_cannot_be_written_is_refused(tmp_path, monkeypatch):
     """Refused with what the operating system said, because "choose another
-    folder" without a reason is the sort of dialog people photograph."""
+    folder" without a reason is the sort of dialog people photograph.
+
+    The folder is made unwritable by the probe's own write failing: a file
+    stood in for it until TASK-097's review, and a file now has a sentence of
+    its own (below)."""
+    real_write = Path.write_text
+
+    def write_text(self, *args, **kwargs):
+        if self.name == ".myscribe-write-test":
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+    refusal = launcher.refuse_location(str(tmp_path / "MyScribe"))
+
+    assert "cannot write in" in refusal and "Access is denied" in refusal
+
+
+def test_a_file_where_a_folder_should_be_is_refused_as_a_file(tmp_path):
+    """TASK-097 review: the write probe under a file said "Errno 2 ... cannot
+    write in", which does not say the path is a file."""
     blocker = tmp_path / "a-file"
     blocker.write_text("not a folder", encoding="utf-8")
 
-    refusal = launcher.refuse_location(str(blocker / "MyScribe"))
-
-    assert "cannot write in" in refusal
+    for chosen in (blocker, blocker / "MyScribe"):
+        refusal = launcher.refuse_location(str(chosen))
+        assert f"{blocker} is a file, not a folder" in refusal
 
 
 def test_a_refused_answer_writes_no_pointer_and_asks_again(tmp_path, layout):
@@ -2173,13 +2224,13 @@ def test_a_refused_answer_writes_no_pointer_and_asks_again(tmp_path, layout):
     pointer = tmp_path / "local" / "MyScribe.location"
     chosen = tmp_path / "second-drive" / "MyScribe"
 
-    home, reports, asked = _door(tmp_path, layout.payload, install=install,
-                                 answers=[str(install / "data"), str(chosen)])
+    settled, reports, asked = _library_door(tmp_path, layout.payload, install=install,
+                                            answers=[str(install / "data"), str(chosen)])
 
-    assert home == chosen.resolve()
+    assert settled == (chosen.resolve(), None)
     assert len(asked) == 2 and "belongs to the installer" in asked[1]
-    assert [state for state, _ in reports] == ["error"]
-    assert json.loads(pointer.read_text(encoding="utf-8")) == {"home": str(chosen.resolve())}
+    assert [state for state, _ in reports] == ["error", "status"]
+    assert json.loads(pointer.read_text(encoding="utf-8")) == {"data": str(chosen.resolve())}
 
 
 def test_no_pointer_is_written_while_the_question_is_still_open(tmp_path, layout):
@@ -2202,14 +2253,14 @@ def test_no_pointer_is_written_while_the_question_is_still_open(tmp_path, layout
         seen.append(pointer.exists())
         return answers.pop(0)
 
-    home = launcher.locate_home(
-        None, asker, lambda state, text: None, layout.payload, platform="win32",
-        environ={"LOCALAPPDATA": str(tmp_path / "local")}, pointer=pointer, install=install,
-        volumes=[],
+    settled = launcher.locate_library(
+        asker, lambda state, text: None, layout.payload, pointer, tmp_path / "local" / "MyScribe",
+        install=install, volumes=[], platform="win32",
     )
 
-    assert home == chosen.resolve()
+    assert settled == (chosen.resolve(), None)
     assert seen == [False, False], "a refused answer was written to the pointer file"
+    assert not (install / "data").exists()
 
 
 # --- the free-space check on the doors that ask nothing (AC #6) --------------------
@@ -2307,6 +2358,84 @@ def test_the_working_room_is_asked_of_a_person_and_not_of_ci(layout, monkeypatch
     assert person is False, "a person installing this is still asked for the working room"
     assert ci is True, "CI is asked only for the install it actually makes"
     assert len(refused) == 1 and "not enough room" in refused[0]
+
+
+def _two_volumes(layout, tmp_path, monkeypatch, *, engine_free: float, library_free: float):
+    """The engine home on one volume ("C") and the library on another ("D"),
+    told apart by the top folder under tmp_path - the `same_volume` the
+    launcher asks, and the free space each one has."""
+    _shipped_install_numbers(layout)  # environment 4 GB, weights 2 GB, floor 10 GB
+    home, library = tmp_path / "C" / "MyScribe", tmp_path / "D" / "Library"
+    home.mkdir(parents=True, exist_ok=True)
+    library.mkdir(parents=True, exist_ok=True)
+    split = launcher.Layout(home, layout.payload, data=library)
+
+    def drive(path):
+        return Path(path).resolve().relative_to(tmp_path.resolve()).parts[0]
+
+    free = {"C": engine_free, "D": library_free}
+    monkeypatch.setattr(launcher, "same_volume", lambda a, b: drive(a) == drive(b), raising=False)
+    monkeypatch.setattr(launcher.shutil, "disk_usage", lambda path: _usage(free[drive(path)]))
+    return split, home, library
+
+
+def test_a_library_on_another_volume_leaves_the_engine_asking_its_own_volume(layout, tmp_path, monkeypatch):
+    """TASK-097 review: the engine home stays on C: while the library goes to
+    D:. Only D: was measured, so a C: with 1 GB free passed the check and ran
+    out halfway through the environment download - the one thing this check
+    exists to prevent."""
+    split, home, _library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=1, library_free=400)
+    refused: list[str] = []
+
+    assert launcher.enough_disk(split, lambda state, text: refused.append(text)) is False
+    assert len(refused) == 1 and str(home) in refused[0] and "--home" in refused[0]
+
+
+def test_a_library_on_another_volume_is_asked_only_for_what_lands_there(layout, tmp_path, monkeypatch):
+    """The other half: D: holds the weights and the working room (2 + 10 GB),
+    not the 4 GB environment that goes to C:. Asking D: for all 16 refused a
+    library that fits."""
+    split, _home, library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=400, library_free=13)
+
+    assert launcher.enough_disk(split, lambda state, text: pytest.fail(f"refused: {text}")) is True
+
+    split, _home, library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=400, library_free=11)
+    refused: list[str] = []
+    assert launcher.enough_disk(split, lambda state, text: refused.append(text)) is False
+    assert len(refused) == 1 and str(library) in refused[0]
+
+
+def test_same_volume_reads_the_device_of_each_path(tmp_path, monkeypatch):
+    """The tests above replace `same_volume`; this holds the real one to its
+    word: one device is one volume, two are two, and a path it cannot read
+    counts as the same volume - the stricter of the two checks."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert launcher.same_volume(tmp_path / "a", tmp_path / "b") is True
+
+    real_stat = launcher.os.stat
+    devices = {"a": 1, "b": 2}
+
+    def stat(path, *args, **kwargs):
+        name = Path(path).name
+        if name in devices:
+            return types.SimpleNamespace(st_dev=devices[name])
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(launcher.os, "stat", stat)
+    assert launcher.same_volume(tmp_path / "a", tmp_path / "b") is False
+    assert launcher.same_volume(tmp_path / "a", tmp_path / "missing") is True
+
+
+def test_one_volume_is_still_asked_for_everything(layout, tmp_path, monkeypatch):
+    """Home and library on one disk: 16 GB on that disk, as before - two
+    separate checks of 4 and 12 would let 13 GB through."""
+    split, _home, _library = _two_volumes(layout, tmp_path, monkeypatch, engine_free=13, library_free=13)
+    monkeypatch.setattr(launcher, "same_volume", lambda a, b: True, raising=False)
+    refused: list[str] = []
+
+    assert launcher.enough_disk(split, lambda state, text: refused.append(text)) is False
+    assert len(refused) == 1
 
 
 def test_a_footprint_whose_numbers_are_not_numbers_still_asks(layout):
@@ -2651,9 +2780,13 @@ def _launcher_log(layout) -> str:
 
 
 def test_an_app_that_dies_ends_the_headless_launcher_with_its_own_code(layout, monkeypatch):
-    """The crash the research found: the child dies, and the launcher said 0."""
+    """The crash the research found: the child dies, and the launcher said 0.
+
+    Under an OS supervisor, which restarts on this code itself; with none the
+    launcher restarts the app first (TASK-112.10, ADR-037, tests below)."""
     child = _sleeping_child()
     launch = _launch_over(layout, child, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "systemd")
     threading.Timer(0.3, child.kill).start()
 
     code = launcher.run_headless(launch)
@@ -4468,6 +4601,7 @@ def test_stop_in_the_tray_ends_the_headless_launcher_through_the_stop_route(layo
 def test_the_tray_goes_when_the_app_dies(layout, monkeypatch):
     child = _sleeping_child()
     launch = _launch_over(layout, child, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "systemd")  # no restart: TASK-112.10's own tests
     tray = _ServingTray(after=None)
     monkeypatch.setattr(launcher, "tray_for", lambda _launch: tray)
     threading.Timer(0.3, child.kill).start()
@@ -4708,6 +4842,7 @@ def test_a_main_thread_tray_that_fails_leaves_the_headless_door_serving(layout, 
 
     tray = BrokenTray(after=None)
     monkeypatch.setattr(launcher, "tray_for", lambda _launch: tray)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "launchd")  # no restart here
     threading.Timer(1.0, child.kill).start()
 
     code = launcher.run_headless(launch)
@@ -4731,6 +4866,375 @@ def test_a_tray_loop_that_fails_says_so(monkeypatch):
     tray.thread.join(5)
 
     assert any("No tray icon" in text and "Shell_NotifyIcon failed" in text for _state, text in said)
+
+
+# --- TASK-112.10: the launcher restarts a crashed app, a bounded number of times --
+#
+# ADR-037. Only where no OS supervisor watches the launcher: the Windows Run
+# value, a start by hand on the console and the XDG autostart file. Under the
+# systemd unit or the LaunchAgent the launcher exits `APP_DIED` at once, as
+# before, and the OS restarts it.
+
+
+def test_the_launchd_job_is_known_by_its_own_label_and_nothing_else():
+    """launchd names the job it started in XPC_SERVICE_NAME. A shell in
+    Terminal has the variable too, as `0` or as Terminal's own name, so its
+    presence alone would switch the restart off for a start by hand."""
+    label = launcher.SUPERVISED_LABEL
+    assert launcher.os_supervisor({"XPC_SERVICE_NAME": label}, cgroup=None) == "launchd"
+    for other in ("0", "application.com.apple.Terminal.1234", "", label + ".other"):
+        assert launcher.os_supervisor({"XPC_SERVICE_NAME": other}, cgroup=None) == ""
+    assert launcher.os_supervisor({}, cgroup=None) == ""
+
+
+def test_the_systemd_unit_is_known_by_its_own_cgroup_and_not_by_invocation_id(tmp_path):
+    """systemd puts a unit's processes in a cgroup named after the unit. Not
+    INVOCATION_ID: a shell in a terminal that runs as a user service (GNOME's
+    terminal server) can carry one, and so can anything another unit starts."""
+    cgroup = tmp_path / "cgroup"
+    unit = launcher.SUPERVISED_UNIT
+    cgroup.write_text(f"0::/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}\n", encoding="utf-8")
+    assert launcher.os_supervisor({}, cgroup=cgroup) == "systemd"
+
+    for path in ("/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-myscribe-4242.scope",
+                 "/user.slice/user-1000.slice/user@1000.service/app.slice/gnome-terminal-server.service",
+                 f"/user.slice/user-1000.slice/user@1000.service/app.slice/not-{unit}"):
+        cgroup.write_text(f"0::{path}\n", encoding="utf-8")
+        assert launcher.os_supervisor({"INVOCATION_ID": "0123abcd"}, cgroup=cgroup) == ""
+    assert launcher.os_supervisor({}, cgroup=tmp_path / "missing") == ""
+
+
+def test_the_restart_budget_is_a_number_of_restarts_in_a_sliding_window():
+    now = [1000.0]
+    budget = launcher.RestartBudget(limit=3, window=600.0, clock=lambda: now[0])
+    for _ in range(3):  # at 1000, 1100 and 1200
+        assert budget.spend() is True
+        now[0] += 100.0
+    assert budget.spend() is False, "the fourth crash inside the window is not restarted"
+    now[0] = 1599.0
+    assert budget.spend() is False
+    now[0] = 1601.0  # the restart at 1000 is now older than the window
+    assert budget.spend() is True
+    assert budget.spend() is False
+
+
+def test_the_default_budget_is_five_restarts_in_five_minutes():
+    """Robert's decision of 2026-10-25 (ADR-037): 5 restarts in any 300 s,
+    the systemd unit's StartLimitBurst=5 and StartLimitIntervalSec=300."""
+    now = [0.0]
+    budget = launcher.RestartBudget(clock=lambda: now[0])
+    assert (budget.limit, budget.window) == (5, 300.0)
+    for _ in range(5):  # at 0, 10, 20, 30 and 40
+        assert budget.spend() is True
+        now[0] += 10.0
+    assert budget.spend() is False, "a sixth crash inside 300 s was restarted"
+    now[0] = 299.999
+    assert budget.spend() is False
+    now[0] = 300.0  # the restart at 0 has left the window
+    assert budget.spend() is True
+    assert budget.spend() is False
+
+
+def test_a_restart_exactly_one_window_old_no_longer_counts():
+    """The boundary: "in any 600 s" is a half-open window. A restart spent
+    exactly `window` seconds ago has left it, so the budget has room again."""
+    now = [0.0]
+    budget = launcher.RestartBudget(limit=1, window=600.0, clock=lambda: now[0])
+    assert budget.spend() is True
+    now[0] = 599.999
+    assert budget.spend() is False
+    now[0] = 600.0
+    assert budget.spend() is True, "a restart exactly one window old still counted"
+
+
+def _restarting(layout, monkeypatch, first, then, supervisor=""):
+    """A Launch over ``first`` whose `start_app` starts the children ``then``
+    makes, one per restart, and records each start."""
+    launch = _launch_over(layout, first, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: supervisor)
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    started = []
+
+    def start_app():
+        child = then(len(started))
+        started.append(child)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        launch.app.proc = child
+        return True
+
+    launch.start_app = start_app
+    return launch, started
+
+
+def _exits(code: int):
+    return _app_child(f"import sys; sys.exit({code})")
+
+
+def test_a_crashed_app_is_started_again_and_a_stop_after_that_is_not(layout, monkeypatch):
+    """AC #2: a crash (non-zero) is restarted; the restarted app ending with 0
+    - the stop route, from Settings or `--stop` - ends the launcher with 0."""
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+
+    code = launcher.run_headless(launch)
+
+    assert code == 0
+    assert len(started) == 1
+    said = _launcher_log(layout)
+    assert "stopped unexpectedly (exit code 3)" in said
+    assert launcher.RESTARTING.format(delay=0, count=1, limit=launcher.RESTART_LIMIT,
+                                      minutes=launcher.RESTART_WINDOW / 60) in said
+    assert launcher.CRASHED_JOB in said, "what happens to a running job is said"
+    assert "MyScribe stopped." in said
+
+
+def test_after_the_last_restart_the_launcher_gives_up_with_a_sentence(layout, monkeypatch):
+    """AC #2: up to `RESTART_LIMIT` restarts in the window, then one sentence
+    and `APP_DIED`."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 2)
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(3))
+
+    code = launcher.run_headless(launch)
+
+    assert code == launcher.APP_DIED
+    assert len(started) == 2
+    gave_up = launcher.GAVE_UP.format(limit=2, minutes=launcher.RESTART_WINDOW / 60,
+                                      log=layout.logs_dir / "app.log")
+    assert _launcher_log(layout).count(gave_up) == 1
+    assert launch.problem == gave_up
+
+
+def test_a_start_at_login_that_gave_up_is_said_by_the_next_start_by_hand(layout, monkeypatch):
+    """Nobody reads launcher.log after a login; TASK-112.07's note carries it."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    launch, _ = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(3))
+
+    assert launcher.run_headless(launch, at_login=True) == launcher.APP_DIED
+    assert launcher.GAVE_UP.format(limit=1, minutes=launcher.RESTART_WINDOW / 60,
+                                   log=layout.logs_dir / "app.log") in launcher.take_login_problem(layout.home)
+
+
+def test_a_restart_that_never_answers_is_spent_like_a_crash(layout, monkeypatch):
+    """`start_app` stops an app that did not answer and says so; that counts
+    against the budget, so a broken environment is not retried for ever."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 2)
+    launch = _launch_over(layout, _exits(3), monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    tries = []
+
+    def start_app():
+        tries.append(1)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        # 0: on POSIX the SIGTERM `start_app` stops it with may end it cleanly.
+        launch.app.proc = _exits(0)
+        launch.app.proc.wait()
+        launch.report("error", "MyScribe did not start; see app.log")  # as `start_app` says it
+        return False
+
+    launch.start_app = start_app
+
+    assert launcher.run_headless(launch) == launcher.APP_DIED
+    assert len(tries) == 2
+    said = _launcher_log(layout)
+    # One line per failure: the crash says "stopped unexpectedly", each
+    # restart that did not answer says "did not start", and nothing says both.
+    assert said.count("stopped unexpectedly (exit code") == 1, said
+    assert said.count("MyScribe did not start") == 2, said
+
+
+def test_under_an_os_supervisor_the_launcher_never_restarts_itself(layout, monkeypatch):
+    """AC #3: the systemd unit restarts on 70 and the LaunchAgent on any
+    non-zero exit; a restart here as well would be two for one crash."""
+    for supervisor in ("systemd", "launchd"):
+        launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0),
+                                      supervisor=supervisor)
+
+        assert launcher.run_headless(launch) == launcher.APP_DIED, supervisor
+        assert started == [], supervisor
+
+
+def test_a_clean_end_is_never_restarted(layout, monkeypatch):
+    """AC #2: exit 0 is a stop somebody asked for (ADR-032)."""
+    launch, started = _restarting(layout, monkeypatch, _exits(0), lambda n: _exits(0))
+
+    assert launcher.run_headless(launch) == 0
+    assert started == []
+
+
+def test_ctrl_c_while_a_restart_starts_stops_it_and_starts_nothing_more(layout, monkeypatch):
+    """AC #2: a deliberate stop during the restart is a stop, not a crash.
+    The app the restart started is stopped through `launch.stop`."""
+    launch = _launch_over(layout, _exits(3), monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    started, stopped = [], []
+
+    def start_app():
+        started.append(1)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        launch.app.proc = _sleeping_child()
+        raise KeyboardInterrupt  # Ctrl+C while it waits for /health
+
+    def stop():
+        stopped.append(launch.app.alive())
+        launch.app.proc.kill()
+        launch.app.proc.wait()
+
+    launch.start_app = start_app
+    launch.stop = stop
+
+    assert launcher.run_headless(launch) == 0
+    assert started == [1] and stopped == [True]
+
+
+def test_a_sigterm_during_the_restart_delay_starts_nothing(layout, monkeypatch):
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 3.0)
+    unhandled = []
+    previous = _signal.signal(_signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    try:
+        threading.Timer(1.0, _signal.raise_signal, args=(_signal.SIGTERM,)).start()
+        code = launcher.run_headless(launch)
+    finally:
+        _signal.signal(_signal.SIGTERM, previous)
+
+    assert code == 0
+    assert started == []
+
+
+# --- TASK-112.11 with TASK-112.10: the tray across a restart ----------------------
+#
+# The tray belongs to the launcher, not to one app process: it stays up while
+# a crashed app is started again, goes when the launcher gives up or stops,
+# and a Stop in it - also in the restart delay - is a stop, never a crash to
+# restart (ADR-032, ADR-037, ADR-038).
+
+
+def _tray_over_restarts(layout, monkeypatch, tray, first, then):
+    launch, started = _restarting(layout, monkeypatch, first, then)
+    made: list[int] = []
+
+    def make(_launch):
+        made.append(1)
+        return tray
+
+    monkeypatch.setattr(launcher, "tray_for", make)
+    return launch, started, made
+
+
+def _stopping_by_kill(launch):
+    stopped: list[bool] = []
+
+    def stop():
+        stopped.append(launch.app.alive())
+        launch.app.proc.kill()
+        launch.app.proc.wait()
+
+    launch.stop = stop
+    return stopped
+
+
+def test_the_tray_stays_up_across_a_restart_and_goes_when_the_launcher_gives_up(layout, monkeypatch):
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    tray = _ServingTray(after=None)
+    seen: list[list[str]] = []
+    launch, started, made = _tray_over_restarts(
+        layout, monkeypatch, tray, _exits(3), lambda n: seen.append(list(tray.events)) or _exits(3))
+
+    assert launcher.run_headless(launch) == launcher.APP_DIED
+    assert len(started) == 1 and made == [1], "one tray for the launcher's whole life"
+    assert seen == [["show"]], "the icon was taken down for the restart"
+    assert tray.events == ["show", "close"]
+
+
+def test_stop_in_the_tray_after_a_restart_is_a_stop_and_not_a_crash(layout, monkeypatch):
+    tray = _ServingTray(after=None)
+
+    def restarted(n):
+        threading.Timer(0.3, tray.ask_stop).start()
+        return _sleeping_child()
+
+    launch, started, _ = _tray_over_restarts(layout, monkeypatch, tray, _exits(3), restarted)
+    stopped = _stopping_by_kill(launch)
+
+    assert launcher.run_headless(launch) == 0
+    assert len(started) == 1 and stopped == [True], "the restarted app is stopped, once"
+    assert _launcher_log(layout).count("stopped unexpectedly") == 1, "the Stop was counted as a crash"
+    assert tray.events == ["show", "close"]
+
+
+def test_stop_in_the_tray_during_the_restart_delay_starts_nothing(layout, monkeypatch):
+    tray = _ServingTray(after=None)
+    launch, started, _ = _tray_over_restarts(layout, monkeypatch, tray, _exits(3), lambda n: _exits(0))
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 3.0)
+    report = launch.report
+    began: list[float] = []
+
+    def stop_when_the_delay_begins(state, text):
+        report(state, text)
+        if text.startswith("Starting MyScribe again"):  # said right before the delay
+            began.append(time.monotonic())
+            tray.ask_stop()
+
+    launch.report = stop_when_the_delay_begins
+
+    code = launcher.run_headless(launch)
+
+    assert code == 0
+    assert len(began) == 1, "the restart delay was never reached"
+    assert started == [], "a Stop in the delay still started the app again"
+    assert time.monotonic() - began[0] < launcher.RESTART_DELAY, "the delay was sat out after the Stop"
+
+
+class _MacTray(_ServingTray):
+    """A main-thread tray that serves the way the real one does: until
+    ``alive`` says no or Stop is asked."""
+
+    main_thread = True
+
+    def __init__(self):
+        super().__init__(after=None)
+        self.serving = threading.Event()
+        self.served_on: list[str] = []
+
+    def serve_on_main_thread(self, alive):
+        self.served_on.append(threading.current_thread().name)
+        self.serving.set()
+        try:
+            while alive() and not self.stop_asked.is_set():
+                time.sleep(0.05)
+        finally:
+            self.serving.clear()
+        return self.stop_asked.is_set()
+
+
+def test_on_macos_the_tray_keeps_the_main_thread_across_a_restart(layout, monkeypatch):
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    tray = _MacTray()
+    seen: list[bool] = []
+    launch, started, made = _tray_over_restarts(
+        layout, monkeypatch, tray, _exits(3), lambda n: seen.append(tray.serving.is_set()) or _exits(3))
+
+    assert launcher.run_headless(launch) == launcher.APP_DIED
+    assert len(started) == 1 and made == [1]
+    assert seen == [True], "the status item was gone while the app was started again"
+    assert tray.served_on == [threading.main_thread().name]
+    assert tray.events == ["close"]
+
+
+def test_on_macos_stop_in_the_tray_after_a_restart_stops_the_restarted_app(layout, monkeypatch):
+    tray = _MacTray()
+
+    def restarted(n):
+        threading.Timer(0.3, tray.ask_stop).start()
+        return _sleeping_child()
+
+    launch, started, _ = _tray_over_restarts(layout, monkeypatch, tray, _exits(3), restarted)
+    stopped = _stopping_by_kill(launch)
+
+    assert launcher.run_headless(launch) == 0
+    assert len(started) == 1 and stopped == [True]
+    assert _launcher_log(layout).count("stopped unexpectedly") == 1
 
 
 # --- TASK-120: a reserved port, and a failed start at login somebody sees ---------

@@ -162,16 +162,16 @@ def test_writing_the_library_keeps_the_home_and_writing_the_home_keeps_the_libra
     assert json.loads(path.read_text(encoding="utf-8"))["data"] == str(tmp_path / "lib")
 
 
-def test_a_pointer_with_only_a_library_does_not_answer_where_everything_goes(tmp_path, payload):
-    """`"data"` alone is what adoption writes after the location question
-    was skipped; it answers the library question and not that one, so the
-    home is still the default and the location question still reads as open
-    for a home that holds no environment yet."""
+def test_a_pointer_with_only_a_library_answers_the_first_start_question(tmp_path, payload):
+    """`"data"` alone names the library and not the home, so the home is
+    still the default. Since TASK-097 the first start's question is where the
+    library goes (ADR-036), so a pointer that names one has answered it: it
+    used to stay open here, when the question was where everything goes."""
     path = tmp_path / "MyScribe.location"
     path.write_text(json.dumps({"data": str(tmp_path / "lib")}), encoding="utf-8")
 
     assert launcher.home_dir("linux", {"XDG_DATA_HOME": str(tmp_path / "xdg")}, pointer=path) == tmp_path / "xdg" / "MyScribe"
-    assert launcher.wants_location(tmp_path / "default", payload, path, None, {}) is True
+    assert launcher.wants_location(tmp_path / "default", payload, path, None, {}) is False
 
 
 # --- the launcher writes what the engine decided, and nothing it decided itself ----

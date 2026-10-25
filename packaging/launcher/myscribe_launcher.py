@@ -130,7 +130,9 @@ def read_pointer(path: Path) -> tuple[dict, str]:
     this file, and nothing here pins that it holds one.
     """
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        # `utf-8-sig`: the Windows installer writes this file too (TASK-097),
+        # and a BOM in front of the JSON would otherwise read as "not JSON".
+        document = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}, ""
     except OSError as error:
@@ -263,6 +265,42 @@ def write_pointer_data(path: Path, data: Path) -> str:
     return ""
 
 
+# --- a library somebody asked for: the pointer's third fact (TASK-097, ADR-036) -----
+
+
+REQUEST_KEY = "library_request"
+"""Where somebody asked the library to go, before anything decided it.
+
+Written by the Windows installer's library page (and `/LIBRARY=`), only while
+the pointer file does not exist yet, or by the first start's library question
+on a machine without that page. Settled by `locate_library` before anything is
+downloaded: an empty or new folder becomes `"data"` there and then, and the
+request goes; a folder that already holds a library stays a request until the
+engine has shown its numbers and the first sitting decided (ADR-019)."""
+
+LIBRARY_NAMES = ("myscribe.db", "scribe.db")
+"""The two names a library's database has had; `scribe.db` until 2026-09-06."""
+
+
+def update_pointer(path: Path, changes: dict) -> str:
+    """Merge `changes` into the pointer, a None value removing that key;
+    return what went wrong, ``""`` when nothing did. Merged and never raised,
+    for the reasons `write_pointer` gives."""
+    document, problem = read_pointer(path)
+    document = {} if problem else document
+    for key, value in changes.items():
+        if value is None:
+            document.pop(key, None)
+        else:
+            document[key] = value
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    except OSError as error:
+        return f"{path} could not be updated ({error})."
+    return ""
+
+
 SETUP_RESULT_VARIABLE = "MYSCRIBE_SETUP_RESULT"
 """Where `scribe.setup` says what an adoption decided (its RESULT_VARIABLE):
 a file this launcher names for the setup child and reads when it has gone.
@@ -312,7 +350,8 @@ class Layout:
     """Every path the launcher touches, from two roots."""
 
     def __init__(self, home: Path, payload: Path, windows: bool = IS_WINDOWS,
-                 data: Path | None = None, pointer: Path | None = None):
+                 data: Path | None = None, pointer: Path | None = None,
+                 offer: Path | None = None):
         # Absolute: the sync runs with the home as its working directory.
         self.home = Path(home).absolute()
         self.payload = Path(payload).absolute()
@@ -323,6 +362,10 @@ class Layout:
         # The pointer file an adoption is recorded in; None when the home was
         # given by hand, which keeps everything under that home.
         self.pointer = Path(pointer) if pointer is not None else None
+        # TASK-097: a folder that holds a library somebody asked for, which
+        # the first sitting lists with its numbers (`--library`); the engine,
+        # not this launcher, adopts it. None when nobody asked for one.
+        self.offer = Path(offer) if offer is not None else None
 
     app_dir = property(lambda self: self.payload / "app")
     bin_dir = property(lambda self: self.payload / "bin")
@@ -954,10 +997,26 @@ def disk_probe_path(layout: Layout) -> Path:
     ``D:\\MyScribe`` exists and ``shutil.disk_usage`` raises on a path that is
     not there.
     """
-    for candidate in (layout.data_dir, *layout.data_dir.parents):
+    return nearest_existing(layout.data_dir)
+
+
+def nearest_existing(path: Path) -> Path:
+    """``path``, or the nearest parent of it that exists: what
+    ``shutil.disk_usage`` can be asked about before a first run."""
+    for candidate in (path, *path.parents):
         if candidate.exists():
             return candidate
-    return layout.data_dir
+    return path
+
+
+def same_volume(first: Path, second: Path) -> bool:
+    """Are two existing paths on one volume? ``st_dev`` is the volume serial
+    number on Windows and the device on POSIX. True when either cannot be
+    read: one volume asked for everything is the stricter answer."""
+    try:
+        return os.stat(first).st_dev == os.stat(second).st_dev
+    except OSError:
+        return True
 
 
 def free_gb(path: Path) -> float | None:
@@ -1042,14 +1101,35 @@ def enough_disk(layout: Layout, report: Callable[[str, str], None], *, floor: bo
     needed = size["needed_gb"]
     if not floor:
         needed = needed - size["floor_gb"] if needed else needed
-    probe = disk_probe_path(layout)
-    free = free_gb(probe)
-    if not needed or free is None or free >= needed:
+    if not needed:
         return True
-    floor = size["floor_gb"]
+    floor = size["floor_gb"] if floor else 0
+    probe = disk_probe_path(layout)
+    engine_probe = nearest_existing(layout.home)
+    if not same_volume(engine_probe, probe):
+        # TASK-097: the library may sit on another volume than the engine
+        # home. The environment goes to the home; the weights and the working
+        # room go to the library. Each volume is asked for its own part.
+        library_needed = size["weights_gb"] + floor
+        engine_needed = needed - library_needed
+        engine_free = free_gb(engine_probe)
+        if engine_needed > 0 and engine_free is not None and engine_free < engine_needed:
+            report("error", f"There is not enough room for the speech engine: it needs about "
+                            f"{engine_needed:.0f} GB in {layout.home}, and {engine_probe} has "
+                            f"{engine_free:.1f} GB free. Nothing was downloaded. Free up space, or "
+                            f"start MyScribe with --home PATH (or set {HOME_VARIABLE}) to put the "
+                            "speech engine on another drive.")
+            return False
+        needed = library_needed
+        part = f"the library in {layout.data_dir}"
+    else:
+        part = "this install"
+    free = free_gb(probe)
+    if free is None or free >= needed:
+        return True
     keeps = (f", plus the {floor} GB MyScribe keeps free for your recordings" if floor else "")
-    report("error", f"There is not enough room: MyScribe needs about {needed:.0f} GB for this "
-                    f"install{keeps}, and {probe} has {free:.1f} GB free. Nothing was downloaded. "
+    report("error", f"There is not enough room: MyScribe needs about {needed:.0f} GB for {part}"
+                    f"{keeps}, and {probe} has {free:.1f} GB free. Nothing was downloaded. "
                     "Free up space, or start MyScribe again and put it on another drive.")
     return False
 
@@ -1064,13 +1144,17 @@ def enough_disk(layout: Layout, report: Callable[[str, str], None], *, floor: bo
 
 def wants_location(default: Path, payload: Path, pointer: Path,
                    home_flag: Path | None = None, environ: dict | None = None) -> bool:
-    """Whether to ask where everything goes - a pure predicate, like ``wants_setup``.
+    """Whether to ask where the library goes - a pure predicate, like ``wants_setup``.
 
     Only on a first run, and only when nobody has already said where: a
-    pointer file, ``MYSCRIBE_HOME`` and ``--home`` are all answers. A home that
-    already holds an environment is an install, and an install is not moved by
-    a question (AC #7): moving one means quitting, moving the folder by hand
-    and writing its new path into the pointer file.
+    pointer that names a home, a library or a library request, ``MYSCRIBE_HOME``
+    and ``--home`` are all answers. A home that already holds an environment is
+    an install, and an install is not moved by a question (AC #7).
+
+    Since TASK-097 this is the library question and no longer "where should
+    everything go": the engine home is the per-user default, or ``--home`` /
+    ``MYSCRIBE_HOME`` (ADR-036). On Windows the installer's page asks it, so a
+    first start there finds the request and asks nothing.
     """
     environ = os.environ if environ is None else environ
     if home_flag is not None or environ.get(HOME_VARIABLE):
@@ -1080,9 +1164,10 @@ def wants_location(default: Path, payload: Path, pointer: Path,
     # was ever asked this, and a file that answers a different question is no
     # answer to this one.
     document, problem = read_pointer(pointer)
-    named = document.get("home")
-    if not problem and isinstance(named, str) and named.strip():
-        return False
+    for key in ("home", DATA_KEY, REQUEST_KEY):
+        named = document.get(key)
+        if not problem and isinstance(named, str) and named.strip():
+            return False
     return not Layout(default, payload).env_python.exists()
 
 
@@ -1158,9 +1243,12 @@ def refuse_location(chosen: str, install: Path | None = None, payload: Path | No
     # path with a typo in it would otherwise leave an empty tree behind on a
     # disk nobody meant to touch, written while the question is still open.
     # `exists` and not `is_dir`, so a file where a folder should be stops the
-    # walk and fails the probe, which is the answer.
+    # walk and is refused as a file (TASK-097 review: the write probe's Errno 2
+    # under it said "cannot write" and not why).
     here = next((candidate for candidate in (resolved, *resolved.parents) if candidate.exists()),
                 resolved)
+    if not here.is_dir():
+        return f"{here} is a file, not a folder. Choose a folder, or a new one."
     probe = here / ".myscribe-write-test"
     try:
         probe.write_text("", encoding="utf-8")
@@ -1187,6 +1275,38 @@ def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | N
     ``layout.home`` is the default home, and the volumes are handed in so a
     test can put two of them on a machine that has one.
     """
+    lines = [
+        f"Where should {APP_NAME} keep everything?",
+        "",
+        f"{APP_NAME} keeps the speech engine, the models, your recordings and its database in "
+        f"one folder. The default is {layout.home}.",
+        "",
+    ]
+    lines += install_lines(layout, volumes, platform, machine)
+    lines += [
+        "",
+        f"Keep the default, or give a folder on another disk. {APP_NAME} does not move an "
+        "install that is already there: this question is asked once, before anything is "
+        "downloaded.",
+        "",
+        ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer),
+        "",
+        NOT_A_SHARE,
+    ]
+    return "\n".join(lines)
+
+
+NOT_A_SHARE = (
+    "Not a folder on a network share: the library is SQLite with a write-ahead log, which "
+    "does not work over a network filesystem. A mapped drive letter hides the same problem "
+    f"and {APP_NAME} cannot detect it."
+)
+
+
+def install_lines(layout: Layout, volumes: Iterable[Path] | None = None,
+                  platform: str | None = None, machine: str | None = None) -> list[str]:
+    """What this install downloads, the room it needs and the free space per
+    volume: the middle of both folder questions."""
     platform = sys.platform if platform is None else platform
     size = install_size(layout, platform, machine)
     volumes = local_volumes(platform) if volumes is None else list(volumes)
@@ -1196,13 +1316,7 @@ def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | N
     anchor = Path(layout.home.anchor) if layout.home.anchor else None
     if anchor is not None and anchor not in volumes:
         volumes.append(anchor)
-    lines = [
-        f"Where should {APP_NAME} keep everything?",
-        "",
-        f"{APP_NAME} keeps the speech engine, the models, your recordings and its database in "
-        f"one folder. The default is {layout.home}.",
-        "",
-    ]
+    lines: list[str] = []
     parts = [f"{size['weights_gb']:.1f} GB of speech models for this machine (measured, from the "
              "catalogue that ships)"]
     if size["environment_gb"]:
@@ -1228,24 +1342,12 @@ def location_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | N
         free = free_gb(volume)
         lines.append(f"  {volume}  {free:.1f} GB free" if free is not None
                      else f"  {volume}  could not be measured")
-    lines += [
-        "",
-        f"Keep the default, or give a folder on another disk. {APP_NAME} does not move an "
-        "install that is already there: this question is asked once, before anything is "
-        "downloaded.",
-        "",
-        ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer),
-        "",
-        "Not a folder on a network share: the library is SQLite with a write-ahead log, which "
-        "does not work over a network filesystem. A mapped drive letter hides the same problem "
-        f"and {APP_NAME} cannot detect it.",
-    ]
-    return "\n".join(lines)
+    return lines
 
 
 def location_note(home: Path, pointer: Path, source: str) -> str:
     """What ``--setup`` says about where everything is, and how to move it."""
-    return (f"{APP_NAME} keeps everything in {home}, which came from {source}. "
+    return (f"{APP_NAME} keeps its speech engine in {home}, which came from {source}. "
             + ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer))
 
 
@@ -1287,34 +1389,30 @@ def locate_home(home_flag: Path | None, ask: Callable[[str], str | None] | None,
                    "there. If it is on a drive that is not plugged in, quit, plug it in and start "
                    f"{APP_NAME} again: nothing has been moved and nothing is lost.")
 
-    if not problem and not wants_location(default, payload, pointer, home_flag, environ):
-        return default  # answered already, or an install nothing here moves
-
-    if ask is None:
-        if problem:
-            report("error", f"{problem} {APP_NAME} cannot start until {pointer} names a folder "
-                            "that is there; it will not quietly start a second, empty library "
-                            "somewhere else.")
-            return None
-        report("status", f"{APP_NAME} keeps everything in {default}; nothing was asked, because "
-                         "nobody is at the screen. "
-                         + ROUTES_LATER.format(variable=HOME_VARIABLE, pointer=pointer))
+    if not problem:
+        # TASK-097: a first start no longer asks where the engine goes - it is
+        # the per-user default, or --home / MYSCRIBE_HOME. Where the library
+        # goes is `locate_library`'s question. What is left here is the repair
+        # of a pointer that names a home somebody moved before TASK-097.
         return default
 
-    if problem:
-        # Said out loud as well as shown on the question: the console and the
-        # log are where somebody looks afterwards for why they were asked.
-        report("error", problem)
+    if ask is None:
+        report("error", f"{problem} {APP_NAME} cannot start until {pointer} names a folder "
+                        "that is there; it will not quietly start a second, empty library "
+                        "somewhere else.")
+        return None
+
+    # Said out loud as well as shown on the question: the console and the log
+    # are where somebody looks afterwards for why they were asked.
+    report("error", problem)
     question = location_question(Layout(default, payload), pointer, volumes, platform)
-    message = f"{problem}\n\n{question}" if problem else question
+    message = f"{problem}\n\n{question}"
     while True:
         answer = ask(message)
         if answer is None:
-            if problem:
-                report("error", f"Nothing was chosen, and {pointer} still names a folder that is "
-                                f"not there. {APP_NAME} cannot start.")
-                return None
-            return default
+            report("error", f"Nothing was chosen, and {pointer} still names a folder that is "
+                            f"not there. {APP_NAME} cannot start.")
+            return None
         refusal = refuse_location(str(answer), install=install, payload=payload)
         if refusal:
             report("error", refusal)
@@ -1328,6 +1426,277 @@ def locate_home(home_flag: Path | None, ask: Callable[[str], str | None] | None,
         if saved:
             report("error", saved)
         return home
+
+
+# --- where the library goes (TASK-097, ADR-036) ------------------------------------
+#
+# Asked by the Windows installer's page, or at a first start where there is
+# none. Settled here, before anything is downloaded, for every folder the
+# launcher can judge without the engine: the default, an empty or new folder,
+# a folder of other things, a folder it must refuse. A folder that already
+# holds a library is the engine's to adopt (ADR-019), after the download.
+
+
+LIBRARY_QUESTION = f"Where should {APP_NAME} keep your library?"
+
+
+def library_question(layout: Layout, pointer: Path, volumes: Iterable[Path] | None = None,
+                     platform: str | None = None, machine: str | None = None) -> str:
+    """The first start's library question, as text. ``layout.home`` is the
+    default home, which is also the answer that means "as today"."""
+    lines = [
+        LIBRARY_QUESTION,
+        "",
+        f"Your library is your recordings, their transcripts, {APP_NAME}'s database, the speech "
+        f"models and the app's log. The default is {layout.home}: keep it and the library goes "
+        f"where it always has, in {layout.home / 'data'}.",
+        "",
+        "Give an empty folder, or a new one, and the library goes there. A folder that holds "
+        f"other files gets a {APP_NAME} folder inside it. A folder that already holds a "
+        f"{APP_NAME} library (myscribe.db) is shown with its recordings after the download, "
+        "and used only when you choose it.",
+        "",
+        f"The speech engine itself always goes to {layout.home}; to put it elsewhere, start "
+        f"{APP_NAME} with --home PATH or set {HOME_VARIABLE}.",
+        "",
+    ]
+    lines += install_lines(layout, volumes, platform, machine)
+    lines += [
+        "",
+        "This question is asked once, before anything is downloaded.",
+        "",
+        NOT_A_SHARE,
+    ]
+    return "\n".join(lines)
+
+
+def library_database(folder: Path) -> Path | None:
+    """The folder that holds a library's database: ``folder`` itself, or its
+    ``data/`` - which is what a home from before TASK-097 looks like, with
+    env/ and cache/ beside it. None when neither does."""
+    for candidate in (folder, folder / "data"):
+        if any((candidate / name).is_file() for name in LIBRARY_NAMES):
+            return candidate
+    return None
+
+
+def library_recordings(folder: Path | None) -> int | None:
+    """How many recordings the library in ``folder`` holds - media rows not
+    in the trash, the count ``scribe.setup._recordings`` asks with - or None
+    when its database cannot be read. 0 for no folder, and for a database
+    without a media table yet.
+
+    Opened read-only: the launcher looks, and never writes into a library.
+    None is "we do not know", which the one caller reads as "it may hold
+    recordings" - the answer that moves nothing."""
+    if folder is None:
+        return 0
+    database = next((folder / name for name in LIBRARY_NAMES if (folder / name).is_file()), None)
+    if database is None:
+        return 0
+    # Here, so that a start that never asks again never loads it; PyInstaller
+    # finds an import inside a function as well and bundles the module.
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"{database.absolute().as_uri()}?mode=ro", uri=True, timeout=2)
+        try:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='media'").fetchone() is None:
+                return 0
+            return int(conn.execute("SELECT COUNT(*) FROM media WHERE trashed_at IS NULL").fetchone()[0])
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+
+
+def _empty(folder: Path) -> bool:
+    """Not there yet, or a folder with nothing in it."""
+    if not folder.exists():
+        return True
+    try:
+        return folder.is_dir() and not any(folder.iterdir())
+    except OSError:
+        return False
+
+
+def _today(text: str, home: Path) -> bool:
+    """Does this folder mean today's layout - the home itself, or its data?"""
+    try:
+        chosen = Path(str(text).strip().strip('"')).resolve()
+        home = Path(home).absolute()
+        return any(os.path.normcase(str(chosen)) == os.path.normcase(str(today.resolve()))
+                   for today in (home, home / "data"))
+    except OSError:
+        return False
+
+
+def judge_library(text: str, home: Path, install: Path | None = None,
+                  payload: Path | None = None) -> tuple[str, Path | None, str]:
+    """What a folder somebody asked for means: ``("today", None, "")``,
+    ``("new", folder, "")``, ``("offer", folder, "")`` or ``("refuse", None,
+    sentence)``. Creates nothing."""
+    refusal = refuse_location(text, install=install, payload=payload)
+    if refusal:
+        return "refuse", None, refusal
+    chosen = Path(str(text).strip().strip('"')).resolve()
+    home = Path(home)
+    for folder in (chosen, chosen / APP_NAME):
+        # The home, or its data, is today's layout - also when it is reached
+        # through the MyScribe subfolder of the folder above it. Anywhere else
+        # under the home is the engine's: env/, cache/ and logs/ live there.
+        if _today(str(folder), home):
+            return "today", None, ""
+        if _inside(folder, home):
+            return "refuse", None, (
+                f"{folder} is inside {home.absolute()}, where the speech engine lives. Choose a "
+                f"folder outside it, or keep {home.absolute()} to keep the library where it "
+                f"always was, in {home.absolute() / 'data'}.")
+        held = library_database(folder)
+        if held is not None:
+            return "offer", held, ""
+        if _empty(folder):
+            return "new", folder, ""
+        if folder.exists() and not folder.is_dir():
+            break
+    return "refuse", None, (
+        f"{chosen} holds other files, and so does {chosen / APP_NAME}, and neither holds a "
+        f"{APP_NAME} library. Choose an empty folder, a new one, or the folder of a library you "
+        "already have.")
+
+
+def locate_library(ask: Callable[[str], str | None] | None, report: Callable[[str, str], None],
+                   payload: Path, pointer: Path, home: Path, install: Path | None = None,
+                   volumes: Iterable[Path] | None = None,
+                   platform: str | None = None) -> tuple[Path | None, Path | None] | None:
+    """Where the library goes: ``(data, offer)``, or None when the launcher
+    must stop.
+
+    ``data`` is a new library folder, made and written into the pointer as
+    ``"data"`` here (ADR-036); ``offer`` is a folder that holds a library,
+    for the first sitting to list with its numbers - the engine adopts it, or
+    not (ADR-019). ``(None, None)`` is today's layout, ``<home>/data``.
+
+    Called only for a pointer that names no ``"data"`` yet, and never under a
+    home given by hand. A request that cannot be used does not stop a door
+    where nobody is at the screen (Robert, 2026-10-25): it starts on
+    ``<home>/data`` and says, with the refusal's sentence, that the request
+    was not used. The request stays in the pointer. While no sitting has
+    ended and ``<home>/data`` holds no recordings, the next start with its
+    window asks the question again with that sentence; a door without one
+    says the same again; once a sitting has ended, or somebody recorded into
+    ``<home>/data``, the request is dropped, as any request is beside a
+    library that is already there.
+    """
+    platform = sys.platform if platform is None else platform
+    install = install_dir() if install is None else install
+    document, problem = read_pointer(pointer)
+    request = document.get(REQUEST_KEY) if not problem else None
+    request = request.strip() if isinstance(request, str) and request.strip() else ""
+    question = ""
+
+    if request:
+        if _today(request, Path(home)):
+            # The page left as it was prefilled: today's layout, at this start
+            # and every later one - also once the app has made <home>/data's
+            # library, which the guard below would otherwise call "another".
+            return None, None
+        held = library_database(Path(home) / "data")
+        kind, offered, _sentence = (judge_library(request, Path(home), install, payload)
+                                    if held is not None else ("", None, ""))
+        if kind == "offer" and setup_needed(Layout(home, payload)):
+            # TASK-097 review: the first start was headless, or its sitting was
+            # closed, and the app made its own library in <home>/data. No
+            # sitting has ended, so the offer still stands: the engine decides,
+            # and it offers a library only while this one holds no recordings.
+            report("status", f"{offered} already holds a {APP_NAME} library; the setup questions "
+                             "offer it again, and it is used only when you choose it there.")
+            return None, offered
+        if (kind == "refuse" and setup_needed(Layout(home, payload))
+                and library_recordings(held) == 0):
+            # A door without a window started on <home>/data over this request
+            # (Robert, 2026-10-25). No sitting has ended, so it is still asked:
+            # the question below says that library stays where it is. Only
+            # while that library holds no recordings (TASK-097 review): once
+            # somebody recorded into it, a start never offers to swap it.
+            pass
+        elif held is not None:
+            # An update of an install that never moved anything has no pointer
+            # file, so the installer may have asked. A library is already
+            # here, and a request is never a reason to swap it for another.
+            update_pointer(pointer, {REQUEST_KEY: None})
+            report("status", f"{APP_NAME} keeps using the library in {held}; the folder asked for, "
+                             f"{request}, is not used and nothing was moved. "
+                             + CHANGE_LIBRARY_LATER)
+            return None, None
+        answer: str | None = request
+    elif ask is not None and wants_location(Path(home), payload, pointer):
+        question = library_question(Layout(home, payload), pointer, volumes, platform)
+        answer = ask(question)
+        if answer is None:
+            return None, None  # "keep the default": today's layout, nothing written
+    else:
+        if ask is None and wants_location(Path(home), payload, pointer):
+            report("status", f"{APP_NAME} keeps your library in {Path(home) / 'data'}; nothing was "
+                             "asked, because nobody is at the screen. " + CHANGE_LIBRARY_LATER
+                             + f" The speech engine stays in {home}; --home PATH or "
+                             f"{HOME_VARIABLE} put it elsewhere.")
+        return None, None
+
+    while True:
+        kind, folder, sentence = judge_library(str(answer), Path(home), install, payload)
+        if kind == "new":
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                kind, sentence = "refuse", f"{folder} could not be made ({error})."
+        if kind != "refuse":
+            break
+        report("error", sentence)
+        if ask is None:
+            # Robert, 2026-10-25: nobody is at the screen, so start on the
+            # default and say so; the request stays for a start with a window.
+            report("warning", f"{APP_NAME} starts with its library in {Path(home) / 'data'}: the library "
+                            f"folder asked for, {answer}, was not used. The request stays in {pointer}; "
+                            "the next start with its window asks again, until the first setup "
+                            f"questions have been answered. Remove \"{REQUEST_KEY}\" from that file "
+                            "to keep the default without being asked.")
+            return None, None
+        if not question:
+            question = library_question(Layout(home, payload), pointer, volumes, platform)
+            held = library_database(Path(home) / "data")
+            if held is not None:
+                question = (f"A {APP_NAME} library is already in {held}; it stays where it is "
+                            "whatever you choose, and keeping the default keeps using it.\n\n"
+                            + question)
+        answer = ask(f"{sentence}\n\n{question}")
+        if answer is None:
+            if request:
+                update_pointer(pointer, {REQUEST_KEY: None})
+            return None, None
+
+    if kind == "today":
+        return None, None
+    if kind == "new":
+        saved = update_pointer(pointer, {DATA_KEY: str(folder), REQUEST_KEY: None})
+        if saved:
+            report("error", saved + " MyScribe uses the library there for this start only.")
+        report("status", f"{APP_NAME} keeps your library in {folder}.")
+        return folder, None
+    if os.path.normcase(str(answer).strip().strip('"')) != os.path.normcase(request):
+        saved = update_pointer(pointer, {REQUEST_KEY: str(Path(str(answer).strip().strip('"')).resolve())})
+        if saved:
+            report("error", saved)
+    report("status", f"{folder} already holds a {APP_NAME} library. After the speech engine is "
+                     "installed, the setup questions show what it holds; it is used only when you "
+                     "choose it there.")
+    return None, folder
+
+
+CHANGE_LIBRARY_LATER = (
+    "To use another library, quit MyScribe and start it with --setup, which offers one while this "
+    "library holds no recordings."
+)
 
 
 # --- one instance -----------------------------------------------------------------
@@ -2467,12 +2836,22 @@ class Launch:
                                  f"given by hand (--home or {HOME_VARIABLE}), which keeps everything under "
                                  "it. Start without it to keep this library.")
         else:
-            problem = write_pointer_data(self.layout.pointer, where)
+            # The request is settled by this too (TASK-097): it was the engine's to decide.
+            problem = update_pointer(self.layout.pointer, {DATA_KEY: str(where), REQUEST_KEY: None})
             if problem:
                 self.report("error", problem)
         self.layout = Layout(self.layout.home, self.layout.payload, self.layout.windows,
                              data=where, pointer=self.layout.pointer)
         self.report("status", f"{APP_NAME} now uses the library at {where}.")
+
+    def settle_offer(self) -> None:
+        """A sitting that applied without adopting the offered library decided
+        against it: the request is done with (TASK-097)."""
+        if self.layout.offer is not None and self.layout.pointer is not None:
+            problem = update_pointer(self.layout.pointer, {REQUEST_KEY: None})
+            if problem:
+                self.report("error", problem)
+        self.layout.offer = None
 
     def apply(self, answers: dict) -> tuple[int, list[str]]:
         """Hand the answers to the engine, returning its exit code and what it
@@ -2907,8 +3286,9 @@ def console_sitting(launch: Launch, report: Callable[[str, str], None]) -> None:
     # holds its own answers, and this engine asks for them against it.
     for _ in range(2):
         take_setup_result(launch.layout)
+        offered = (["--library", str(launch.layout.offer)] if launch.layout.offer is not None else [])
         try:
-            subprocess.call([str(launch.layout.env_python), "-m", "scribe.setup"],
+            subprocess.call([str(launch.layout.env_python), "-m", "scribe.setup", *offered],
                             cwd=str(launch.layout.app_dir), env=setup_environment(launch.layout))
         except Exception as error:
             report("error", f"The setup questions could not be asked: {error}. MyScribe starts anyway; "
@@ -2933,7 +3313,9 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
     it again at the next start (TASK-089.11).
     """
     applied = False
-    named: list[str] = []
+    # TASK-097: the library asked for at install, listed with its numbers in
+    # the first plan, as a folder typed in an earlier pass is.
+    named: list[str] = [str(launch.layout.offer)] if launch.layout.offer is not None else []
     while True:
         plan = launch.watching(setup_plan, launch.layout, report, unasked_only=not force_setup,
                                **({"named": named} if named else {}))
@@ -2968,6 +3350,7 @@ def open_sitting(launch: Launch, ask: Callable[[dict], dict | None],
         if retry is None or not retry(sentence):
             break
     if applied:
+        launch.settle_offer()
         launch.watching(run_prove, launch.layout, report, launch.port)
 
 
@@ -3036,6 +3419,85 @@ answered) end with 0 and say why in the log: a restart cannot plug a drive in,
 and under launchd it would retry a multi-GB sync every ten seconds. 70 is
 EX_SOFTWARE from sysexits.h, clear of the 1 Python itself exits with on an
 uncaught exception (TASK-112.02)."""
+
+# --- a crashed app is started again (TASK-112.10, ADR-037) -----------------------
+
+RESTART_LIMIT = 5
+RESTART_WINDOW = 300.0
+RESTART_DELAY = 5.0
+"""At most `RESTART_LIMIT` restarts in any `RESTART_WINDOW` seconds, each after
+`RESTART_DELAY` seconds: the systemd unit's `StartLimitBurst=5`,
+`StartLimitIntervalSec=300` and `RestartSec=5` (Robert, 2026-10-25). A crash after
+hours of serving finds its budget back. A crash that repeats is given up on
+at the sixth crash, 5 x (RESTART_DELAY + L) seconds after the first one, where
+L is how long each restarted app lives, its start-up included: 25 s for L = 0,
+about 1.5 to 2 minutes for an app that dies once it serves (the real run of
+TASK-112.10 gave up 107.0 s in, after 6 kills), and just under 5 minutes as L
+nears 55 s. An app that lives 55 s or more each time never exhausts the
+window and is restarted for as long as it keeps crashing, once a minute at
+most - as systemd does with the same numbers."""
+
+SUPERVISED_UNIT = "myscribe.service"
+SUPERVISED_LABEL = "io.github.rvdbreemen.myscribe"
+"""The names `scribe/autostart.py` gives the systemd user unit (UNIT_NAME) and
+the LaunchAgent (LABEL). Spelled again rather than imported, like `APP_DIED`:
+the app is not importable from the launcher. A test holds them to its own."""
+
+CRASHED_JOB = ("A job that was running finishes by itself if its runner outlived the crash; "
+               "otherwise MyScribe marks it interrupted as it starts, and Retry on the jobs page "
+               "starts it over.")
+RESTARTING = ("Starting MyScribe again in {delay:g} s (restart {count} of at most {limit} in "
+              "{minutes:g} minutes). " + CRASHED_JOB)
+GAVE_UP = ("MyScribe stopped unexpectedly again after {limit} restarts in {minutes:g} minutes, so it "
+           "is not started again; see {log}. Start MyScribe by hand to try once more.")
+"""What the console door says about a crash it restarts and the one it gives
+up on. The job half is reconcile's (ADR-013, `scribe/supervisor.py`): a
+running row whose runner is dead becomes interrupted at the next start, one
+whose runner lives on is left to write its own verdict."""
+
+
+def os_supervisor(environ: dict | None = None, cgroup: Path | None = Path("/proc/self/cgroup")) -> str:
+    """"systemd" or "launchd" when MyScribe's own login entry started this
+    launcher and restarts it on `APP_DIED`, "" when nothing does.
+
+    Known by name, never by a variable being there at all. launchd puts the
+    job's label in XPC_SERVICE_NAME, but a shell in Terminal carries the
+    variable too (`0`, or Terminal's own name). systemd sets INVOCATION_ID,
+    but so does every other unit, a terminal server that runs as one
+    included; the cgroup it puts the unit's processes in is named after the
+    unit. The XDG autostart file and the Windows Run value watch nothing.
+    """
+    environ = os.environ if environ is None else environ
+    if environ.get("XPC_SERVICE_NAME") == SUPERVISED_LABEL:
+        return "launchd"
+    if cgroup is not None:
+        try:
+            lines = cgroup.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            if line.rpartition(":")[2].rstrip("/").rpartition("/")[2] == SUPERVISED_UNIT:
+                return "systemd"
+    return ""
+
+
+class RestartBudget:
+    """`limit` restarts in any `window` seconds; `spend` says whether one more fits."""
+
+    def __init__(self, limit: int | None = None, window: float | None = None,
+                 clock: Callable[[], float] = time.monotonic):
+        self.limit = RESTART_LIMIT if limit is None else limit
+        self.window = RESTART_WINDOW if window is None else window
+        self.clock = clock
+        self.spent: list[float] = []
+
+    def spend(self) -> bool:
+        now = self.clock()
+        self.spent = [then for then in self.spent if now - then < self.window]
+        if len(self.spent) >= self.limit:
+            return False
+        self.spent.append(now)
+        return True
 
 
 # --- the tray icon (TASK-112.11, ADR-038) ----------------------------------------
@@ -3217,6 +3679,99 @@ def tray_for(launch: Launch, platform: str = sys.platform) -> Tray | None:
     return None
 
 
+def _rest(stopping: threading.Event, seconds: float) -> bool:
+    """Sleep up to ``seconds``; True as soon as a stop is asked. In short
+    `time.sleep`s, which Ctrl+C and the SIGTERM handler interrupt on every
+    platform - a lock wait on Windows would hold them off until it ends."""
+    until = time.monotonic() + seconds
+    while not stopping.is_set():
+        left = until - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(0.1, left))
+    return True
+
+
+def keep_serving(launch: Launch, stopping: threading.Event, budget: RestartBudget) -> tuple[bool, bool]:
+    """Watch the app until it ends for good, starting a crashed one again
+    within ``budget`` (ADR-037); ``(stopped, gave_up)``.
+
+    ``stopping`` is the tray's Stop (ADR-038): asked while the app serves, in
+    the restart delay or while a restarted app comes up, it ends the watch as
+    a stop somebody asked for and never as a crash to restart. Under an OS
+    supervisor the first end is final; an exit of 0 - the stop route - too
+    (ADR-032)."""
+    supervisor = os_supervisor()
+    answered = True
+    while True:
+        while launch.app.alive():
+            if _rest(stopping, 0.5):
+                return True, False
+        if stopping.is_set():
+            return True, False
+        code = launch.app.exit_code()
+        if (not code and answered) or supervisor:
+            return False, False
+        if answered:  # `start_app` has said it for one that did not answer
+            launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); "
+                                   f"see {launch.layout.logs_dir / 'app.log'}.")
+        if not budget.spend():
+            return False, True
+        launch.report("status", RESTARTING.format(delay=RESTART_DELAY, count=len(budget.spent),
+                                                  limit=budget.limit, minutes=budget.window / 60))
+        if _rest(stopping, RESTART_DELAY):
+            return True, False
+        # One that does not answer is stopped - on POSIX its SIGTERM may end
+        # it with 0 - and the loop spends again.
+        answered = launch.start_app()
+        if stopping.is_set():
+            return True, False
+
+
+def _serve_beside_a_main_thread_tray(launch: Launch, tray: Tray, budget: RestartBudget):
+    """macOS: the status item keeps the main thread for the launcher's whole
+    life, across restarts too, and `keep_serving` runs on a thread of its own;
+    ``(stopped, gave_up, tray)``, the tray None when it failed.
+
+    Every way out waits for that thread before `launch.stop` can run: a stop
+    while it is inside `start_app` would leave the app it starts running
+    behind a launcher that has gone. Whatever the thread raised - a Ctrl+C in
+    a test's `start_app` - is raised here, on the main thread."""
+    stopping = tray.stop_asked
+    outcome: dict = {}
+
+    def watch() -> None:
+        try:
+            outcome["result"] = keep_serving(launch, stopping, budget)
+        except BaseException as error:  # noqa: BLE001  handed to the main thread
+            outcome["error"] = error
+
+    worker = threading.Thread(target=watch, name="myscribe-watch", daemon=True)
+    worker.start()
+    try:
+        try:
+            with stop_on_sigterm(then=tray.ask_stop):
+                if tray.serve_on_main_thread(worker.is_alive):
+                    stopping.set()
+        except Exception as error:  # no status bar after all: serve on without one
+            launch.report("busy", TRAY_NONE.format(reason=f"{type(error).__name__}: {error}"))
+            tray.close()
+            tray = None
+    finally:
+        # Normal return, a failed tray, or a Ctrl+C before the tray took SIGINT:
+        # the watch is ended and waited for, so only one thread starts apps.
+        with stop_on_sigterm(then=stopping.set):
+            while worker.is_alive():
+                try:
+                    worker.join(0.5)
+                except KeyboardInterrupt:
+                    stopping.set()
+    if "error" in outcome:
+        raise outcome["error"]
+    stopped, gave_up = outcome["result"]
+    return stopped, gave_up, tray
+
+
 def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = False) -> int:
     """The console door, and every build without Tk; the exit code is
     `APP_DIED`'s contract.
@@ -3228,6 +3783,21 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
 
     An app that never answered at start counts as a configuration problem and
     not as a crash: restarting it repeats the same failure.
+
+    An app that dies under a launcher no OS supervisor watches is started
+    again, up to `RESTART_LIMIT` times in `RESTART_WINDOW` (ADR-037,
+    TASK-112.10): the Windows Run value has nobody else to do it. A restart
+    that does not answer is spent like a crash. Under MyScribe's own systemd
+    unit or LaunchAgent (`os_supervisor`) the launcher exits `APP_DIED` at
+    once, as before, and the OS restarts it; both at once would be two
+    restarts for one crash. An exit of 0 - the stop route, from Settings or
+    `--stop` - and Ctrl+C or SIGTERM, also during a restart, are never
+    restarted (ADR-032).
+
+    The tray (ADR-038) is the launcher's and not one app's: made once after
+    the first app answers, up while a crashed app is started again, closed
+    after the stop or the give-up. Its Stop, also in the restart delay, is a
+    stop and never a crash to restart (`keep_serving`).
     """
     started = first_run(launch, None, launch.report, force_setup, at_login)
     if at_login and (launch.serving or (started and launch.app is not None)):
@@ -3242,32 +3812,30 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             keep_login_problem(launch.layout.home, launch.problem)
             launch.kept = launch.problem  # for the box, once the lock is let go (TASK-120)
         return 0
-    interrupted = False
+    interrupted = gave_up = False
+    budget = RestartBudget()
+    app_log = lambda: launch.layout.logs_dir / "app.log"  # noqa: E731  (only after a crash)
     tray = None
+    stopping = threading.Event()  # the tray's own once there is one
     try:
         # After the start, so a first sync at login has no icon that offers to
         # stop a MyScribe that is not there yet (TASK-112.11). Inside the try
         # and under a SIGTERM handler: importing pystray and Pillow takes some
         # 200 ms, and a Ctrl+C or a logout in it must still reach launch.stop().
+        # One tray for the launcher's whole life: it stays up across a restart.
         with stop_on_sigterm():
             tray = tray_for(launch)
+        if tray is not None:
+            stopping = tray.stop_asked
         if tray is not None and tray.main_thread:
-            try:
-                with stop_on_sigterm(then=tray.ask_stop):
-                    interrupted = tray.serve_on_main_thread(launch.app.alive)
-            except Exception as error:  # no status bar after all: serve on without one
-                launch.report("busy", TRAY_NONE.format(reason=f"{type(error).__name__}: {error}"))
-                tray.close()
-                tray = None
-        elif tray is not None:
-            tray.show()
-        if not interrupted:
+            interrupted, gave_up, tray = _serve_beside_a_main_thread_tray(launch, tray, budget)
+        else:
+            if tray is not None:
+                tray.show()
+            # One handler and one `finally` over the restarts too: a SIGTERM in
+            # the delay or while a restarted app comes up is a stop, not a crash.
             with stop_on_sigterm():
-                while launch.app.alive():
-                    if tray is not None and tray.stop_asked.is_set():
-                        interrupted = True  # Stop in the tray: a stop somebody asked for
-                        break
-                    time.sleep(0.5)
+                interrupted, gave_up = keep_serving(launch, stopping, budget)
     except KeyboardInterrupt:
         interrupted = True
     finally:
@@ -3277,10 +3845,14 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             tray.close()  # after the stop: the icon says "stopping" while it runs
     if interrupted:
         return 0
+    if gave_up:
+        launch.report("error", GAVE_UP.format(limit=budget.limit, minutes=budget.window / 60, log=app_log()))
+        if at_login:
+            keep_login_problem(launch.layout.home, launch.problem)  # the next start by hand says it
+        return APP_DIED
     code = launch.app.exit_code()
     if code:
-        launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see "
-                               f"{launch.layout.logs_dir / 'app.log'}.")
+        launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see {app_log()}.")
         return APP_DIED
     launch.report("status", "MyScribe stopped.")
     return 0
@@ -3361,7 +3933,10 @@ def ask_location(message: str) -> str | None:
     from tkinter import filedialog
 
     root = tk.Tk()
-    root.title(f"Where should {APP_NAME} keep everything?")
+    # The question's own line: the library question (TASK-097), or the repair
+    # of a home that is not there, whatever sentence was put above it.
+    root.title(next((line for line in message.splitlines() if line.startswith("Where should")),
+                    APP_NAME))
     chosen: dict = {}
 
     tk.Label(root, text=message, justify="left", anchor="w").pack(
@@ -4208,10 +4783,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     before_home = [True]
 
     def console(state: str, text: str) -> None:
+        # A warning is a line the start goes on after, so it is no problem to
+        # show in a window; it is kept in the early log as an error is.
         if state == "error":
             problems.append(text)
-            if before_home[0]:  # no launcher.log to say it in yet (TASK-112.02)
-                write_early([text])
+        if state in ("error", "warning") and before_home[0]:
+            write_early([text])  # no launcher.log to say it in yet (TASK-112.02)
         print(text, flush=True)
 
     quiet = args.sync_only or args.doctor is not None or args.smoke
@@ -4235,16 +4812,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         return stopped
     # TASK-089.19: an adopted library, the pointer's second fact. Not under a
     # home given by hand: `--home` and MYSCRIBE_HOME mean "everything here".
-    data, missing, pointer = None, "", None
+    data, missing, pointer, offer = None, "", None, None
     if args.home is None and not os.environ.get(HOME_VARIABLE):
         pointer = pointer_path()
         data, missing = adopted_data(pointer)
+        if data is None and not missing:
+            # TASK-097: where the library goes - the installer's request, or
+            # the first start's question where there is no installer page -
+            # settled before anything is written under the home or downloaded.
+            settled = locate_library(ask_location if windowed and not args.at_login else None,
+                                     console, payload, pointer, home)
+            if settled is None:
+                if windowed and problems:
+                    show_error(problems[-1])
+                return stopped
+            data, offer = settled
     if missing:
         console("error", missing)
         if windowed:
             show_error(missing)
         return stopped
-    layout = Layout(home, payload, data=data, pointer=pointer)
+    layout = Layout(home, payload, data=data, pointer=pointer, offer=offer)
     before_home[0] = False
     # One launcher per home from here on (TASK-112.07): before the /health
     # probe in `Launch.prepare`, before the sync, before the app.
@@ -4294,7 +4882,8 @@ def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, 
     which is why it is handed on."""
     if args.setup:  # where everything is, and the three ways to move it (ADR-015)
         pointer = pointer_path()
-        console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer)))
+        console("status", location_note(layout.home, pointer, home_source(args.home, pointer=pointer))
+                + f" Your library is in {layout.data_dir}.")  # apart from the home since TASK-097
 
     if quiet:
         # `floor=False`: --smoke, --sync-only and --doctor install and then

@@ -67,32 +67,57 @@ workflow, the tag and the commit the file was built from.
 
 ## The first start
 
-**1. Where MyScribe keeps its files.** The first window asks for one folder -
-the *home* - and shows the free space on each drive and how much will be
-downloaded. The home holds the speech engine and its caches, and your library
-in its `data` folder:
+**1. Where MyScribe keeps your library.** The library is your recordings,
+their transcripts, the database, the speech models and the app's log. On
+Windows the installer asks where it goes, on the page after the program
+folder; on macOS and Linux the first start asks, before anything is
+downloaded, and shows the free space on each drive. A silent Windows install
+takes the folder from `/LIBRARY=D:\Data\MyScribe`.
+
+- Keep the default and the library goes where it always has, in the `data`
+  folder of the per-user *home*.
+- An empty folder, or one that does not exist yet, becomes the library.
+- A folder with other files in it gets a `MyScribe` folder inside it.
+- A folder that already holds a MyScribe library (`myscribe.db`, or a former
+  home with `data\myscribe.db`) is shown with its recordings and size after
+  the download, and used only when you choose it there.
+- A network share, a file, a folder inside the program folder or one inside
+  the home (other than its `data`) is refused with the reason. With its
+  window MyScribe asks again; started without one (at login, or from a
+  console) it starts with the library in the home's `data` and says the
+  folder was not used. The request is kept, and the next start with the
+  window asks again until the first setup questions have been answered.
+- If the first start does not get to the setup questions, a library you chose
+  is offered again at the next start.
+
+The speech engine and its caches always go to the home; start MyScribe with
+`--home PATH`, or set `MYSCRIBE_HOME`, to put them elsewhere. Before the
+download MyScribe checks the free space on the home's drive for the engine and
+on the library's drive for the models and working room:
 
 ```
 <home>\                  %LOCALAPPDATA%\MyScribe by default
 ├── env\  python\  cache\  bin\    the speech engine - can be downloaded again
-├── logs\launcher.log
-└── data\                          your library
+├── logs\launcher.log  logs\app.log
+└── data\                          your library, unless you chose another folder
     ├── myscribe.db
     ├── media\  models\  work\  logs\
 ```
 
 On macOS the default home is `~/Library/Application Support/MyScribe`, on
-Linux `~/.local/share/MyScribe`. Your choice is remembered in a small file
-beside the default home, `MyScribe.location`.
+Linux `~/.local/share/MyScribe`. Where the library is, is remembered in a
+small file beside the default home, `MyScribe.location`. An update never asks
+again, and uninstalling leaves both.
 
 The speech models (about 1.6 GB) are the one large thing that can live
-outside the home. The models setup downloads go to `data\models`. A model
+outside the library. The models setup downloads go to the library's `models`
+folder. A model
 that was not downloaded there - when setup's download was skipped, for
 instance - is fetched by the speech engine itself on first use, into the
 Hugging Face cache: `~/.cache/huggingface/hub`, or wherever `HF_HUB_CACHE` or
 `HF_HOME` points. MyScribe uses either copy and does not download a model
-twice. To keep everything on the home's drive, let setup download the models,
-or point `HF_HOME` at a folder on that drive.
+twice. To keep the models with the library, let setup download them, or
+point `HF_HOME` at a folder on the library's drive.
 
 **2. The download.** MyScribe downloads the speech engine (a few GB) and shows
 its progress. Later starts skip this.
@@ -235,7 +260,7 @@ home. It leaves:
   `D:\Data\MyScribe.lock` and `D:\Data\MyScribe-at-login.txt`; they stay too,
   and can go with the home.
 - `%LOCALAPPDATA%\MyScribe.location`, the small file that remembers where your
-  home is. Safe to delete once the home is gone.
+  library (and a home you moved) is. Safe to delete once both are gone.
 - Ollama and its models, if MyScribe installed them: they are an ordinary
   Ollama install. Remove Ollama under Settings > Apps, as
   [Ollama's own page](https://docs.ollama.com/windows) describes; its models

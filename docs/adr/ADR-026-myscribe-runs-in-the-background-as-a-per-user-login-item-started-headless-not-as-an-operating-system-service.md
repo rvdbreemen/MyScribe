@@ -10,6 +10,7 @@ verified_in: []
 supersedes: []
 superseded_by: null
 related:
+  - "ADR-037"
   - "ADR-038"
   - "ADR-039"
 topics:
