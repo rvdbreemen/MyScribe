@@ -236,6 +236,18 @@ def bundle(tmp_path) -> Path:
     return usr_bin
 
 
+def default_parent(tmp_path: Path) -> Path:
+    """The folder the script's default home sits in, with HOME=tmp_path and
+    XDG_DATA_HOME=tmp_path/xdg: ~/Library/Application Support on a Mac, the
+    XDG data folder elsewhere - the launcher's rule (myscribe_launcher.home_dir),
+    which the script copies. Asked of `uname -s` through the same sh, the way
+    the script asks it, so the test and the script cannot disagree about the OS."""
+    system = subprocess.run([SH, "-c", "uname -s"], capture_output=True, text=True).stdout.strip()
+    if system == "Darwin":
+        return tmp_path / "Library" / "Application Support"
+    return tmp_path / "xdg"
+
+
 def run_sh(script: Path, *args: str, env: dict, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run([SH, str(script), *args], capture_output=True, text=True, env=env,
                           timeout=60, cwd=str(cwd or script.parent))
@@ -292,38 +304,38 @@ def test_the_posix_script_passes_the_exit_code_through(bundle, tmp_path):
 
 @posix
 def test_the_posix_script_follows_the_pointer_file(bundle, tmp_path):
-    data_home = tmp_path / "xdg"
-    (data_home).mkdir()
+    data_home = default_parent(tmp_path)
+    data_home.mkdir(parents=True)
     moved = tmp_path / "moved home"
     posix_home(moved)
     (data_home / "MyScribe.location").write_text(
         json.dumps({"home": as_posix(moved), "data": "/elsewhere"}, indent=2), encoding="utf-8")
     done = run_sh(bundle / "myscribe-cli", "status",
-                  env=clean_env(XDG_DATA_HOME=as_posix(data_home), HOME=as_posix(tmp_path)))
+                  env=clean_env(XDG_DATA_HOME=as_posix(tmp_path / "xdg"), HOME=as_posix(tmp_path)))
     assert done.returncode == 0, done.stderr
     assert seen(done)["python"].endswith("moved home/env/bin/python")
 
 
 @posix
 def test_the_posix_script_refuses_a_pointer_it_cannot_read(bundle, tmp_path):
-    data_home = tmp_path / "xdg"
-    data_home.mkdir()
+    data_home = default_parent(tmp_path)
+    data_home.mkdir(parents=True)
     (data_home / "MyScribe.location").write_text(json.dumps({"home": "/home/h\u00e9"}, indent=2),
                                                  encoding="utf-8")
     done = run_sh(bundle / "myscribe-cli", "status",
-                  env=clean_env(XDG_DATA_HOME=as_posix(data_home), HOME=as_posix(tmp_path)))
+                  env=clean_env(XDG_DATA_HOME=as_posix(tmp_path / "xdg"), HOME=as_posix(tmp_path)))
     assert done.returncode == 2
     assert "MYSCRIBE_HOME" in done.stderr
 
 
 @posix
 def test_the_posix_script_uses_the_default_home(bundle, tmp_path):
-    data_home = tmp_path / "xdg"
+    data_home = default_parent(tmp_path)
     posix_home(data_home / "MyScribe")
     done = run_sh(bundle / "myscribe-cli", "status",
-                  env=clean_env(XDG_DATA_HOME=as_posix(data_home), HOME=as_posix(tmp_path)))
+                  env=clean_env(XDG_DATA_HOME=as_posix(tmp_path / "xdg"), HOME=as_posix(tmp_path)))
     assert done.returncode == 0, done.stderr
-    assert seen(done)["python"].endswith("xdg/MyScribe/env/bin/python")
+    assert seen(done)["python"].endswith(f"{data_home.name}/MyScribe/env/bin/python")
 
 
 @posix
