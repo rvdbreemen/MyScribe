@@ -2909,8 +2909,14 @@ RESTART_DELAY = 5.0
 """At most `RESTART_LIMIT` restarts in any `RESTART_WINDOW` seconds, each after
 `RESTART_DELAY` seconds: the systemd unit's `StartLimitBurst=5`,
 `StartLimitIntervalSec=300` and `RestartSec=5` (Robert, 2026-10-25). A crash after
-hours of serving finds its budget back; a crash that repeats at every start
-is given up on within a minute or so instead of being retried for ever."""
+hours of serving finds its budget back. A crash that repeats is given up on
+at the sixth crash, 5 x (RESTART_DELAY + L) seconds after the first one, where
+L is how long each restarted app lives, its start-up included: 25 s for L = 0,
+about 1.5 to 2 minutes for an app that dies once it serves (the real run of
+TASK-112.10 gave up 107.0 s in, after 6 kills), and just under 5 minutes as L
+nears 55 s. An app that lives 55 s or more each time never exhausts the
+window and is restarted for as long as it keeps crashing, once a minute at
+most - as systemd does with the same numbers."""
 
 SUPERVISED_UNIT = "myscribe.service"
 SUPERVISED_LABEL = "io.github.rvdbreemen.myscribe"
