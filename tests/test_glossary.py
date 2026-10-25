@@ -637,6 +637,232 @@ def test_an_accented_vowel_is_a_vowel():
     assert _read(words_from("dat is zó anders"), [term("Sanders")]) == "dat is zó Sanders"
 
 
+# --- TASK-111: a lone function word, a middle word, a name and its "en" -------------
+
+
+@pytest.mark.parametrize(
+    ("sentence", "name"),
+    [
+        ("Ik zag het huis op de berg in Utrecht", "Hetty"),
+        ("Ik zag het huis op de berg in Utrecht", "Opa"),
+        ("Ik zag het huis op de berg in Utrecht", "Ina"),
+        ("Dat is er niet", "Isa"),
+        ("Dat is er niet", "Era"),
+        ("Jan en Piet", "Ena"),
+        ("Hij liep door de deur maar niet verder", "Doori"),
+        ("Hij liep door de deur maar niet verder", "Maars"),
+        ("the cat and the dog", "Thea"),
+        ("the cat and the dog", "Anda"),
+        ("it is on the table at noon", "Ito"),
+        ("it is on the table at noon", "Ona"),
+        ("it is on the table at noon", "Ata"),
+        ("we will see what you must do", "Will"),
+    ],
+)
+def test_a_lone_function_word_is_never_respelled_as_a_short_term(sentence, name):
+    """TASK-111. A one-word window only has to clear `fuzz.ratio` 85, or 70
+    with the same metaphone, and a two- or three-letter word against a name
+    one or two letters longer lands there: "het" is 75 against "Hetty" and
+    'HT' both ways, "the" 85.7 against "Thea". So "Ik zag het huis" read
+    "Ik zag Hetty huis". "door" and "maar" are four letters; the vendored
+    function-word list is what keeps them."""
+    assert _read(words_from(sentence), [term(name)]) == sentence
+
+
+def test_a_lone_word_of_three_letters_is_not_respelled_as_a_longer_name():
+    """The length guard, for words that are on no list: "Ari" is 85.7 against
+    "Arie". A lone word of three letters or fewer is corrected only when it is
+    spelled as a listed variant - the cost, measured in the TASK-111 sweep, is
+    that short names are no longer guessed."""
+    assert _read(words_from("Ik zag Ari gisteren"), [term("Arie")]) == "Ik zag Ari gisteren"
+
+
+@pytest.mark.parametrize(
+    ("sentence", "entry", "expected"),
+    [
+        ("Ik zag het huis", term("Hetty", variants=("het",)), "Ik zag Hetty huis"),
+        ("Het huis", term("Hetty", variants=("het",)), "Hetty huis"),
+        ("Ik zag Ari gisteren", term("Arie", variants=("Ari",)), "Ik zag Arie gisteren"),
+    ],
+)
+def test_a_short_word_listed_as_a_variant_is_still_corrected(sentence, entry, expected):
+    """A variant is the user saying that this spelling means that name, so
+    the guards stand aside for it."""
+    assert _read(words_from(sentence), [entry]) == expected
+
+
+@pytest.mark.parametrize(
+    ("sentence", "entry", "expected"),
+    [
+        ("de api werkt", term("API"), "de API werkt"),
+        ("de gpu is heet", term("GPU"), "de GPU is heet"),
+        ("het journaal van de nos", term("NOS"), "het journaal van de NOS"),
+        ("Api werkt", term("API"), "API werkt"),
+        ("een mp3 bestand", term("MP3"), "een MP3 bestand"),
+        ("de ios app", term("iOS"), "de iOS app"),
+    ],
+)
+def test_a_lone_word_gets_the_capitals_of_an_acronym_it_differs_from_only_in_case(
+    sentence, entry, expected
+):
+    """Robert's decision (2026-10-25): a listed term with two or more
+    capitals restores the capitals of a lone word that is the same word in
+    another case - "api" is "API", whatever the length guard says."""
+    assert _read(words_from(sentence), [entry]) == expected
+
+
+@pytest.mark.parametrize(
+    ("sentence", "entry", "expected"),
+    [
+        # A function word never takes an acronym's capitals.
+        ("it is on the table", term("IT"), "it is on the table"),
+        ("Tell us more", term("US"), "Tell us more"),
+        ("I can do it", term("CAN"), "I can do it"),
+        ("you may go", term("MAY"), "you may go"),
+        ("you must go", term("MUST"), "you must go"),
+        ("we will see", term("WILL"), "we will see"),
+        ("Ik ben er", term("BEN"), "Ik ben er"),
+        ("Ik ben er", term("Ben"), "Ik ben er"),
+        ("dat is het", term("DAT"), "dat is het"),
+        ("Het huis is van ons", term("ONS"), "Het huis is van ons"),
+        # One capital is a name, not an acronym: no capitals fixed.
+        ("Ik zag ida gisteren", term("Ida"), "Ik zag ida gisteren"),
+        # Only a difference in case, never a spelling.
+        ("de ap werkt", term("API"), "de ap werkt"),
+        ("de gp is heet", term("GPU"), "de gp is heet"),
+        # A variant still fixes a one-capital term.
+        ("Ik zag ida gisteren", term("Ida", variants=("ida",)), "Ik zag Ida gisteren"),
+    ],
+)
+def test_capitals_come_back_only_for_an_acronym_and_never_on_a_function_word(
+    sentence, entry, expected
+):
+    """The bounds of that decision: "it" never becomes IT, "ben" never Ben or
+    BEN, a one-capital name like "Ida" is still not guessed at, and a word
+    spelled differently ("ap", which sounds like "API") is still under the
+    length guard."""
+    assert _read(words_from(sentence), [entry]) == expected
+
+
+def test_a_short_term_spelled_right_still_claims_its_word():
+    """The guards stop a correction, never a claim: an exact "Ida" still
+    holds its word, so nothing else may be written over it (TASK-103)."""
+    words = words_from("Ik zag Ida en Eva")
+
+    assert glossary.corrections_for(words, [term("Ida"), term("Eva")]) == []
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Marieke en Vermeulen kwamen",
+        "Ik zag Marieke het Vermeulen gisteren",
+        "Ik zag Marieke op Vermeulen gisteren",
+    ],
+)
+def test_a_middle_word_that_is_not_a_piece_of_the_term_is_kept(sentence):
+    """TASK-111. `_covers` checked the first and the last word of a window,
+    never the one between them: "Marieke en Vermeulen" scores above the
+    threshold against "Marieke Vermeulen", both edges are pieces of it, and
+    "en" was deleted. Anchored to the first and the last word,
+    "marieke vermeulen" leaves only the space for the middle word."""
+    assert _read(words_from(sentence), [term("Marieke Vermeulen")]) == sentence
+
+
+@pytest.mark.parametrize(
+    ("sentence", "name", "expected"),
+    [
+        ("Ik zag Jan de Fries gisteren", "Jan de Vries", "Ik zag Jan de Vries gisteren"),
+        ("Ik zag Anna de Boer gisteren", "Anna de Boer", "Ik zag Anna de Boer gisteren"),
+        ("Ik zag Mar ie ke gisteren", "Marieke", "Ik zag Marieke gisteren"),
+        (
+            "Ik zag Ma rieke Vermeulen gisteren",
+            "Marieke Vermeulen",
+            "Ik zag Marieke Vermeulen gisteren",
+        ),
+    ],
+)
+def test_a_term_whose_middle_word_is_a_piece_of_it_is_still_corrected(sentence, name, expected):
+    """The control for the middle-word test: a real three-word split, or a
+    name with "de" in it, still matches."""
+    assert _read(words_from(sentence), [term(name)]) == expected
+
+
+@pytest.mark.parametrize(
+    ("sentence", "terms"),
+    [
+        ("Niels en Peter en ik", ["Niels", "Nielsen", "Peter", "Petersen"]),
+        ("Henk een boek", ["Henk", "Henken"]),
+        ("Henk den Uyl", ["Henk", "Henken"]),
+        ("Karel en ik", ["Karel", "Karelsen"]),
+    ],
+)
+def test_a_listed_name_keeps_the_function_word_after_it(sentence, terms):
+    """TASK-111, Robert's decision (option b, 2026-10-24): with "Niels" and
+    "Nielsen" both listed, "Niels en" is 93.3 against "Nielsen" and reached
+    past the claim of "Niels", so "Niels en Peter en ik" read "Nielsen
+    Petersen ik". When the head is itself a listed term and the word past it
+    is a function word, the join is refused."""
+    assert _read(words_from(sentence), [term(t) for t in terms]) == sentence
+
+
+@pytest.mark.parametrize(
+    ("sentence", "terms", "expected"),
+    [
+        ("Jan de Fries kwam", ["Jan", "Jan de Vries"], "Jan de Vries kwam"),
+        ("Henk van Dijck kwam", ["Henk", "Henk van Dijk"], "Henk van Dijk kwam"),
+        ("Jan de Fries kwam", ["Jan de Vries"], "Jan de Vries kwam"),
+    ],
+)
+def test_a_listed_first_name_does_not_stop_its_full_name_with_a_tussenvoegsel(
+    sentence, terms, expected
+):
+    """Option b refuses a join when the leftover past the claim is a function
+    word ("Niels en"), not whenever a function word is somewhere past it.
+    With "Jan" and "Jan de Vries" both listed, the leftover of "Jan de Fries"
+    is "de Fries": the name still needs its correction (review of 8ebaf4b)."""
+    assert _read(words_from(sentence), [term(t) for t in terms]) == expected
+
+
+@pytest.mark.parametrize(
+    ("sentence", "name", "expected"),
+    [
+        ("Niels en ik", "Nielsen", "Nielsen ik"),
+        ("Henk een boek", "Henken", "Henken boek"),
+        ("Henk den boek", "Henken", "Henken boek"),
+        ("Henk men boek", "Henken", "Henken boek"),
+    ],
+)
+def test_a_name_and_en_are_still_joined_when_only_the_longer_name_is_listed(
+    sentence, name, expected
+):
+    """The other half of option b: only the longer name listed, nothing
+    claims the head, and the text is the same as a split "Niels en". Joined,
+    as before; only the audio could tell. "een", "den" and "men" are 80
+    against the leftover "en", which is exactly `FUNCTION_WORD_EDGE_FLOOR`."""
+    assert _read(words_from(sentence), [term(name)]) == expected
+
+
+@pytest.mark.parametrize(
+    ("sentence", "name"),
+    [
+        ("Marieke are Vermeulen kwamen", "Marieke Vermeulen"),
+        ("Ik zag are Vermeulen", "Marieke Vermeulen"),
+        ("Anna er Boer kwamen", "Anna Boer"),
+    ],
+)
+def test_a_function_word_is_a_piece_of_a_term_only_when_spelled_as_that_piece(
+    sentence, name
+):
+    """TASK-111. `EDGE_WORD_FLOOR` (50) lets "are" stand for the "marieke" of
+    "Marieke Vermeulen" (60) and "er" for the "boer" of "Anna Boer" (66.7).
+    With the middle-word check refusing "Marieke are Vermeulen", the
+    two-word window behind it won and the name was doubled: "Marieke Marieke
+    Vermeulen kwamen". A function word at an edge must be spelled as its
+    piece of the term (`FUNCTION_WORD_EDGE_FLOOR`), and sound is not enough."""
+    assert _read(words_from(sentence), [term(name)]) == sentence
+
+
 def apply_in_memory(words: list[dict], fixes: list[glossary.Correction]) -> list[dict]:
     """The read-time join, done by hand: what the LEFT JOIN produces."""
     by_idx = {fix.word_idx: fix.corrected for fix in fixes}

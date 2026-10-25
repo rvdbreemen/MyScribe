@@ -92,13 +92,46 @@ likewise. Not a correction over the same
 words, so with "Jansen" and "Janssen" both listed neither is respelled as
 the other.
 
-Not decided by any of this: a name followed by a word that completes a
-longer listed name. "Niels en" is 93.3 against "Nielsen", and "en" is
-exactly the leftover, so with "Nielsen" listed it is joined - as it always
-was; "Henk en" with "Henken" likewise. The text is the same as a split
-"Niels en"; only the audio knows. With "Niels" listed as well, the claim
-does not stop it, and "een", "den" and "men" pass too (80 against "en"):
-"Henk een boek" reads "Henken boek", as it did before.
+A window of three words is checked in the middle as well (TASK-111): what
+lies between the first word's piece of the term and the last word's piece
+must be the middle word. "Marieke en Vermeulen" scored above the threshold
+against "Marieke Vermeulen", both edges are pieces of it, and "en" was
+deleted; the cuts leave "e ve" for it. "Jan de Fries" leaves "de". A
+function word at an edge or in the middle must be spelled as its piece
+(`FUNCTION_WORD_EDGE_FLOOR`, 80) and never only sound like it: at 50 "are"
+stood for the "marieke" of "Marieke Vermeulen" and "er" for the "boer" of
+"Anna Boer", and with the middle check in place "Marieke are Vermeulen"
+read "Marieke Marieke Vermeulen". Still joined: a middle word that spells
+a real piece, "Anna na Boer" ("an-NA boer") reads "Anna Boer".
+
+A lone word is not corrected if it has `SHORT_WORD_LETTERS` letters or fewer
+or is on the vendored Dutch and English function-word list
+(`function_words.txt`, Snowball plus six by hand), unless it is spelled as a variant the
+user listed (TASK-111). One word against a name a letter or two longer
+clears a rule easily: "het" is 75 against "Hetty" and 'HT' both ways, "the"
+85.7 against "Thea", "door" 88.9 against "Doori". A spelling already right
+still claims its word; only a correction is stopped. The cost is that a
+short name is no longer guessed: "Ari" is left for "Arie", "ida" for "Ida".
+The listed term itself is not a variant, so the capitals of a short name
+are not fixed either: "ida" stays with "Ida" listed, or "Ik ben er" would
+read "Ik Ben er" with "Ben" listed. An acronym is the exception (Robert's
+decision, 2026-10-25): a term with two or more capitals gives a lone word
+that differs from it only in case its capitals, "api" -> "API", "nos" ->
+"NOS", unless the word is a function word - "it" never becomes "IT", "ben"
+never "BEN". Only a lone word is guarded: "I saw it" with "Isa" listed still
+reads "Isa it", a two-word split whose pieces pass the edge test.
+
+A name followed by a word that completes a longer listed name: "Niels en"
+is 93.3 against "Nielsen", and "en" is exactly the leftover. Robert's
+decision (TASK-111, option b): when the head is itself a listed term - a
+claim - nothing reaches past it if every word past the claim is a function
+word, so with "Niels" and "Nielsen" both listed "Niels en Peter" stays, and
+so do "Henk een" and "Henk den" with "Henk" and "Henken". With only
+"Nielsen" listed there is no claim and it is joined, as it always was: the
+text is the same as a split "Niels en", and only the audio knows. The same
+rule refuses "Linked In" when "Linked" and "LinkedIn" are both listed. A
+function word followed by more of the name does not stop it: with "Jan" and
+"Jan de Vries" listed, "Jan de Fries" still reads "Jan de Vries".
 
 Known and accepted: the edge test refuses some splits the layer joined
 before TASK-110. In a sweep of 21,425 sound-alike splits (2026-10-12), 111
@@ -142,6 +175,7 @@ pay for them.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import re
@@ -189,6 +223,15 @@ MAX_WINDOW_WORDS = 3
 # words in "Jan en de Vries"-shaped sentences; 60 loses 8 real splits.
 EDGE_WORD_FLOOR = 50.0
 
+# The same, for an edge or middle word that is a function word, and with no
+# sound match: it must be spelled as its piece of the term (TASK-111). At 50
+# "are" stood for the "marieke" of "Marieke Vermeulen" (60) and "er" for the
+# "boer" of "Anna Boer" (66.7). 80 is exactly where "een", "den" and "men"
+# meet the "en" of "Henken", which Robert's decision keeps joined when only
+# the longer name is listed; "en", "in", "de", "my" and "op" as the exact
+# piece score 100.
+FUNCTION_WORD_EDGE_FLOOR = 80.0
+
 # How well the last word of a correction must be spelled as its piece of the
 # term (`fuzz.ratio`) for the correction to reach past a term already spelled
 # right. Measured (2026-10-12) on 1,320 sentences of a first name with a
@@ -197,9 +240,32 @@ EDGE_WORD_FLOOR = 50.0
 # "Peters" and is refused at any floor above it. 80 joins 152 of the 212 and
 # 75 no more; 85 drops 20 ("Java Skript" 83.3, "Jan de Fries" 80). Kept at
 # 80 because a missed join leaves Whisper's text and a wrong one deletes a
-# word. What 80 still lets through:
-# "een", "den" and "men" are 80 against the "en" of "Henken" (see below).
+# word. "een", "den" and "men" are 80 against the "en" of "Henken", but
+# past a claim a leftover of only function words joins no more (TASK-111,
+# option b); they join only when nothing claims the head - "Henken" listed
+# without "Henk". "Jan de Fries" (80) still joins past a listed "Jan": its
+# leftover "de Fries" is more than a function word.
 PAST_CLAIM_FLOOR = 80.0
+
+# A lone word this short is never corrected unless it is spelled as one of
+# the user's listed variants (TASK-111). Two or three letters against a name
+# one or two letters longer always clears a threshold: "het" is 75 against
+# "Hetty" and 'HT' on both metaphones, "the" 85.7 against "Thea". A miss
+# leaves Whisper's text; a hit respells "het" in every sentence it is in.
+SHORT_WORD_LETTERS = 3
+
+# Except a word that differs from a listed term only in case, where the term
+# has this many capitals or more and the word is no function word (Robert's
+# decision, 2026-10-25): "api", "gpu" and "nos" get the capitals of "API",
+# "GPU" and "NOS", while "it" stays with "IT" listed and "ben" with "Ben" or
+# "BEN". One capital is a name, and a name is not guessed: "ida" stays.
+ACRONYM_CAPITALS = 2
+
+# The words that are never respelled alone either, whatever their length:
+# Dutch and English function words: the Snowball stop word lists (BSD-3;
+# source, commits and licence in the file) plus six words added by hand. "door" and "maar"
+# are four letters and 88.9 against "Doori" and "Maars".
+FUNCTION_WORDS_PATH = Path(__file__).with_name("function_words.txt")
 
 RULE_FUZZY = "fuzzy"
 RULE_PHONETIC = "phonetic"
@@ -536,6 +602,16 @@ def corrections_for(
                     # Already spelled the way the glossary wants it: nothing to
                     # write, but the words are claimed (TASK-103).
                     replacement = None
+                elif (
+                    length == 1
+                    and _guarded(core)
+                    and not (needle != canonical and core.casefold() == needle.casefold())
+                    and not _acronym_case(core, needle)
+                ):
+                    # A lone short word or function word, and not a variant the
+                    # user listed in that spelling: "het" is not "Hetty"
+                    # (TASK-111). A claim above is never stopped here.
+                    continue
                 candidates.setdefault(start, []).append(
                     (plain, length, float(wratio), replacement, rule, last, needle)
                 )
@@ -556,6 +632,14 @@ def corrections_for(
         # "Sophie a" is a fuzzy match for a listed "Sophia", and would name
         # the other person and drop "a". Not one over the same words -
         # "Janssen" is 92.3 against a listed "Jansen", and both are wanted.
+        # And never when all that lies past the claim is function words
+        # (TASK-111, Robert's option b): with "Niels" and "Nielsen" listed,
+        # "Niels en" is 93.3 against "Nielsen" and "en" is exactly the rest
+        # of it, so "Niels en Peter" read "Nielsen Peter". All, not any:
+        # with "Jan" and "Jan de Vries" listed, "de Fries" is past the claim
+        # and the name still needs its correction. With only "Nielsen"
+        # listed there is no claim, and the join stays - the text of a split
+        # "Niels en" is the same.
         claimed = max((c[1] for c in here if c[3] is None), default=0)
         kept = _bare(
             "".join(str(w.get("text") or "") for w in rows[index : index + claimed])
@@ -571,6 +655,10 @@ def corrections_for(
                     c[4] == RULE_FUZZY
                     and c[5] >= PAST_CLAIM_FLOOR
                     and (_bare(c[3]).startswith(kept) or _bare(c[6]).startswith(kept))
+                    and not all(
+                        _is_function_word(_core(str(w.get("text") or "")))
+                        for w in rows[index + claimed : index + c[1]]
+                    )
                 )
             )
         ]
@@ -751,13 +839,19 @@ def _covers(span: Sequence[dict], needle: str) -> float | None:
     # A tie goes to the cut that leaves the edge word more of the term: "Jen"
     # matches "jan" and "jansen" equally (66.7), and "sen" is the second word.
     head = processed(texts[:-1])
-    cut = max(cuts, key=lambda k: (fuzz.ratio(head, target[:k]), -k))
-    leftover, last = target[cut:].strip(), processed(texts[-1:])
+    end = max(cuts, key=lambda k: (fuzz.ratio(head, target[:k]), -k))
+    leftover, last = target[end:].strip(), processed(texts[-1:])
     if not _edge_word(leftover, last):
         return None
     tail = processed(texts[1:])
-    cut = max(cuts, key=lambda k: (fuzz.ratio(tail, target[k:]), k))
-    if not _edge_word(target[:cut], processed(texts[:1])):
+    start = max(cuts, key=lambda k: (fuzz.ratio(tail, target[k:]), k))
+    if not _edge_word(target[:start], processed(texts[:1])):
+        return None
+    # The words between (TASK-111): what lies between the first word's piece
+    # and the last word's piece has to be them. "Marieke en Vermeulen" leaves
+    # "e ve" of "marieke vermeulen" for "en", and "en" was deleted; "Jan de
+    # Fries" leaves "de", "Mar ie ke" leaves "ie".
+    if len(texts) > 2 and not _edge_word(target[start:end], processed(texts[1:-1])):
         return None
     return float(fuzz.ratio(leftover, last))
 
@@ -768,18 +862,55 @@ def _edge_word(leftover: str, word: str) -> bool:
     "my" of "MyScribe" is 40 on spelling and 'M' on both metaphones. Not a
     word with a vowel for a leftover without one: metaphone drops non-initial
     vowels, so "zo" sounds like the "s" of "Sanders". An empty leftover never
-    is: ratio("", "") is 100."""
+    is: ratio("", "") is 100. A function word has to be spelled as its piece
+    (`FUNCTION_WORD_EDGE_FLOOR`), never only sound like it."""
     from rapidfuzz import fuzz
 
     leftover = leftover.strip()
     if not leftover:
         return False
+    if _is_function_word(word):
+        return fuzz.ratio(leftover, word) >= FUNCTION_WORD_EDGE_FLOOR
     if fuzz.ratio(leftover, word) >= EDGE_WORD_FLOOR:
         return True
     if _has_vowel(word) and not _has_vowel(leftover):
         return False
     sound = _metaphone(leftover)
     return bool(sound) and sound == _metaphone(word)
+
+
+@functools.cache
+def function_words() -> frozenset[str]:
+    """The vendored list, read once and only when a match runs - the web
+    process imports this module and never does."""
+    lines = FUNCTION_WORDS_PATH.read_text(encoding="utf-8").splitlines()
+    return frozenset(
+        line.strip().casefold()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
+def _is_function_word(core: str) -> bool:
+    return core.casefold().replace("’", "'") in function_words()
+
+
+def _guarded(core: str) -> bool:
+    """Whether a lone word is too short, or too common, to be guessed at:
+    `SHORT_WORD_LETTERS` letters or fewer, or on the function-word list."""
+    letters = sum(ch.isalpha() for ch in core)
+    return letters <= SHORT_WORD_LETTERS or _is_function_word(core)
+
+
+def _acronym_case(core: str, needle: str) -> bool:
+    """Whether a lone word is ``needle`` in another case and ``needle`` has
+    `ACRONYM_CAPITALS` capitals or more, while the word is no function word:
+    "api" for "API", never "it" for "IT" (Robert's decision, 2026-10-25)."""
+    return (
+        core.casefold() == needle.casefold()
+        and sum(ch.isupper() for ch in needle) >= ACRONYM_CAPITALS
+        and not _is_function_word(core)
+    )
 
 
 def _bare(text: str) -> str:
