@@ -201,7 +201,9 @@
   items with timestamps need qwen3.5:9b or larger on a local model; a 4B
   model such as qwen3.5:4b may leave them without timestamps. Settings says
   so beside the Ollama model. Measured on one 2h28m Dutch recording, where
-  qwen3.5:9b gave minutes with real timestamps (TASK-124, TASK-126).
+  qwen3.5:9b gave minutes with real timestamps. On the same recording,
+  chapters on qwen3.5:4b finished, but its chapters covered only the first
+  hour (TASK-124, TASK-126).
 - **Quit no longer costs you the running job.** Quit in the MyScribe window,
   Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
   (on macOS and Linux) now stop MyScribe the way the Stop button in Settings
