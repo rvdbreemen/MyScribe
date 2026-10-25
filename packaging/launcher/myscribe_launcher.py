@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -57,6 +58,9 @@ LAUNCHER_VARIABLE = "MYSCRIBE_LAUNCHER"
 # And this launcher's pid, which /health reports as launcher_pid: on Windows
 # the app's parent is uv's trampoline python.exe, not this process (TASK-117).
 LAUNCHER_PID_VARIABLE = "MYSCRIBE_LAUNCHER_PID"
+# And the last start at login's problem, said once by this start, for the
+# Settings card of the app it starts (TASK-120). `scribe.autostart` reads it.
+LOGIN_PROBLEM_VARIABLE = "MYSCRIBE_LOGIN_PROBLEM"
 STAMP_NAME = ".myscribe-sync.json"
 READY_TIMEOUT = 120.0
 STOP_TIMEOUT = 15.0
@@ -465,8 +469,13 @@ def this_launcher() -> Path | None:
     return launcher_path(sys.executable, sys.platform, os.environ)
 
 
-def app_environment(layout: Layout, base: dict | None = None) -> dict:
+def app_environment(layout: Layout, base: dict | None = None, notice: str = "") -> dict:
     env = child_environment(base)
+    # Only the app this start says the note for gets it; one inherited from
+    # whatever started this launcher is not this start's to pass on (TASK-120).
+    env.pop(LOGIN_PROBLEM_VARIABLE, None)
+    if notice:
+        env[LOGIN_PROBLEM_VARIABLE] = notice
     env.update(
         SCRIBE_DATA_DIR=str(layout.data_dir),
         SCRIBE_ENV_FILE=str(layout.env_file),
@@ -1543,6 +1552,56 @@ def take_login_problem(home: Path) -> str:
     return LOGIN_PROBLEM.format(problem=problem) if problem else ""
 
 
+# Robert's option C for TASK-120: the note above everywhere, and on Windows a
+# box at once as well. There the Run value has no supervisor that would show a
+# failure, and a reservation of the port (Hyper-V, WSL) is the likely one.
+LOGIN_BOX_TITLE = "MyScribe could not start"
+LOGIN_BOX = ("MyScribe was started at login and could not start:\n\n{problem}\n\n"
+             "MyScribe says this again the next time you start it, and Settings shows it "
+             "under Start at login.")
+LOGIN_BOX_SECONDS = 600.0
+"""How long a launcher at login waits for somebody to close its box. Then it
+ends, and the box goes with it: a login start never waits for ever, and the
+note keeps the sentence for the next start."""
+NO_LOGIN_BOX_VARIABLE = "MYSCRIBE_NO_LOGIN_BOX"
+"""Set to anything: no box. The tests set it, so that no run puts a box on
+the screen of whoever runs them, also from a launcher started as a child."""
+
+
+def _message_box(title: str, text: str) -> None:
+    """A plain MessageBoxW: documented user32, standard library ctypes, no
+    new dependency. MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST, so it is
+    in front of what the login opened. It blocks until it is closed."""
+    import ctypes
+
+    ctypes.windll.user32.MessageBoxW(None, text, title, 0x30 | 0x10000 | 0x40000)
+
+
+def show_login_box(problem: str, seconds: float = LOGIN_BOX_SECONDS,
+                   box: Callable[[str, str], None] | None = None) -> None:
+    """Say a failed start at login in a box, on Windows, for at most
+    ``seconds``.
+
+    The box runs on a daemon thread and this one waits for it with a timeout:
+    closing it ends the wait early; nobody closing it ends the wait at the
+    timeout, and the process ends with the box still on that thread. Called
+    with the instance lock already let go, so a start by hand meanwhile is
+    not held up by a launcher that only shows a sentence."""
+    if not IS_WINDOWS or os.environ.get(NO_LOGIN_BOX_VARIABLE):
+        return
+    show = box or _message_box
+
+    def shown() -> None:
+        try:
+            show(LOGIN_BOX_TITLE, LOGIN_BOX.format(problem=problem))
+        except Exception:  # noqa: BLE001 - no desktop, no user32: the note has it
+            pass
+
+    thread = threading.Thread(target=shown, name="myscribe-login-box", daemon=True)
+    thread.start()
+    thread.join(seconds)
+
+
 def drop_login_problem(home: Path) -> None:
     """A start at login that serves, or finds MyScribe serving, makes the
     last one's problem history: the next start by hand must not say it."""
@@ -1786,6 +1845,46 @@ def ask_to_stop(port: int) -> dict:
 
 
 def port_taken(port: int) -> bool:
+    return port_refusal(port) is not None
+
+
+PORT_IN_USE = "Port {port} is used by another program; MyScribe cannot start."
+PORT_RESERVED = (
+    "Windows has reserved port {port}, so MyScribe cannot use it; no other program is using it. "
+    "Hyper-V, WSL, Docker and Windows Sandbox reserve blocks of ports; "
+    "`netsh int ipv4 show excludedportrange protocol=tcp` lists them. "
+    "Start MyScribe with --port and a port outside those blocks (a start at login always uses "
+    f"{DEFAULT_PORT}), or, as an administrator, put the dynamic port range back to the Windows "
+    "default with `netsh int ipv4 set dynamicport tcp start=49152 num=16384` and restart Windows. "
+    "See docs/troubleshooting.md."
+)
+PORT_FORBIDDEN = (
+    "This system does not let MyScribe use port {port} (permission denied). On Linux and macOS a "
+    "port below 1024 needs administrator rights; start MyScribe with --port and a port above "
+    f"1024, such as {DEFAULT_PORT}."
+)
+WSAEACCES = 10013
+
+
+def refused_access(error: OSError) -> bool:
+    """A bind the OS refused rather than one somebody else holds the port for.
+
+    By errno and winerror, not by type: Windows raises a PermissionError
+    (errno 13, winerror 10013) for a reserved port, but an OSError(10013)
+    is not a PermissionError (measured for TASK-120)."""
+    return (error.errno in (errno.EACCES, WSAEACCES)
+            or getattr(error, "winerror", None) == WSAEACCES)
+
+
+def port_sentence(port: int, error: OSError) -> str:
+    """What a start says about a port it could not bind (TASK-120)."""
+    if not refused_access(error):
+        return PORT_IN_USE.format(port=port)
+    return (PORT_RESERVED if IS_WINDOWS else PORT_FORBIDDEN).format(port=port)
+
+
+def port_refusal(port: int) -> OSError | None:
+    """The error a bind of ``port`` fails with, or None when it is free."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         # Bound the way uvicorn binds. Without SO_REUSEADDR a POSIX bind fails
         # for about a minute after a server on the port stopped, on the
@@ -1797,9 +1896,9 @@ def port_taken(port: int) -> bool:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((HOST, port))
-        except OSError:
-            return True
-    return False
+        except OSError as error:
+            return error
+    return None
 
 
 # --- the app process --------------------------------------------------------------
@@ -1809,10 +1908,11 @@ class AppProcess:
     """``python -m scribe`` from the environment, in a process group of its
     own so Quit reaches the runner children it spawns."""
 
-    def __init__(self, layout: Layout, port: int, base: dict | None = None):
+    def __init__(self, layout: Layout, port: int, base: dict | None = None, notice: str = ""):
         self.layout = layout
         self.port = port
         self.base = base
+        self.notice = notice  # for the app's Settings card (TASK-120)
         self.proc: subprocess.Popen | None = None
 
     def command(self) -> list[str]:
@@ -1828,7 +1928,7 @@ class AppProcess:
                 kwargs["start_new_session"] = True
             self.proc = subprocess.Popen(
                 self.command(), cwd=str(self.layout.app_dir),
-                env=app_environment(self.layout, self.base),
+                env=app_environment(self.layout, self.base, notice=self.notice),
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **kwargs,
             )
         finally:
@@ -2109,6 +2209,12 @@ class Launch:
         self.route_asked = False  # set by stop_through_route, read by stop
         # The last error said, for the note a start at login leaves (TASK-112.07).
         self.problem = ""
+        # The last login's problem this start said, which the first app it
+        # starts shows on its Settings card until it is dismissed (TASK-120).
+        self.notice = ""
+        # The problem a failed start at login kept in the note, for the box
+        # `main` shows on Windows once the lock is let go (TASK-120).
+        self.kept = ""
 
     def report(self, state: str, text: str) -> None:
         """One tee, so that every line the launcher says is also in the file.
@@ -2157,8 +2263,9 @@ class Launch:
             self.report("done", f"MyScribe is already running at {self.url()}")
             self.serving = True
             return True
-        if port_taken(self.port):
-            self.report("error", f"Port {self.port} is used by another program; MyScribe cannot start.")
+        refused = port_refusal(self.port)
+        if refused is not None:
+            self.report("error", port_sentence(self.port, refused))
             return False
         # Before anything is written and not only before the download: this is
         # the one place every door with a window passes through, and
@@ -2189,7 +2296,11 @@ class Launch:
     def start_app(self) -> bool:
         self.report("status", "Starting MyScribe...")
         self.app = AppProcess(self.layout, self.port)
+        self.app.notice = self.notice
         self.app.start()
+        # One app gets it: a later start in this launcher (a retry, the app
+        # after one that died) is a clean start, which clears it.
+        self.notice = ""
         if not self.app.wait_ready():
             self.report("error", f"MyScribe did not start; see {self.layout.logs_dir / 'app.log'}")
             self.app.stop()
@@ -2925,6 +3036,7 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
         if at_login and launch.problem and not launch.serving:
             # Nobody reads that log; the next start by hand says it (TASK-112.07).
             keep_login_problem(launch.layout.home, launch.problem)
+            launch.kept = launch.problem  # for the box, once the lock is let go (TASK-120)
         return 0
     interrupted = False
     try:
@@ -3762,6 +3874,7 @@ def run_window(layout: Layout, port: int, open_browser: bool, force_setup: bool 
         """
         if notice:  # the last login's problem, before this start's own lines
             launch.report("status", notice)
+            launch.notice = notice  # and on the Settings card (TASK-120)
         in_a_worker(
             lambda: take_a_turn(
                 lambda: first_run(launch, ask, launch.report, force_setup, at_login, retry)),
@@ -3930,10 +4043,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         return code
     if lock.problem:
         console("status", lock.problem)
+    kept: list[str] = []
     try:
-        return run_doors(args, layout, console, quiet, windowed, lock)
+        code = run_doors(args, layout, console, quiet, windowed, lock, kept)
     finally:
         lock.release()
+    if kept:
+        show_login_box(kept[-1])  # Windows only; after the lock (TASK-120)
+    return code
 
 
 def run_doctor(args: argparse.Namespace, layout: Layout) -> int:
@@ -3943,7 +4060,8 @@ def run_doctor(args: argparse.Namespace, layout: Layout) -> int:
 
 
 def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, str], None],
-              quiet: bool, windowed: bool, lock: InstanceLock | None = None) -> int:
+              quiet: bool, windowed: bool, lock: InstanceLock | None = None,
+              kept: list[str] | None = None) -> int:
     """`main` past the home and the lock: the one-job doors, the console and
     the window. The window lets go of the lock while it runs no MyScribe,
     which is why it is handed on."""
@@ -3995,7 +4113,11 @@ def run_doors(args: argparse.Namespace, layout: Layout, console: Callable[[str, 
         launch = Launch(layout, args.port, not args.no_browser, console)
         if notice:
             launch.report("status", notice)
-        return run_headless(launch, force_setup=args.setup, at_login=args.at_login)
+            launch.notice = notice
+        code = run_headless(launch, force_setup=args.setup, at_login=args.at_login)
+        if kept is not None and getattr(launch, "kept", ""):
+            kept.append(launch.kept)
+        return code
     extra = {"notice": notice} if notice else {}
     return run_window(
         layout, args.port, not args.no_browser, force_setup=args.setup, at_login=args.at_login,

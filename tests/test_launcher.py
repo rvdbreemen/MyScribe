@@ -4300,3 +4300,252 @@ def test_a_setup_click_during_the_pump_still_opens_the_sitting(layout, monkeypat
         assert launcher.main(_argv(layout, _free_port(), "--no-browser")) == 0
     assert clicked == ["setup"]
     assert sat == ["sitting"], "the Setup click was dropped"
+
+
+# --- TASK-120: a reserved port, and a failed start at login somebody sees ---------
+
+
+class _RefusingSocket:
+    """A socket whose bind fails the way ``error`` says; nothing else is asked."""
+
+    def __init__(self, error: OSError):
+        self.error = error
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def setsockopt(self, *args):
+        pass
+
+    def bind(self, address):
+        raise self.error
+
+
+def _reserved_by_windows() -> int | None:
+    """A port inside one of this machine's own excluded ranges, or None.
+
+    Hyper-V, WinNAT and friends reserve blocks of the dynamic range; a bind
+    there fails with WSAEACCES for a user without privilege, which is the
+    case TASK-120 is about. Read from `netsh`, never changed."""
+    if sys.platform != "win32":
+        return None
+    import subprocess as _sp
+
+    try:
+        shown = _sp.run(["netsh", "int", "ipv4", "show", "excludedportrange", "protocol=tcp"],
+                        capture_output=True, text=True, timeout=20).stdout
+    except (OSError, _sp.SubprocessError):
+        return None
+    for start, end in re.findall(r"^\s*(\d+)\s+(\d+)\s*\*?\s*$", shown, re.MULTILINE):
+        for port in range(int(start), int(end) + 1):
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError as error:
+                    if getattr(error, "winerror", None) == 10013:
+                        return port
+    return None
+
+
+def _refusal_sentence(layout, port: int) -> str:
+    said: list[tuple[str, str]] = []
+    launch = launcher.Launch(layout, port, False, lambda state, text: said.append((state, text)))
+    assert launch.prepare() is False
+    errors = [text for state, text in said if state == "error"]
+    assert len(errors) == 1, said
+    return errors[0]
+
+
+@pytest.mark.parametrize("error", [
+    PermissionError(13, "An attempt was made to access a socket in a way forbidden", None, 10013),
+    OSError(10013, "WSAEACCES by its number alone"),
+], ids=["permission-error-as-windows-raises-it", "oserror-10013-by-hand"])
+def test_a_port_windows_reserved_is_named_as_reserved_with_the_way_out(layout, monkeypatch, error):
+    """AC #1. Nobody uses a port Windows has reserved, so "used by another
+    program" sends a person looking for a program that is not there. Gone by
+    errno and winerror, not by type: OSError(10013) is not a PermissionError."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(error))
+
+    sentence = _refusal_sentence(layout, 4242)
+
+    assert "used by another program" not in sentence
+    assert "reserved" in sentence and "4242" in sentence
+    assert "netsh int ipv4 show excludedportrange protocol=tcp" in sentence
+    assert "--port" in sentence
+    assert "start=49152 num=16384" in sentence
+
+
+def test_a_port_posix_refuses_says_permission_and_not_netsh(layout, monkeypatch):
+    """EACCES on Linux or macOS is a port below 1024 without privilege; the
+    Windows way out would be nonsense there."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(PermissionError(13, "Permission denied")))
+
+    sentence = _refusal_sentence(layout, 80)
+
+    assert "used by another program" not in sentence and "netsh" not in sentence
+    assert "80" in sentence and "1024" in sentence and "--port" in sentence
+
+
+def test_a_port_in_use_is_still_said_to_be_in_use(layout, monkeypatch):
+    """WSAEADDRINUSE (10048) and EADDRINUSE stay what they were."""
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(OSError(10048, "in use", None, 10048)))
+
+    assert "is used by another program" in _refusal_sentence(layout, 4242)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows port reservation")
+def test_a_port_this_machine_has_reserved_for_real_is_said_to_be_reserved(layout):
+    """The real WSAEACCES, from a range `netsh` lists on this very machine,
+    read only. Skipped where Windows reserves nothing."""
+    port = _reserved_by_windows()
+    if port is None:
+        pytest.skip("no excluded TCP port range on this machine")
+
+    assert launcher.port_taken(port) is True
+    sentence = _refusal_sentence(layout, port)
+    assert "reserved" in sentence and str(port) in sentence
+
+
+def test_the_login_problem_variable_is_the_one_the_app_reads():
+    from scribe import autostart
+
+    assert launcher.LOGIN_PROBLEM_VARIABLE == autostart.LOGIN_PROBLEM_VARIABLE
+
+
+def test_the_app_environment_carries_the_login_problem_only_when_there_is_one(layout, monkeypatch):
+    monkeypatch.setenv(launcher.LOGIN_PROBLEM_VARIABLE, "left over from whoever started this")
+
+    assert launcher.app_environment(layout, notice="It could not start.")[
+        launcher.LOGIN_PROBLEM_VARIABLE] == "It could not start."
+    assert launcher.LOGIN_PROBLEM_VARIABLE not in launcher.app_environment(layout)
+
+
+def test_the_first_app_a_launch_starts_gets_the_notice_and_a_restart_does_not(layout, monkeypatch):
+    """Option C: the record is said at the next start by hand (TASK-112.07)
+    and handed to that start's app for its Settings card. One app gets it: a
+    second start in the same launcher is that clean start again."""
+    started: list[str] = []
+
+    class Recorder:
+        notice = ""
+
+        def __init__(self, layout, port, base=None):
+            pass
+
+        def start(self):
+            started.append(self.notice)
+
+        def wait_ready(self, timeout=None):
+            return True
+
+    monkeypatch.setattr(launcher, "AppProcess", Recorder)
+    launch = launcher.Launch(layout, 4520, False, lambda state, text: None)
+    launch.notice = "The last time MyScribe started on its own, it could not start: x"
+
+    assert launch.start_app() and launch.start_app()
+    assert started == ["The last time MyScribe started on its own, it could not start: x", ""]
+
+
+def test_the_start_by_hand_after_a_failed_login_hands_the_notice_to_its_launch(layout, monkeypatch):
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    sock, port = _busy_port()
+    try:
+        assert launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser")) == 0
+    finally:
+        sock.close()
+    notices: list[str] = []
+    monkeypatch.setattr(launcher, "run_headless",
+                        lambda launch, **k: notices.append(launch.notice) or 0)
+
+    launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+    launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+
+    assert "started on its own" in notices[0] and f"Port {port}" in notices[0]
+    assert notices[1] == ""
+
+
+@pytest.fixture
+def boxes(layout, monkeypatch):
+    """The Windows box at login, recorded instead of shown, with whether the
+    instance lock was free at that moment."""
+    shown: list[dict] = []
+
+    def box(problem, *args, **kwargs):
+        probe = launcher.InstanceLock(launcher.instance_lock_path(layout.home))
+        free = probe.acquire()
+        if free:
+            probe.release()
+        shown.append({"problem": problem, "lock_free": free})
+
+    monkeypatch.setattr(launcher, "show_login_box", box)
+    return shown
+
+
+def test_a_failed_start_at_login_shows_the_box_after_letting_go_of_the_lock(layout, monkeypatch, boxes):
+    """Option C's immediate sign. After the lock: a start by hand while the box
+    is up must not wait on a launcher that only shows a sentence."""
+    monkeypatch.setattr(launcher, "tkinter_present", lambda: False)
+    sock, port = _busy_port()
+    try:
+        launcher.main(_argv(layout, port, "--headless", "--no-browser"))
+        assert boxes == []  # a start by hand has somebody at the screen
+        assert launcher.main(_argv(layout, port, "--headless", "--at-login", "--no-browser")) == 0
+    finally:
+        sock.close()
+
+    assert len(boxes) == 1
+    assert f"Port {port}" in boxes[0]["problem"]
+    assert boxes[0]["lock_free"] is True
+
+
+def test_the_box_is_windows_only_and_can_be_switched_off(monkeypatch):
+    calls: list = []
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    launcher.show_login_box("x", seconds=1, box=lambda *a: calls.append(a))
+    assert calls == []
+
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    monkeypatch.setenv(launcher.NO_LOGIN_BOX_VARIABLE, "1")
+    launcher.show_login_box("x", seconds=1, box=lambda *a: calls.append(a))
+    assert calls == []
+
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE)
+    launcher.show_login_box("Port 4242 is reserved.", seconds=1, box=lambda *a: calls.append(a))
+    assert len(calls) == 1 and "Port 4242 is reserved." in calls[0][1]
+
+
+def test_a_box_nobody_closes_does_not_hold_up_the_login_start_forever(monkeypatch):
+    """MessageBoxW blocks until somebody clicks. It runs on a thread of its
+    own and the launcher waits a bounded time, then ends - the box with it."""
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    never = threading.Event()
+    begun = time.monotonic()
+
+    launcher.show_login_box("x", seconds=0.5, box=lambda *a: never.wait())
+
+    assert time.monotonic() - begun < 5
+    never.set()
+
+
+def test_a_box_that_cannot_be_shown_is_not_an_error(monkeypatch):
+    monkeypatch.delenv(launcher.NO_LOGIN_BOX_VARIABLE, raising=False)
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+
+    def broken(*a):
+        raise OSError("no desktop")
+
+    launcher.show_login_box("x", seconds=1, box=broken)  # no exception

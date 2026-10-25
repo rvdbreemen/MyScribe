@@ -2,6 +2,18 @@
 
 ### Fixed
 
+- **A port Windows has reserved is no longer called "used by another
+  program".** Hyper-V, WSL, Docker and Windows Sandbox can reserve the port
+  MyScribe uses (4242). MyScribe now says the port is reserved, how to list the
+  reserved blocks (`netsh int ipv4 show excludedportrange protocol=tcp`) and
+  what to do: start it on another port with `--port`, or put the dynamic port
+  range back to the Windows default. On Linux and macOS a port that needs
+  administrator rights gets a sentence of its own (TASK-120).
+- **A start at login that cannot start no longer fails without a word.** On
+  Windows a message box says why at once; it closes by itself after 10
+  minutes. On every system the next start says it once, as before, and
+  **Settings → Start at login** now shows it too, until you dismiss it or
+  MyScribe stops (TASK-120).
 - **After a Linux update, Start at login starts the new AppImage.** Each
   release is a new file, and the login entry kept starting the old one. When
   an AppImage starts, a login entry (the systemd user unit or the autostart

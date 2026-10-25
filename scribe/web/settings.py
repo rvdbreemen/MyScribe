@@ -105,6 +105,7 @@ FLASH_TERM_ADDED = "Added to the glossary. It biases the next transcription and 
 FLASH_TERM_REMOVED = "Term removed. Re-run the corrections to take its changes back out of the transcripts."
 FLASH_AUTOSTART_ON = "MyScribe will start when you log in."
 FLASH_AUTOSTART_OFF = "MyScribe will not start when you log in."
+FLASH_LOGIN_PROBLEM_DISMISSED = "Dismissed. MyScribe says it again if a start at login fails again."
 FLASH_CPU_FALLBACK_ON = "A job will run on the CPU when the GPU cannot be reached."
 FLASH_CPU_FALLBACK_OFF = "A job is refused when the GPU cannot be reached."
 
@@ -433,10 +434,14 @@ def autostart_context(*, flash: str | None = None) -> dict:
     where somebody goes to find out what is wrong with this machine, and a
     registry read that raised would take every other card on it away too.
     """
+    # The last start at login that could not start, as the launcher handed it
+    # over (TASK-120); unrelated to what the OS answers, so on both branches.
+    login_problem = autostart.login_problem()
     try:
         entry = autostart.status()
     except (OSError, ValueError) as refused:
-        return {"autostart": None, "autostart_error": str(refused), "flash": flash}
+        return {"autostart": None, "autostart_error": str(refused), "flash": flash,
+                "login_problem": login_problem}
     running = os.environ.get(autostart.LAUNCHER_VARIABLE, "")
     translocated = autostart.translocated(running)
     return {
@@ -460,6 +465,7 @@ def autostart_context(*, flash: str | None = None) -> dict:
         },
         "autostart_error": None,
         "flash": flash,
+        "login_problem": login_problem,
     }
 
 
@@ -894,6 +900,14 @@ async def set_autostart(request: Request) -> Response:
     # (TASK-112.05).
     flash = FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF
     return _autostart_answer(request, flash=f"{flash} {note}" if note else flash)
+
+
+@router.post("/settings/autostart/dismiss", include_in_schema=False)
+def dismiss_login_problem(request: Request) -> Response:
+    """Take the last login's problem off the card (TASK-120). It was said and
+    seen; the next one that fails leaves a new one."""
+    autostart.dismiss_login_problem()
+    return _autostart_answer(request, flash=FLASH_LOGIN_PROBLEM_DISMISSED)
 
 
 @router.post("/settings/stop", include_in_schema=False)
