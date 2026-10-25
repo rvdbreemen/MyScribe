@@ -2,11 +2,11 @@
 ;   iscc /DMyAppVersion=.. /DMySource=.. /DMyOutputDir=.. /DMyOutputName=.. myscribe.iss
 ;
 ; Per user, so it needs no administrator: everything goes under
-; %LOCALAPPDATA%\Programs\MyScribe. The app's own data - the database, media,
-; models and the environment it installs on first start - lives in
-; %LOCALAPPDATA%\MyScribe by default, or wherever the first start was told to
-; put it (TASK-089.14), which is deliberately *not* this directory: an
-; uninstall or an update must not take a transcript with it.
+; %LOCALAPPDATA%\Programs\MyScribe. The environment the first start installs
+; lives in %LOCALAPPDATA%\MyScribe; the library - the database, media, models
+; and the app's log - goes where the library page below says, by default
+; %LOCALAPPDATA%\MyScribe\data (TASK-097, ADR-036). Neither is ever this
+; directory: an uninstall or an update must not take a transcript with it.
 
 #define MyAppName "MyScribe"
 #define MyAppExe "MyScribe.exe"
@@ -106,6 +106,122 @@ const
 
 var
   StoppedOne: Boolean;
+  LibraryPage: TInputDirWizardPage;
+
+// --- where the library goes (TASK-097, ADR-036) ---------------------------------
+// The page records a request in MyScribe.location, the launcher's pointer file
+// beside the default home; the launcher settles it at the first start, before
+// anything is downloaded, and a folder that already holds a library is adopted
+// by the engine there, its recordings shown first (ADR-019). Nothing here opens
+// a database or decides an adoption.
+
+function DefaultHome(): String;
+begin
+  Result := ExpandConstant('{localappdata}\MyScribe');
+end;
+
+function PointerFile(): String;
+begin
+  Result := ExpandConstant('{localappdata}\MyScribe.location');
+end;
+
+// Asked only where nothing says where yet: no pointer file at all, and no
+// install in the default home. An update of an install that never moved
+// anything has no pointer file, and its library must not be swapped for an
+// empty one; the launcher refuses that too.
+function AskForLibrary(): Boolean;
+begin
+  Result := not FileExists(PointerFile()) and not DirExists(DefaultHome() + '\env');
+end;
+
+// JSON in ASCII: every backslash doubled, a double quote escaped, and every
+// character outside printable ASCII as \uXXXX, so the file's encoding cannot
+// matter to the launcher's reader.
+function JsonString(S: String): String;
+var
+  I: Integer;
+  C: Char;
+begin
+  Result := '"';
+  for I := 1 to Length(S) do
+  begin
+    C := S[I];
+    if C = '\' then
+      Result := Result + '\\'
+    else if C = '"' then
+      Result := Result + '\"'
+    else if (Ord(C) < 32) or (Ord(C) > 126) then
+      Result := Result + '\u' + Format('%.4x', [Ord(C)])
+    else
+      Result := Result + C;
+  end;
+  Result := Result + '"';
+end;
+
+procedure InitializeWizard();
+var
+  Given: String;
+begin
+  LibraryPage := CreateInputDirPage(wpSelectDir,
+    'Where your library goes',
+    'Where should MyScribe keep your recordings, transcripts and models?',
+    'Keep this folder and the library goes where it always has, in its data folder. An empty '
+      + 'or new folder becomes the library. A folder that holds other files gets a MyScribe '
+      + 'folder inside it. A folder that already holds a MyScribe library is shown with its '
+      + 'recordings at the first start, and used only when you choose it there.'#13#10#13#10
+      + 'Not a network share. Uninstalling never deletes the library.',
+    False, 'MyScribe');
+  LibraryPage.Add('');
+  // /LIBRARY= gives a silent install the same answer.
+  Given := Trim(ExpandConstant('{param:LIBRARY|}'));
+  if Given = '' then
+    Given := DefaultHome();
+  LibraryPage.Values[0] := Given;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = LibraryPage.ID) and not AskForLibrary();
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Chosen: String;
+begin
+  Result := True;
+  if CurPageID <> LibraryPage.ID then
+    Exit;
+  Chosen := Trim(LibraryPage.Values[0]);
+  if Copy(Chosen, 1, 2) = '\\' then
+  begin
+    MsgBox('A folder on a network share cannot hold the library: MyScribe keeps it in SQLite '
+      + 'with a write-ahead log, which does not work over a network filesystem. Choose a folder '
+      + 'on a disk in this computer.', mbError, MB_OK);
+    Result := False;
+  end
+  else if (Length(Chosen) < 3) or (Chosen[2] <> ':') or (Chosen[3] <> '\') then
+  begin
+    MsgBox(Chosen + ' is not a full path. Give the whole path, the drive included, for '
+      + 'example D:\MyScribe.', mbError, MB_OK);
+    Result := False;
+  end
+  else if Pos(Lowercase(AddBackslash(WizardDirValue())), Lowercase(AddBackslash(Chosen))) = 1 then
+  begin
+    MsgBox(Chosen + ' is inside the program folder, which the next update or uninstall '
+      + 'deletes with everything in it. Choose a folder outside it.', mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+// Written once, before the launcher is started, and never over a pointer
+// file that exists.
+procedure WriteLibraryRequest();
+begin
+  if not AskForLibrary() then
+    Exit;
+  SaveStringToFile(PointerFile(), '{'#13#10'  "library_request": '
+    + JsonString(Trim(LibraryPage.Values[0])) + #13#10'}'#13#10, False);
+end;
 
 function RunStopScript(Script: String; var Code: Integer): Boolean;
 begin
@@ -200,6 +316,8 @@ begin
   // never race for the port.
   if CurStep <> ssPostInstall then
     Exit;
+  // Before either start below: the launcher reads the request at once.
+  WriteLibraryRequest();
   // Ticked: on PATH. Unticked on an update: off again, so PATH says what the
   // last install was told.
   if WizardIsTaskSelected('addtopath') then
@@ -215,8 +333,8 @@ begin
     Exec(ExpandConstant('{app}\{#MyAppExe}'), '--at-login --headless', '',
       SW_HIDE, ewNoWait, Code)
   else
-    // The launcher with its window: a first start asks where the files go and
-    // shows the download, and it opens the browser once MyScribe serves - or
+    // The launcher with its window: a first start settles the library page's
+    // answer and shows the download, and it opens the browser once MyScribe serves - or
     // at once, when a MyScribe is already running.
     Exec(ExpandConstant('{app}\{#MyAppExe}'), '', '', SW_SHOWNORMAL, ewNoWait, Code);
 end;
@@ -251,4 +369,4 @@ SetupAppTitle={#MyAppName}
 ; No size in gigabytes here: this text cannot read scribe/footprint.json, so a
 ; number in it would be one nobody updates, and the first start already shows
 ; the size it is about to download - per platform, per model (TASK-089.14).
-WelcomeLabel2=This installs [name/ver] for your account only, into %LOCALAPPDATA%\Programs\MyScribe.%n%nThe first start asks where your recordings, transcripts and models should go - %LOCALAPPDATA%\MyScribe is only the default - then downloads the speech engine with its progress, and asks a few questions you can skip. Later starts skip all of that.%n%nUninstalling removes the program and its login item, and leaves that folder alone: it is yours. If MyScribe installed Ollama and a model for you, they stay too and belong to you; remove them with Ollama's own uninstaller under Windows Settings > Apps.
+WelcomeLabel2=This installs [name/ver] for your account only, into %LOCALAPPDATA%\Programs\MyScribe.%n%nA later page asks where your library goes - your recordings, transcripts and models; %LOCALAPPDATA%\MyScribe is only the default. The first start then downloads the speech engine with its progress, and asks a few questions you can skip. Later starts skip all of that.%n%nUninstalling removes the program and its login item, and leaves your library alone: it is yours. If MyScribe installed Ollama and a model for you, they stay too and belong to you; remove them with Ollama's own uninstaller under Windows Settings > Apps.

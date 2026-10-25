@@ -296,6 +296,23 @@
 
 ### Changed
 
+- **The Windows installer asks where your library goes.** A page after the
+  program folder asks for the folder that holds your recordings, transcripts,
+  database and models, apart from the program; a silent install takes
+  `/LIBRARY=<folder>`. Leave it as it is and nothing changes. An empty or new
+  folder becomes the library, and a folder with other files gets a `MyScribe`
+  folder inside it. A folder that already holds a MyScribe library is shown
+  with its recordings at the first start and used only when you choose it. An
+  update keeps the choice without asking, and uninstalling never deletes the
+  library. On macOS and Linux the first start asks the same question, before
+  anything is downloaded. The speech engine now always goes to the per-user
+  folder; `--home` or `MYSCRIBE_HOME` still put it elsewhere. The free-space
+  check before the download asks each drive for its own part. A folder the
+  library cannot go in is refused with a sentence; when MyScribe starts
+  without its window (at login, or from a console), it starts with the
+  library in the default folder instead and says the folder asked for was
+  not used. The request is kept: the next start with its window asks again,
+  until the first setup questions have been answered (TASK-097).
 - **A MyScribe that crashes in the background starts again by itself.** When
   MyScribe was started without a window (at login, or with `--headless`) and
   its server stops with an error, the launcher waits 5 seconds and starts it

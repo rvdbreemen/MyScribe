@@ -412,3 +412,29 @@ def test_the_first_start_of_an_adopted_back_catalogue_queues_no_llm_job(
         assert conn.execute("SELECT COUNT(*) FROM job WHERE type='llm'").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_a_terminal_sitting_lists_a_folder_the_launcher_hands_over_before_anybody_says_yes(
+    target, as_release, monkeypatch, capsys, tmp_path
+):
+    """TASK-097: the console door's half of the installer's library request.
+    The launcher passes the folder with --library; the first question already
+    lists it with its numbers, and nothing in it is changed by being asked."""
+    named = build(tmp_path / "chosen-at-install", plain=3)
+    before = listing(named)
+    seen: list[list[dict]] = []
+    monkeypatch.setattr(setup, "at_a_terminal", lambda stream=None: True)
+
+    def ask(questions, **kwargs):
+        seen.append(questions)
+        return {}
+
+    monkeypatch.setattr(setup, "ask", ask)
+
+    assert setup.main(["--library", str(named)]) == 0
+
+    library_question = next(q for q in seen[0] if q["id"] == "library")
+    offered = {c["value"]: c["note"] for c in library_question["choices"]}
+    assert str(named) in offered, "the folder handed over was not in the first question"
+    assert "3 recordings" in offered[str(named)]
+    assert listing(named) == before

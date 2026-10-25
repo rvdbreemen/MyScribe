@@ -41,5 +41,6 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-033 | Accepted | `scribe/**`, `scribe/mcp_server.py` | Chosen option: A. |
 | ADR-034 | Accepted | - | Chosen option: B. |
 | ADR-035 | Accepted | - | Chosen option: B. |
+| ADR-036 | Accepted | - | Chosen option: a request in the pointer file, the only one that gives Windows a page and keeps adoption in the engine. |
 | ADR-037 | Accepted | - | Chosen option: A. |
 | ADR-039 | Accepted | - | Chosen option: C, decided by Robert on 2026-10-24 and kept on 2026-10-25. |

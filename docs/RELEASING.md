@@ -59,6 +59,18 @@ upgrade or an OS that was not checked.
 | `build` (×3) | The artifact is built on its own OS **and started**: `build_release.py --smoke` runs the frozen launcher against a fresh home - first sync, `/health`, a page, quit. "The build produced a file" is not the thing a release needs to be true. |
 | `publish` | SHA256SUMS, the attestation where GitHub offers one, and the GitHub Release. Tag runs only; a `workflow_dispatch` run uploads the same artifacts and publishes nothing. |
 
+## Where an installed MyScribe keeps the library
+
+The program goes to `%LOCALAPPDATA%\Programs\MyScribe` on Windows, the
+`.app` on macOS and the AppImage on Linux; none of them ever holds the
+library, because an update replaces them. The library goes where the Windows
+installer's library page, or the first start on macOS and Linux, was told,
+and is the `data` folder of the per-user home by default (ADR-036). The page
+writes `"library_request"` into `%LOCALAPPDATA%\MyScribe.location` only when
+that file does not exist and `%LOCALAPPDATA%\MyScribe\env` does not either, so
+an update keeps what is there. A rehearsal of the installer goes on a machine
+where nothing is installed yet - never with `/LIBRARY=` naming a live library.
+
 ## Ollama is not a release step
 
 A release of MyScribe no longer carries an Ollama version. Until TASK-095 it
