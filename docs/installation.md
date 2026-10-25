@@ -197,7 +197,7 @@ no stop, so it is ended, and its running job is marked interrupted: Retry on
 the jobs page starts it over.
 
 On Linux the new release is a new file. Put it in the same folder as the old
-one: when you start it, a *Start at login* entry that starts an older
+one: when you start it, a *Start at login* entry that starts another
 `MyScribe-<version>-linux-x64.AppImage` from that folder is pointed at the
 new file. If you keep the new file somewhere else, or renamed the old one,
 Settings says the entry starts another file; switch *Start at login* off and
