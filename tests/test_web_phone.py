@@ -341,6 +341,33 @@ def test_the_default_door_binds_the_lan_address_on_4243_and_publishes_with_zeroc
     assert isinstance(door._publisher, phone_door.ZeroconfPublisher)
 
 
+def test_the_door_as_built_closes_on_the_app_stop_deadline(db_path, data_dir, monkeypatch):
+    """Review of TASK-112.09: whoever closes the door once the app is
+    stopping - the fifteen minutes, Close, a received file, the lifespan -
+    hands its listener the deadline the app's stop gave uploads
+    (`app.state.upload_deadline`, set by `scribe.__main__._stopping`), so a
+    phone upload never gets a second bound (ADR-032)."""
+    stops: list[float | None] = []
+
+    class SpyListener(phone_door.UvicornListener):
+        def stop(self, timeout=phone_door.UvicornListener.STOP_JOIN_SECONDS, *, upload_deadline=None):
+            stops.append(upload_deadline)
+            super().stop(timeout, upload_deadline=upload_deadline)
+
+    monkeypatch.setattr(phone_door, "UvicornListener", SpyListener)
+    monkeypatch.setattr(phone_door, "lan_address", lambda: "127.0.0.1")
+    monkeypatch.setattr(phone_door, "ZeroconfPublisher", FakePublisher)
+    monkeypatch.setattr(phone_door, "DEFAULT_PORT", 0)
+    app = create_app(db_path=db_path, start_supervisor=False)
+    door = phone_ui.build_door(app)
+    door.open()
+    door.close("closed on the laptop")  # no stop yet: the whole bound
+    app.state.upload_deadline = 4242.0  # the app's stop has begun
+    door.open()
+    door.close("timeout")  # not the lifespan's close: it names no deadline
+    assert stops == [None, 4242.0]
+
+
 def test_a_restart_finds_the_door_closed_and_the_old_port_released(db_path, data_dir, clock, publisher):
     first = create_app(db_path=db_path, start_supervisor=False)
     with TestClient(first, base_url="http://127.0.0.1") as client:

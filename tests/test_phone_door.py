@@ -811,6 +811,44 @@ def test_an_upload_still_going_at_a_passed_deadline_is_cut_after_the_grace(recei
         d.close()
 
 
+def test_a_door_that_times_out_inside_the_app_stop_shares_the_app_deadline(received, clock, publisher, logs,
+                                                                            monkeypatch):
+    """Review of TASK-112.09: the fifteen minutes can run out inside the
+    app's stop, with a phone upload in flight. That close is the watchdog's,
+    not the lifespan's, and it gave the upload a fresh bound from its own
+    start - past the app's deadline, and the lifespan's close then waited for
+    it (ADR-032: the door gets what is left of the app's deadline). Every
+    close asks the door's ``stop_deadline`` once the app is stopping."""
+    import time
+
+    from scribe.web import stopping
+
+    monkeypatch.setattr(stopping, "UPLOAD_FINISH_SECONDS", 8.0)  # a red run need not sit for 30 s
+    passed = time.monotonic() - 1  # the app's stop gave uploads until a moment ago
+    d = make_door(received, clock, publisher, stop_deadline=lambda: passed)
+    try:
+        opening = d.open()
+        sock, rest = _half_an_upload(opening, b"\x00audio" * 40_000)
+        time.sleep(0.3)
+        started = time.monotonic()
+        clock.advance(phone_door.OPEN_SECONDS + 1)  # the watchdog closes it
+        assert d.wait_closed(30)
+        took = time.monotonic() - started
+        assert took < phone_door.GRACE_SECONDS + 3, f"the timeout's close took {took:.1f} s"
+        assert not _rest_and_answer(sock, rest).startswith(b"HTTP/1.1 200")
+        assert received.files == []
+        assert [e["reason"] for e in read_log(logs) if e["event"] == "phone.close"] == ["timeout"]
+    finally:
+        d.close()
+
+
+def test_a_door_outside_a_stop_gives_an_upload_the_whole_bound(door):
+    """No stop under way: ``stop_deadline`` answers None and a close passes
+    no deadline to its listener, which then gives an upload
+    `stopping.UPLOAD_FINISH_SECONDS` (test above this one)."""
+    assert door._stop_deadline() is None
+
+
 def _close_in_background(close) -> threading.Thread:
     thread = threading.Thread(target=close, daemon=True)
     thread.start()

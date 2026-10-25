@@ -310,6 +310,7 @@ class Door:
         poll: float = 1.0,
         max_bytes: int = MAX_UPLOAD_BYTES,
         listener_factory=UvicornListener,
+        stop_deadline: Callable[[], float | None] = lambda: None,
     ) -> None:
         self._accept = accept
         self._pick = address_picker
@@ -320,6 +321,12 @@ class Door:
         self._poll = poll
         self.max_bytes = max_bytes
         self._listener_factory = listener_factory
+        # The deadline the app's stop gave uploads, once it has begun; None
+        # before. Every close asks it, so the fifteen minutes, Close or a
+        # received file running out inside the app's stop give a phone
+        # upload what is left of that deadline too, not a bound of its own
+        # (ADR-032; review of TASK-112.09).
+        self._stop_deadline = stop_deadline
         self._lock = threading.Lock()
         self._opening: Opening | None = None
         self._listener = None
@@ -447,8 +454,12 @@ class Door:
         take that long; `closing` says so meanwhile. ``upload_deadline``: when
         the app is stopping, the moment its stop gives uploads until
         (`stopping.StoppingServer`). A phone upload in flight has run
-        alongside the app's stop and gets no second bound.
+        alongside the app's stop and gets no second bound. Without one, the
+        door's ``stop_deadline`` is asked, so a close by anybody else once the
+        app is stopping shares that bound as well.
         """
+        if upload_deadline is None:
+            upload_deadline = self._stop_deadline()
         with self._lock:
             opening = self._opening
             if only is not None and opening is not only:

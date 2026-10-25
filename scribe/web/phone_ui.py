@@ -98,6 +98,8 @@ def build_door(app) -> phone_door.Door:
         publisher=phone_door.ZeroconfPublisher(),
         port=phone_door.DEFAULT_PORT,
         listener_factory=phone_door.UvicornListener,
+        # Set by `scribe.__main__._stopping` as the app's stop begins (ADR-032).
+        stop_deadline=lambda: getattr(app.state, "upload_deadline", None),
     )
 
 
