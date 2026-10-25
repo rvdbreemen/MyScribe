@@ -207,3 +207,21 @@ For the recommended option.
   `crates/uv-virtualenv/src/virtualenv.rs:214-222`.
 * `packaging/launcher/myscribe_launcher.py:367-410, 645-659, 1567-1573`.
 * Backlog TASK-113 and subtasks .01 to .03.
+
+## More Information
+
+Note added 2026-10-24, after acceptance. It changes no decision above.
+
+* The cause of #16 is found (TASK-116). Inno Setup 6.7.1 turns on Windows
+  RedirectionGuard for Setup, and the MyScribe that Setup starts inherits it.
+  Windows then refuses uv's Python junction with os error 448. 0.9.1 fixes it
+  with `RedirectionGuard=no` (`packaging/windows/myscribe.iss`, pinned by
+  `tests/test_installer_redirectionguard.py`).
+* Reproduced 2026-10-24 with uv 0.12.13 and the launcher's sync flags in a
+  shell with RedirectionGuard enforced: a fresh Python folder gives #16's
+  exact line, `Failed to create Python minor version link directory ... (os
+  error 448)`. The same run without the guard exits 0.
+* The retry of option A stays as a cheap guard against other failures on the
+  minor version link.
+* Option B, the launcher installing its own Python (TASK-113.03), is not
+  planned.
