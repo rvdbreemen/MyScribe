@@ -37,3 +37,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-029 | Accepted | - | Chosen option: A, decided by Robert on 2026-10-23 with the three options and the A/B in front of him. |
 | ADR-030 | Accepted | - | Chosen option: B, decided by Robert on 2026-10-24. |
 | ADR-031 | Accepted | - | Chosen option: A, proposed by the agent. |
+| ADR-034 | Proposed | - | Chosen option: B. |

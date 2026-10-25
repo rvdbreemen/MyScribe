@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import replace
 
 import pytest
@@ -1460,6 +1461,82 @@ def test_the_strict_rewrite_leaves_the_pydantic_model_alone():
     fresh = tasks.ActionItems.model_json_schema()
     assert "additionalProperties" not in fresh
     assert tasks.ActionItems.model_validate({"items": [{"text": "still optional"}]}).items[0].owner is None
+
+
+CLOCK_FIELDS = {"action_items": ["items", "evidence_ts"], "minutes": ["actions", "evidence_ts"],
+                "chapters": ["chapters", "start"]}
+
+
+def clock_node(schema: dict, kind: str) -> dict:
+    """The schema node of the one timestamp field `kind` carries."""
+    array, field = CLOCK_FIELDS[kind]
+    ref = schema["properties"][array]["items"]["$ref"].rsplit("/", 1)[-1]
+    return schema["$defs"][ref]["properties"][field]
+
+
+def types_of(node: dict) -> set[str]:
+    return {node["type"]} if "type" in node else {alt["type"] for alt in node["anyOf"]}
+
+
+@pytest.mark.parametrize("kind", sorted(CLOCK_FIELDS))
+def test_a_grammar_provider_is_never_offered_a_number_for_a_timestamp(kind):
+    """TASK-124, ADR-034, measured 2026-10-25 on Ollama 0.40.8 with qwen3.5:4b:
+    with `evidence_ts` typed `number` (or `number` or text) the grammar let the
+    model start `2:16:10` as the number 2 and finish it as `2.0` - valid JSON,
+    a moment two hours off. As a pattern-bound string it wrote `"2:16:10"`,
+    which `parse_answer` reads as 8170 s. Text only: no number type at all."""
+    schema = tasks.schema_payload(tasks.TASKS[kind], True, clock_as_text=True)["schema"]
+    node = clock_node(schema, kind)
+
+    assert "number" not in types_of(node)
+    texts = [alt for alt in node.get("anyOf", [node]) if alt["type"] == "string"]
+    assert len(texts) == 1
+    pattern = re.compile(texts[0]["pattern"])
+    for written in ("2:16:29", "1:23", "83.0", "83", "0:00"):
+        assert pattern.fullmatch(written), written
+        assert tasks._clock_seconds(written) >= 0
+    for written in ("{2:16:10}", "[1:23]", "2:16:", "about an hour in", ""):
+        assert not pattern.fullmatch(written), written
+    # `[0-9]`, never `\d`: with `\d` the daemon let `"{2:16:10}"` through
+    # (measured 2026-10-25), so the class it does honour is spelt out.
+    assert r"\d" not in texts[0]["pattern"]
+    assert ("null" in types_of(node)) is (kind != "chapters"), "nullable exactly where pydantic is"
+    assert "x-myscribe-clock" not in json.dumps(schema)
+
+
+@pytest.mark.parametrize("kind", SCHEMA_KINDS)
+def test_the_cloud_schema_is_unchanged_by_the_clock_marker(kind):
+    """The strict schema OpenRouter validated live keeps `number` timestamps
+    and carries no private keyword: a strict validator may refuse one."""
+    schema = tasks.schema_payload(tasks.TASKS[kind], True)["schema"]
+
+    assert "x-myscribe-clock" not in json.dumps(schema)
+    assert '"pattern"' not in json.dumps(schema)
+    if kind in CLOCK_FIELDS:
+        assert "number" in types_of(clock_node(schema, kind))
+
+
+def test_the_combine_carries_the_text_timestamps_and_the_notes_no_schema(conn, media, monkeypatch):
+    """Through the front door: a provider that says its schema is a grammar
+    gets the clock-as-text schema on the combine, and the notes stay prose."""
+    strict, calls = fake_provider(
+        map_reduce_script(ANSWERS["minutes"]), name="grammar", supports_json_schema=True
+    )
+    strict.schema_clock_as_text = True
+    register(monkeypatch, strict)
+    long_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, long_id, n_segments=12)
+
+    tasks.run_task(
+        conn, media_id=long_id, kind="minutes", provider_name="grammar", model="grammar-1",
+        budget_tokens=100,
+    )
+
+    notes = [c for c in calls if CHUNK_MARKER in c.user]
+    combines = [c for c in calls if CHUNK_MARKER not in c.user]
+    assert notes and all(c.json_schema is None for c in notes)
+    assert len(combines) == 1
+    assert "number" not in types_of(clock_node(combines[0].json_schema["schema"], "minutes"))
 
 
 def test_a_custom_task_never_sends_a_schema(conn, media, monkeypatch):

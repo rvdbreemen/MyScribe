@@ -81,6 +81,21 @@ http://127.0.0.1:11434, `qwen3.5:4b` / `qwen3.5:9b` / `gemma4:12b` pulled):
   stopped at prompt + answer == window with `done_reason: "length"` whether it
   was true, false or absent.
 
+* **`format` makes the daemon enforce the kind's JSON Schema** (TASK-124,
+  ADR-034, Ollama 0.40.8, 2026-10-25). Without it qwen3.5:4b wrote the
+  minutes' `"evidence_ts": 2:16:10` unquoted and the answer did not parse;
+  with it the same request came back valid JSON, and `prompt_eval_count` was
+  unchanged (500 with thinking on, 502 off, with and without `format`), so
+  the schema costs the window nothing. In the v0.40.8 source
+  (`llm/llama_server.go`) the schema goes to llama-server, and when the model
+  thinks it becomes a grammar that applies only after the thinking closes -
+  measured: thinking on, the answer after it was valid JSON. Two traps, both
+  measured: a timestamp typed `number` let the model start `2:16:10` as `2`
+  and end it as `2.0`, so timestamps go as text (`schema_clock_as_text`);
+  and a `\\d` in a pattern was not honoured where `[0-9]` was. With thinking
+  off and a nullable timestamp the 4B chose `null` (3 runs of 3) where with
+  thinking on it wrote the time: a missing moment, never a wrong one.
+
 There is no key: nothing here resolves one, nothing logs one, and `available()`
 never mentions one.
 
@@ -379,6 +394,10 @@ class OllamaProvider(base.Provider):
     key_env_vars = ()  # nothing to resolve: loopback, no credential
     # Top level of the /api/chat body, not `options` (module docstring).
     reasoning_off_body = {"think": False}
+    # `format` carries the kind's JSON Schema and the daemon turns it into a
+    # grammar (module docstring, ADR-034): valid JSON, and timestamps as text.
+    supports_json_schema = True
+    schema_clock_as_text = True
 
     def __init__(
         self,
@@ -851,6 +870,9 @@ class OllamaProvider(base.Provider):
 
         `truncate: false` makes a prompt the window cannot hold a 400 instead
         of a 200 answered from its second half (module docstring, TASK-124).
+
+        `format` is the bare JSON Schema of `json_schema` - not the OpenAI
+        wrapper with `name` and `strict` - and is sent only with one (ADR-034).
         """
         body: dict[str, Any] = {
             "model": req.model,
@@ -864,6 +886,8 @@ class OllamaProvider(base.Provider):
             },
             "keep_alive": KEEP_ALIVE,
         }
+        if req.json_schema is not None:
+            body["format"] = req.json_schema.get("schema", req.json_schema)
         if req.reasoning_off:
             body.update(dict(self.reasoning_off_body))
         return body

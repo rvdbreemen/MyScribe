@@ -1942,6 +1942,67 @@
         "supersedes": [],
         "superseded_by": null
       }
+    },
+    {
+      "id": "ADR-034",
+      "title": "Ollama answers are constrained by the kind's JSON schema",
+      "path": "ADR-034-ollama-answers-are-constrained-by-the-kind-s-json-schema.md",
+      "format": "madr",
+      "status": "Proposed",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: B.",
+      "topics": [
+        "json-schema",
+        "ollama",
+        "structured-output"
+      ],
+      "aliases": [
+        "ollama format",
+        "timestamps as text"
+      ],
+      "components": [
+        "scribe/llm/ollama.py",
+        "scribe/llm/tasks.py"
+      ],
+      "symbols": [
+        "CLOCK_TEXT",
+        "OllamaProvider._body",
+        "Provider.schema_clock_as_text"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Send format as the bare JSON Schema whenever ChatRequest.jsonschema is set, and keep it on the ADR-029 retry.",
+          "Give a provider with schemaclockastext every timestamp field as text bound by CLOCKTEXT, plus null exactly where the field is nullable.",
+          "Write the pattern with [0-9]."
+        ],
+        "must_not": [
+          "Offer a number type for a timestamp to such a provider.",
+          "Send format on a note or a part, which are prose.",
+          "Change the schema a cloud provider receives."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testthekindsschemagoesoutasformatsothedaemonenforcesit",
+          "tests/testllmollama.py::testtheschemaridesalongwhenananswerlosttothinkingisaskedagain",
+          "tests/testllmtasks.py::testagrammarproviderisneverofferedanumberforatimestamp",
+          "tests/testllmtasks.py::testthecloudschemaisunchangedbytheclockmarker",
+          "tests/testllmtasks.py::testthecombinecarriesthetexttimestampsandthenotesnoschema"
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
     }
   ],
   "relationships": [
@@ -2560,6 +2621,18 @@
     {
       "source": "ADR-031",
       "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-034",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-034",
+      "target": "ADR-031",
       "type": "related",
       "resolved": true
     }

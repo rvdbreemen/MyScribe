@@ -31,6 +31,14 @@
   version are not reused: the next run of any AI task on a long recording
   (summary, minutes, blog and the others; chat is not affected) asks every
   part again. Earlier results are kept (TASK-124).
+- **A local AI answer comes back in the shape it was asked for.** With
+  Ollama, every AI task that answers in a fixed shape (summary, action items,
+  chapters, minutes, blog post, who is speaking, labels) now sends that shape
+  along, and Ollama lets the model write only JSON of that shape. Minutes on a
+  long recording failed when the model wrote a timestamp without quotes.
+  Timestamps are asked for as text, such as `2:16:29`, and an action item may
+  still come back without one. Cloud providers are asked as before (TASK-124,
+  ADR-034).
 - **A blog post on a long recording is written without thinking first.** The
   last step, which writes the post from the notes on each part, asks the model
   not to think first, as cleanup does, with every provider. With qwen3.5:4b

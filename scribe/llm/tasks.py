@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Sequence
 
 import jinja2
-from pydantic import BaseModel, BeforeValidator, ValidationError
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
 from scribe import db, glossary, llm, render
 from scribe.exports import doc as docs
@@ -134,8 +134,24 @@ def _optional_clock_seconds(value: Any) -> float | None:
     return _clock_seconds(value)
 
 
-Seconds = Annotated[float, BeforeValidator(_clock_seconds)]
-OptionalSeconds = Annotated[float | None, BeforeValidator(_optional_clock_seconds)]
+CLOCK_FIELD = "x-myscribe-clock"
+"""The mark a timestamp field carries in the JSON Schema pydantic writes, so
+`strict_json_schema` can find it. Never sent: the rewrite always removes it."""
+
+CLOCK_TEXT = {"type": "string", "pattern": r"^([0-9]+(\.[0-9]+)?|[0-9]+(:[0-5][0-9]){1,2})$"}
+"""A timestamp as text - `83`, `83.0`, `1:23`, `2:16:29` - for a provider whose
+schema is a grammar (`Provider.schema_clock_as_text`, ADR-034). `[0-9]`, not
+`\\d`: measured 2026-10-25 on Ollama 0.40.8, with `\\d` the daemon let
+`"{2:16:10}"` through and with `[0-9]` it did not."""
+
+Seconds = Annotated[
+    float, BeforeValidator(_clock_seconds), Field(json_schema_extra={CLOCK_FIELD: True})
+]
+OptionalSeconds = Annotated[
+    float | None,
+    BeforeValidator(_optional_clock_seconds),
+    Field(json_schema_extra={CLOCK_FIELD: True}),
+]
 
 
 # Pydantic ignores unknown keys by default, and that default is wanted here: a
@@ -907,7 +923,7 @@ def user_prompt(
     )
 
 
-def strict_json_schema(schema: dict) -> dict:
+def strict_json_schema(schema: dict, *, clock_as_text: bool = False) -> dict:
     """A pydantic JSON Schema the structured-output endpoints will accept.
 
     Measured against the live API on 2026-09-03: `Chapters.model_json_schema()`
@@ -928,6 +944,11 @@ def strict_json_schema(schema: dict) -> dict:
       must supply the key and may answer null. `default` is dropped for the same
       reason - a default is a statement about a key that may be missing, and
       here none may be.
+
+    A timestamp field loses its `CLOCK_FIELD` mark either way. With
+    `clock_as_text` its type becomes `CLOCK_TEXT` (or null, where pydantic
+    allows null) instead of `number` (ADR-034): a grammar that constrains every
+    token let qwen3.5:4b start `2:16:10` as the number 2 and end it as `2.0`.
 
     The rewrite happens here rather than in the models because it is a property
     of the wire format, not of the data: `parse_answer` still validates with
@@ -952,6 +973,21 @@ def strict_json_schema(schema: dict) -> dict:
                     rewrite(item)
             return
 
+        if value.pop(CLOCK_FIELD, False) and clock_as_text:
+            nullable = any(
+                isinstance(alt, dict) and alt.get("type") == "null"
+                for alt in value.get("anyOf") or ()
+            )
+            title = value.get("title")
+            value.clear()
+            if title:
+                value["title"] = title
+            if nullable:
+                value["anyOf"] = [dict(CLOCK_TEXT), {"type": "null"}]
+            else:
+                value.update(CLOCK_TEXT)
+            return
+
         if value.get("type") == "object" or "properties" in value:
             value["additionalProperties"] = False
             value["required"] = list(value.get("properties") or {})
@@ -968,7 +1004,9 @@ def strict_json_schema(schema: dict) -> dict:
     return node
 
 
-def schema_payload(spec: TaskSpec, supports_json_schema: bool) -> dict | None:
+def schema_payload(
+    spec: TaskSpec, supports_json_schema: bool, *, clock_as_text: bool = False
+) -> dict | None:
     """The `json_schema` for a `ChatRequest`, or None to ask in words instead.
 
     The capability is read off the provider class (`Provider.supports_json_schema`),
@@ -979,12 +1017,17 @@ def schema_payload(spec: TaskSpec, supports_json_schema: bool) -> dict | None:
     `strict` is declared because the schema is now strict-shaped, and declaring
     it is the difference between the endpoint validating the schema and the
     endpoint constraining the model to it.
+
+    `clock_as_text` is the provider's `schema_clock_as_text`: timestamps as
+    text rather than numbers (`strict_json_schema`, ADR-034).
     """
     if spec.schema is None or not supports_json_schema:
         return None
     return {
         "name": spec.kind,
-        "schema": strict_json_schema(spec.schema.model_json_schema()),
+        "schema": strict_json_schema(
+            spec.schema.model_json_schema(), clock_as_text=clock_as_text
+        ),
         "strict": True,
     }
 
@@ -1155,6 +1198,8 @@ class TaskPlan:
     its own vocabulary halfway through would be asked to reuse labels it had
     just invented, from a run that has not finished deciding them yet."""
     provider_supports_schema: bool = False
+    provider_clock_as_text: bool = False
+    """The provider's `schema_clock_as_text`, read when the plan is made."""
     note_budget: int = 0
     """The answer cap for one chunk's notes, decided here rather than in
     `_collect_notes` so that the number `plan_task` proved would fit back
@@ -1317,6 +1362,7 @@ def plan_task(
         known_labels=vocabulary(conn) if spec.kind == "labels" else (),
         language=answer_language(doc.run),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
+        provider_clock_as_text=bool(provider_cls.schema_clock_as_text),
         note_budget=note_budget,
         context_tokens=_known_window(provider_cls, chosen_model, window, given=context_tokens),
     )
@@ -1882,7 +1928,9 @@ def generate(
         if on_progress is not None:
             on_progress(done / total_calls)
 
-    schema = schema_payload(plan.spec, plan.provider_supports_schema)
+    schema = schema_payload(
+        plan.spec, plan.provider_supports_schema, clock_as_text=plan.provider_clock_as_text
+    )
 
     if not plan.chunked:
         response = _ask(

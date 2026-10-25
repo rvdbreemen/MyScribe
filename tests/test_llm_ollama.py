@@ -191,6 +191,55 @@ def test_the_hint_is_think_false_and_its_absence_sends_no_think():
     assert "think" not in plain.body()
 
 
+MINUTES_SCHEMA = {
+    "name": "minutes",
+    "schema": {"type": "object", "properties": {"agenda": {"type": "array"}}},
+    "strict": True,
+}
+
+
+def test_the_kinds_schema_goes_out_as_format_so_the_daemon_enforces_it():
+    """TASK-124, ADR-034. Measured 2026-10-25 on Ollama 0.40.8, qwen3.5:4b,
+    think off: without `format` the minutes answer carried `"evidence_ts":
+    2:16:10` unquoted and did not parse; with the schema as `format` the same
+    request came back valid JSON. `format` takes the bare JSON Schema, not the
+    OpenAI wrapper with `name` and `strict`."""
+    assert ollama.OllamaProvider.supports_json_schema is True
+
+    rec = Recorder(chat_answer('{"agenda": []}'))
+    provider(rec).complete(
+        base.ChatRequest(system="", user="minutes", model="qwen3.5:4b", json_schema=MINUTES_SCHEMA)
+    )
+    assert rec.body()["format"] == MINUTES_SCHEMA["schema"]
+
+    plain = Recorder(chat_answer())
+    provider(plain).complete(REQUEST)
+    assert "format" not in plain.body(), "a call with no schema - a note - is not constrained"
+
+
+def test_the_schema_rides_along_when_an_answer_lost_to_thinking_is_asked_again():
+    """ADR-029's second call is the same request with `think: false`; dropping
+    the schema there would trade an empty answer for an unparseable one."""
+    rec = Recorder(
+        chat_answer("", done_reason="length", thinking="Thinking Process: ..."),
+        chat_answer('{"agenda": []}'),
+    )
+    provider(rec).complete(
+        base.ChatRequest(system="", user="minutes", model="qwen3.5:4b", json_schema=MINUTES_SCHEMA)
+    )
+    assert rec.calls == 2
+    assert rec.body(1)["think"] is False
+    assert rec.body(1)["format"] == MINUTES_SCHEMA["schema"]
+
+
+def test_ollama_asks_for_timestamps_as_text():
+    """The grammar constrains every token from the first: measured 2026-10-25,
+    a timestamp field typed `number` let qwen3.5:4b start `2:16:10` as the
+    number 2 and close it as `2.0` - valid JSON, wrong moment."""
+    assert ollama.OllamaProvider.schema_clock_as_text is True
+    assert base.Provider.schema_clock_as_text is False
+
+
 def test_thinking_is_reported_in_characters_never_as_a_token_count():
     """Ollama reports one `eval_count` for thinking and answer together, so the
     thinking is measured in the only unit the answer carries - its characters -
