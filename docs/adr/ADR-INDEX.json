@@ -1887,7 +1887,7 @@
       "title": "Every shutdown the app lives through ends the running runner, and only a requested stop requeues",
       "path": "ADR-032-every-shutdown-the-app-lives-through-ends-the-running-runner-and-only-a-requested-stop-requeues.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-10-25",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-24.",
       "topics": [

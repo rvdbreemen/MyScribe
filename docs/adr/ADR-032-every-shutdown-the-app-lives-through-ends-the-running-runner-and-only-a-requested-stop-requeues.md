@@ -1,7 +1,7 @@
 ---
 id: "ADR-032"
 title: "Every shutdown the app lives through ends the running runner, and only a requested stop requeues"
-status: "Proposed"
+status: "Accepted"
 date: "2026-10-25"
 binding: false
 gate: null
@@ -42,7 +42,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-10-25.
+Accepted, 2026-10-25.
 
 ## Status History
 
@@ -77,6 +77,11 @@ status_history:
     status: Proposed
     changed_by: Claude (agent, session 2026-10-25)
     reason: "Robert 2026-10-25: 30 s and 75/80 s kept; no claim once a stop begins; one threaded store-and-enqueue call, database closed only when none runs; every door Close lets an upload finish"
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
+    reason: Robert accepted ADR-032 in the session of 2026-10-25, with the upload window, ingest window and stop order in front of him
     changed_via: adr-kit lifecycle
 ```
 
