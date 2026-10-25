@@ -135,7 +135,8 @@ in 483 s; chunk 1 wrote 34 points, 39 when asked again, thinned to 30.
 * A disobeying chunk costs a second call, paid for on a cloud provider (time
   not measured); its row names the unstored ask's tokens in `other_ask`.
 * Thinning drops points by position, not by weight: a decision can be lost.
-  The second ask exists so that this is the rare path.
+  It is not rare: in both live runs a count-over's second ask stayed over 30
+  (116, 39) and thinning held the bound; only a cut-off note gained from it.
 
 ## Related Decisions
 
