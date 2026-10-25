@@ -106,7 +106,7 @@ a real piece, "Anna na Boer" ("an-NA boer") reads "Anna Boer".
 
 A lone word is not corrected if it has `SHORT_WORD_LETTERS` letters or fewer
 or is on the vendored Dutch and English function-word list
-(`function_words.txt`, from Snowball), unless it is spelled as a variant the
+(`function_words.txt`, Snowball plus six by hand), unless it is spelled as a variant the
 user listed (TASK-111). One word against a name a letter or two longer
 clears a rule easily: "het" is 75 against "Hetty" and 'HT' both ways, "the"
 85.7 against "Thea", "door" 88.9 against "Doori". A spelling already right
@@ -262,8 +262,8 @@ SHORT_WORD_LETTERS = 3
 ACRONYM_CAPITALS = 2
 
 # The words that are never respelled alone either, whatever their length:
-# Dutch and English function words, vendored from the Snowball stop word
-# lists (BSD-3; source, commits and licence in the file). "door" and "maar"
+# Dutch and English function words: the Snowball stop word lists (BSD-3;
+# source, commits and licence in the file) plus six words added by hand. "door" and "maar"
 # are four letters and 88.9 against "Doori" and "Maars".
 FUNCTION_WORDS_PATH = Path(__file__).with_name("function_words.txt")
 

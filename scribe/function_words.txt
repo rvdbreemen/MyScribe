@@ -2,16 +2,18 @@
 # when one stands alone (scribe/glossary.py, TASK-111). One word per line,
 # lowercase; a line starting with "#" is a comment.
 #
-# Source: the Snowball stop word lists, taken unchanged
+# Source: the Snowball stop word lists, plus six words added by hand.
 #   https://github.com/snowballstem/snowball-website
 #   algorithms/dutch/stop.txt   (commit 013d96b2fcaee7caf78846656d2146b4a0cd82e8)
 #   algorithms/english/stop.txt (commit ce80856f7574e040b191328062433247c67690e8)
-# The comments and the commented-out entries of those files are left out
-# (the English list comments out will/can/may/must/us as homonyms; the
-# Dutch list comments nothing out).
-# Added by hand, not in either list: "den" (Dutch, "the", as in "Henk
-# den"), which TASK-111's decision names next to en/een/men; and the five
-# English homonyms back, us/will/can/may/must, because Robert's acronym rule
+# The two "Snowball" sections below hold the active entries of those files,
+# in their order and spelling; their comments and commented-out entries are
+# left out (the English list comments out will/can/may/must/us as homonyms;
+# the Dutch list comments nothing out).
+# The two "added by hand" sections hold the six words that are not active
+# entries in either file: "den" (Dutch, "the", as in "Henk den"), which
+# TASK-111's decision names next to en/een/men; and the five English
+# homonyms back, us/will/can/may/must, because Robert's acronym rule
 # (2026-10-25) says a function word never takes a term's capitals: "us"
 # stays with "US" listed, "can" with "CAN", "will" with "Will" or "WILL".
 #
@@ -325,6 +327,8 @@ so
 than
 too
 very
+
+# --- English, added by hand (see above) ---
 us
 will
 can
