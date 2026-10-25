@@ -85,12 +85,12 @@ thinned. A cut-off note whose second ask is cut off or empty is refused.
 
 ### Confirmation
 
-Unit tests with a scripted provider, and one live chapters run on media 61
-with `qwen3.5:4b` on a library copy (TASK-126, job 430 at ab378fa): done in
-408 s where TASK-124's job 433 failed. Chunk 0's second ask wrote 116 points,
-thinned to 30, the last at 57:12 of a chunk ending 1:00:16. The notes reached
-each chunk's end; the result did not: all 11 chapters started by 54:40 of
-2:28:04, so they are not usable chapters. Chunks 1 and 2 were not thinned.
+Unit tests, and live runs on media 61 with `qwen3.5:4b` on library copies.
+Chapters (ab378fa): done in 408 s where TASK-124's job 433 failed; chunk 0's
+second ask wrote 116 points, thinned to 30, the last at 57:12 of 1:00:16. The
+notes reached each chunk's end; the result did not: all 11 chapters started
+by 54:40 of 2:28:04, so they are not usable chapters. Minutes (5138248): done
+in 483 s; chunk 1 wrote 34 points, 39 when asked again, thinned to 30.
 
 ## Decision Contract
 
