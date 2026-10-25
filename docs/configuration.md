@@ -43,6 +43,13 @@ Without a token a transcription still completes: the transcript has no
 speakers, and says why and how to fix it. A pipeline you already have needs
 no token at all - put it in `models/pyannote` inside the library.
 
+## Choosing a local model
+
+**Settings → AI providers → Model for Ollama (local)** picks the model Ollama
+answers with. Minutes and action items with timestamps need qwen3.5:9b or
+larger on a local model; a 4B model such as qwen3.5:4b may leave them without
+timestamps. This was measured on one long recording (2h28m, Dutch).
+
 ## Ollama on another computer
 
 Ollama normally runs on this computer. It can also run on another machine in

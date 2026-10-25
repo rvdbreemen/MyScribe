@@ -267,10 +267,15 @@ def test_the_map_reduce_templates_are_the_ones_chunking_names():
         assert (tasks.PROMPTS_DIR / f"{name}.md").is_file()
 
 
-PROMPTS_DIGEST = "80f59da4962055e099a2408282d2139875a397f3f6277436726d69737308715e"
-"""sha256 over everything a prompt is made of, for PROMPT_VERSION "5": the
+PROMPTS_DIGEST = "8caa7d01408d090994a9955f80b707e67078ef0049aadb9c5cb8492d0f75cfaf"
+"""sha256 over everything a prompt is made of, for PROMPT_VERSION "6": the
 templates in prompts/, SYSTEM and JSON_SYSTEM, every kind's goal and note
 rule, and the source line `source_label` writes.
+
+Version "6" (TASK-126, 2026-10-25): map_chunk.md gained the second ask of a
+note that broke `MAX_NOTE_POINTS` or ran out of its budget (the `again`
+slot). The note rules render the same text, now from the constant. Was
+80f59da4... under "5".
 
 Version "5" (TASK-124, 2026-10-25): minutes, action_items and chapters got a
 note rule like blog's (points in their own words, no line copied from the
@@ -2155,7 +2160,7 @@ def test_notes_keep_the_speaker_when_the_lines_carry_one(speakers, kept):
     SPEAKER_XX left to name."""
     text = tasks.render_prompt("map_chunk", index=1, count=2, start="0:00", end="5:00",
                                goal="g", transcript="[0:01] x", speakers=speakers,
-                               note_rule="")
+                               note_rule="", again="", max_points=tasks.MAX_NOTE_POINTS)
 
     assert ("speaker" in text.lower()) is kept
 
@@ -2579,3 +2584,292 @@ def test_repair_json_says_why_it_could_not_parse():
     with pytest.raises(base.BadResponse) as caught:
         tasks.repair_json('{"body": "never closed')
     assert "json:" in str(caught.value), str(caught.value)
+
+
+# --- the note count is bounded in code, not only asked (TASK-126) ---------------------------
+
+ASKED_AGAIN = "Your first notes for this excerpt"
+"""The first words of the second ask: how a script tells it from the first."""
+
+
+def _points(n: int, start: int = 0) -> str:
+    """`n` notes in a model's own words, each with its own clock."""
+    return "\n".join(
+        f"[{(start + k) // 60}:{(start + k) % 60:02d}] Point {start + k} in the model's own words."
+        for k in range(n)
+    )
+
+
+def _notes(first, again, kind: str = "minutes"):
+    """`first` for a chunk's first ask, `again` for the second, and the kind's own
+    answer for the combine. Each is a string or a ChatResponse."""
+
+    def answer(req: base.ChatRequest):
+        if CHUNK_MARKER not in req.user:
+            return ANSWERS.get(kind, json.dumps({"speakers": []}))
+        return again if ASKED_AGAIN in req.user else first
+
+    return answer
+
+
+def _run_minutes(conn, monkeypatch, first, again, kind: str = "minutes"):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    provider, calls = fake_provider(_notes(first, again, kind))
+    register(monkeypatch, provider)
+    tasks.run_task(conn, media_id=media_id, kind=kind, provider_name="fake", model="fake-1",
+                   budget_tokens=100)
+    chunk_rows = [r for r in rows(conn, media_id) if tasks.is_chunk_kind(r["kind"])]
+    assert chunk_rows
+    return chunk_rows, calls
+
+
+def test_the_note_rules_ask_for_the_bound_the_code_keeps():
+    """The number in the prompt and the number in the code are one constant, so
+    the bound a note is cut to is the bound it was asked for."""
+    for kind, spec in tasks.TASKS.items():
+        if spec.note_rule:
+            assert f"Write at most {tasks.MAX_NOTE_POINTS} notes." in spec.note_rule, kind
+
+
+def test_an_85_note_chunk_is_asked_again_and_then_bounded(conn, monkeypatch):
+    """Job 430 on the round-8 library copy (TASK-124, 2026-10-25): qwen3.5:9b
+    wrote 85 minutes notes on chunk 0 against 'at most 30'. Asked once more, a
+    model that still writes 85 has them cut to 30 in code - spread over the
+    whole note, the last one kept, each line untouched with its clock."""
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), _points(85))
+
+    again = [c for c in calls if ASKED_AGAIN in c.user]
+    assert len(again) == len(chunk_rows), "every 85-note chunk is asked a second time"
+    assert "85 notes" in again[0].user and str(tasks.MAX_NOTE_POINTS) in again[0].user
+    written = _points(85).splitlines()
+    for row in chunk_rows:
+        kept = row["content"].splitlines()
+        assert len(kept) == tasks.MAX_NOTE_POINTS, row["content"]
+        assert kept[0] == written[0] and kept[-1] == written[-1], "the chunk's end is kept"
+        assert all(line in written for line in kept), "a kept line was rewritten"
+        params = json.loads(row["params_json"])
+        assert params["points_written"] == 85 and params["points_kept"] == tasks.MAX_NOTE_POINTS
+        assert params["asked_again"] is True
+
+
+def test_a_note_that_keeps_the_bound_when_asked_again_is_stored_whole(conn, monkeypatch):
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), _points(20))
+
+    for row in chunk_rows:
+        assert row["content"] == _points(20)
+        params = json.loads(row["params_json"])
+        assert (params["points_written"], params["points_kept"]) == (20, 20)
+        assert params["asked_again"] is True
+
+
+def test_a_note_within_the_bound_is_asked_once(conn, monkeypatch):
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(30), _points(5))
+
+    assert not [c for c in calls if ASKED_AGAIN in c.user]
+    for row in chunk_rows:
+        assert row["content"] == _points(30)
+        assert json.loads(row["params_json"])["asked_again"] is False
+
+
+def test_a_note_cut_off_at_its_cap_is_asked_again_and_the_finished_one_stored(
+    conn, monkeypatch
+):
+    """Job 433 (chapters, qwen3.5:4b, round-8 copy) ran out of its 4000-token
+    budget at 31:15 of a 60-minute chunk, writing fragments. The second ask
+    says so and asks for the whole excerpt within the bound. Twenty notes and
+    cut off: within the bound, and asked again all the same, because the cap
+    is what kept it from the end of the excerpt."""
+    chunk_rows, calls = _run_minutes(
+        conn, monkeypatch, truncated(_points(20) + "\n[0:20] Sti"), _points(12), kind="chapters",
+    )
+
+    again = [c for c in calls if ASKED_AGAIN in c.user]
+    assert len(again) == len(chunk_rows)
+    assert "ran out of room" in again[0].user
+    for row in chunk_rows:
+        assert row["content"] == _points(12)
+
+
+def test_a_note_cut_off_twice_is_refused_and_not_stored(conn, monkeypatch):
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    cut = truncated(_points(20) + "\n[0:20] Sti")
+    provider, calls = fake_provider(_notes(cut, cut, "chapters"))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="chapters", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    assert "ran out of room" in str(caught.value) and "asked twice" in str(caught.value)
+    assert rows(conn, media_id) == []
+    assert len(calls) == 2, "one chunk, asked twice, then refused"
+
+
+def test_speaker_notes_are_not_bounded(conn, monkeypatch):
+    """`speakers` keeps its quotes and has no note rule, so no bound either."""
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), _points(5),
+                                     kind="speakers")
+
+    assert not [c for c in calls if ASKED_AGAIN in c.user]
+    for row in chunk_rows:
+        assert row["content"] == _points(85)
+
+
+def test_bounded_points_spreads_the_kept_lines_over_the_whole_note():
+    note = _points(85)
+    kept = tasks.bounded_points(note, 30).splitlines()
+    lines = note.splitlines()
+
+    assert len(kept) == 30
+    assert kept[0] == lines[0] and kept[-1] == lines[-1]
+    assert [lines.index(line) for line in kept] == sorted({lines.index(line) for line in kept})
+    # Spread, not the first thirty: something from the middle third is kept.
+    assert any(28 <= lines.index(line) <= 56 for line in kept)
+    assert tasks.bounded_points(_points(30), 30) == _points(30)
+    # Blank lines are not points and are not kept.
+    assert tasks.bounded_points("[0:01] a\n\n[0:02] b\n", 30) == "[0:01] a\n[0:02] b"
+
+
+@pytest.mark.parametrize("again", ["cut off", "empty"])
+def test_a_finished_note_over_the_bound_is_kept_when_the_second_ask_fails(
+    conn, monkeypatch, again
+):
+    """The second ask must not turn a job that finished into one that fails.
+    Job 430's chunk 0 (TASK-124 round 8, qwen3.5:9b minutes) finished with 85
+    notes and was stored; if its second ask runs out of room or says nothing,
+    the finished first note is kept, thinned to the bound."""
+    second = truncated(_points(10) + "\n[0:10] Sti") if again == "cut off" else ""
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), second)
+
+    assert [c for c in calls if ASKED_AGAIN in c.user], "the bound was not asked again"
+    written = _points(85).splitlines()
+    for row in chunk_rows:
+        kept = row["content"].splitlines()
+        assert len(kept) == tasks.MAX_NOTE_POINTS and kept[-1] == written[-1], row["content"]
+        params = json.loads(row["params_json"])
+        assert params["stored_from_ask"] == 1 and params["finish_reason"] == "stop", params
+
+
+# --- a point is a stamped line and what hangs under it (TASK-126 review) ---------------------
+
+LEAD_IN = "Hier zijn de notities uit het transcript, gericht op de onderwerpen:"
+"""The line qwen3.5:4b opened chunk 1 of job 430 with (TASK-126 live run): not a
+point, so it may neither count against the bound nor take a kept slot."""
+
+
+def _two_line_points(n: int) -> str:
+    """A lead-in, then `n` points of a stamped head and an unstamped sub-bullet:
+    the shape the review probed, `2n + 1` lines for `n` notes."""
+    body = "\n".join(
+        f"[{k // 60}:{k % 60:02d}] Point {k} in the model's own words.\n  - detail of point {k}"
+        for k in range(n)
+    )
+    return f"{LEAD_IN}\n\n{body}"
+
+
+def test_a_point_is_its_stamped_line_and_the_lines_under_it():
+    points = tasks.note_points(_two_line_points(20))
+
+    assert len(points) == 20
+    assert all(p.startswith("[") and "\n  - detail of point" in p for p in points)
+    # qwen3.5:4b writes the clock without its closing bracket (TASK-124 round 8):
+    # still a stamp, so still a point of its own.
+    assert len(tasks.note_points("[2:26:09 Henry: one\n[2:27:10 Ruud: two")) == 2
+
+
+def test_a_note_without_stamps_is_counted_by_line():
+    """No stamp to group by - a 4B note that left them out: each line is a point,
+    and nothing is dropped as a lead-in."""
+    note = "\n".join(f"Christel: point {k} in her own words." for k in range(40))
+    assert len(tasks.note_points(note)) == 40
+    # One stamp among forty lines is not a note made of stamped points either.
+    assert len(tasks.note_points("[0:01] first\n" + note)) == 41
+
+
+def test_twenty_two_line_points_after_a_lead_in_are_asked_once_and_stored_whole(
+    conn, monkeypatch
+):
+    """Twenty notes written as head plus sub-bullet were 41 lines, and 41 lines
+    were asked again as if they were 41 notes."""
+    note = _two_line_points(20)
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, note, _points(5))
+
+    assert not [c for c in calls if ASKED_AGAIN in c.user]
+    for row in chunk_rows:
+        assert row["content"] == note
+        assert json.loads(row["params_json"])["points_written"] == 20
+
+
+def test_forty_two_line_points_are_thinned_by_point_not_by_line(conn, monkeypatch):
+    note = _two_line_points(40)
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, note, note)
+
+    heads = [line for line in note.splitlines() if line.startswith("[")]
+    for row in chunk_rows:
+        lines = row["content"].splitlines()
+        assert LEAD_IN not in row["content"], "the lead-in took a kept slot"
+        assert lines[0].startswith("["), lines[0]
+        kept_heads = [line for line in lines if line.startswith("[")]
+        assert len(kept_heads) == tasks.MAX_NOTE_POINTS
+        assert kept_heads[-1] == heads[-1], "the chunk's last point is kept"
+        # Every head keeps its own sub-bullet, and no sub-bullet is kept alone.
+        assert len(lines) == 2 * tasks.MAX_NOTE_POINTS
+        for head, sub in zip(lines[::2], lines[1::2]):
+            k = head.split("Point ")[1].split(" ")[0]
+            assert sub == f"  - detail of point {k}", (head, sub)
+        params = json.loads(row["params_json"])
+        assert (params["points_written"], params["points_kept"]) == (40, tasks.MAX_NOTE_POINTS)
+
+
+def test_one_point_over_the_bound_is_asked_again_and_cut_to_it(conn, monkeypatch):
+    """The edge: 31 is over, 30 is not (a `MAX_NOTE_POINTS + 1` slip survived
+    the 85- and 20-point tests)."""
+    over = _points(tasks.MAX_NOTE_POINTS + 1)
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, over, over)
+
+    again = [c for c in calls if ASKED_AGAIN in c.user]
+    assert len(again) == len(chunk_rows)
+    assert f"{tasks.MAX_NOTE_POINTS + 1} notes" in again[0].user
+    for row in chunk_rows:
+        assert len(row["content"].splitlines()) == tasks.MAX_NOTE_POINTS
+        params = json.loads(row["params_json"])
+        assert params["points_kept"] == tasks.MAX_NOTE_POINTS
+
+
+def test_a_cut_off_note_whose_second_ask_is_empty_says_it_ran_out_of_room(conn, monkeypatch):
+    """The first ask ran out of room, the second said nothing: the job fails on
+    the cause that started it, not on 'returned nothing' as if asked once."""
+    media_id = seed_media(conn, title="Long one")
+    seed_long_run(conn, media_id, n_segments=12)
+    cut = truncated(_points(20) + "\n[0:20] Sti")
+    provider, calls = fake_provider(_notes(cut, "", "chapters"))
+    register(monkeypatch, provider)
+
+    with pytest.raises(base.BadResponse) as caught:
+        tasks.run_task(conn, media_id=media_id, kind="chapters", provider_name="fake",
+                       model="fake-1", budget_tokens=100)
+
+    message = str(caught.value)
+    assert "ran out of room" in message and "asked twice" in message, message
+    assert "second answer" in message and "returned nothing" in message, message
+    assert not message.startswith("the model returned nothing"), message
+    assert rows(conn, media_id) == []
+
+
+def test_a_second_ask_records_what_the_other_ask_cost(conn, monkeypatch):
+    """Both asks are paid for on a cloud provider; the stored row carries one
+    response's tokens, so it names the other ask's too."""
+    first = base.ChatResponse(text=_points(85), model="fake-1-2026-09-02", provider="fake",
+                              prompt_tokens=900, completion_tokens=850,
+                              raw_finish_reason="stop")
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, first, _points(20))
+
+    for row in chunk_rows:
+        params = json.loads(row["params_json"])
+        assert params["stored_from_ask"] == 2
+        assert params["other_ask"] == {"prompt_tokens": 900, "completion_tokens": 850,
+                                       "finish_reason": "stop"}, params
+    chunk_rows, _ = _run_minutes(conn, monkeypatch, _points(5), _points(5))
+    assert json.loads(chunk_rows[-1]["params_json"])["other_ask"] is None
