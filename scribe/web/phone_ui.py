@@ -48,7 +48,7 @@ from markupsafe import Markup
 from starlette.responses import Response
 
 from scribe import db
-from scribe.web import phone_door, render, transcribe_dialog
+from scribe.web import phone_door, render, stopping, transcribe_dialog
 from scribe.web.library import _is_htmx
 
 router = APIRouter()
@@ -139,8 +139,12 @@ def _job_sentence(conn: sqlite3.Connection, media_id) -> str:
 
 
 def _arrived(door: phone_door.Door, conn: sqlite3.Connection) -> list[dict]:
-    """What came in through the opening that closed on it, with its job."""
-    if door.opening is not None or door.closed_reason != "received":
+    """What came in through the opening that has closed, with its job.
+
+    Whatever closed it: since a Close lets an upload in flight finish
+    (TASK-112.09), a file can land while the button or the fifteen minutes
+    are closing the door, and it is in the library like any other."""
+    if door.opening is not None or door.closing:
         return []
     return [
         {"name": name, "job": _job_sentence(conn, media_id)}
@@ -162,14 +166,17 @@ def _panel_context(
         "qr": _qr(opening.ip_url) if opening else None,
         "countdown": _clock(door.remaining()) if opening else None,
         "received": list(door.received) if opening else [],
+        "closing": door.closing,
+        "closing_seconds": f"{stopping.UPLOAD_FINISH_SECONDS:g}",
         "error": error,
         "firewall_note": FIREWALL_NOTE if sys.platform == "win32" else None,
         "minutes": int(phone_door.OPEN_SECONDS // 60),
     }
 
 
-def _panel(request: Request, error: str | None = None, status: int = 200) -> Response:
-    ctx = _panel_context(_door(request), request.app.state.conn, error)
+def _panel(request: Request, error: str | None = None, status: int = 200, *,
+           reload: bool = False) -> Response:
+    ctx = _panel_context(_door(request), request.app.state.conn, error, reload=reload)
     if _is_htmx(request):
         response = render(request, "_phone_panel.html", **ctx)
     else:
@@ -197,8 +204,12 @@ def open_door(request: Request) -> Response:
 
 @router.post("/phone/close", include_in_schema=False)
 def close_door(request: Request) -> Response:
+    """Close the door. An upload in flight may finish first, for up to
+    `stopping.UPLOAD_FINISH_SECONDS` (Robert, 2026-10-25), and this answer
+    waits for it; the countdown says so meanwhile. A file that landed is
+    named, and the library reloads once to list it."""
     _door(request).close("closed on the laptop")
-    return _panel(request)
+    return _panel(request, reload=True)
 
 
 @router.get("/phone/countdown", include_in_schema=False)
@@ -208,6 +219,7 @@ def countdown(request: Request) -> Response:
         return render(
             request, "_phone_countdown.html",
             countdown=_clock(door.remaining()), received=list(door.received),
+            closing=door.closing, closing_seconds=f"{stopping.UPLOAD_FINISH_SECONDS:g}",
         )
     ctx = _panel_context(door, request.app.state.conn, reload=True)
     response = render(request, "_phone_panel.html", **ctx)

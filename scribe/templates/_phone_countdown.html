@@ -1,8 +1,14 @@
 {# The part of the open panel that changes: minutes left and what came in.
    Polls itself once a second; when the door has closed, /phone/countdown
-   answers 286 with the closed panel, retargeted over #phone-panel. #}
+   answers 286 with the closed panel, retargeted over #phone-panel.
+   `closing`: the door takes nothing new, and an upload already on its way
+   may still finish, for up to `closing_seconds` (TASK-112.09). #}
 <div id="phone-live" hx-get="/phone/countdown" hx-trigger="every 1s" hx-swap="outerHTML">
+  {% if closing %}
+  <p role="status">Closing. The door takes nothing new; a recording already on its way from the phone may still arrive, for up to {{ closing_seconds }} seconds.</p>
+  {% else %}
   <p>Closes by itself in <strong>{{ countdown }}</strong>.</p>
+  {% endif %}
   {% if received %}
   <p>Received from the phone:</p>
   <ul class="phone-received">

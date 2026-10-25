@@ -85,12 +85,12 @@ SHORTER_ENV = "SCRIBE_PHONE_DOOR_SECONDS"
 # address, owned by nobody, and a UDP connect sends no packet at all.
 ROUTE_PROBE = ("192.0.2.1", 9)
 
-# How long a Close waits for a request still open before cutting it off. A
-# Close inside the app's stop lets an upload in flight finish until the app's
-# deadline (`stopping.UPLOAD_FINISH_SECONDS` after the app's stop began;
-# uploads exempt: Robert, 2026-10-25, TASK-112.09), and never gives it less
-# than this. Any other Close - the button, the fifteen minutes - cuts it after
-# this (an agent choice, still open for Robert).
+# How long a Close waits for a request still open that is not an upload (the
+# upload page's GET) before cutting it off. An upload in flight may finish for
+# `stopping.UPLOAD_FINISH_SECONDS` after the Close began, whatever closes the
+# door - the button, the fifteen minutes, the app's stop (Robert, 2026-10-25,
+# TASK-112.09) - and the Close takes that long. Inside the app's stop the
+# door gets the app's deadline, never less than this grace.
 GRACE_SECONDS = 2.0
 
 Accept = Callable[[BinaryIO, str], object]
@@ -251,7 +251,8 @@ class UvicornListener:
             server_header=False,
         )
         self._server = stopping.StoppingServer(
-            config, is_upload=_is_door_upload, grace=grace, name="phone_door")
+            config, is_upload=_is_door_upload, grace=grace,
+            upload_seconds=stopping.UPLOAD_FINISH_SECONDS, name="phone_door")
         self._thread: threading.Thread | None = None
 
     def start(self, timeout: float = 10.0) -> None:
@@ -270,10 +271,11 @@ class UvicornListener:
             time.sleep(0.01)
 
     def stop(self, timeout: float = STOP_JOIN_SECONDS, *, upload_deadline: float | None = None) -> None:
-        """Stop the server and wait for its thread. ``upload_deadline``: the
-        app's, when the door closes inside the app's own stop; without it an
-        upload gets the grace only."""
-        self._server.upload_deadline = time.monotonic() if upload_deadline is None else upload_deadline
+        """Stop the server and wait for its thread. An upload in flight may
+        finish for `stopping.UPLOAD_FINISH_SECONDS`; ``upload_deadline``, the
+        app's when the door closes inside the app's own stop, shortens that,
+        never below the grace."""
+        self._server.upload_deadline = upload_deadline
         self._server.should_exit = True
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -319,6 +321,7 @@ class Door:
         self._listener = None
         self._stop_watch: threading.Event | None = None
         self._closed = threading.Event()
+        self._closing = False
         self._closed.set()
         self.received: list[str] = []
         # What ``accept`` answered for each file, in order (the laptop's side
@@ -335,6 +338,12 @@ class Door:
 
     def is_open(self) -> bool:
         return self._opening is not None
+
+    @property
+    def closing(self) -> bool:
+        """Closed to anything new, with an upload that was already on its way
+        still allowed to finish: the listener is not stopped yet."""
+        return self._closing
 
     def remaining(self) -> float:
         opening = self._opening
@@ -429,9 +438,12 @@ class Door:
         closing it (the door closes itself after a file): the listener is
         stopped and ``phone.close`` logged by then.
 
-        ``upload_deadline``: when the app is stopping, the moment its stop
-        gives uploads until (`stopping.StoppingServer`). A phone upload in
-        flight has run alongside the app's stop and gets no second bound.
+        A phone upload in flight may finish first, for up to
+        `stopping.UPLOAD_FINISH_SECONDS` (Robert, 2026-10-25), so a Close can
+        take that long; `closing` says so meanwhile. ``upload_deadline``: when
+        the app is stopping, the moment its stop gives uploads until
+        (`stopping.StoppingServer`). A phone upload in flight has run
+        alongside the app's stop and gets no second bound.
         """
         with self._lock:
             opening = self._opening
@@ -439,6 +451,7 @@ class Door:
                 return
             if opening is not None:
                 self._opening = None
+                self._closing = True
                 self.closed_reason = reason
                 listener, self._listener = self._listener, None
                 stop, self._stop_watch = self._stop_watch, None
@@ -464,6 +477,7 @@ class Door:
                 applog.log("phone.mdns_withdraw_failed", level="warn", error=str(exc))
             # Logged first: whoever waits on _closed may read the log next.
             applog.log("phone.close", reason=reason, received=received)
+            self._closing = False
             self._closed.set()
 
     def close_if_due(self) -> bool:
@@ -477,7 +491,7 @@ class Door:
         opening = self._opening
         if opening is not None and self._clock() >= opening.closes_at:
             self.close("timeout", only=opening)
-        return self._opening is None
+        return self._opening is None and not self._closing
 
     def _watch(self, opening: Opening, stop: threading.Event) -> None:
         while not stop.wait(self._poll):

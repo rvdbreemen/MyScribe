@@ -462,10 +462,13 @@ def test_a_door_that_timed_out_does_not_reload_the_library(client, clock):
 
 
 @pytest.mark.parametrize("close", ["by hand", "by timeout"])
-def test_a_door_closed_otherwise_after_a_file_neither_claims_it_nor_reloads(client, clock, monkeypatch, close):
-    # The window between the phone's answer and the door closing itself on
-    # it: the laptop's Close or the timer gets there first. The reason is
-    # then not "received", and the panel must not report an arrival.
+def test_a_door_closed_otherwise_after_a_file_names_it_and_reloads(client, clock, monkeypatch, close):
+    """The window between the phone's answer and the door closing itself on
+    it: the laptop's Close or the timer gets there first. Since a Close lets
+    an upload in flight finish (Robert, 2026-10-25, TASK-112.09), that window
+    is up to half a minute, and the file is in the library: the panel names
+    it and reloads the library once, as for a door closed on its file.
+    Before, it said nothing about a file that had arrived."""
     door = door_of(client)
     monkeypatch.setattr(door, "_close_after_answer", lambda opening: None)
     client.post("/phone/open", headers=HX)
@@ -474,14 +477,54 @@ def test_a_door_closed_otherwise_after_a_file_neither_claims_it_nor_reloads(clie
     if close == "by hand":
         panel = client.post("/phone/close", headers=HX)
         assert door.closed_reason == "closed on the laptop"
-        assert "Received Meeting.m4a" not in panel.text
+        assert "Received Meeting.m4a" in panel.text
+        assert 'hx-get="/phone/done"' in panel.text
     else:
         clock.advance(15 * 60)
     tick = client.get("/phone/countdown", headers=HX)
     assert tick.status_code == phone_ui.STOP_POLLING
     assert door.closed_reason == ("closed on the laptop" if close == "by hand" else "timeout")
-    assert "Received Meeting.m4a" not in tick.text
-    assert "/phone/done" not in tick.text
+    assert "Received Meeting.m4a" in tick.text
+
+
+def test_while_a_close_waits_for_an_upload_the_panel_says_it_may_still_arrive(client):
+    """What the laptop shows while a Close lets a phone upload finish: the
+    countdown's place says the door takes nothing new and the recording on its
+    way may still arrive, for up to the bound; the panel offers no Open (the
+    port is still the old listener's). Once the file is in, the countdown
+    swaps in the closed panel that names it and reloads the library."""
+    import threading
+    import time
+
+    from scribe.web import stopping
+    from test_phone_door import _half_an_upload, _rest_and_answer
+
+    door = door_of(client)
+    client.post("/phone/open", headers=HX)
+    sock, rest = _half_an_upload(door.opening, b"\x00audio" * 40_000)
+    time.sleep(0.3)
+    closing = threading.Thread(target=door.close, args=("closed on the laptop",), daemon=True)
+    closing.start()
+    time.sleep(0.5)
+    try:
+        assert door.closing
+        seconds = f"{stopping.UPLOAD_FINISH_SECONDS:g} seconds"
+        tick = client.get("/phone/countdown", headers=HX)
+        assert tick.status_code == 200
+        assert "may still arrive" in tick.text and seconds in tick.text
+        assert "Closes by itself" not in tick.text
+        panel = client.get("/phone", headers=HX)
+        assert "may still arrive" in panel.text
+        assert 'hx-post="/phone/open"' not in panel.text
+        assert 'hx-get="/phone/countdown"' in panel.text
+    finally:
+        answer = _rest_and_answer(sock, rest)
+        closing.join(60)
+    assert answer.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK", answer[:200]
+    tick = client.get("/phone/countdown", headers=HX)
+    assert tick.status_code == phone_ui.STOP_POLLING
+    assert "Received Voice memo 42.m4a" in tick.text
+    assert 'hx-get="/phone/done"' in tick.text
 
 
 def test_opening_the_panel_later_does_not_reload_the_library(client):
