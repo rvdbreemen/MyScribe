@@ -1111,6 +1111,16 @@ def test_keep_alive_restarts_only_the_exit_that_means_the_app_died():
     assert autostart.APP_DIED == _launcher().APP_DIED != 0
 
 
+def test_the_launcher_knows_the_unit_and_the_job_by_the_names_written_here():
+    """TASK-112.10, ADR-037: the launcher restarts a crashed app only where no
+    OS supervisor watches it, and tells the systemd unit and the LaunchAgent
+    by these names. It spells them again, like `APP_DIED`; this holds them
+    to the module's own."""
+    launcher = _launcher()
+    assert launcher.SUPERVISED_UNIT == autostart.UNIT_NAME
+    assert launcher.SUPERVISED_LABEL == autostart.LABEL
+
+
 def test_the_plist_waits_longer_than_the_launchers_longest_stop():
     """Robert's decision: launchd's SIGKILL must not come before the
     launcher's own stop has run out - killed sooner, the launcher exits

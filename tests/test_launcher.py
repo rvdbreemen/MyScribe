@@ -2651,9 +2651,13 @@ def _launcher_log(layout) -> str:
 
 
 def test_an_app_that_dies_ends_the_headless_launcher_with_its_own_code(layout, monkeypatch):
-    """The crash the research found: the child dies, and the launcher said 0."""
+    """The crash the research found: the child dies, and the launcher said 0.
+
+    Under an OS supervisor, which restarts on this code itself; with none the
+    launcher restarts the app first (TASK-112.10, ADR-037, tests below)."""
     child = _sleeping_child()
     launch = _launch_over(layout, child, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "systemd")
     threading.Timer(0.3, child.kill).start()
 
     code = launcher.run_headless(launch)
@@ -4300,3 +4304,202 @@ def test_a_setup_click_during_the_pump_still_opens_the_sitting(layout, monkeypat
         assert launcher.main(_argv(layout, _free_port(), "--no-browser")) == 0
     assert clicked == ["setup"]
     assert sat == ["sitting"], "the Setup click was dropped"
+
+
+# --- TASK-112.10: the launcher restarts a crashed app, a bounded number of times --
+#
+# ADR-037. Only where no OS supervisor watches the launcher: the Windows Run
+# value, a start by hand on the console and the XDG autostart file. Under the
+# systemd unit or the LaunchAgent the launcher exits `APP_DIED` at once, as
+# before, and the OS restarts it.
+
+
+def test_the_launchd_job_is_known_by_its_own_label_and_nothing_else():
+    """launchd names the job it started in XPC_SERVICE_NAME. A shell in
+    Terminal has the variable too, as `0` or as Terminal's own name, so its
+    presence alone would switch the restart off for a start by hand."""
+    label = launcher.SUPERVISED_LABEL
+    assert launcher.os_supervisor({"XPC_SERVICE_NAME": label}, cgroup=None) == "launchd"
+    for other in ("0", "application.com.apple.Terminal.1234", "", label + ".other"):
+        assert launcher.os_supervisor({"XPC_SERVICE_NAME": other}, cgroup=None) == ""
+    assert launcher.os_supervisor({}, cgroup=None) == ""
+
+
+def test_the_systemd_unit_is_known_by_its_own_cgroup_and_not_by_invocation_id(tmp_path):
+    """systemd puts a unit's processes in a cgroup named after the unit. Not
+    INVOCATION_ID: a shell in a terminal that runs as a user service (GNOME's
+    terminal server) can carry one, and so can anything another unit starts."""
+    cgroup = tmp_path / "cgroup"
+    unit = launcher.SUPERVISED_UNIT
+    cgroup.write_text(f"0::/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}\n", encoding="utf-8")
+    assert launcher.os_supervisor({}, cgroup=cgroup) == "systemd"
+
+    for path in ("/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-myscribe-4242.scope",
+                 "/user.slice/user-1000.slice/user@1000.service/app.slice/gnome-terminal-server.service",
+                 f"/user.slice/user-1000.slice/user@1000.service/app.slice/not-{unit}"):
+        cgroup.write_text(f"0::{path}\n", encoding="utf-8")
+        assert launcher.os_supervisor({"INVOCATION_ID": "0123abcd"}, cgroup=cgroup) == ""
+    assert launcher.os_supervisor({}, cgroup=tmp_path / "missing") == ""
+
+
+def test_the_restart_budget_is_a_number_of_restarts_in_a_sliding_window():
+    now = [1000.0]
+    budget = launcher.RestartBudget(limit=3, window=600.0, clock=lambda: now[0])
+    for _ in range(3):  # at 1000, 1100 and 1200
+        assert budget.spend() is True
+        now[0] += 100.0
+    assert budget.spend() is False, "the fourth crash inside the window is not restarted"
+    now[0] = 1599.0
+    assert budget.spend() is False
+    now[0] = 1601.0  # the restart at 1000 is now older than the window
+    assert budget.spend() is True
+    assert budget.spend() is False
+
+
+def _restarting(layout, monkeypatch, first, then, supervisor=""):
+    """A Launch over ``first`` whose `start_app` starts the children ``then``
+    makes, one per restart, and records each start."""
+    launch = _launch_over(layout, first, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: supervisor)
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    started = []
+
+    def start_app():
+        child = then(len(started))
+        started.append(child)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        launch.app.proc = child
+        return True
+
+    launch.start_app = start_app
+    return launch, started
+
+
+def _exits(code: int):
+    return _app_child(f"import sys; sys.exit({code})")
+
+
+def test_a_crashed_app_is_started_again_and_a_stop_after_that_is_not(layout, monkeypatch):
+    """AC #2: a crash (non-zero) is restarted; the restarted app ending with 0
+    - the stop route, from Settings or `--stop` - ends the launcher with 0."""
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+
+    code = launcher.run_headless(launch)
+
+    assert code == 0
+    assert len(started) == 1
+    said = _launcher_log(layout)
+    assert "stopped unexpectedly (exit code 3)" in said
+    assert launcher.RESTARTING.format(delay=0, count=1, limit=launcher.RESTART_LIMIT,
+                                      minutes=launcher.RESTART_WINDOW / 60) in said
+    assert launcher.CRASHED_JOB in said, "what happens to a running job is said"
+    assert "MyScribe stopped." in said
+
+
+def test_after_the_last_restart_the_launcher_gives_up_with_a_sentence(layout, monkeypatch):
+    """AC #2: up to `RESTART_LIMIT` restarts in the window, then one sentence
+    and `APP_DIED`."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 2)
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(3))
+
+    code = launcher.run_headless(launch)
+
+    assert code == launcher.APP_DIED
+    assert len(started) == 2
+    gave_up = launcher.GAVE_UP.format(limit=2, minutes=launcher.RESTART_WINDOW / 60,
+                                      log=layout.logs_dir / "app.log")
+    assert _launcher_log(layout).count(gave_up) == 1
+    assert launch.problem == gave_up
+
+
+def test_a_start_at_login_that_gave_up_is_said_by_the_next_start_by_hand(layout, monkeypatch):
+    """Nobody reads launcher.log after a login; TASK-112.07's note carries it."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    launch, _ = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(3))
+
+    assert launcher.run_headless(launch, at_login=True) == launcher.APP_DIED
+    assert launcher.GAVE_UP.format(limit=1, minutes=launcher.RESTART_WINDOW / 60,
+                                   log=layout.logs_dir / "app.log") in launcher.take_login_problem(layout.home)
+
+
+def test_a_restart_that_never_answers_is_spent_like_a_crash(layout, monkeypatch):
+    """`start_app` stops an app that did not answer and says so; that counts
+    against the budget, so a broken environment is not retried for ever."""
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 2)
+    launch = _launch_over(layout, _exits(3), monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    tries = []
+
+    def start_app():
+        tries.append(1)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        # 0: on POSIX the SIGTERM `start_app` stops it with may end it cleanly.
+        launch.app.proc = _exits(0)
+        launch.app.proc.wait()
+        return False
+
+    launch.start_app = start_app
+
+    assert launcher.run_headless(launch) == launcher.APP_DIED
+    assert len(tries) == 2
+
+
+def test_under_an_os_supervisor_the_launcher_never_restarts_itself(layout, monkeypatch):
+    """AC #3: the systemd unit restarts on 70 and the LaunchAgent on any
+    non-zero exit; a restart here as well would be two for one crash."""
+    for supervisor in ("systemd", "launchd"):
+        launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0),
+                                      supervisor=supervisor)
+
+        assert launcher.run_headless(launch) == launcher.APP_DIED, supervisor
+        assert started == [], supervisor
+
+
+def test_a_clean_end_is_never_restarted(layout, monkeypatch):
+    """AC #2: exit 0 is a stop somebody asked for (ADR-032)."""
+    launch, started = _restarting(layout, monkeypatch, _exits(0), lambda n: _exits(0))
+
+    assert launcher.run_headless(launch) == 0
+    assert started == []
+
+
+def test_ctrl_c_while_a_restart_starts_stops_it_and_starts_nothing_more(layout, monkeypatch):
+    """AC #2: a deliberate stop during the restart is a stop, not a crash.
+    The app the restart started is stopped through `launch.stop`."""
+    launch = _launch_over(layout, _exits(3), monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "")
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 0.0)
+    started, stopped = [], []
+
+    def start_app():
+        started.append(1)
+        launch.app = launcher.AppProcess(layout, launch.port)
+        launch.app.proc = _sleeping_child()
+        raise KeyboardInterrupt  # Ctrl+C while it waits for /health
+
+    def stop():
+        stopped.append(launch.app.alive())
+        launch.app.proc.kill()
+        launch.app.proc.wait()
+
+    launch.start_app = start_app
+    launch.stop = stop
+
+    assert launcher.run_headless(launch) == 0
+    assert started == [1] and stopped == [True]
+
+
+def test_a_sigterm_during_the_restart_delay_starts_nothing(layout, monkeypatch):
+    launch, started = _restarting(layout, monkeypatch, _exits(3), lambda n: _exits(0))
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 3.0)
+    unhandled = []
+    previous = _signal.signal(_signal.SIGTERM, lambda *a: unhandled.append(a))  # keeps pytest alive
+    try:
+        threading.Timer(1.0, _signal.raise_signal, args=(_signal.SIGTERM,)).start()
+        code = launcher.run_headless(launch)
+    finally:
+        _signal.signal(_signal.SIGTERM, previous)
+
+    assert code == 0
+    assert started == []

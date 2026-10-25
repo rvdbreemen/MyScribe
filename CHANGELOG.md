@@ -138,6 +138,19 @@
 
 ### Changed
 
+- **A MyScribe that crashes in the background starts again by itself.** When
+  MyScribe was started without a window (at login, or with `--headless`) and
+  its server stops with an error, the launcher waits 5 seconds and starts it
+  again, at most 3 times in 10 minutes. After that it stops trying, says
+  why in `launcher.log`, and after a start at login your next start by hand
+  says it too. A job that was running when MyScribe crashed is marked
+  interrupted, and Retry on the jobs page starts it over; if its
+  transcription outlived the crash, it finishes by itself. A stop you asked
+  for (the Stop button in Settings, `--stop`, Ctrl+C) is never restarted.
+  On Linux with the systemd user unit and on macOS with the LaunchAgent,
+  the system restarts MyScribe as before and the launcher does not add a
+  restart of its own. A start with the MyScribe window open does not
+  restart (TASK-112.10).
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser
   --headless` instead of `open -a`, which returned at once. launchd restarts

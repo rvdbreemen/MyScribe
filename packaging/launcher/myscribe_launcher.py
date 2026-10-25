@@ -2901,6 +2901,78 @@ and under launchd it would retry a multi-GB sync every ten seconds. 70 is
 EX_SOFTWARE from sysexits.h, clear of the 1 Python itself exits with on an
 uncaught exception (TASK-112.02)."""
 
+# --- a crashed app is started again (TASK-112.10, ADR-037) -----------------------
+
+RESTART_LIMIT = 3
+RESTART_WINDOW = 600.0
+RESTART_DELAY = 5.0
+"""At most `RESTART_LIMIT` restarts in any `RESTART_WINDOW` seconds, each after
+`RESTART_DELAY` seconds, the `RestartSec=5` of the systemd unit. A crash after
+hours of serving finds its budget back; a crash that repeats at every start
+is given up on within a minute or so instead of being retried for ever."""
+
+SUPERVISED_UNIT = "myscribe.service"
+SUPERVISED_LABEL = "io.github.rvdbreemen.myscribe"
+"""The names `scribe/autostart.py` gives the systemd user unit (UNIT_NAME) and
+the LaunchAgent (LABEL). Spelled again rather than imported, like `APP_DIED`:
+the app is not importable from the launcher. A test holds them to its own."""
+
+CRASHED_JOB = ("A job that was running finishes by itself if its runner outlived the crash; "
+               "otherwise MyScribe marks it interrupted as it starts, and Retry on the jobs page "
+               "starts it over.")
+RESTARTING = ("Starting MyScribe again in {delay:g} s (restart {count} of at most {limit} in "
+              "{minutes:g} minutes). " + CRASHED_JOB)
+GAVE_UP = ("MyScribe stopped unexpectedly again after {limit} restarts in {minutes:g} minutes, so it "
+           "is not started again; see {log}. Start MyScribe by hand to try once more.")
+"""What the console door says about a crash it restarts and the one it gives
+up on. The job half is reconcile's (ADR-013, `scribe/supervisor.py`): a
+running row whose runner is dead becomes interrupted at the next start, one
+whose runner lives on is left to write its own verdict."""
+
+
+def os_supervisor(environ: dict | None = None, cgroup: Path | None = Path("/proc/self/cgroup")) -> str:
+    """"systemd" or "launchd" when MyScribe's own login entry started this
+    launcher and restarts it on `APP_DIED`, "" when nothing does.
+
+    Known by name, never by a variable being there at all. launchd puts the
+    job's label in XPC_SERVICE_NAME, but a shell in Terminal carries the
+    variable too (`0`, or Terminal's own name). systemd sets INVOCATION_ID,
+    but so does every other unit, a terminal server that runs as one
+    included; the cgroup it puts the unit's processes in is named after the
+    unit. The XDG autostart file and the Windows Run value watch nothing.
+    """
+    environ = os.environ if environ is None else environ
+    if environ.get("XPC_SERVICE_NAME") == SUPERVISED_LABEL:
+        return "launchd"
+    if cgroup is not None:
+        try:
+            lines = cgroup.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            if line.rpartition(":")[2].rstrip("/").rpartition("/")[2] == SUPERVISED_UNIT:
+                return "systemd"
+    return ""
+
+
+class RestartBudget:
+    """`limit` restarts in any `window` seconds; `spend` says whether one more fits."""
+
+    def __init__(self, limit: int | None = None, window: float | None = None,
+                 clock: Callable[[], float] = time.monotonic):
+        self.limit = RESTART_LIMIT if limit is None else limit
+        self.window = RESTART_WINDOW if window is None else window
+        self.clock = clock
+        self.spent: list[float] = []
+
+    def spend(self) -> bool:
+        now = self.clock()
+        self.spent = [then for then in self.spent if now - then < self.window]
+        if len(self.spent) >= self.limit:
+            return False
+        self.spent.append(now)
+        return True
+
 
 def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = False) -> int:
     """The console door, and every build without Tk; the exit code is
@@ -2913,6 +2985,16 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
 
     An app that never answered at start counts as a configuration problem and
     not as a crash: restarting it repeats the same failure.
+
+    An app that dies under a launcher no OS supervisor watches is started
+    again, up to `RESTART_LIMIT` times in `RESTART_WINDOW` (ADR-037,
+    TASK-112.10): the Windows Run value has nobody else to do it. A restart
+    that does not answer is spent like a crash. Under MyScribe's own systemd
+    unit or LaunchAgent (`os_supervisor`) the launcher exits `APP_DIED` at
+    once, as before, and the OS restarts it; both at once would be two
+    restarts for one crash. An exit of 0 - the stop route, from Settings or
+    `--stop` - and Ctrl+C or SIGTERM, also during a restart, are never
+    restarted (ADR-032).
     """
     started = first_run(launch, None, launch.report, force_setup, at_login)
     if at_login and (launch.serving or (started and launch.app is not None)):
@@ -2926,11 +3008,32 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             # Nobody reads that log; the next start by hand says it (TASK-112.07).
             keep_login_problem(launch.layout.home, launch.problem)
         return 0
-    interrupted = False
+    interrupted = gave_up = False
+    supervisor = os_supervisor()
+    budget = RestartBudget()
+    app_log = lambda: launch.layout.logs_dir / "app.log"  # noqa: E731  (only after a crash)
     try:
+        # One handler and one `finally` over the restarts too: a SIGTERM in
+        # the delay or while a restarted app comes up is a stop, not a crash.
         with stop_on_sigterm():
-            while launch.app.alive():
-                time.sleep(0.5)
+            answered = True
+            while True:
+                while launch.app.alive():
+                    time.sleep(0.5)
+                code = launch.app.exit_code()
+                if (not code and answered) or supervisor:
+                    break
+                if answered:  # `start_app` has said it for one that did not answer
+                    launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see {app_log()}.")
+                if not budget.spend():
+                    gave_up = True
+                    break
+                launch.report("status", RESTARTING.format(delay=RESTART_DELAY, count=len(budget.spent),
+                                                          limit=budget.limit, minutes=budget.window / 60))
+                time.sleep(RESTART_DELAY)
+                # One that does not answer is stopped - on POSIX its SIGTERM may
+                # end it with 0 - and the loop spends again.
+                answered = launch.start_app()
     except KeyboardInterrupt:
         interrupted = True
     finally:
@@ -2938,10 +3041,14 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             launch.stop()  # says what happened to the running job (TASK-112.09)
     if interrupted:
         return 0
+    if gave_up:
+        launch.report("error", GAVE_UP.format(limit=budget.limit, minutes=budget.window / 60, log=app_log()))
+        if at_login:
+            keep_login_problem(launch.layout.home, launch.problem)  # the next start by hand says it
+        return APP_DIED
     code = launch.app.exit_code()
     if code:
-        launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see "
-                               f"{launch.layout.logs_dir / 'app.log'}.")
+        launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see {app_log()}.")
         return APP_DIED
     launch.report("status", "MyScribe stopped.")
     return 0
