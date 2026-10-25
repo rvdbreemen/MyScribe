@@ -41,4 +41,4 @@ One row per Architecture Decision Record. Scope is the Enforcement `path_glob` s
 | ADR-033 | Accepted | `scribe/**`, `scribe/mcp_server.py` | Chosen option: A. |
 | ADR-034 | Accepted | - | Chosen option: B. |
 | ADR-035 | Accepted | - | Chosen option: B. |
-| ADR-038 | Proposed | `packaging/launcher/*.py` | Chosen option: A. |
+| ADR-038 | Accepted | `packaging/launcher/*.py` | Chosen option: A. |

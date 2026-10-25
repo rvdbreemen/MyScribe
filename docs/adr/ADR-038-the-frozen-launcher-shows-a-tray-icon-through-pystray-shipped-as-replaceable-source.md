@@ -1,7 +1,7 @@
 ---
 id: "ADR-038"
 title: "The frozen launcher shows a tray icon through pystray, shipped as replaceable source"
-status: "Proposed"
+status: "Accepted"
 date: "2026-10-25"
 binding: false
 gate: null
@@ -42,7 +42,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-10-25.
+Accepted, 2026-10-25.
 
 ## Status History
 
@@ -58,6 +58,11 @@ status_history:
     changed_by: Claude (agent, session 2026-10-25)
     reason: Related to ADR-011 (amended, its standard-library-only rule), ADR-026 (the login door the icon is for), ADR-028 and ADR-032 (the stop its Stop uses) (TASK-112.11); four adr relate entries merged by hand to keep this ADR at 150 lines
     changed_via: manual edit
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
+    reason: Robert accepted ADR-038 in the session of 2026-10-25
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
@@ -67,7 +72,7 @@ A login entry starts the launcher headless on all three OSes (ADR-026, `scribe/a
 ## Decision Drivers
 
 * The icon must not cost the launcher its start: no dependency may be needed by the doors that run before or without it.
-* What ships frozen must meet the LGPL, and must have no open advisory on the day it is pinned.
+* What ships frozen must meet the LGPL (GNU Lesser General Public License), and must have no open advisory on the day it is pinned.
 
 ## Considered Options
 
@@ -107,7 +112,7 @@ On Windows, from source and from a local frozen build (port 4540, a scratch home
 
 ### Exceptions
 
-* The frozen Linux AppImage carries no PyGObject, so it gets the xorg backend only. On GNOME without an extension that hosts legacy tray icons it has no tray (unverified on a real desktop).
+* The frozen Linux AppImage carries no PyGObject, so it gets the xorg backend only. On GNOME (the GNU Network Object Model Environment desktop) without an extension that hosts legacy tray icons it has no tray (unverified on a real desktop).
 
 ### Verification
 
@@ -122,11 +127,11 @@ On Windows, from source and from a local frozen build (port 4540, a scratch home
 ### Negative
 
 * ADR-011's standard-library-only rule now has one exception: an LGPL dependency from 2023 and its backends, in the frozen builds only.
-* Fourteen MB on Windows, and Pillow to watch for advisories. The macOS path is unit-tested but has not run. Licence, as read by the agent (not legal advice): LGPL-3.0 section 4 asks for a notice that pystray is used, the GPL and LGPL texts, and its source or a replaceable copy. Loose `.py` files in `_internal` are both; on macOS a swapped file breaks the ad-hoc signature until it is re-signed.
+* Fourteen MB on Windows, and Pillow to watch for advisories. The macOS path is unit-tested but has not run. Licence, as read by the agent (not legal advice): LGPL-3.0 section 4 asks for a notice that pystray is used, the GPL (GNU General Public License) and LGPL texts, and its source or a replaceable copy. Loose `.py` files in `_internal` are both; on macOS a swapped file breaks the ad-hoc signature until it is re-signed.
 
 ## Open Questions
 
-- [ ] Is the notice in README's License section and the shipped dist-info enough as the prominent notice LGPL-3.0 4(a) asks, or does the installer need a third-party notices page?
+- [x] Is the notice in README's License section and the shipped dist-info enough as the prominent notice LGPL-3.0 4(a) asks, or does the installer need a third-party notices page? — **Answered 2026-10-25 by Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude):** Yes, enough: Robert accepted ADR-038 as built on 2026-10-25, with the README licence paragraph and pystray's bundled COPYING files as the notice; no installer notices page.
 
 ## Related Decisions
 

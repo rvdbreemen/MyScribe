@@ -2188,7 +2188,7 @@
       "title": "The frozen launcher shows a tray icon through pystray, shipped as replaceable source",
       "path": "ADR-038-the-frozen-launcher-shows-a-tray-icon-through-pystray-shipped-as-replaceable-source.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-10-25",
       "decision_summary": "Chosen option: A.",
       "topics": [
@@ -2230,7 +2230,7 @@
           "Stop the app from inside a menu callback."
         ],
         "exceptions": [
-          "The frozen Linux AppImage carries no PyGObject, so it gets the xorg backend only. On GNOME without an extension that hosts legacy tray icons it has no tray (unverified on a real desktop)."
+          "The frozen Linux AppImage carries no PyGObject, so it gets the xorg backend only. On GNOME (the GNU Network Object Model Environment desktop) without an extension that hosts legacy tray icons it has no tray (unverified on a real desktop)."
         ],
         "verification": [
           "tests/testlauncher.py, the tray tests from testthetraymenuoffersopenmyscribeandstop on; tests/testbuildrelease.py, the replaceabletray, freeze and hook tests."
