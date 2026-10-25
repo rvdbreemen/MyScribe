@@ -4306,10 +4306,12 @@ def test_a_setup_click_during_the_pump_still_opens_the_sitting(layout, monkeypat
 
 
 class _RefusingSocket:
-    """A socket whose bind fails the way ``error`` says; nothing else is asked."""
+    """A socket whose bind fails the way ``error`` says, and whose connect
+    answers ``answer``: 10061 (refused, nobody listens) unless a test says 0."""
 
-    def __init__(self, error: OSError):
+    def __init__(self, error: OSError, answer: int = 10061):
         self.error = error
+        self.answer = answer
 
     def __call__(self, *args, **kwargs):
         return self
@@ -4326,13 +4328,22 @@ class _RefusingSocket:
     def bind(self, address):
         raise self.error
 
+    def settimeout(self, seconds):
+        pass
+
+    def connect_ex(self, address):
+        return self.answer
+
 
 def _reserved_by_windows() -> int | None:
-    """A port inside one of this machine's own excluded ranges, or None.
+    """A port inside one of this machine's own excluded ranges that no
+    program answers on, or None.
 
     Hyper-V, WinNAT and friends reserve blocks of the dynamic range; a bind
     there fails with WSAEACCES for a user without privilege, which is the
-    case TASK-120 is about. Read from `netsh`, never changed."""
+    case TASK-120 is about. Read from `netsh`, never changed. Some excluded
+    ports have Windows itself listening (http.sys on 2869, 5357, 5985 and
+    47001 here): those are in use as well as reserved, and are left out."""
     if sys.platform != "win32":
         return None
     import subprocess as _sp
@@ -4348,7 +4359,7 @@ def _reserved_by_windows() -> int | None:
                 try:
                     sock.bind(("127.0.0.1", port))
                 except OSError as error:
-                    if getattr(error, "winerror", None) == 10013:
+                    if getattr(error, "winerror", None) == 10013 and not launcher.answers(port):
                         return port
     return None
 
@@ -4394,6 +4405,55 @@ def test_a_port_posix_refuses_says_permission_and_not_netsh(layout, monkeypatch)
 
     assert "used by another program" not in sentence and "netsh" not in sentence
     assert "80" in sentence and "1024" in sentence and "--port" in sentence
+
+
+def test_a_refused_bind_with_a_program_that_answers_is_in_use_not_reserved(layout, monkeypatch):
+    """WSAEACCES is not proof of a reservation: a program listening on
+    0.0.0.0 with SO_EXCLUSIVEADDRUSE makes the 127.0.0.1 bind fail with
+    10013 too (review of TASK-120, measured). Something that accepts a
+    connect is a program using the port, and the netsh advice cannot help."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", True)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(
+        PermissionError(13, "forbidden", None, 10013), answer=0))
+
+    sentence = _refusal_sentence(layout, 4242)
+
+    assert "is used by another program" in sentence
+    assert "reserved" not in sentence and "netsh" not in sentence
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="SO_EXCLUSIVEADDRUSE is Windows")
+def test_a_port_held_exclusively_on_all_addresses_is_said_to_be_in_use(layout):
+    """The real case behind the test above, on an ephemeral port: the holder
+    gives our bind WSAEACCES, and the sentence still names the program."""
+    with socket.socket() as holder:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        holder.bind(("0.0.0.0", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+
+        refused = launcher.port_refusal(port)
+        assert refused is not None and launcher.refused_access(refused), refused
+        sentence = launcher.port_sentence(port, refused)
+
+    assert "is used by another program" in sentence, sentence
+    assert "reserved" not in sentence
+
+
+def test_a_posix_refusal_above_1024_does_not_blame_the_port_number(layout, monkeypatch):
+    """EACCES on 4242 is not the below-1024 rule: SELinux, AppArmor or
+    another policy refused it, and "a port above 1024" would send a person
+    to the port they already use (review of TASK-120)."""
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    monkeypatch.setattr(launcher, "running_instance", lambda *a, **k: False)
+    monkeypatch.setattr(launcher.socket, "socket", _RefusingSocket(PermissionError(13, "Permission denied")))
+
+    sentence = _refusal_sentence(layout, 4242)
+
+    assert "4242" in sentence and "permission denied" in sentence
+    assert "1024" not in sentence and "netsh" not in sentence
+    assert "used by another program" not in sentence
 
 
 def test_a_port_in_use_is_still_said_to_be_in_use(layout, monkeypatch):

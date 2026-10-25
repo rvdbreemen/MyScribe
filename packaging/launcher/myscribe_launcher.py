@@ -1850,19 +1850,27 @@ def port_taken(port: int) -> bool:
 
 PORT_IN_USE = "Port {port} is used by another program; MyScribe cannot start."
 PORT_RESERVED = (
-    "Windows has reserved port {port}, so MyScribe cannot use it; no other program is using it. "
+    "Windows has reserved port {port}, so MyScribe cannot use it. "
     "Hyper-V, WSL, Docker and Windows Sandbox reserve blocks of ports; "
     "`netsh int ipv4 show excludedportrange protocol=tcp` lists them. "
     "Start MyScribe with --port and a port outside those blocks (a start at login always uses "
     f"{DEFAULT_PORT}), or, as an administrator, put the dynamic port range back to the Windows "
     "default with `netsh int ipv4 set dynamicport tcp start=49152 num=16384` and restart Windows."
 )
+PORT_PRIVILEGED = (
+    "This system does not let MyScribe use port {port} (permission denied). A port below 1024 "
+    "can need administrator rights; start MyScribe with --port and a port above 1024, such as "
+    f"{DEFAULT_PORT}."
+)
 PORT_FORBIDDEN = (
-    "This system does not let MyScribe use port {port} (permission denied). On Linux and macOS a "
-    "port below 1024 needs administrator rights; start MyScribe with --port and a port above "
-    f"1024, such as {DEFAULT_PORT}."
+    "This system does not let MyScribe use port {port} (permission denied). A security policy "
+    "such as SELinux or AppArmor can refuse a port; start MyScribe with --port and another port, "
+    "or allow this one in that policy."
 )
 WSAEACCES = 10013
+ANSWER_TIMEOUT = 0.5
+"""How long `answers` waits for a connect on the loopback, where an answer
+or a refusal comes back at once."""
 
 
 def refused_access(error: OSError) -> bool:
@@ -1875,11 +1883,29 @@ def refused_access(error: OSError) -> bool:
             or getattr(error, "winerror", None) == WSAEACCES)
 
 
+def answers(port: int) -> bool:
+    """Whether a program accepts a connect on ``port`` of the loopback."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(ANSWER_TIMEOUT)
+        try:
+            return sock.connect_ex((HOST, port)) == 0
+        except OSError:
+            return False
+
+
 def port_sentence(port: int, error: OSError) -> str:
-    """What a start says about a port it could not bind (TASK-120)."""
-    if not refused_access(error):
+    """What a start says about a port it could not bind (TASK-120).
+
+    A refused bind is not proof of a reservation: a program listening on
+    0.0.0.0 with SO_EXCLUSIVEADDRUSE gives a 127.0.0.1 bind WSAEACCES as
+    well (measured in the review of TASK-120). So a refusal where a program
+    accepts a connect is a port in use; only one where nothing answers gets
+    the reservation, or on Linux and macOS the permission, sentence."""
+    if not refused_access(error) or answers(port):
         return PORT_IN_USE.format(port=port)
-    return (PORT_RESERVED if IS_WINDOWS else PORT_FORBIDDEN).format(port=port)
+    if IS_WINDOWS:
+        return PORT_RESERVED.format(port=port)
+    return (PORT_PRIVILEGED if port < 1024 else PORT_FORBIDDEN).format(port=port)
 
 
 def port_refusal(port: int) -> OSError | None:

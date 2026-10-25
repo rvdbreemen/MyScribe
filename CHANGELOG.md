@@ -7,13 +7,15 @@
   MyScribe uses (4242). MyScribe now says the port is reserved, how to list the
   reserved blocks (`netsh int ipv4 show excludedportrange protocol=tcp`) and
   what to do: start it on another port with `--port`, or put the dynamic port
-  range back to the Windows default. On Linux and macOS a port that needs
-  administrator rights gets a sentence of its own (TASK-120).
+  range back to the Windows default. A port a program answers on is still
+  called used by another program, also when Windows refuses it rather than
+  calls it taken. On Linux and macOS a refused port gets a sentence of its own,
+  which names the rule for ports below 1024 only for such a port (TASK-120).
 - **A start at login that cannot start no longer fails without a word.** On
   Windows a message box says why at once, also for the start the installer
-  makes after an update; it closes by itself after 10 minutes. On every system the next start says it once, as before, and
-  **Settings → Start at login** now shows it too, until you dismiss it or
-  MyScribe stops (TASK-120).
+  makes after an update; it closes by itself after 10 minutes. On every system
+  the next start says it once, as before, and **Settings → Start at login**
+  now shows it too, until you dismiss it or MyScribe stops (TASK-120).
 - **After a Linux update, Start at login starts the new AppImage.** Each
   release is a new file, and the login entry kept starting the old one. When
   an AppImage starts, a login entry (the systemd user unit or the autostart
