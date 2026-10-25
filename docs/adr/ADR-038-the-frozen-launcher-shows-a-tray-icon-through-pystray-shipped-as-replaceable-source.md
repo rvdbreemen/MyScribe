@@ -56,8 +56,8 @@ status_history:
   - date: 2026-10-25
     status: Proposed
     changed_by: Claude (agent, session 2026-10-25)
-    reason: Related to ADR-011 (amended, its standard-library-only rule), ADR-026 (the login door the icon is for), ADR-028 and ADR-032 (the stop its Stop uses) (TASK-112.11)
-    changed_via: adr-kit lifecycle
+    reason: Related to ADR-011 (amended, its standard-library-only rule), ADR-026 (the login door the icon is for), ADR-028 and ADR-032 (the stop its Stop uses) (TASK-112.11); four adr relate entries merged by hand to keep this ADR at 150 lines
+    changed_via: manual edit
 ```
 
 ## Context and Problem Statement
