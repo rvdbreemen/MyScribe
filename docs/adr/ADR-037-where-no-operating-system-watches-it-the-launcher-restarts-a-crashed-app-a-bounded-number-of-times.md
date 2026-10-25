@@ -85,8 +85,7 @@ file, where nothing else does, and keeps both OS supervisors as built. B can
 switch the restart off for a start by hand: a macOS Terminal shell is said to
 carry `XPC_SERVICE_NAME` (`0`), and a shell under a terminal server running
 as a systemd user service can inherit `INVOCATION_ID` (neither checked here).
-C loses the OS restart of a launcher that crashes itself and undoes
-TASK-112.05 and TASK-112.06.
+C drops the OS restart of a crashed launcher and undoes TASK-112.05/06.
 
 The limit is 3 restarts in any 10 minutes, each after 5 s (the unit's
 `RestartSec=5`); a restart that never answers `/health` is spent like a
@@ -98,9 +97,8 @@ outlived the crash writes its own verdict (ADR-013). The sentence says both.
 
 ### Confirmation
 
-On Windows, a launcher from source with a scratch home on port 4530: kill
-the app's python, `/health` answers with a new pid; after the fourth kill in
-ten minutes the sentence is in `launcher.log` and nothing answers.
+Windows, launcher from source, scratch home, port 4530: a killed app answers
+`/health` again with a new pid; the fourth kill ends in the sentence.
 
 ## Decision Contract
 
@@ -119,15 +117,12 @@ ten minutes the sentence is in `launcher.log` and nothing answers.
 
 ### Exceptions
 
-* The window door does not restart: its pump lets go of the instance lock
-  when the app ends, a restart would race the next start for it, and a
-  person sits at that window. Its own task if wanted.
+* The window door: its pump frees the instance lock when the app ends, so a
+  restart would race the next start; a person sits there. Its own task.
 
 ### Verification
 
-* `tests/test_launcher.py`, the TASK-112.10 block: supervisor names, the
-  budget, restart, give-up, no restart after 0, Ctrl+C, SIGTERM, supervised.
-* `tests/test_autostart.py::test_the_launcher_knows_the_unit_and_the_job_by_the_names_written_here`.
+* The TASK-112.10 block of `tests/test_launcher.py`, and `tests/test_autostart.py::test_the_launcher_knows_the_unit_and_the_job_by_the_names_written_here`.
 
 ## Consequences
 
@@ -138,21 +133,18 @@ ten minutes the sentence is in `launcher.log` and nothing answers.
 ### Negative
 
 * A launcher that crashes itself is still not restarted on Windows.
-* The launchd half rests on launchd putting the label in `XPC_SERVICE_NAME`,
-  unseen on a Mac here. If not, each launcher launchd starts restarts its app
-  up to 3 times first: more starts, no new failure.
+* launchd putting the label in `XPC_SERVICE_NAME` is unseen on a Mac here; if
+  it does not, each launcher launchd starts first restarts its app 3 times.
 
 ## Open Questions
 
-* [ ] Is 3 restarts in 10 minutes the budget Robert wants?
+* [ ] Is 3 restarts in 10 minutes, 5 s apart, the budget Robert wants?
 
 ## Related Decisions
 
-* ADR-026: answers its Negative "a crash is not restarted on Windows".
-* ADR-032, ADR-028: deliberate stops and requeues. ADR-013: reconcile.
+* ADR-026 (its Negative on Windows crashes); ADR-032, ADR-028, ADR-013.
 
 ## References
 
-* `packaging/launcher/myscribe_launcher.py`: `run_headless`, `os_supervisor`.
-* `scribe/autostart.py`: `SystemdUserUnit.text`, `LaunchAgent.plist`.
+* `packaging/launcher/myscribe_launcher.py` (`run_headless`, `os_supervisor`); `scribe/autostart.py`.
 * systemd.exec(5) on `INVOCATION_ID`; launchd.plist(5) on `KeepAlive`.
