@@ -174,8 +174,8 @@
   matter. A note with more than 30 points, or one that runs out of room
   before the end of its part, is asked once more. If the second note still
   has more than 30, MyScribe keeps 30 of them, spread over the whole part,
-  each with its timestamp (TASK-126, ADR-040). A note that runs out of room
-  the second time fails the job, as before. Such a note that runs out of room with most of its lines copied from the
+  each with its timestamp (TASK-126, ADR-040). A note that ran out of room
+  both times fails the job, as before. Such a note that runs out of room with most of its lines copied from the
   transcript now says so. Notes for the other tasks are asked as before.
   The shared notes prompt changed, so notes stored by an earlier version
   are not reused: the next run of any AI task on a long recording (summary, minutes,

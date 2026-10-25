@@ -2730,3 +2730,23 @@ def test_bounded_points_spreads_the_kept_lines_over_the_whole_note():
     assert tasks.bounded_points(_points(30), 30) == _points(30)
     # Blank lines are not points and are not kept.
     assert tasks.bounded_points("[0:01] a\n\n[0:02] b\n", 30) == "[0:01] a\n[0:02] b"
+
+
+@pytest.mark.parametrize("again", ["cut off", "empty"])
+def test_a_finished_note_over_the_bound_is_kept_when_the_second_ask_fails(
+    conn, monkeypatch, again
+):
+    """The second ask must not turn a job that finished into one that fails.
+    Job 430's chunk 0 (TASK-124 round 8, qwen3.5:9b minutes) finished with 85
+    notes and was stored; if its second ask runs out of room or says nothing,
+    the finished first note is kept, thinned to the bound."""
+    second = truncated(_points(10) + "\n[0:10] Sti") if again == "cut off" else ""
+    chunk_rows, calls = _run_minutes(conn, monkeypatch, _points(85), second)
+
+    assert [c for c in calls if ASKED_AGAIN in c.user], "the bound was not asked again"
+    written = _points(85).splitlines()
+    for row in chunk_rows:
+        kept = row["content"].splitlines()
+        assert len(kept) == tasks.MAX_NOTE_POINTS and kept[-1] == written[-1], row["content"]
+        params = json.loads(row["params_json"])
+        assert params["stored_from_ask"] == 1 and params["finish_reason"] == "stop", params

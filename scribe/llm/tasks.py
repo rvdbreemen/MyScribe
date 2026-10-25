@@ -295,7 +295,9 @@ alone was measured not to hold on media 61 (round-8 library copy, 2026-10-25):
 qwen3.5:9b wrote 85 minutes notes on one chunk, and qwen3.5:4b wrote chapters
 fragments until its 4000-token note budget ran out halfway through the chunk.
 A note over the bound, or cut off at its budget, is asked once more; a second
-answer still over it keeps this many lines, spread over the whole note."""
+answer still over it keeps this many lines, spread over the whole note. A
+finished first note whose second ask comes back empty or cut off is kept,
+thinned the same way; only a note cut off on both asks is refused."""
 
 DEFAULT_MAX_OUTPUT_TOKENS = 4000
 """Room for an answer, per call, and a measured floor rather than a round
@@ -2192,18 +2194,30 @@ def _collect_notes(
         bounded = bool(plan.spec.note_rule)
         cut_off = response.raw_finish_reason == TRUNCATED_FINISH
         asked_again = bounded and (cut_off or first_points > MAX_NOTE_POINTS)
+        stored_from_ask = 1
         if asked_again:
-            response, text = _ask_note(
-                conn,
-                plan,
-                chunk,
-                on_call,
-                provider_kwargs,
-                "ran out of room before the end of the excerpt"
-                if cut_off
-                else f"were {first_points} notes, more than the {MAX_NOTE_POINTS} asked for",
-            )
             calls += 1
+            try:
+                second: tuple[ChatResponse, str] | None = _ask_note(
+                    conn,
+                    plan,
+                    chunk,
+                    on_call,
+                    provider_kwargs,
+                    "ran out of room before the end of the excerpt"
+                    if cut_off
+                    else f"were {first_points} notes, more than the {MAX_NOTE_POINTS} asked for",
+                )
+            except base.BadResponse:
+                if cut_off:
+                    raise
+                second = None
+            # A finished first note is never lost to its second ask: when that
+            # one says nothing or runs out of room, the first is kept and
+            # thinned below. Without this, a job that finished before the bound
+            # existed (TASK-124 round 8, job 430's 85 notes) could now fail.
+            if second is not None and (cut_off or second[0].raw_finish_reason != TRUNCATED_FINISH):
+                (response, text), stored_from_ask = second, 2
         # Emptiness used to be the only thing checked, and a note that stopped
         # mid-word because it hit `note_budget` looks exactly like a short one.
         # Storing it is what makes it permanent: the row is the cache, so every
@@ -2230,8 +2244,9 @@ def _collect_notes(
             )
         written = len(note_points(text))
         if bounded and written > MAX_NOTE_POINTS:
-            # Asked twice and still over: cut in code, spread over the whole
-            # note so the excerpt's last minutes still reach the combine.
+            # Still over after the second ask, or the first answer kept: cut in
+            # code, spread over the whole note so the excerpt's last minutes
+            # still reach the combine.
             text = bounded_points(text, MAX_NOTE_POINTS)
             copied, counted = copied_lines(text, chunk.text)
         chunk_ids.append(
@@ -2269,6 +2284,7 @@ def _collect_notes(
                     "points_written": written,
                     "points_kept": len(note_points(text)),
                     "asked_again": asked_again,
+                    "stored_from_ask": stored_from_ask,
                     # Judged against the note budget this call was asked with.
                     **reasoning_record(response, note_budget),
                 },

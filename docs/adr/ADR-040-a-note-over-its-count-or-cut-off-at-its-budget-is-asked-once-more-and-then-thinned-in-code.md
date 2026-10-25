@@ -79,12 +79,18 @@ wrote its second half. C applies to Ollama only, turns prose notes into JSON,
 and bounds the count without making the model cover the excerpt. B gives the
 model one chance to obey (as ADR-023 and ADR-029 ask once more), then holds
 the bound itself without losing the chunk's end. Each kept line is untouched,
-so it keeps its `[m:ss]`. A second reply still cut off is refused as before.
+so it keeps its `[m:ss]`. A finished first note is never lost to its second
+ask: when that one comes back empty or cut off, the first is kept and thinned.
+Only a note cut off on both asks is refused, as before.
 
 ### Confirmation
 
 Unit tests with a scripted provider, and one live chapters run on media 61
-with `qwen3.5:4b` on a library copy (TASK-126).
+with `qwen3.5:4b` on a library copy (TASK-126, job 430 at ab378fa): done in
+408 s where TASK-124's job 433 failed. Chunk 0's first ask stopped at the
+4000-token budget; the second finished with 116 points, thinned to 30, the
+last at 57:12 of a chunk ending 1:00:16. That run did not take the path where
+the first note is kept.
 
 ## Decision Contract
 
@@ -93,13 +99,15 @@ with `qwen3.5:4b` on a library copy (TASK-126).
 * Count a note's points as its non-empty lines, by `note_points`.
 * Ask a kind with a `note_rule` once more when its note has more than
   `MAX_NOTE_POINTS` points or stopped at its budget.
-* Thin a second reply still over the count with `bounded_points`.
+* Thin a note still over the count with `bounded_points`.
+* Keep a finished first note when its second ask is empty or cut off.
 * Render the number in every note rule from `MAX_NOTE_POINTS`.
 
 ### Must Not
 
 * Keep only the first `MAX_NOTE_POINTS` lines.
 * Store a note that stopped at its budget, asked again or not.
+* Fail a chunk whose first note finished because its second ask did not.
 * Ask or thin the notes of a kind without a `note_rule`.
 
 ### Exceptions
@@ -111,6 +119,7 @@ with `qwen3.5:4b` on a library copy (TASK-126).
 * `tests/test_llm_tasks.py::test_an_85_note_chunk_is_asked_again_and_then_bounded`
 * `tests/test_llm_tasks.py::test_a_note_cut_off_at_its_cap_is_asked_again_and_the_finished_one_stored`
 * `tests/test_llm_tasks.py::test_bounded_points_spreads_the_kept_lines_over_the_whole_note`
+* `tests/test_llm_tasks.py::test_a_finished_note_over_the_bound_is_kept_when_the_second_ask_fails`
 
 ## Consequences
 
@@ -122,7 +131,7 @@ with `qwen3.5:4b` on a library copy (TASK-126).
 
 ### Negative
 
-* A disobeying chunk costs a second call; on `qwen3.5:4b` about a minute.
+* A disobeying chunk costs a second call (time not measured on its own).
 * Thinning drops points by position, not by weight: a decision can be lost.
   The second ask exists so that this is the rare path.
 
