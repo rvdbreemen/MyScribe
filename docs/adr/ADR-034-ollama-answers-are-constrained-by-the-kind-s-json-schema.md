@@ -87,9 +87,9 @@ reports `runner: llamacpp`, so that path is the one used.
 
 ## Decision Outcome
 
-Chosen option: **B**. A turns a parse error into a silent wrong value; C
-fixes one malformation and leaves the rest to chance; B has the daemon
-enforce the shape, and a timestamp is at least a time, not a cut-off number.
+Chosen option: **B**. A cuts a copied `2:16:10` to `2.0`; C fixes one
+malformation and leaves the rest to chance; B keeps a copied clock whole and
+invents digits only where there is no time to copy (see Consequences).
 
 `Provider.schema_clock_as_text` is True for Ollama and False for the cloud
 providers, whose request stays byte-identical. Timestamp fields are found by
