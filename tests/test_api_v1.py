@@ -893,6 +893,8 @@ def test_the_watch_list_is_what_the_page_shows(client, conn, inbox, tmp_path):
         ("bad_option", 400, "bad_request"),
         ("unknown_field", 400, "bad_request"),
         ("not_an_object", 400, "bad_request"),
+        ("video_as_a_string", 400, "bad_request"),
+        ("path_not_a_string", 400, "bad_request"),
     ],
 )
 def test_a_watch_folder_the_page_refuses_is_refused_here(client, conn, inbox, data_dir, tmp_path,
@@ -915,6 +917,9 @@ def test_a_watch_folder_the_page_refuses_is_refused_here(client, conn, inbox, da
         "bad_option": {"path": str(inbox), "tier": "huge"},
         "unknown_field": {"path": str(inbox), "colour": "blue"},
         "not_an_object": ["path"],
+        # "false" is a truthy string: taken as given it would watch WITH video.
+        "video_as_a_string": {"path": str(inbox), "include_video": "false"},
+        "path_not_a_string": {"path": 42},
     }[case]
     assert_coded(client.post(f"{V1}/watch-folders", json=body), status, code)
     assert folders_of(conn) == []
