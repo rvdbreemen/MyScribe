@@ -11,6 +11,7 @@ supersedes: []
 superseded_by: null
 related:
   - "ADR-038"
+  - "ADR-039"
 topics:
   - "autostart"
   - "packaging"

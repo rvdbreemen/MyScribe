@@ -16,6 +16,10 @@
                        `stops_now`: switching off also stops MyScribe now
                        (TASK-112.05)
       autostart_error  what it said when it refused
+      login_problem    the sentence about the last start at login that could
+                       not start, which the launcher handed over, or "".
+                       Shown with a Dismiss whatever the OS answered
+                       (TASK-120)
       flash            a line for the page's status region, or none
       oob              whether this is a fragment response carrying the flash
                        out of band
@@ -43,6 +47,16 @@
     This is registered for your account alone - nothing machine-wide is written and nothing
     here needs an administrator.
   </p>
+
+  {% if login_problem %}
+  <div class="login-problem" role="alert">
+    <p class="hint fail">{{ login_problem }}</p>
+    <form method="post" action="/settings/autostart/dismiss"
+          hx-post="/settings/autostart/dismiss" hx-target="#start-at-login" hx-swap="outerHTML">
+      <button type="submit">Dismiss</button>
+    </form>
+  </div>
+  {% endif %}
 
   {% if autostart_error %}
   <p class="hint fail">

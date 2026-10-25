@@ -1394,3 +1394,83 @@ def test_the_provider_can_be_un_chosen(client, conn):
     resp = client.post("/settings/llm", data={"provider": ""})
     assert resp.status_code == 200
     assert llm.default_provider(conn) == ""
+
+
+# --- TASK-120: a start at login that failed, on the card ---------------------------
+
+LOGIN_PROBLEM = ("The last time MyScribe started on its own, at login or after an update, it could "
+                 "not start: Windows has reserved port 4242 <b>for itself</b>.")
+
+
+def test_the_card_shows_the_last_login_problem_the_launcher_handed_over(client, monkeypatch, login_entry):
+    """Robert's option C: the record is on the Settings card as well as at the
+    start by hand, as text and never as markup."""
+    from scribe import autostart
+
+    monkeypatch.setenv(autostart.LOGIN_PROBLEM_VARIABLE, LOGIN_PROBLEM)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert "could not start: Windows has reserved port 4242" in card
+    assert "&lt;b&gt;for itself&lt;/b&gt;" in card and "<b>for itself</b>" not in card
+    assert 'action="/settings/autostart/dismiss"' in card
+
+
+def test_no_login_problem_means_no_block_on_the_card(client, monkeypatch, login_entry):
+    from scribe import autostart
+
+    monkeypatch.delenv(autostart.LOGIN_PROBLEM_VARIABLE, raising=False)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert "could not start" not in card and "/settings/autostart/dismiss" not in card
+
+
+def test_dismiss_takes_the_login_problem_off_the_card_for_the_life_of_this_app(client, monkeypatch, login_entry):
+    from scribe import autostart
+
+    monkeypatch.setenv(autostart.LOGIN_PROBLEM_VARIABLE, LOGIN_PROBLEM)
+
+    answer = client.post("/settings/autostart/dismiss", headers=HX, follow_redirects=False)
+
+    assert answer.status_code == 200
+    assert "could not start" not in _the_autostart_card(answer.text)
+    assert "could not start" not in _the_autostart_card(client.get("/settings?section=autostart").text)
+
+
+def test_dismiss_without_javascript_goes_back_to_the_card(client, monkeypatch, login_entry):
+    from scribe import autostart
+
+    monkeypatch.setenv(autostart.LOGIN_PROBLEM_VARIABLE, LOGIN_PROBLEM)
+
+    answer = client.post("/settings/autostart/dismiss", follow_redirects=False)
+
+    assert answer.status_code == 303 and "start-at-login" in answer.headers["location"]
+
+
+def test_the_card_shows_the_login_problem_when_the_os_will_not_answer(client, monkeypatch):
+    """The card that lost its OS answer still says what the launcher handed
+    over: the two are unrelated."""
+    from scribe import autostart
+
+    def refuse(*args, **kwargs):
+        raise OSError("registry read refused")
+
+    monkeypatch.setattr(autostart, "status", refuse)
+    monkeypatch.setenv(autostart.LOGIN_PROBLEM_VARIABLE, LOGIN_PROBLEM)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert "registry read refused" in card and "could not start: Windows has reserved" in card
+
+
+def test_a_dismiss_from_another_site_is_refused(client, monkeypatch, login_entry):
+    from scribe import autostart
+
+    monkeypatch.setenv(autostart.LOGIN_PROBLEM_VARIABLE, LOGIN_PROBLEM)
+
+    refused = client.post("/settings/autostart/dismiss", headers={"Sec-Fetch-Site": "cross-site"},
+                          follow_redirects=False)
+
+    assert refused.status_code == 403
+    assert autostart.login_problem() == LOGIN_PROBLEM

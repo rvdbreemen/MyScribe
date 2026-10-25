@@ -62,6 +62,10 @@ LAUNCHER_VARIABLE = "MYSCRIBE_LAUNCHER"
 # uv's trampoline, env/Scripts/python.exe, which starts the real python as
 # its own child (TASK-117).
 LAUNCHER_PID_VARIABLE = "MYSCRIBE_LAUNCHER_PID"
+# What went wrong the last time MyScribe started on its own, at login or
+# after an update: the launcher says it once at the next start by hand and
+# hands the same sentence to the app it starts, for the Settings card (TASK-120).
+LOGIN_PROBLEM_VARIABLE = "MYSCRIBE_LOGIN_PROBLEM"
 # Under this user's own hive, never the machine's.
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 # The identifier the release build gives the Mac bundle
@@ -119,6 +123,21 @@ class NothingToStart(RuntimeError):
 class Translocated(NothingToStart):
     """The running copy is one macOS translocated: registering it would name a
     path that is gone at the next login (ADR-026 Must Not)."""
+
+
+def login_problem() -> str:
+    """The sentence the launcher handed over about the last start at login
+    that could not start, or "" (TASK-120).
+
+    Read from this process's environment and nowhere else: the launcher took
+    the note beside the home when it said it, so the start after this one -
+    a clean start - has none. Dismissing it takes it out of this environment,
+    so it stays away for the life of this app, runner children included."""
+    return os.environ.get(LOGIN_PROBLEM_VARIABLE, "").strip()
+
+
+def dismiss_login_problem() -> None:
+    os.environ.pop(LOGIN_PROBLEM_VARIABLE, None)
 
 
 def translocated(path: str | None) -> bool:
