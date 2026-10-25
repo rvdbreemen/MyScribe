@@ -25,6 +25,25 @@
   weights and never mentioned the larger ones *Max* loads. It now checks the
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
+- **Two starts at once start one MyScribe.** When the start at login and a
+  start by hand came within the same seconds, both could install into the
+  same environment and both started the app. Now the second one waits for
+  the first and opens it in your browser, also when you gave it another
+  `--port`; with a window it says at once that MyScribe is already starting.
+  A window left open after MyScribe stopped or could not start does not hold
+  up the next start, and `--doctor` does not install into an environment
+  another start is still installing. When MyScribe started on its own, at
+  login or after an update, and could not start, for example because another
+  program had its port, the next start you make yourself says so once
+  (TASK-112.07).
+  For this MyScribe keeps two small files beside your home, not in it:
+  `MyScribe.lock`, and `MyScribe-at-login.txt` while such a problem waits to
+  be shown, next to the default `%LOCALAPPDATA%\MyScribe`. The Windows
+  uninstaller lists those two to delete; a real uninstall has not been run
+  yet to confirm it. When your home is in a folder you chose, say
+  `D:\Data\MyScribe`, they are
+  `D:\Data\MyScribe.lock` and `D:\Data\MyScribe-at-login.txt`, and an
+  uninstall leaves them there with the home.
 
 - **OpenRouter calls ask the model to keep its thinking short.** With
   `openrouter/auto`, some picked models spent the whole answer budget

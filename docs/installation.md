@@ -213,11 +213,17 @@ anything MyScribe installed for you from somebody else, such as Ollama.
 
 **Windows** - Settings > Apps > MyScribe > Uninstall stops a running MyScribe,
 then removes
-`%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, and the login item if
-*Start at login* was on. It leaves:
+`%LOCALAPPDATA%\Programs\MyScribe`, the shortcuts, the login item if
+*Start at login* was on, and `%LOCALAPPDATA%\MyScribe.lock` and
+`%LOCALAPPDATA%\MyScribe-at-login.txt`: the launcher's lock, and the note a
+failed start at login leaves for the next start by hand, beside the default
+home. It leaves:
 
 - your home and library: `%LOCALAPPDATA%\MyScribe`, or the folder you chose.
-  Delete it by hand when you no longer want the recordings.
+  Delete it by hand when you no longer want the recordings. Beside a folder
+  you chose, say `D:\Data\MyScribe`, the two small files are
+  `D:\Data\MyScribe.lock` and `D:\Data\MyScribe-at-login.txt`; they stay too,
+  and can go with the home.
 - `%LOCALAPPDATA%\MyScribe.location`, the small file that remembers where your
   home is. Safe to delete once the home is gone.
 - Ollama and its models, if MyScribe installed them: they are an ordinary
@@ -235,7 +241,10 @@ once. By hand: run
 `~/Library/LaunchAgents/io.github.rvdbreemen.myscribe.plist`. The log
 launchd wrote stays in `~/Library/Logs/MyScribe`. Your
 home stays in `~/Library/Application Support/MyScribe` (or the folder you
-chose), with `~/Library/Application Support/MyScribe.location` beside it. An
+chose), with `~/Library/Application Support/MyScribe.location` beside it.
+Beside the home, wherever it is, also stay `MyScribe.lock`, the launcher's
+lock, and after a failed start at login `MyScribe-at-login.txt`; they can go
+with the home. An
 Ollama installed through MyScribe is `/Applications/Ollama.app`; its models
 are in `~/.ollama`.
 
@@ -245,7 +254,10 @@ with a systemd user session the entry is a user unit, so run
 `~/.config/systemd/user/myscribe.service`; without one it is
 `~/.config/autostart/myscribe.desktop`. Both are under `$XDG_CONFIG_HOME` if
 you set it. Your home stays in `~/.local/share/MyScribe` (under `$XDG_DATA_HOME` if
-set), with `MyScribe.location` beside it. MyScribe never installs Ollama on
+set), with `MyScribe.location` beside it. Beside the home, wherever it is,
+also stay `MyScribe.lock` and after a failed start at login
+`MyScribe-at-login.txt`; they can go with the home. MyScribe never installs
+Ollama on
 Linux - it shows Ollama's commands and you run them - so removing it is
 [Ollama's uninstall section](https://docs.ollama.com/linux).
 
