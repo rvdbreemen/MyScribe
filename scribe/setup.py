@@ -2411,6 +2411,8 @@ def apply(
             else:
                 report["wrote"].append("start_at_login")
                 report["notes"].append(f"MyScribe starts when you log in: {entry.where}")
+                if entry.note:  # a Mac whose launchd would not load it now (TASK-112.05)
+                    report["notes"].append(f"start_at_login: {entry.note}")
 
     if answers.fetch_models:
         answered.append("fetch_models")

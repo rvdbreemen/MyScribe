@@ -443,6 +443,11 @@ def autostart_context(*, flash: str | None = None) -> dict:
             "where": entry.where,
             "command": entry.command,
             "can_switch": entry.on or bool(entry.command),
+            # Why there is no switch, when that is known (a translocated Mac
+            # app), and whether switching off also stops MyScribe now (the
+            # LaunchAgent's bootout) - TASK-112.05.
+            "refused": entry.refused,
+            "stops_now": entry.stops_now,
         },
         "autostart_error": None,
         "flash": flash,
@@ -859,9 +864,10 @@ async def set_autostart(request: Request) -> Response:
     """
     fields = transcribe_dialog._fields(await request.form())
     wanted = library._truthy(fields.get(FIELD_AUTOSTART))
+    note = ""
     try:
         if wanted:
-            autostart.enable()
+            note = autostart.enable().note
         else:
             autostart.disable()
     except autostart.NothingToStart as nothing:
@@ -870,7 +876,10 @@ async def set_autostart(request: Request) -> Response:
         raise HTTPException(
             status_code=500, detail=f"the login entry could not be changed: {refused}"
         ) from None
-    return _autostart_answer(request, flash=FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF)
+    # On a Mac the plist can be written while launchd would not load it now;
+    # the switch is on all the same, and the line says both (TASK-112.05).
+    flash = FLASH_AUTOSTART_ON if wanted else FLASH_AUTOSTART_OFF
+    return _autostart_answer(request, flash=f"{flash} {note}" if note else flash)
 
 
 @router.post("/settings/stop", include_in_schema=False)

@@ -97,6 +97,39 @@ def _systemd(tmp_path, environ: dict | None = None):
     )
 
 
+class FakeLaunchctl:
+    """`launchctl` as far as this module asks it anything.
+
+    Every call is recorded with whether the caller waited for it, so a test
+    can say which verbs were asked, in what order, and which one was left to
+    run on its own. `bootstrap` answers with `refuse` when a test sets it.
+    Nothing here has met a real launchd: there is no Mac on this machine.
+    """
+
+    def __init__(self):
+        self.calls: list[tuple[tuple[str, ...], bool]] = []
+        self.refuse: subprocess.CompletedProcess | None = None
+
+    def __call__(self, args, *, wait=True):
+        args = tuple(args)
+        self.calls.append((args, wait))
+        if not wait:
+            return None
+        if args[0] == "bootstrap" and self.refuse is not None:
+            return self.refuse
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def verbs(self) -> list[str]:
+        return [args[0] for args, _wait in self.calls]
+
+
+def _agent(tmp_path, uid: int = 501):
+    """A LaunchAgent under a `Library` this test owns, with a fake `launchctl`
+    and a fixed uid: no real launchd is asked and no `os.getuid` is needed,
+    which this Windows machine does not have."""
+    return autostart.LaunchAgent(folder=tmp_path / "Library" / "LaunchAgents", run=FakeLaunchctl(), uid=uid)
+
+
 @pytest.fixture(params=["windows", "macos", "linux", "systemd"])
 def mechanism(request, tmp_path):
     """One mechanism per platform, each pointed at somewhere this test owns."""
@@ -109,7 +142,7 @@ def mechanism(request, tmp_path):
         finally:
             _drop_scratch_key()
     elif request.param == "macos":
-        yield autostart.LaunchAgent(folder=tmp_path / "LaunchAgents")
+        yield _agent(tmp_path)
     elif request.param == "systemd":
         yield _systemd(tmp_path)
     else:
@@ -238,7 +271,7 @@ def test_what_each_mechanism_actually_leaves_on_disk(tmp_path):
     Unverified by any real login - this asserts the contents against Apple's
     launchd keys and the freedesktop Autostart spec, nothing more.
     """
-    agent = autostart.LaunchAgent(folder=tmp_path / "LaunchAgents")
+    agent = _agent(tmp_path)  # a stand-in launchctl: a macOS CI runner must not load this
     autostart.enable(agent, command=COMMAND)
     plist = plistlib.loads(agent.path.read_bytes())
     assert plist["Label"] == autostart.LABEL
@@ -431,27 +464,31 @@ def test_a_release_registers_the_launcher_and_a_clone_the_start_script(tmp_path)
     assert "--detached" in posix_clone and "--no-browser" in posix_clone
 
 
-def test_a_mac_release_names_something_launchd_can_actually_execute():
-    """AC4, the Mac's own shape. The stable path a release names there is the
-    `.app` bundle (design spec §3.10) - and a bundle is a directory.
+def test_a_mac_release_names_the_binary_inside_the_bundle():
+    """TASK-112.05. The stable path a release names on a Mac is the `.app`
+    bundle (`launcher_path`), and a bundle is a directory - `launchd.plist(5)`
+    hands `ProgramArguments` to `execvp(3)`, so argv[0] has to be a file.
 
-    `launchd.plist(5)` hands `ProgramArguments` to `execvp(3)`: no
-    LaunchServices, so argv[0] has to be a file that can be executed. A
-    bundle in that position fails to spawn at every login. `open -a <bundle>
-    --args ...` is `open(1)`'s documented way to start a bundle with
-    arguments, so that is what the entry runs.
+    Up to 0.9.x that file was `/usr/bin/open -a <bundle>`, which returns at
+    once: launchd then watched nothing, logged nothing, and `KeepAlive` would
+    have been a respawn loop. The entry now names the binary inside the
+    bundle, `Contents/MacOS/<FROZEN_NAME>`, so launchd watches the launcher
+    itself. The name is read from the build script, so the two cannot drift.
 
-    Not run at a real login, like everything macOS here - but composed from
-    the platform's own documentation rather than from a guess.
+    Not run at a real login, like everything macOS here.
     """
     bundle = "/Applications/MyScribe.app"
 
     mac = autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: bundle}, platform="darwin")
 
-    assert mac is not None
+    frozen = _build_constant("FROZEN_NAME")
+    assert mac == (f"{bundle}/Contents/MacOS/{frozen}", "--at-login", "--no-browser", "--headless")
+    assert "/usr/bin/open" not in mac
     assert not mac[0].endswith(".app"), "argv[0] goes to execvp; a bundle directory is not executable"
-    assert mac[:4] == ("/usr/bin/open", "-a", bundle, "--args")
-    assert mac[4:] == ("--at-login", "--no-browser", "--headless")
+
+    # A launcher that handed down a file (an unpacked build) is named as it is.
+    unpacked = "/Users/me/MyScribe/MyScribe"
+    assert autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: unpacked}, platform="darwin")[0] == unpacked
 
     # The other two doors name their launcher directly: both are files.
     for platform, launcher in (("win32", r"C:\Program Files\MyScribe\MyScribe.exe"), ("linux", "/opt/MyScribe.AppImage")):
@@ -1002,3 +1039,282 @@ def test_a_rewrite_the_manager_refused_keeps_the_unit_that_was_on(tmp_path):
         autostart.enable(unit, command=AT_LOGIN)
 
     assert unit.path.exists()
+
+
+# --- macOS: a LaunchAgent that starts the binary itself (TASK-112.05) -------------
+#
+# Robert's decisions of 2026-10-24: the agent names Contents/MacOS/<binary>,
+# headless, with its own log; KeepAlive restarts only APP_DIED; a path under
+# AppTranslocation is refused with a sentence; switching on bootstraps it now,
+# switching off removes the plist and boots it out, which stops MyScribe now.
+# Every launchctl call goes through an injected runner. Nothing in this
+# section has met a real launchd, launchctl or App Translocation - there is
+# no Mac here. What it proves is the plist (through plistlib), the argv each
+# switch hands launchctl, and the order of the steps.
+
+BUILD_RELEASE = Path(__file__).resolve().parent.parent / "packaging" / "build_release.py"
+BUNDLE = "/Applications/MyScribe.app"
+MAC_RELEASE = {autostart.LAUNCHER_VARIABLE: BUNDLE}
+MAC_COMMAND = (f"{BUNDLE}/Contents/MacOS/MyScribe", "--at-login", "--no-browser", "--headless")
+TRANSLOCATED = "/private/var/folders/xy/abc123/T/AppTranslocation/0F1E2D3C-4B5A-6978/d/MyScribe.app"
+
+
+def _build_constant(name: str):
+    """One top-level constant of `packaging/build_release.py`, read with `ast`
+    rather than imported: the build script is not part of the app."""
+    tree = ast.parse(BUILD_RELEASE.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} is not a constant in {BUILD_RELEASE}")
+
+
+def _plist(agent) -> dict:
+    return plistlib.loads(agent.path.read_bytes())
+
+
+def test_the_launch_agent_plist_has_the_research_notes_keys(tmp_path):
+    """AC #1: the plist of docs/reports/2026-10-19-background-server-research.md
+    section 2.2, key by key, parsed back with plistlib. `ExitTimeOut` has its
+    own test below: Robert's decision put it above the note's 40."""
+    agent = _agent(tmp_path)
+
+    autostart.enable(agent, command=MAC_COMMAND)
+    plist = _plist(agent)
+
+    log = str(tmp_path / "Library" / "Logs" / "MyScribe" / "launchd.log")
+    assert plist == {
+        "Label": autostart.LABEL,
+        "ProgramArguments": list(MAC_COMMAND),
+        "AssociatedBundleIdentifiers": [_build_constant("BUNDLE_ID")],
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "ProcessType": "Interactive",
+        "LimitLoadToSessionType": "Aqua",
+        "ExitTimeOut": autostart.EXIT_TIMEOUT,
+        "StandardOutPath": log,
+        "StandardErrorPath": log,
+    }
+    assert autostart.LABEL == _build_constant("BUNDLE_ID")
+    assert agent.read() == shlex.join(MAC_COMMAND)
+
+
+def test_keep_alive_restarts_only_the_exit_that_means_the_app_died():
+    """`SuccessfulExit: false` restarts every non-zero exit, so it is only
+    safe because the launcher exits non-zero for one reason alone, `APP_DIED`
+    (TASK-112.02): a clean stop, another instance and a busy port all exit 0.
+    The module spells that code again; this reads the launcher's own."""
+    assert autostart.APP_DIED == _launcher().APP_DIED != 0
+
+
+def test_the_plist_waits_longer_than_the_launchers_longest_stop():
+    """Robert's decision: launchd's SIGKILL must not come before the
+    launcher's own stop has run out - killed sooner, the launcher exits
+    non-zero, which KeepAlive reads as a crash. `LAUNCHER_STOP_WAIT` is read
+    from the launcher, so a branch that raises it (TASK-112.09's open branch
+    takes it from 40 to 207 s) turns this red instead of drifting past it.
+    The 10 s of margin for launchd's own bookkeeping is an estimate, not a
+    measurement."""
+    assert autostart.EXIT_TIMEOUT >= _launcher().LAUNCHER_STOP_WAIT + 10
+
+
+def test_the_log_folder_is_made_before_launchd_needs_it(tmp_path):
+    """launchd opens `StandardOutPath` itself and does not make the folder
+    above it. It sits beside `LaunchAgents` - `~/Library/Logs/MyScribe` on a
+    Mac - so a test that owns the one owns the other."""
+    agent = _agent(tmp_path)
+
+    agent.write(MAC_COMMAND)
+
+    assert (tmp_path / "Library" / "Logs" / "MyScribe").is_dir()
+    assert autostart.default_mechanism("darwin").log == Path.home() / "Library" / "Logs" / "MyScribe" / "launchd.log"
+
+
+def test_an_open_a_plist_from_0_9_is_rewritten_to_the_binary(tmp_path):
+    """The next start brings a 0.9.x plist - `open -a <bundle> --args ...`,
+    three keys - up to the binary and the full set of keys, and asks launchctl
+    nothing: the job it would reload may be the very app that is starting."""
+    agent = _agent(tmp_path)
+    agent.folder.mkdir(parents=True)
+    agent.path.write_bytes(plistlib.dumps({
+        "Label": autostart.LABEL,
+        "ProgramArguments": ["/usr/bin/open", "-a", BUNDLE, "--args", "--at-login", "--no-browser", "--headless"],
+        "RunAtLoad": True,
+    }))
+
+    command = autostart.start_command(MAC_RELEASE, platform="darwin")
+    entry = autostart.refresh(agent, environ=MAC_RELEASE, command=command)
+
+    assert entry is not None
+    assert _plist(agent)["ProgramArguments"] == list(MAC_COMMAND)
+    assert _plist(agent)["KeepAlive"] == {"SuccessfulExit": False}
+    assert agent.run.calls == []
+
+
+def test_a_plist_with_todays_arguments_but_older_keys_is_rewritten(tmp_path):
+    """refresh() compared only the command, so a key added later never reached
+    a plist that already ran the right binary. The LaunchAgent compares the
+    whole plist it would write; one that already matches is left alone."""
+    agent = _agent(tmp_path)
+    agent.folder.mkdir(parents=True)
+    agent.path.write_bytes(plistlib.dumps({
+        "Label": autostart.LABEL, "ProgramArguments": list(MAC_COMMAND), "RunAtLoad": True,
+    }))
+
+    assert autostart.refresh(agent, environ=MAC_RELEASE, command=MAC_COMMAND) is not None
+    assert _plist(agent)["ExitTimeOut"] == autostart.EXIT_TIMEOUT
+
+    written = agent.path.read_bytes()
+    assert autostart.refresh(agent, environ=MAC_RELEASE, command=MAC_COMMAND) is None
+    assert agent.path.read_bytes() == written
+
+
+def test_a_bundle_path_with_a_space_still_matches_its_own_plist(tmp_path):
+    """The guard "names this same launcher" compares paths, not shell text:
+    `shlex.join` quotes a path with a space, and the quoted bundle is not a
+    substring of the quoted binary inside it."""
+    bundle = "/Users/me/My Apps/MyScribe.app"
+    environ = {autostart.LAUNCHER_VARIABLE: bundle}
+    agent = _agent(tmp_path)
+    agent.folder.mkdir(parents=True)
+    agent.path.write_bytes(plistlib.dumps({
+        "Label": autostart.LABEL,
+        "ProgramArguments": [f"{bundle}/Contents/MacOS/MyScribe", "--at-login"],
+        "RunAtLoad": True,
+    }))
+
+    assert autostart.refresh(agent, environ=environ, command=autostart.start_command(environ, platform="darwin"))
+    assert _plist(agent)["ProgramArguments"] == [f"{bundle}/Contents/MacOS/MyScribe", "--at-login",
+                                                 "--no-browser", "--headless"]
+
+    other = {autostart.LAUNCHER_VARIABLE: "/Users/me/My Apps/MyScribe 2.app"}
+    assert autostart.refresh(agent, environ=other, command=autostart.start_command(other, platform="darwin")) is None
+
+
+def test_a_translocated_app_is_not_registered_and_says_why(tmp_path):
+    """AC #2. An app opened from the dmg or Downloads with the quarantine flag
+    runs from a random read-only path under AppTranslocation that is gone at
+    the next login (ADR-026's Must Not). Nothing is written, and the reason
+    is a sentence a user can act on, not "nothing to start"."""
+    environ = {autostart.LAUNCHER_VARIABLE: TRANSLOCATED}
+
+    assert autostart.start_command(environ=environ, platform="darwin") is None
+    reason = autostart.refusal(environ=environ, platform="darwin")
+    assert reason is not None
+    assert "Applications" in reason and "temporary" in reason
+
+    agent = _agent(tmp_path)
+    with pytest.raises(autostart.NothingToStart, match="Applications"):
+        autostart.enable(agent, command=None, environ=environ, platform="darwin")
+    assert not agent.path.exists() and agent.run.calls == []
+
+    off = autostart.status(agent, environ=environ, platform="darwin")
+    assert off.on is False and off.command == "" and off.refused == reason
+
+    # Only a Mac path, and only that folder.
+    assert autostart.refusal(environ=MAC_RELEASE, platform="darwin") is None
+    assert autostart.refusal(environ=environ, platform="linux") is None
+
+
+def test_switching_on_bootstraps_the_agent_now(tmp_path):
+    """AC #3. The plist first, then `launchctl bootstrap gui/<uid> <plist>`,
+    so it is loaded in this session and not only at the next login. No
+    bootout first: the job a bootout hits may be the app answering this
+    request. A second launcher started by RunAtLoad finds this one serving
+    and exits 0, which KeepAlive leaves alone (TASK-112.02)."""
+    agent = _agent(tmp_path, uid=501)
+
+    entry = autostart.enable(agent, command=MAC_COMMAND)
+
+    assert agent.run.calls == [(("bootstrap", "gui/501", str(agent.path)), True)]
+    assert entry.on is True and entry.note == ""
+
+
+def test_a_bootstrap_launchd_refuses_keeps_the_file_and_says_so(tmp_path):
+    """launchd answers an agent that is already loaded with an error, and its
+    error numbers are not documented. Either way the plist is loaded at the
+    next login, so the file stays, the switch is on, and the entry carries
+    what launchctl said for Settings to show."""
+    agent = _agent(tmp_path)
+    agent.run.refuse = subprocess.CompletedProcess((), 5, "", "Bootstrap failed: 5: Input/output error")
+
+    entry = autostart.enable(agent, command=MAC_COMMAND)
+
+    assert agent.path.exists() and entry.on is True
+    assert "Input/output error" in entry.note and "next login" in entry.note
+
+    def hang(args, *, wait=True):
+        raise subprocess.TimeoutExpired(args, 15)
+
+    agent.run = hang
+    assert "next login" in autostart.enable(agent, command=MAC_COMMAND).note
+
+    def missing(args, *, wait=True):
+        raise FileNotFoundError("/bin/launchctl")
+
+    agent.run = missing
+    assert "next login" in autostart.enable(agent, command=MAC_COMMAND).note
+
+
+def test_switching_off_removes_the_plist_then_boots_out_without_waiting(tmp_path):
+    """AC #3, Robert's decision: off means off now. The plist goes first -
+    bootout stops the launcher, which stops this app, and a step after that
+    would never run. The bootout itself is not waited for: it waits for the
+    job to stop, the job is this app, and this app is blocked in the request
+    that asked. A second off asks launchctl nothing."""
+    agent = _agent(tmp_path, uid=501)
+    autostart.enable(agent, command=MAC_COMMAND)
+    real = agent.run
+    real.calls.clear()
+    gone_before_bootout = []
+
+    def watch(args, *, wait=True):
+        gone_before_bootout.append(not agent.path.exists())
+        return real(args, wait=wait)
+
+    agent.run = watch
+
+    off = autostart.disable(agent, command=MAC_COMMAND)
+
+    assert off.on is False and not agent.path.exists()
+    assert real.calls == [(("bootout", f"gui/501/{autostart.LABEL}"), False)]
+    assert gone_before_bootout == [True]
+
+    real.calls.clear()
+    autostart.disable(agent, command=MAC_COMMAND)
+    assert real.calls == []
+
+
+def test_only_the_launch_agent_says_switching_off_stops_myscribe(tmp_path):
+    """The card's warning comes from the entry. A Windows Run value, a desktop
+    file and a disabled user unit stop nothing that is running."""
+    assert autostart.status(_agent(tmp_path), command=MAC_COMMAND).stops_now is True
+    assert autostart.status(_systemd(tmp_path), command=AT_LOGIN).stops_now is False
+    assert autostart.status(autostart.XdgAutostart(folder=tmp_path / "a"), command=AT_LOGIN).stops_now is False
+
+
+def test_the_real_launchctl_runner_waits_with_a_timeout_or_lets_go(monkeypatch):
+    """`/bin/launchctl`, never a `launchctl` found on PATH. Waited for with a
+    timeout, or started in a session of its own and let go, so the app's
+    process-group stop does not take the bootout down with it."""
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["run"] = (argv, kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def fake_popen(argv, **kwargs):
+        seen["popen"] = (argv, kwargs)
+
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+    monkeypatch.setattr(autostart.subprocess, "Popen", fake_popen)
+
+    autostart.launchctl(["bootstrap", "gui/501", "/x.plist"])
+    autostart.launchctl(["bootout", "gui/501/x"], wait=False)
+
+    argv, kwargs = seen["run"]
+    assert argv == ["/bin/launchctl", "bootstrap", "gui/501", "/x.plist"]
+    assert kwargs["timeout"] > 0 and kwargs["capture_output"] is True
+    argv, kwargs = seen["popen"]
+    assert argv == ["/bin/launchctl", "bootout", "gui/501/x"]
+    assert kwargs["start_new_session"] is True

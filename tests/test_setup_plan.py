@@ -2601,6 +2601,20 @@ def test_yes_calls_the_same_enable_the_settings_switch_calls_with_no_arguments(
     assert login_entry.value == by_the_sitting
 
 
+def test_a_yes_launchd_would_not_load_now_is_registered_and_says_so(
+        library, no_weights, monkeypatch, login_entry):
+    """TASK-112.05. On a Mac the plist can be written while launchd refuses to
+    load it now; it loads at the next login, so the answer is written, not
+    reopened, and the sitting's notes carry what launchd said."""
+    said = "launchd did not load it now (exit 5); it starts at your next login."
+    monkeypatch.setattr(login_entry, "switch_on", lambda: said, raising=False)
+
+    report = setup.apply(setup.Answers(start_at_login=True), library)
+
+    assert "start_at_login" in report["wrote"] and "start_at_login" not in report["reopen"]
+    assert f"start_at_login: {said}" in report["notes"]
+
+
 @pytest.mark.parametrize("given,state", [("no", "answered"), (None, "skipped")])
 def test_no_and_skip_register_nothing_and_neither_returns_at_the_next_start(
         library, no_weights, monkeypatch, login_entry, given, state):

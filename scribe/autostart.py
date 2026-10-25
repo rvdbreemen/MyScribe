@@ -13,7 +13,10 @@ nothing that needs an administrator:
   shortcut in the Startup folder: a `.lnk` needs COM to write, and a shortcut
   is the thing R3 declined. A value is one string, visible in regedit, and
   gone when it is deleted.
-* **macOS** - a launchd agent in this user's own `Library`, with `RunAtLoad`.
+* **macOS** - a launchd agent in this user's own `Library` that starts the
+  launcher's own binary, so launchd restarts a crash and keeps its output in
+  `~/Library/Logs/MyScribe` (TASK-112.05). Switching it on loads it now and
+  switching it off unloads it now, which stops a MyScribe it started.
 * **Linux** - a systemd user unit in this user's own config directory where a
   systemd user session runs, so a crash is restarted and the output lands in
   the journal (ADR-026). Where none runs, and for a clone, a desktop entry in
@@ -23,7 +26,8 @@ The Windows one has been run against its real OS API, and the user unit
 against a real systemd 255 user manager in WSL (TASK-112.06) - not a
 graphical desktop login. The LaunchAgent and the desktop entry are built from
 Apple's launchd keys and the freedesktop specs and have been honoured by no
-real login anywhere; every place that mentions them says so.
+real login anywhere - no launchd and no `launchctl` has run what this module
+writes or asks; every place that mentions them says so.
 
 `status()` asks the OS every time. Nothing is remembered: a user who deleted
 the value or the file gets a switch that says off, which a stored row could
@@ -67,12 +71,34 @@ UNIT_NAME = "myscribe.service"
 # (TASK-112.02). Spelled again rather than imported, like LABEL: the launcher
 # is not shipped inside the app. A test reads the launcher's own value.
 APP_DIED = 70
+# The binary inside the Mac bundle, `Contents/MacOS/<this>`
+# (`packaging/build_release.py`, FROZEN_NAME). Spelled again, like LABEL; a
+# test reads the build script's own value.
+FROZEN_NAME = "MyScribe"
+# How long launchd waits after its SIGTERM before it sends SIGKILL. Longer
+# than the launcher's own longest stop (`LAUNCHER_STOP_WAIT`, 40 s on main and
+# 207 s on TASK-112.09's branch), or a stop that is still running is killed
+# and exits non-zero, which KeepAlive reads as a crash. A test reads the
+# launcher's value and asks for 10 s on top. Only a hung launcher ever waits
+# this long: one that stops sooner is not held up by it.
+EXIT_TIMEOUT = 240
+LAUNCHD_LOG = "launchd.log"
+# Where macOS runs a quarantined app opened from a dmg or Downloads: a random,
+# read-only copy that is gone after the next login (ADR-026's Must Not).
+TRANSLOCATION = "/AppTranslocation/"
+TRANSLOCATED = (
+    "MyScribe is running from a temporary copy macOS made when it was opened from the "
+    "disk image or the Downloads folder, and that copy is gone after the next login. "
+    "Drag MyScribe to the Applications folder in Finder, open it from there, and switch "
+    "this on again."
+)
 # Five starts in five minutes, then systemd stops trying (TASK-112.06 AC #4).
 START_LIMIT_BURST = 5
 START_LIMIT_INTERVAL_SEC = 300
 # Long enough for a user manager that is slow to answer, short enough that a
-# Settings page waiting on it still loads.
+# Settings page waiting on it still loads. launchctl gets the same.
 SYSTEMCTL_TIMEOUT = 15
+LAUNCHCTL_TIMEOUT = SYSTEMCTL_TIMEOUT
 
 
 class NothingToStart(RuntimeError):
@@ -91,6 +117,15 @@ class Entry:
     where: str
     command: str
     on: bool
+    # What the OS said when switching on half-worked: the entry is written,
+    # but launchd would not load it now (TASK-112.05). Empty otherwise.
+    note: str = ""
+    # Why there is nothing to register, when that is known better than
+    # "nothing to start": an app running from a translocated copy.
+    refused: str = ""
+    # Switching this entry off also stops a MyScribe it started - the
+    # LaunchAgent's bootout. Settings warns before the click.
+    stops_now: bool = False
 
 
 # --- the mechanisms ----------------------------------------------------------------
@@ -154,18 +189,59 @@ class WindowsRun:
             pass
 
 
+def launchctl(args, *, wait: bool = True) -> subprocess.CompletedProcess | None:
+    """`/bin/launchctl ...`, never one found on PATH.
+
+    Waited for with a timeout, or - `wait=False` - started in a session of its
+    own and let go: a bootout waits for the job to stop, and when the job is
+    this app, the app cannot answer its own stop while it waits. In its own
+    session it also outlives the launcher's process-group stop of this app.
+    """
+    argv = ["/bin/launchctl", *[str(arg) for arg in args]]
+    if not wait:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return None
+    return subprocess.run(argv, capture_output=True, text=True, timeout=LAUNCHCTL_TIMEOUT, check=False)
+
+
 class LaunchAgent:
     """A launchd agent in this user's own Library. Unverified by any real login.
 
-    The keys are launchd's own: a label, the arguments, and `RunAtLoad`.
-    Nothing is asked of `launchctl`, so the entry takes effect at the next
-    login rather than in the session that switched it on - which is what a
-    switch called "start at login" promises anyway.
+    The keys are the research note's (docs/reports/2026-10-19-background-
+    server-research.md, section 2.2), all from `launchd.plist(5)`:
+
+    * `ProgramArguments` names the launcher's binary inside the bundle, so
+      launchd watches the launcher itself - not `open -a`, which returns at
+      once and left launchd nothing to watch or log (0.9.x and earlier).
+    * `KeepAlive` with `SuccessfulExit` false: restarted after a non-zero
+      exit only, and the launcher exits non-zero only when the app died under
+      it (`APP_DIED`, TASK-112.02).
+    * `StandardOutPath` and `StandardErrorPath` in `~/Library/Logs/MyScribe`,
+      beside the `LaunchAgents` folder, made before the plist is written.
+    * `ExitTimeOut` longer than the launcher's longest stop (`EXIT_TIMEOUT`).
+    * `ProcessType` Interactive, `LimitLoadToSessionType` Aqua, and
+      `AssociatedBundleIdentifiers`, which ties the plist to the app in
+      Login Items.
+
+    Switching on loads it now (`launchctl bootstrap gui/<uid>`); a refusal
+    is a note, because the plist still loads at the next login. Switching
+    off removes the plist and then boots the job out, which stops a MyScribe
+    launchd started - the one answering the click - right away (Robert's
+    decision of 2026-10-24). Writing alone asks launchctl nothing: the start
+    that rewrites an older plist may be the very job a reload would stop.
+    `run` and `uid` are injectable so a test stands in for launchctl.
     """
 
-    def __init__(self, folder: Path | None = None, label: str = LABEL):
+    stops_when_switched_off = True
+
+    def __init__(self, folder: Path | None = None, label: str = LABEL, logs: Path | None = None,
+                 run=None, uid: int | None = None):
         self.folder = Path(folder) if folder is not None else Path.home() / "Library" / "LaunchAgents"
+        self.logs = Path(logs) if logs is not None else self.folder.parent / "Logs" / APP_NAME
         self.label = label
+        self.run = run or launchctl
+        self._uid = uid
 
     @property
     def path(self) -> Path:
@@ -175,31 +251,94 @@ class LaunchAgent:
     def where(self) -> str:
         return str(self.path)
 
+    @property
+    def log(self) -> Path:
+        return self.logs / LAUNCHD_LOG
+
+    @property
+    def domain(self) -> str:
+        """`gui/<uid>`: this user's own login session, never `system`."""
+        uid = self._uid
+        if uid is None:
+            getuid = getattr(os, "getuid", None)
+            if getuid is None:
+                raise OSError("this platform has no user id to give launchctl")
+            uid = getuid()
+        return f"gui/{uid}"
+
     def render(self, command) -> str:
         return shlex.join(str(part) for part in command)
 
-    def read(self) -> str | None:
+    def plist(self, command) -> dict:
+        log = str(self.log)
+        return {
+            "Label": self.label,
+            "ProgramArguments": [str(part) for part in command],
+            "AssociatedBundleIdentifiers": [self.label],
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},
+            "ProcessType": "Interactive",
+            "LimitLoadToSessionType": "Aqua",
+            "ExitTimeOut": EXIT_TIMEOUT,
+            "StandardOutPath": log,
+            "StandardErrorPath": log,
+        }
+
+    def _held(self) -> dict | None:
         try:
-            plist = plistlib.loads(self.path.read_bytes())
+            return plistlib.loads(self.path.read_bytes())
         except FileNotFoundError:
             return None
-        arguments = plist.get("ProgramArguments")
+
+    def read(self) -> str | None:
+        plist = self._held()
+        arguments = plist.get("ProgramArguments") if plist else None
         return self.render(arguments) if arguments else None
+
+    def current(self, command) -> bool:
+        """Whether the plist on disk is exactly the one `write` would write -
+        every key, not only the command, so a key added later reaches it."""
+        return self._held() == self.plist(command)
+
+    def names(self, launcher: str) -> bool:
+        """Whether the plist starts this launcher: the bundle itself (`open -a`
+        up to 0.9.x) or a file inside it. Paths, not shell text, so a path
+        with a space in it still matches."""
+        plist = self._held() or {}
+        launcher = str(launcher).rstrip("/")
+        return any(str(part) == launcher or str(part).startswith(launcher + "/")
+                   for part in plist.get("ProgramArguments") or ())
 
     def write(self, command) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
-        self.path.write_bytes(
-            plistlib.dumps(
-                {
-                    "Label": self.label,
-                    "ProgramArguments": [str(part) for part in command],
-                    "RunAtLoad": True,
-                }
-            )
-        )
+        # launchd opens the log itself and makes no folder for it.
+        self.logs.mkdir(parents=True, exist_ok=True)
+        self.path.write_bytes(plistlib.dumps(self.plist(command)))
 
     def remove(self) -> None:
         self.path.unlink(missing_ok=True)
+
+    def switch_on(self) -> str:
+        """Load the agent now. Empty when launchd took it; otherwise what it
+        said, with the reason the switch is on anyway. No bootout first: the
+        job it would hit may be the app that is answering this click."""
+        try:
+            done = self.run(["bootstrap", self.domain, str(self.path)])
+        except subprocess.TimeoutExpired as slow:
+            said = f"launchctl did not answer in {slow.timeout} s"
+        except OSError as failed:
+            said = str(failed)
+        else:
+            if done.returncode == 0:
+                return ""
+            said = (done.stderr or done.stdout or "").strip() or f"exit code {done.returncode}"
+        return f"launchd did not load it now ({said}); it starts at your next login."
+
+    def switch_off(self) -> None:
+        """Unload the agent, which stops a MyScribe launchd started. Not waited
+        for, and asked only after the plist is gone: when the job is this
+        app, nothing after this line is sure to run."""
+        self.run(["bootout", f"{self.domain}/{self.label}"], wait=False)
 
 
 class XdgAutostart:
@@ -503,9 +642,11 @@ def start_command(
     would run a stale environment at the first login after a new release. The
     launcher hands its own stable path down as `MYSCRIBE_LAUNCHER`; where it
     did not, there is nothing to fall back on and this returns None rather
-    than guess. On a Mac that stable path is the `.app` bundle - a directory -
-    so there the entry runs `open -a <bundle> --args ...` instead of naming it
-    as argv[0], which launchd could not execute.
+    than guess. On a Mac that stable path is the `.app` bundle - a directory,
+    which launchd cannot execute - so there the entry names the launcher's
+    binary inside it, `Contents/MacOS/MyScribe`, and launchd watches the
+    launcher itself (TASK-112.05). A bundle running from a translocated copy
+    is not named at all: that path is gone after the next login (`refusal`).
 
     **A clone** names the `scripts/start.*` that is already in the checkout,
     detached. Nothing new is created. That is a choice, not a given: R3
@@ -528,12 +669,16 @@ def start_command(
     if launcher:
         arguments = ("--at-login", "--no-browser", "--headless")
         if platform == "darwin":
+            if TRANSLOCATION in launcher:
+                return None
             # The stable path on a Mac is the `.app` bundle, which is a
             # directory - and launchd hands ProgramArguments straight to
-            # execvp, so a directory there fails to spawn at every login.
-            # `open -a <bundle> --args ...` is open(1)'s documented way to
-            # start a bundle with arguments.
-            return ("/usr/bin/open", "-a", launcher, "--args", *arguments)
+            # execvp, so the binary inside it is named instead. Not
+            # `open -a`: it returns at once and leaves launchd nothing to
+            # watch, restart or log.
+            bundle = launcher.rstrip("/")
+            if bundle.endswith(".app"):
+                return (f"{bundle}/Contents/MacOS/{FROZEN_NAME}", *arguments)
         return (launcher, *arguments)
 
     root = Path(__file__).resolve().parent.parent if repo is None else Path(repo)
@@ -558,22 +703,41 @@ def start_command(
     return None
 
 
+def refusal(environ: dict | None = None, platform: str = sys.platform) -> str | None:
+    """Why this release must not be registered, in a sentence for Settings, or
+    None when nothing is known against it.
+
+    One case today: a Mac app running from App Translocation. macOS runs a
+    quarantined app opened from a dmg or Downloads from a random read-only
+    copy (Eclectic Light; Apple does not document the exact behaviour), and
+    an entry naming it is broken at the next login.
+    """
+    environ = os.environ if environ is None else environ
+    launcher = environ.get(LAUNCHER_VARIABLE) or ""
+    if platform == "darwin" and TRANSLOCATION in launcher:
+        return TRANSLOCATED
+    return None
+
+
 # --- on, off, and what the OS says -------------------------------------------------
 
 
-def status(mechanism=None, command=None) -> Entry:
+def status(mechanism=None, command=None, environ: dict | None = None, platform: str | None = None) -> Entry:
     """What the OS holds right now.
 
     An entry that is there is reported exactly as the OS spells it, whatever
     wrote it - for the user unit, that includes a desktop file it replaces
     that the desktop still starts. An entry that is not there reports the command switching it on
     would write, so the card can show that before anything is written; where
-    there is nothing to start, that is the empty string.
+    there is nothing to start, that is the empty string, and `refused` says
+    why when that is known. `environ` and `platform` are for a test; the app
+    passes neither.
     """
     mechanism = mechanism or default_mechanism()
+    stops = bool(getattr(mechanism, "stops_when_switched_off", False))
     registered = mechanism.read()
     if registered is not None:
-        return Entry(where=mechanism.where, command=registered, on=True)
+        return Entry(where=mechanism.where, command=registered, on=True, stops_now=stops)
     if isinstance(mechanism, SystemdUserUnit):
         # A desktop file the unit did not take over - one naming another
         # launcher path, or one a refused migration left - still starts
@@ -582,22 +746,46 @@ def status(mechanism=None, command=None) -> Entry:
         legacy = mechanism.legacy.read()
         if legacy is not None:
             return Entry(where=mechanism.legacy.where, command=legacy, on=True)
-    command = command or start_command()
+    command = command or _start_command(environ, platform)
     return Entry(
         where=mechanism.where,
         command=mechanism.render(command) if command else "",
         on=False,
+        refused="" if command else (_refusal(environ, platform) or ""),
+        stops_now=stops,
     )
 
 
-def enable(mechanism=None, command=None) -> Entry:
-    """Write the login entry, and say what was written and where."""
+def _start_command(environ, platform):
+    """`start_command()` as the app calls it - with no arguments at all, which
+    the tests that stand in for it rely on - unless a test passed its own."""
+    if environ is None and platform is None:
+        return start_command()
+    return start_command(environ=environ, platform=platform or sys.platform)
+
+
+def _refusal(environ, platform):
+    if environ is None and platform is None:
+        return refusal()
+    return refusal(environ=environ, platform=platform or sys.platform)
+
+
+def enable(mechanism=None, command=None, environ: dict | None = None, platform: str | None = None) -> Entry:
+    """Write the login entry, and say what was written and where.
+
+    A mechanism that can start it now (the LaunchAgent's bootstrap) does so
+    after the write; what it said, when it said no, is the entry's `note`.
+    """
     mechanism = mechanism or default_mechanism()
-    command = command or start_command()
+    command = command or _start_command(environ, platform)
     if not command:
-        raise NothingToStart("nothing on this machine is known to start MyScribe at login")
+        raise NothingToStart(_refusal(environ, platform)
+                             or "nothing on this machine is known to start MyScribe at login")
     mechanism.write(command)
-    return Entry(where=mechanism.where, command=mechanism.render(command), on=True)
+    switch_on = getattr(mechanism, "switch_on", None)
+    note = switch_on() if switch_on is not None else ""
+    return Entry(where=mechanism.where, command=mechanism.render(command), on=True, note=note,
+                 stops_now=bool(getattr(mechanism, "stops_when_switched_off", False)))
 
 
 def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry | None:
@@ -621,13 +809,24 @@ def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     registered = mechanism.read()
     if registered is None:
         return None
-    named, held = mechanism.render((launcher,)), registered
-    if isinstance(mechanism, WindowsRun):  # a path there is the same path in any case
-        named, held = named.casefold(), held.casefold()
-    if named not in held:
-        return None
+    if isinstance(mechanism, LaunchAgent):
+        if not mechanism.names(launcher):
+            return None
+    else:
+        named, held = mechanism.render((launcher,)), registered
+        if isinstance(mechanism, WindowsRun):  # a path there is the same path in any case
+            named, held = named.casefold(), held.casefold()
+        if named not in held:
+            return None
     command = command or start_command(environ)
-    if not command or mechanism.render(command) == registered:
+    if not command:
+        return None
+    if isinstance(mechanism, LaunchAgent):
+        # Every key, not only the command: a plist from 0.9.x runs `open -a`
+        # with three keys. Written only, never reloaded - see `LaunchAgent`.
+        if mechanism.current(command):
+            return None
+    elif mechanism.render(command) == registered:
         return None
     mechanism.write(command)
     return Entry(where=mechanism.where, command=mechanism.render(command), on=True)
@@ -667,7 +866,15 @@ def migrate(mechanism=None, command=None, environ: dict | None = None) -> Entry 
 
 
 def disable(mechanism=None, command=None) -> Entry:
-    """Remove that one value or file, and nothing else. Already gone is fine."""
+    """Remove that one value or file, and nothing else. Already gone is fine.
+
+    A mechanism that also stops what it started (the LaunchAgent's bootout)
+    is asked to after the file is gone, and only when there was a file.
+    """
     mechanism = mechanism or default_mechanism()
+    switch_off = getattr(mechanism, "switch_off", None)
+    there = switch_off is not None and mechanism.read() is not None
     mechanism.remove()
+    if there:
+        switch_off()
     return status(mechanism, command=command)

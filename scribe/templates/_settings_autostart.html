@@ -17,6 +17,12 @@
   he can compare these two lines with what regedit, Finder or `cat` shows and
   see the same thing, or see that they differ.
 
+  On a Mac, switching off unloads the LaunchAgent at once, which stops a
+  MyScribe launchd started - this very page's - so the card says so first:
+  in text, which a post without JavaScript shows too, and once more with
+  hx-confirm. A translocated Mac app gets its own reason instead of a switch
+  (TASK-112.05).
+
   No switch at all where nothing is known to start MyScribe again. A button
   that registered a path which is wrong at the next login would be worse than
   the absence of one, and the paragraph says which two doors exist.
@@ -34,6 +40,8 @@
   <p class="hint fail">
     This machine would not say whether MyScribe starts at login: {{ autostart_error }}
   </p>
+  {% elif not autostart.can_switch and autostart.refused %}
+  <p class="hint fail">{{ autostart.refused }}</p>
   {% elif not autostart.can_switch %}
   <p class="hint fail">
     Nothing here is known to start MyScribe again after a login, so there is nothing to
@@ -54,8 +62,15 @@
     <dd class="mono">{{ autostart.command }}</dd>
   </dl>
 
+  {% if autostart.on and autostart.stops_now %}
+  <p class="hint warn">
+    Switching this off also stops MyScribe now, if it was started at login: macOS unloads it
+    at once. A job that is running stops with it.
+  </p>
+  {% endif %}
   <form method="post" action="/settings/autostart"
-        hx-post="/settings/autostart" hx-target="#start-at-login" hx-swap="outerHTML">
+        hx-post="/settings/autostart" hx-target="#start-at-login" hx-swap="outerHTML"
+        {% if autostart.on and autostart.stops_now %}hx-confirm="Switching this off also stops MyScribe now, if it was started at login. Switch it off?"{% endif %}>
     <input type="hidden" name="enabled" value="{{ '0' if autostart.on else '1' }}">
     <button type="submit" class="{{ '' if autostart.on else 'primary' }}">
       {{ 'Do not start at login' if autostart.on else 'Start MyScribe when I log in' }}
