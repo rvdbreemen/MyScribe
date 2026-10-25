@@ -123,6 +123,7 @@ h2 { font-size: 1rem; margin: 0 0 .5rem; }
 .mono { font-family: var(--mono); }
 .muted, .hint { color: var(--fg-muted); }
 .hint { font-size: .85rem; margin: .3rem 0; }
+.hint.warn { color: var(--warn); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ---- chrome ---- */
