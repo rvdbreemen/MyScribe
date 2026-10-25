@@ -437,17 +437,26 @@ def autostart_context(*, flash: str | None = None) -> dict:
         entry = autostart.status()
     except (OSError, ValueError) as refused:
         return {"autostart": None, "autostart_error": str(refused), "flash": flash}
+    running = os.environ.get(autostart.LAUNCHER_VARIABLE, "")
+    translocated = autostart.translocated(running)
     return {
         "autostart": {
             "on": entry.on,
             "where": entry.where,
             "command": entry.command,
             "can_switch": entry.on or bool(entry.command),
-            # Why there is no switch, when that is known (a translocated Mac
-            # app), and whether switching off also stops MyScribe now (the
-            # LaunchAgent's bootout) - TASK-112.05.
-            "refused": entry.refused,
+            # Why switching on is refused, when that is known - a translocated
+            # Mac copy (ADR-026 Must Not; TASK-112.05, TASK-119) - and whether
+            # switching off also stops MyScribe now (the LaunchAgent's bootout).
+            # `translocated` is asked of the running copy whatever the entry
+            # holds, so an entry that is on still gets the reason, not "switch
+            # it off and on", which would register the temporary path.
+            "refused": entry.refused or (autostart.TRANSLOCATED if translocated else ""),
+            "translocated": translocated,
             "stops_now": entry.stops_now,
+            # The entry starts another file than the one running (TASK-119).
+            "elsewhere": entry.elsewhere,
+            "running": running,
         },
         "autostart_error": None,
         "flash": flash,

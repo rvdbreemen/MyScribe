@@ -45,13 +45,14 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import dataclasses
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 APP_NAME = "MyScribe"
 # What a release launcher tells the app about itself. Set by the launcher's
@@ -86,13 +87,16 @@ FROZEN_NAME = "MyScribe"
 EXIT_TIMEOUT = 240
 LAUNCHD_LOG = "launchd.log"
 # Where macOS runs a quarantined app opened from a dmg or Downloads: a random,
-# read-only copy that is gone after the next login (ADR-026's Must Not).
+# read-only copy that is gone after the next login, so ADR-026 forbids
+# registering it (docs/reports/2026-10-19-background-server-research.md:
+# refuse when the path contains `AppTranslocation`). The one test for it is
+# `translocated()`; the one sentence for it is TRANSLOCATED.
 TRANSLOCATION = "/AppTranslocation/"
 TRANSLOCATED = (
     "MyScribe is running from a temporary copy macOS made when it was opened from the "
-    "disk image or the Downloads folder, and that copy is gone after the next login. "
-    "Drag MyScribe to the Applications folder in Finder, open it from there, and switch "
-    "this on again."
+    "disk image or the Downloads folder (App Translocation), and that copy is gone after "
+    "the next login. In Finder, drag MyScribe into Applications, open it from there, and "
+    "switch this on again."
 )
 # Five starts in five minutes, then systemd stops trying (TASK-112.06 AC #4).
 START_LIMIT_BURST = 5
@@ -101,10 +105,26 @@ START_LIMIT_INTERVAL_SEC = 300
 # Settings page waiting on it still loads. launchctl gets the same.
 SYSTEMCTL_TIMEOUT = 15
 LAUNCHCTL_TIMEOUT = SYSTEMCTL_TIMEOUT
+# What the Linux release is called (`packaging/build_release.py`:
+# MyScribe-<version>-<platform>.AppImage). An update is a new file by this
+# name, so an entry starting one of these from the running AppImage's own
+# folder is this install's, a version older or newer (TASK-119).
+RELEASE_APPIMAGE = re.compile(r"MyScribe-.+-linux-x64\.AppImage")
 
 
 class NothingToStart(RuntimeError):
     """Nothing on this machine is known to start MyScribe again at login."""
+
+
+class Translocated(NothingToStart):
+    """The running copy is one macOS translocated: registering it would name a
+    path that is gone at the next login (ADR-026 Must Not)."""
+
+
+def translocated(path: str | None) -> bool:
+    """Whether a launcher path is a copy macOS runs from App Translocation.
+    Asked of the path text, so it holds on any OS a test runs on."""
+    return bool(path) and TRANSLOCATION in path
 
 
 @dataclass(frozen=True)
@@ -129,6 +149,10 @@ class Entry:
     # Switching this entry off also stops a MyScribe it started - the
     # LaunchAgent's bootout. Settings warns before the click.
     stops_now: bool = False
+    # On, and it starts another file than the launcher that is running - an
+    # AppImage in another folder, say. The next login starts that file
+    # (TASK-119).
+    elsewhere: bool = False
 
 
 # --- the mechanisms ----------------------------------------------------------------
@@ -689,7 +713,7 @@ def start_command(
     if launcher:
         arguments = ("--at-login", "--no-browser", "--headless")
         if platform == "darwin":
-            if TRANSLOCATION in launcher:
+            if translocated(launcher):
                 return None
             # The stable path on a Mac is the `.app` bundle, which is a
             # directory - and launchd hands ProgramArguments straight to
@@ -733,10 +757,81 @@ def refusal(environ: dict | None = None, platform: str = sys.platform) -> str | 
     an entry naming it is broken at the next login.
     """
     environ = os.environ if environ is None else environ
-    launcher = environ.get(LAUNCHER_VARIABLE) or ""
-    if platform == "darwin" and TRANSLOCATION in launcher:
+    if platform == "darwin" and translocated(environ.get(LAUNCHER_VARIABLE)):
         return TRANSLOCATED
     return None
+
+
+# --- whose entry this is -----------------------------------------------------------
+
+
+def _first_word(held: str) -> str:
+    """The program a Linux entry starts: its first word, out of the quotes.
+
+    Both Linux mechanisms quote a word with double quotes and escape inside
+    them with a backslash (`XdgAutostart.render`, `_unit_word`); a word
+    without quotes ends at the first blank.
+    """
+    held = held.lstrip(" \t")
+    if not held.startswith('"'):
+        return held.split(None, 1)[0] if held.strip() else ""
+    word, escaped = [], False
+    for char in held[1:]:
+        if escaped:
+            word.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            break
+        else:
+            word.append(char)
+    return "".join(word)
+
+
+def _program(mechanism, held: str) -> str:
+    """`_first_word`, with the doubling each Linux mechanism adds undone: `%`
+    in both, and `$` in a unit too."""
+    word = _first_word(held)
+    if isinstance(mechanism, SystemdUserUnit):
+        word = word.replace("$$", "$")
+    return word.replace("%%", "%")
+
+
+def _names_launcher(mechanism, held: str, launcher: str) -> bool:
+    """Whether the entry names this very launcher, spelled the way this
+    mechanism spells it. On Windows a path is the same path in any case. A
+    LaunchAgent is asked by path, not by shell text: its plist names the
+    binary inside the bundle (TASK-112.05), and a quoted bundle path with a
+    space in it is no substring of that."""
+    if isinstance(mechanism, LaunchAgent):
+        return mechanism.names(launcher)
+    named = mechanism.render((launcher,))
+    if isinstance(mechanism, WindowsRun):
+        named, held = named.casefold(), held.casefold()
+    return named in held
+
+
+def _is_ours(mechanism, held: str, launcher: str) -> bool:
+    """Whether the start may rewrite this entry (TASK-119).
+
+    Everywhere: it names this same launcher. On Linux also: what it starts is
+    a release AppImage, `MyScribe-<anything>-linux-x64.AppImage`, in the
+    folder of the AppImage that is running - an update is a new file next to
+    the old one. Only the program counts, not a path further along the
+    command, and the folder is compared as text: no link is followed. Windows
+    and macOS keep the strict rule: a second install there is a second
+    install, not an update.
+    """
+    if _names_launcher(mechanism, held, launcher):
+        return True
+    if not isinstance(mechanism, (XdgAutostart, SystemdUserUnit)):
+        return False
+    program = PurePosixPath(_program(mechanism, held))
+    return (
+        program.parent == PurePosixPath(launcher).parent
+        and RELEASE_APPIMAGE.fullmatch(program.name) is not None
+    )
 
 
 # --- on, off, and what the OS says -------------------------------------------------
@@ -752,12 +847,24 @@ def status(mechanism=None, command=None, environ: dict | None = None, platform: 
     there is nothing to start, that is the empty string, and `refused` says
     why when that is known. `environ` and `platform` are for a test; the app
     passes neither.
+
+    `elsewhere` asks the strict question - does the entry name the launcher
+    that is running? - and not `_is_ours`: an older AppImage in this folder
+    that the start failed to rewrite still starts the older file. A clone has
+    no launcher to compare with and is never elsewhere (TASK-119).
     """
+    launcher = (os.environ if environ is None else environ).get(LAUNCHER_VARIABLE)
     mechanism = mechanism or default_mechanism()
     stops = bool(getattr(mechanism, "stops_when_switched_off", False))
+
+    def on(where, registered, stops_now) -> Entry:
+        elsewhere = bool(launcher) and not _names_launcher(where, registered, launcher)
+        return Entry(where=where.where, command=registered, on=True, stops_now=stops_now,
+                     elsewhere=elsewhere)
+
     registered = mechanism.read()
     if registered is not None:
-        return Entry(where=mechanism.where, command=registered, on=True, stops_now=stops)
+        return on(mechanism, registered, stops)
     if isinstance(mechanism, SystemdUserUnit):
         # A desktop file the unit did not take over - one naming another
         # launcher path, or one a refused migration left - still starts
@@ -765,7 +872,7 @@ def status(mechanism=None, command=None, environ: dict | None = None, platform: 
         # removes it, switching on replaces it.
         legacy = mechanism.legacy.read()
         if legacy is not None:
-            return Entry(where=mechanism.legacy.where, command=legacy, on=True)
+            return on(mechanism.legacy, legacy, False)
     command = command or _start_command(environ, platform)
     return Entry(
         where=mechanism.where,
@@ -798,12 +905,22 @@ def enable(mechanism=None, command=None, environ: dict | None = None, platform: 
     A LaunchAgent loaded there would have RunAtLoad start a launcher that
     finds nothing serving and starts a second MyScribe (TASK-112.05 review).
     The Settings switch, whose app is the one serving, asks `load_now()`.
+
+    A translocated Mac copy is refused twice over (ADR-026 Must Not):
+    `start_command()` names nothing for it, so `refusal()` says why, and a
+    command handed in that names a translocated path anyway is refused too.
+    Both raise `Translocated`, a `NothingToStart`, which Settings answers
+    with a 409 and nothing is written.
     """
     mechanism = mechanism or default_mechanism()
     command = command or _start_command(environ, platform)
     if not command:
-        raise NothingToStart(_refusal(environ, platform)
-                             or "nothing on this machine is known to start MyScribe at login")
+        why = _refusal(environ, platform)
+        if why:  # the one refusal today is App Translocation
+            raise Translocated(why)
+        raise NothingToStart("nothing on this machine is known to start MyScribe at login")
+    if any(translocated(str(word)) for word in command):
+        raise Translocated(TRANSLOCATED)
     mechanism.write(command)
     return Entry(where=mechanism.where, command=mechanism.render(command), on=True,
                  stops_now=bool(getattr(mechanism, "stops_when_switched_off", False)))
@@ -833,7 +950,9 @@ def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     * only a process the launcher started rewrites, so a clone on the same
       machine cannot point a release's entry at its start script;
     * only an entry that already names this same launcher, so a second
-      install does not take over somebody else's.
+      install does not take over somebody else's - or, on Linux, one that
+      starts a release AppImage from the running AppImage's own folder: an
+      update there is a new file beside the old one (`_is_ours`, TASK-119).
     """
     environ = os.environ if environ is None else environ
     launcher = environ.get(LAUNCHER_VARIABLE)
@@ -843,15 +962,8 @@ def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     registered = mechanism.read()
     if registered is None:
         return None
-    if isinstance(mechanism, LaunchAgent):
-        if not mechanism.names(launcher):
-            return None
-    else:
-        named, held = mechanism.render((launcher,)), registered
-        if isinstance(mechanism, WindowsRun):  # a path there is the same path in any case
-            named, held = named.casefold(), held.casefold()
-        if named not in held:
-            return None
+    if not _is_ours(mechanism, registered, launcher):
+        return None
     command = command or start_command(environ)
     if not command:
         return None
@@ -874,9 +986,10 @@ def migrate(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     next start writes and enables the unit and removes the file; a unit that
     is already on only loses the leftover file. Returns the unit's entry when
     anything moved, None when nothing did. The same guards as `refresh()`:
-    only a process the launcher started, only a desktop file that names this
-    same launcher, and a file the desktop was told to ignore stays off with
-    no unit beside it.
+    only a process the launcher started, only a desktop file that is this
+    install's (`_is_ours`: this same launcher, or a release AppImage in its
+    folder), and a file the desktop was told to ignore stays off with no unit
+    beside it.
     """
     environ = os.environ if environ is None else environ
     launcher = environ.get(LAUNCHER_VARIABLE)
@@ -886,7 +999,7 @@ def migrate(mechanism=None, command=None, environ: dict | None = None) -> Entry 
     if not isinstance(mechanism, SystemdUserUnit):
         return None
     held = mechanism.legacy.read()
-    if held is None or mechanism.legacy.render((launcher,)) not in held:
+    if held is None or not _is_ours(mechanism.legacy, held, launcher):
         return None
     registered = mechanism.read()
     if registered is not None:
