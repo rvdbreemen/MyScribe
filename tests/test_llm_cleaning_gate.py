@@ -437,6 +437,12 @@ def test_a_verbatim_copy_is_stored_but_not_published(conn, media, monkeypatch):
     assert any("nothing was cleaned" in reason for reason in verdict["reasons"]), verdict["reasons"]
 
 
+WIDE, NARROW = 220, 110
+"""Four and two of `seed_long_run`'s segments a part (54 tokens each since
+TASK-124 counted the digits of `word07` and `[0:05]`; these were 100 and 60
+when a segment cost about 25), so twelve segments still cut 3 parts and 6."""
+
+
 def naming(name: str):
     """A cleaner that makes a real change at ratio 1.0 - the cluster label
     becomes `name` - so a reading shows whose parts it was built from."""
@@ -469,9 +475,9 @@ def test_a_rerun_publishes_its_own_parts_not_another_models_newer_ones(conn, mon
     register(monkeypatch, cloud)
     register(monkeypatch, local)
     wide = dict(media_id=media_id, kind="cleanup", provider_name="cloud", model="cloud-1",
-                budget_tokens=100)
+                budget_tokens=WIDE)
     narrow = dict(media_id=media_id, kind="cleanup", provider_name="local", model="local-1",
-                  budget_tokens=60)
+                  budget_tokens=NARROW)
     assert (
         len(tasks.plan_task(conn, **narrow).chunks) > len(tasks.plan_task(conn, **wide).chunks) > 1
     ), "the test needs one run cut two ways, the second into more parts"
@@ -517,7 +523,7 @@ def test_a_rerun_asks_again_for_the_parts_of_a_refused_reading(conn, monkeypatch
     media_id = seed_media(conn, title="Long one")
     seed_long_run(conn, media_id, n_segments=12)
     wide = dict(media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1",
-                budget_tokens=100)
+                budget_tokens=WIDE)
     state = {"copy": True, "first_line": None}
     provider, calls = fake_provider(_cleaner_that_copies_the_first_part(state))
     register(monkeypatch, provider)
@@ -548,7 +554,7 @@ def test_a_rerun_still_reuses_the_parts_of_a_published_reading(conn, monkeypatch
     media_id = seed_media(conn, title="Long one")
     seed_long_run(conn, media_id, n_segments=12)
     wide = dict(media_id=media_id, kind="cleanup", provider_name="fake", model="fake-1",
-                budget_tokens=100)
+                budget_tokens=WIDE)
     provider, calls = fake_provider(naming("Clean"))
     register(monkeypatch, provider)
 

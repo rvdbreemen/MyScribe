@@ -1888,6 +1888,67 @@
       }
     },
     {
+      "id": "ADR-031",
+      "title": "Ollama is asked never to truncate, and the token estimate is calibrated against measured tokenizer counts",
+      "path": "ADR-031-ollama-is-asked-never-to-truncate-and-the-token-estimate-is-calibrated-against-measured-tokenizer-counts.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A, proposed by the agent.",
+      "topics": [
+        "chunking",
+        "context-window",
+        "ollama"
+      ],
+      "aliases": [
+        "estimate_tokens",
+        "halving signature",
+        "truncate"
+      ],
+      "components": [
+        "scribe/llm/chunking.py",
+        "scribe/llm/ollama.py"
+      ],
+      "symbols": [
+        "CONTEXT_REFUSAL",
+        "estimate_tokens",
+        "halved_prompt_tokens"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Every Ollama /api/chat body carries \"truncate\": false.",
+          "An HTTP 400 carrying the daemon's context refusal (CONTEXTREFUSAL) is ContextTooLong.",
+          "A promptevalcount equal to halvedprompttokens(window) is ContextTooLong, with the window this call asked for.",
+          "estimatetokens prices a run of letters at three characters a token, every other character at one token, and each non-blank line at one more.",
+          "The estimate is at least the measured qwen3.5:4b count of the test fixture; a new tokenizer measurement that beats it changes the estimate, not the test."
+        ],
+        "must_not": [
+          "Send shift; it was measured to change nothing.",
+          "Store an answer whose prompt count matches the halving signature.",
+          "Ask the daemon for a token count while planning."
+        ],
+        "exceptions": [
+          "A prompt whose real count is exactly the halving signature is refused too; one count in half a window is the accepted price."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testthebodyasksthedaemonnevertotruncate, ::testadaemonthatrefusestotruncateiscontexttoolong, ::testapromptthedaemonhalvedisrefused, ::testthehalvingsignatureisthewindowthedaemonreallyran, ::testacountnexttothesign...",
+          "tests/testllmchunking.py::testestimatetokensispessimisticatthreelettersatoken, ::testtheestimateisnotbelowwhatthelocaltokenizercounted, ::testatimestampandaspeakerlabelcostatokenacharacter."
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
       "id": "ADR-032",
       "title": "Every shutdown the app lives through ends the running runner, and only a requested stop requeues",
       "path": "ADR-032-every-shutdown-the-app-lives-through-ends-the-running-runner-and-only-a-requested-stop-requeues.md",
@@ -1998,6 +2059,120 @@
           "scribe/**",
           "scribe/mcp_server.py"
         ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-034",
+      "title": "Ollama answers are constrained by the kind's JSON schema",
+      "path": "ADR-034-ollama-answers-are-constrained-by-the-kind-s-json-schema.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: B.",
+      "topics": [
+        "json-schema",
+        "ollama",
+        "structured-output"
+      ],
+      "aliases": [
+        "ollama format",
+        "timestamps as text"
+      ],
+      "components": [
+        "scribe/llm/ollama.py",
+        "scribe/llm/tasks.py"
+      ],
+      "symbols": [
+        "CLOCK_TEXT",
+        "OllamaProvider._body",
+        "Provider.schema_clock_as_text"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Send format as the bare JSON Schema whenever ChatRequest.jsonschema is set, and keep it on the ADR-029 retry.",
+          "Give a provider with schemaclockastext every timestamp field as text bound by CLOCKTEXT, plus null exactly where the field is nullable.",
+          "Write the pattern with [0-9]."
+        ],
+        "must_not": [
+          "Offer a number type for a timestamp to such a provider.",
+          "Send format on a note or a part, which are prose.",
+          "Change the schema a cloud provider receives."
+        ],
+        "exceptions": [
+          "None."
+        ],
+        "verification": [
+          "tests/testllmollama.py::testthekindsschemagoesoutasformatsothedaemonenforcesit",
+          "tests/testllmollama.py::testtheschemaridesalongwhenananswerlosttothinkingisaskedagain",
+          "tests/testllmtasks.py::testagrammarproviderisneverofferedanumberforatimestamp",
+          "tests/testllmtasks.py::testthecloudschemaisunchangedbytheclockmarker",
+          "tests/testllmtasks.py::testthecombinecarriesthetexttimestampsandthenotesnoschema"
+        ]
+      },
+      "scope": {
+        "path_globs": []
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
+      "id": "ADR-035",
+      "title": "On a local model, blog's combine asks for no reasoning",
+      "path": "ADR-035-on-a-local-model-blog-s-combine-asks-for-no-reasoning.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: B.",
+      "topics": [
+        "map-reduce",
+        "ollama",
+        "reasoning"
+      ],
+      "aliases": [
+        "blog combine think false",
+        "combine reasoning off"
+      ],
+      "components": [
+        "scribe/llm/tasks.py"
+      ],
+      "symbols": [
+        "TaskPlan.provider_is_local",
+        "TaskSpec.combine_reasoning_off"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Send reasoningoff on a combinereasoningoff kind's combine call only when the provider is local.",
+          "Keep the notes and a one-call answer at the provider's default."
+        ],
+        "must_not": [
+          "Send the combine hint to a cloud provider.",
+          "Read locality from a provider name instead of islocal."
+        ],
+        "exceptions": [
+          "A kind with reasoningoff (cleanup) sends the hint on every call, on every provider, as ADR-020 decides."
+        ],
+        "verification": [
+          "tests/testllmtasks.py::testablogasksonlyitscombinenottoreasonandonlyonalocalmodel"
+        ]
+      },
+      "scope": {
+        "path_globs": []
       },
       "metadata": {
         "binding": false,
@@ -2479,6 +2654,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-020",
+      "target": "ADR-035",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-021",
       "target": "ADR-015",
       "type": "related",
@@ -2617,6 +2798,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-029",
+      "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-030",
       "target": "ADR-020",
       "type": "related",
@@ -2625,6 +2812,18 @@
     {
       "source": "ADR-030",
       "target": "ADR-023",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-030",
+      "target": "ADR-035",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-031",
+      "target": "ADR-029",
       "type": "related",
       "resolved": true
     },
@@ -2649,6 +2848,36 @@
     {
       "source": "ADR-033",
       "target": "ADR-025",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-034",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-034",
+      "target": "ADR-031",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-020",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-029",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-035",
+      "target": "ADR-030",
       "type": "related",
       "resolved": true
     }

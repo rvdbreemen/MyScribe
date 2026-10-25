@@ -119,6 +119,55 @@
   weights and never mentioned the larger ones *Max* loads. It now checks the
   tier you chose, *Turbo* when you never chose one, and its fix names the
   exact download (TASK-107.04).
+- **Local AI reads all of a long recording, or says it cannot.**
+  MyScribe under-counted how much of a model's window a transcript fills: each
+  timestamp and speaker name costs more than it allowed for. So a local model
+  could get a part of a long recording too big for its window, read only the
+  second half, and report the job as done. MyScribe now uses a deliberately
+  pessimistic estimate, calibrated on token counts measured with qwen3.5 and
+  gemma4 on Dutch text. Text written without spaces, such as Chinese or
+  Japanese, can still be under-counted. It asks Ollama to refuse a prompt
+  that does not fit instead of shortening it, and it refuses one that was
+  shortened anyway. A
+  note that stopped because the window was full now says so, instead of
+  blaming the answer limit; a cloud answer that stopped before its limit says
+  that too. Long recordings are split into a few more parts than before,
+  locally and for cleanup in the cloud (TASK-124).
+- **Notes on a long recording for a blog post, minutes, action items and
+  chapters are asked for in the model's own words.** A recording too long
+  for one call is read in parts, with notes taken on each. For these four
+  tasks, local models wrote a part's transcript back line by line until they
+  ran out of room, and the job failed. Those notes are now asked as at most
+  30 points in the model's own words, each with its timestamp (for minutes
+  and action items also the speaker), quoting only a few words where they
+  matter. This is a request, not a limit: a model can still write more.
+  Such a note that runs out of room with most of its lines copied from the
+  transcript now says so. Notes for the other tasks are asked as before.
+  The shared notes prompt changed, so notes stored by an earlier version
+  are not reused: the next run of any AI task on a long recording (summary, minutes,
+  blog and the others; chat is not affected) asks every part again. Earlier
+  results are kept (TASK-124).
+- **A local AI answer comes back in the shape it was asked for.** With
+  Ollama, every AI task that answers in a fixed shape (summary, action items,
+  chapters, minutes, blog post, who is speaking, labels) now sends that shape
+  along, and Ollama lets the model write only JSON of that shape. Minutes on a
+  long recording failed when the model wrote a timestamp without quotes.
+  Timestamps are asked for as text, such as `2:16:29`, and an action item may
+  still come back without one. Cloud providers are asked as before (TASK-124,
+  ADR-034).
+- **A local model writes a blog post on a long recording without thinking
+  first.** The last step, which writes the post from the notes on each part,
+  asks a local model (Ollama) not to think first, as cleanup does. With
+  qwen3.5:4b that step had stopped at its answer limit after thinking once in
+  two runs; with the request it finished in three runs, all on the same notes.
+  Cloud providers are asked as before; OpenRouter keeps the thinking limit
+  below. The notes and a recording short enough for one step are asked as
+  before (TASK-124, ADR-035).
+- **Known limit: a small local model on a long recording.** On a 4B model
+  such as qwen3.5:4b, minutes and action items may come back without
+  timestamps, and chapters can stop at the model's note budget. qwen3.5:9b
+  gave minutes with real timestamps (measured on one 2h28m Dutch recording)
+  (TASK-124).
 - **Quit no longer costs you the running job.** Quit in the MyScribe window,
   Ctrl+C in the MyScribe launcher's console and a stop signal to the launcher
   (on macOS and Linux) now stop MyScribe the way the Stop button in Settings

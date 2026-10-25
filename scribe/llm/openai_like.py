@@ -184,8 +184,7 @@ class OpenAILikeProvider(base.Provider):
     max_tokens_field: str = "max_tokens"
     # `_body` turns `ChatRequest.json_schema` into `response_format`, which both
     # endpoints take, so a caller with a schema gets constrained decoding here.
-    # OllamaProvider leaves this False: its native `/api/chat` has a `format`
-    # field that would do the same job, and this app's body does not send it.
+    # OllamaProvider sends the same schema as `/api/chat`'s `format` (ADR-034).
     supports_json_schema = True
 
     def __init__(

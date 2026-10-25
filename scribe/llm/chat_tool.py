@@ -97,8 +97,12 @@ HISTORY_CHARS = 1000
 """How much of one earlier turn is replayed. A long answer clipped in the middle
 still carries what it was about, and `tasks.clip` says how much it dropped."""
 
-MARKER_TOKENS = 1
+MARKER_TOKENS = estimate_tokens(GAP_MARKER)
 """What a `…` line costs, charged per chosen segment plus one during the fill.
+
+Read off the estimate rather than written down: it was 1 until TASK-124 made
+the line break a token of its own, and a constant would have kept saying 1
+while the rendered context ran a token over its budget per stretch.
 
 There is at most one marker per contiguous stretch plus one at the front, and
 there are never more stretches than segments, so charging this per segment is a
