@@ -35,7 +35,8 @@ the web process (ADR-001):
   already being watched - all three at the form, where a mistake can be
   named, rather than in a thread where it would be a log line.
 * **Start at login.** One per-user login entry - a value under this user's own
-  Run key, a launchd agent or an XDG autostart file - written and read back by
+  Run key, a launchd agent, a systemd user unit or an XDG autostart file -
+  written and read back by
   `scribe.autostart`. Nothing about it is stored here: the OS is asked on every
   load, so an entry removed by hand reads as off. It is the counterpart to the
   watch folders above, which do nothing at all while the app is not running.

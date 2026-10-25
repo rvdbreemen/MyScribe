@@ -14,12 +14,16 @@ nothing that needs an administrator:
   is the thing R3 declined. A value is one string, visible in regedit, and
   gone when it is deleted.
 * **macOS** - a launchd agent in this user's own `Library`, with `RunAtLoad`.
-* **Linux** - a desktop entry in this user's own config directory, as the
-  freedesktop Autostart spec describes.
+* **Linux** - a systemd user unit in this user's own config directory where a
+  systemd user session runs, so a crash is restarted and the output lands in
+  the journal (ADR-026). Where none runs, and for a clone, a desktop entry in
+  the same directory, as the freedesktop Autostart spec describes.
 
-Only the Windows one has ever been run against its real OS API. The other two
-are built from Apple's launchd keys and the freedesktop specs and have been
-honoured by no real login anywhere; every place that mentions them says so.
+The Windows one has been run against its real OS API, and the user unit
+against a real systemd 255 user manager in WSL (TASK-112.06) - not a
+graphical desktop login. The LaunchAgent and the desktop entry are built from
+Apple's launchd keys and the freedesktop specs and have been honoured by no
+real login anywhere; every place that mentions them says so.
 
 `status()` asks the OS every time. Nothing is remembered: a user who deleted
 the value or the file gets a switch that says off, which a stored row could
@@ -37,6 +41,7 @@ from __future__ import annotations
 import os
 import plistlib
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -57,6 +62,17 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 # imported: that script is not shipped with the app.
 LABEL = "io.github.rvdbreemen.myscribe"
 DESKTOP_NAME = "myscribe.desktop"
+UNIT_NAME = "myscribe.service"
+# The launcher's `APP_DIED`: the one exit that means the app died under it
+# (TASK-112.02). Spelled again rather than imported, like LABEL: the launcher
+# is not shipped inside the app. A test reads the launcher's own value.
+APP_DIED = 70
+# Five starts in five minutes, then systemd stops trying (TASK-112.06 AC #4).
+START_LIMIT_BURST = 5
+START_LIMIT_INTERVAL_SEC = 300
+# Long enough for a user manager that is slow to answer, short enough that a
+# Settings page waiting on it still loads.
+SYSTEMCTL_TIMEOUT = 15
 
 
 class NothingToStart(RuntimeError):
@@ -269,12 +285,207 @@ class XdgAutostart:
         self.path.unlink(missing_ok=True)
 
 
-def default_mechanism(platform: str = sys.platform, environ: dict | None = None):
-    """The mechanism this OS uses, pointed at this user's own profile."""
+def systemctl(args) -> subprocess.CompletedProcess:
+    """`systemctl --user ...`: this user's own manager, never the machine's."""
+    return subprocess.run(
+        ["systemctl", "--user", *[str(arg) for arg in args]],
+        capture_output=True, text=True, timeout=SYSTEMCTL_TIMEOUT, check=False,
+    )
+
+
+def _unit_word(raw) -> str:
+    """One word of a unit file's command line (systemd.service, "Command
+    lines"). `%` is a specifier and `$` a variable wherever they stand, so
+    each is doubled; a backslash and a double quote are C-style escapes; a
+    word with whitespace or a quote in it is only one word inside quotes."""
+    text = str(raw)
+    quote = not text or any(char in text for char in " \t\"'\\;")
+    text = text.replace("%", "%%").replace("$", "$$")
+    text = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"' if quote else text
+
+
+def _unit_assignment(name: str, value: str) -> str:
+    """One `Environment=` assignment, always quoted. No `$` expansion happens
+    there, but specifiers and C escapes do."""
+    text = f"{name}={value}".replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+class SystemdUserUnit:
+    """A systemd user unit in this user's own config directory.
+
+    What the desktop entry cannot do: the user manager restarts a crash and
+    keeps the output in the journal (`journalctl --user -u myscribe`). It is
+    run against a real user manager only in WSL, never at a desktop login.
+
+    * `Restart=no` with `RestartForceExitStatus=` the launcher's `APP_DIED`:
+      the only restart is for the one exit that means the app died. A clean
+      stop, another instance already serving and a configuration problem all
+      end with 0, and a restart cannot plug a drive in.
+    * Five starts in five minutes and the unit stays failed.
+    * `KillMode=mixed`: a stop sends SIGTERM to the launcher alone, whose own
+      stop takes the app's process group down; what is left after the
+      timeout is killed.
+    * `WantedBy=default.target`, reached at any first login, a desktop or
+      not. MyScribe is a server and needs no display.
+    * An `XDG_DATA_HOME` set at registration is written in, because the
+      manager does not read `.profile`: without it the background server
+      would open another library than a start by hand (ADR-026's Must).
+
+    Switching it on does not start it (no `--now`): the app that writes it is
+    already the one running. `legacy` is the desktop entry this replaces -
+    written by an earlier version, or by this one without a user session -
+    and on and off both take it away, so one login never starts two.
+    `run` is injectable so a test can stand in for `systemctl`.
+    """
+
+    def __init__(self, folder: Path | None = None, name: str = UNIT_NAME, environ: dict | None = None,
+                 run=None, legacy: "XdgAutostart | None" = None):
+        environ = os.environ if environ is None else environ
+        if folder is not None:
+            self.folder = Path(folder)
+        else:
+            config = environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+            self.folder = Path(config) / "systemd" / "user"
+        self.name = name
+        self.environ = environ
+        self.run = run or systemctl
+        self.legacy = legacy if legacy is not None else XdgAutostart(environ=environ)
+
+    @property
+    def path(self) -> Path:
+        return self.folder / self.name
+
+    @property
+    def where(self) -> str:
+        return str(self.path)
+
+    def render(self, command) -> str:
+        return " ".join(_unit_word(part) for part in command)
+
+    def _ask(self, *args) -> subprocess.CompletedProcess:
+        try:
+            return self.run(list(args))
+        except subprocess.TimeoutExpired as slow:
+            raise OSError(f"systemctl --user {' '.join(args)} did not answer in {slow.timeout} s") from slow
+
+    def _must(self, *args) -> None:
+        done = self._ask(*args)
+        if done.returncode != 0:
+            said = (done.stderr or done.stdout or "").strip() or f"exit code {done.returncode}"
+            raise OSError(f"systemctl --user {' '.join(args)}: {said}")
+
+    def text(self, command) -> str:
+        service = [
+            "Type=simple",
+            f"ExecStart={self.render(command)}",
+        ]
+        data_home = self.environ.get("XDG_DATA_HOME")
+        if data_home:
+            service.append(f"Environment={_unit_assignment('XDG_DATA_HOME', data_home)}")
+        service += [
+            "Restart=no",
+            f"RestartForceExitStatus={APP_DIED}",
+            "RestartSec=5",
+            "KillMode=mixed",
+        ]
+        return "\n".join([
+            f"# Written by {APP_NAME}'s Start at login switch. Switch it off there, or:",
+            f"#   systemctl --user disable {self.name}",
+            "[Unit]",
+            f"Description={APP_NAME}",
+            f"StartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}",
+            f"StartLimitBurst={START_LIMIT_BURST}",
+            "",
+            "[Service]",
+            *service,
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            "",
+        ])
+
+    def read(self) -> str | None:
+        """The `ExecStart=` this unit runs, or None when the manager will not
+        start it at login: no file, or a unit somebody disabled with
+        `systemctl --user disable`, which leaves the file where it was."""
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        command = None
+        for line in text.splitlines():
+            if line.startswith("ExecStart="):
+                command = line[len("ExecStart="):]
+        if command is None:
+            return None
+        answer = self._ask("is-enabled", self.name)
+        return command if answer.returncode == 0 and answer.stdout.strip() == "enabled" else None
+
+    def write(self, command) -> None:
+        """Write, reload, enable, and only then take the desktop file away.
+
+        A manager that refuses leaves no unit file this write created: a
+        disabled unit beside a desktop file that still starts MyScribe is a
+        file nobody asked for. A unit that was already there keeps its file,
+        so a failed rewrite does not switch an entry that was on off.
+        """
+        self.folder.mkdir(parents=True, exist_ok=True)
+        created = not self.path.exists()
+        self.path.write_text(self.text(command), encoding="utf-8")
+        try:
+            self._must("daemon-reload")
+            self._must("enable", self.name)
+        except OSError:
+            if created:
+                self.path.unlink(missing_ok=True)
+            raise
+        self.legacy.remove()
+
+    def remove(self) -> None:
+        self.legacy.remove()
+        if not self.path.exists():
+            return
+        self._must("disable", self.name)
+        self.path.unlink(missing_ok=True)
+        self._must("daemon-reload")
+
+
+def systemd_user_session(environ: dict | None = None, which=shutil.which) -> bool:
+    """Whether this user has a systemd user manager to register with.
+
+    The manager's own socket, `$XDG_RUNTIME_DIR/systemd/private`, and a
+    `systemctl` to talk to it: two cheap looks, and no process started,
+    because Settings asks on every load.
+    """
+    environ = os.environ if environ is None else environ
+    runtime = environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not (Path(runtime) / "systemd" / "private").exists():
+        return False
+    return which("systemctl", path=environ.get("PATH")) is not None
+
+
+def default_mechanism(platform: str = sys.platform, environ: dict | None = None, session: bool | None = None):
+    """The mechanism this OS uses, pointed at this user's own profile.
+
+    On Linux, a release with a systemd user session gets a user unit and
+    everything else the desktop entry (ADR-026). A clone is the everything
+    else: its command is `start.sh --detached`, which starts the app in the
+    background and exits 0, and a unit reads that exit as the service ending
+    and stops what is left in it - the app. `session` is injectable; None
+    asks this machine.
+    """
     if platform == "win32":
         return WindowsRun()
     if platform == "darwin":
         return LaunchAgent()
+    environ = os.environ if environ is None else environ
+    if environ.get(LAUNCHER_VARIABLE):
+        if session is None:
+            session = systemd_user_session(environ)
+        if session:
+            return SystemdUserUnit(environ=environ)
     return XdgAutostart(environ=environ)
 
 
@@ -354,7 +565,8 @@ def status(mechanism=None, command=None) -> Entry:
     """What the OS holds right now.
 
     An entry that is there is reported exactly as the OS spells it, whatever
-    wrote it. An entry that is not there reports the command switching it on
+    wrote it - for the user unit, that includes a desktop file it replaces
+    that the desktop still starts. An entry that is not there reports the command switching it on
     would write, so the card can show that before anything is written; where
     there is nothing to start, that is the empty string.
     """
@@ -362,6 +574,14 @@ def status(mechanism=None, command=None) -> Entry:
     registered = mechanism.read()
     if registered is not None:
         return Entry(where=mechanism.where, command=registered, on=True)
+    if isinstance(mechanism, SystemdUserUnit):
+        # A desktop file the unit did not take over - one naming another
+        # launcher path, or one a refused migration left - still starts
+        # something at login. The card says so, and where; switching off
+        # removes it, switching on replaces it.
+        legacy = mechanism.legacy.read()
+        if legacy is not None:
+            return Entry(where=mechanism.legacy.where, command=legacy, on=True)
     command = command or start_command()
     return Entry(
         where=mechanism.where,
@@ -408,6 +628,39 @@ def refresh(mechanism=None, command=None, environ: dict | None = None) -> Entry 
         return None
     command = command or start_command(environ)
     if not command or mechanism.render(command) == registered:
+        return None
+    mechanism.write(command)
+    return Entry(where=mechanism.where, command=mechanism.render(command), on=True)
+
+
+def migrate(mechanism=None, command=None, environ: dict | None = None) -> Entry | None:
+    """Move this launcher's desktop entry into the user unit, so one login
+    starts one MyScribe (TASK-112.06).
+
+    Up to 0.9.1 every Linux entry was a desktop file. With a user session the
+    next start writes and enables the unit and removes the file; a unit that
+    is already on only loses the leftover file. Returns the unit's entry when
+    anything moved, None when nothing did. The same guards as `refresh()`:
+    only a process the launcher started, only a desktop file that names this
+    same launcher, and a file the desktop was told to ignore stays off with
+    no unit beside it.
+    """
+    environ = os.environ if environ is None else environ
+    launcher = environ.get(LAUNCHER_VARIABLE)
+    if not launcher:
+        return None
+    mechanism = mechanism or default_mechanism(environ=environ)
+    if not isinstance(mechanism, SystemdUserUnit):
+        return None
+    held = mechanism.legacy.read()
+    if held is None or mechanism.legacy.render((launcher,)) not in held:
+        return None
+    registered = mechanism.read()
+    if registered is not None:
+        mechanism.legacy.remove()
+        return Entry(where=mechanism.where, command=registered, on=True)
+    command = command or start_command(environ)
+    if not command:
         return None
     mechanism.write(command)
     return Entry(where=mechanism.where, command=mechanism.render(command), on=True)
