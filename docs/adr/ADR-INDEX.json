@@ -2188,7 +2188,7 @@
       "title": "The library folder is asked apart from the engine home, as a request the launcher settles and the engine adopts",
       "path": "ADR-036-the-library-folder-is-asked-apart-from-the-engine-home-as-a-request-the-launcher-settles-and-the-engine-adopts.md",
       "format": "madr",
-      "status": "Proposed",
+      "status": "Accepted",
       "date": "2026-10-25",
       "decision_summary": "Chosen option: a request in the pointer file, the only one that gives Windows a page and keeps adoption in the engine.",
       "topics": [

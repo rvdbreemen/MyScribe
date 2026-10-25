@@ -1,7 +1,7 @@
 ---
 id: "ADR-036"
 title: "The library folder is asked apart from the engine home, as a request the launcher settles and the engine adopts"
-status: "Proposed"
+status: "Accepted"
 date: "2026-10-25"
 binding: false
 gate: null
@@ -35,7 +35,7 @@ format: "madr"
 
 ## Status
 
-Proposed, 2026-10-25.
+Accepted, 2026-10-25.
 
 ## Status History
 
@@ -46,6 +46,11 @@ status_history:
     changed_by: Claude (agent, session 2026-10-25)
     reason: Initial proposal
     changed_via: adr-kit
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
+    reason: Robert accepted ADR-036 in the session of 2026-10-25
+    changed_via: adr-kit lifecycle
 ```
 
 ## Context and Problem Statement
