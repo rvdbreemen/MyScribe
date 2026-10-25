@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 
 import pytest
@@ -840,7 +841,10 @@ def test_a_migration_that_fails_half_way_leaves_nothing_and_the_next_start_compl
         with pytest.raises(sqlite3.OperationalError):
             db.migrate(conn)
         assert conn.execute("PRAGMA user_version").fetchone()[0] == last - 1
-        assert "watch_existing" not in {r[0] for r in conn.execute(
+        # The table the last step creates, read from the step itself, so the
+        # test follows the ladder instead of naming one rung of it.
+        created = re.search(r"CREATE TABLE (\w+)", db._MIGRATIONS[last - 1]).group(1)
+        assert created not in {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}, "half a migration stayed"
 
         monkeypatch.undo()

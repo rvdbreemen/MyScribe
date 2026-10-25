@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Sequence
 
 import jinja2
-from pydantic import BaseModel, BeforeValidator, ValidationError
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
 from scribe import db, glossary, llm, render
 from scribe.exports import doc as docs
@@ -67,9 +67,10 @@ from scribe.llm import base, chunking, ollama, privacy
 from scribe.llm.base import ChatRequest, ChatResponse
 from scribe.llm.chunking import Chunk, estimate_tokens
 
-PROMPT_VERSION = "3"
+PROMPT_VERSION = "5"
 """Bumped whenever a prompt changes - a template in `prompts/`, SYSTEM,
-JSON_SYSTEM, a kind's goal or the line `source_label` writes - because it is
+JSON_SYSTEM, LANGUAGE_SYSTEM, a kind's goal or note rule (`TaskSpec.note_rule`)
+or the line `source_label` writes - because it is
 part of the stored key: answers to an edited question are not answers to the
 old one, and a panel showing both without saying so would be comparing two
 different things. tests/test_llm_tasks.py hashes all of it and fails on a
@@ -133,8 +134,24 @@ def _optional_clock_seconds(value: Any) -> float | None:
     return _clock_seconds(value)
 
 
-Seconds = Annotated[float, BeforeValidator(_clock_seconds)]
-OptionalSeconds = Annotated[float | None, BeforeValidator(_optional_clock_seconds)]
+CLOCK_FIELD = "x-myscribe-clock"
+"""The mark a timestamp field carries in the JSON Schema pydantic writes, so
+`strict_json_schema` can find it. Never sent: the rewrite always removes it."""
+
+CLOCK_TEXT = {"type": "string", "pattern": r"^([0-9]+(\.[0-9]+)?|[0-9]+(:[0-5][0-9]){1,2})$"}
+"""A timestamp as text - `83`, `83.0`, `1:23`, `2:16:29` - for a provider whose
+schema is a grammar (`Provider.schema_clock_as_text`, ADR-034). `[0-9]`, not
+`\\d`: measured 2026-10-25 on Ollama 0.40.8, with `\\d` the daemon let
+`"{2:16:10}"` through and with `[0-9]` it did not."""
+
+Seconds = Annotated[
+    float, BeforeValidator(_clock_seconds), Field(json_schema_extra={CLOCK_FIELD: True})
+]
+OptionalSeconds = Annotated[
+    float | None,
+    BeforeValidator(_optional_clock_seconds),
+    Field(json_schema_extra={CLOCK_FIELD: True}),
+]
 
 
 # Pydantic ignores unknown keys by default, and that default is wanted here: a
@@ -303,6 +320,19 @@ class TaskSpec:
     goal: str
     """One line, handed to the chunk-level prompt so the notes taken from an
     excerpt are notes for *this* task rather than a generic summary."""
+    note_rule: str = ""
+    """How a note for this kind is written, added to the chunk prompt when set.
+    Empty for the kinds whose notes come back as notes. Set for `blog` by
+    TASK-124 (Robert's option A, 2026-10-25): on media 61 qwen3.5:4b and :9b
+    wrote the excerpt back line for line until the note budget ran out (jobs
+    430-432 on the 2026-10-24 library copy), so a blog note is asked as a bounded number of points in the
+    model's own words. Set for `minutes` by Robert's decision of 2026-10-25,
+    after job 433 (round-6 copy) wrote chunk 2 back line for line to the cap,
+    and for `action_items`, which shares that note path, after job 430 on the
+    round-7 copy did the same to chunk 0 (21 of 24 lines copied), and for
+    `chapters`, whose job 431 there copied 25 of 26. Not shared
+    through `map_chunk.md` itself, because `speakers` asks for 'the quote and
+    its time' and must keep its quotes."""
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     needs_prompt: bool = False
     with_speakers: chunking.Speakers = False
@@ -328,6 +358,21 @@ class TaskSpec:
     person and `speakers` writes names; the others have no recorded length
     failure. `effort: low` is used nowhere: on media 1 it dropped the [m:ss]
     stamps and the speaker labels."""
+    combine_reasoning_off: bool = False
+    """Ask the combine call alone not to reason, and only on a local model
+    (`base.Provider.is_local`, which today means Ollama) - the notes, a
+    recording short enough for one call and every cloud call keep the
+    provider's default. ADR-035. Set for `blog` by Robert's decisions of
+    2026-10-25 (TASK-124), after the A/B the line above asks for, on media 61
+    with qwen3.5:4b. Without the hint, one combine of
+    two finished (5057 tokens) and one stopped at the 6000-token cap after
+    16,866 characters of thinking. With it, three of three finished in
+    1599-1996 tokens with no thinking, 23-31 s each (round-6 library copy).
+    Those three shared one set of notes (jobs 431 and 432 reused job 430's,
+    prompt 2731 tokens) while each baseline had its own (3477 and 4334): one
+    input against two, not three independent runs. Measured on Ollama only,
+    which is why a cloud combine does not get it: on OpenRouter the hint would
+    replace ADR-030's reasoning limit, and that trade was never measured."""
     apply: Callable[[sqlite3.Connection, "TaskPlan", Any, int], dict] | None = None
     """What to do with the answer once it is stored, for the kinds that change
     something rather than only report.
@@ -361,6 +406,14 @@ TASKS: dict[str, TaskSpec] = {
         template="action_items",
         schema=ActionItems,
         goal="list everything somebody agreed to do, with who took it on and when it was said",
+        note_rule=(
+            "Write at most 30 notes. Each note is one thing somebody took on or was asked to do, "
+            "in your own words, written as `[m:ss] Name: point` - the moment it was said and who "
+            "took it on, as the excerpt names them. Never copy a line from the excerpt: a note "
+            "that repeats a line word for word is not a note. Where the exact words matter, such "
+            "as a promise or a deadline, quote only those few words, in quotation marks, inside "
+            "your own sentence."
+        ),
         with_speakers="names",
     ),
     "chapters": TaskSpec(
@@ -369,6 +422,11 @@ TASKS: dict[str, TaskSpec] = {
         template="chapters",
         schema=Chapters,
         goal="mark where the subject changes, with the time each new stretch starts",
+        note_rule=(
+            "Write at most 30 notes. Each note is one subject in your own words, starting with "
+            "the `[m:ss]` where talk of it begins. Never copy a line from the excerpt: a note "
+            "that repeats a line word for word is not a note."
+        ),
     ),
     "minutes": TaskSpec(
         kind="minutes",
@@ -376,6 +434,14 @@ TASKS: dict[str, TaskSpec] = {
         template="minutes",
         schema=Minutes,
         goal="write the minutes: what was discussed, what was decided, what was agreed to do",
+        note_rule=(
+            "Write at most 30 notes. Each note is one point in your own words, written as "
+            "`[m:ss] Name: point` - the moment it is about and who it is about, as the excerpt "
+            "names them - saying what was discussed, decided or agreed to do. Never copy a line "
+            "from the excerpt: a note that repeats a line word for word is not a note. Where the "
+            "exact words matter, such as a decision or a promise, quote only those few words, in "
+            "quotation marks, inside your own sentence."
+        ),
         with_speakers="names",
     ),
     "blog": TaskSpec(
@@ -383,10 +449,20 @@ TASKS: dict[str, TaskSpec] = {
         label="Blog post",
         template="blog",
         schema=Blog,
-        goal="gather the material a blog post about this recording would be written from",
+        goal=(
+            "gather what a blog post about this recording would be written from: the subjects, "
+            "and what was said about each, in your own words"
+        ),
+        note_rule=(
+            "Write at most 30 notes. Each note is one point in your own words, starting with the "
+            "`[m:ss]` of the moment it is about. Never copy a line from the excerpt: a note that "
+            "repeats a line word for word is not a note. Where the exact words matter, quote only "
+            "those few words, in quotation marks, inside your own sentence."
+        ),
         # The one kind whose answer is meant to be long: a post is prose, not a
         # list, and the floor above only buys the thinking that precedes it.
         max_output_tokens=6000,
+        combine_reasoning_off=True,
     ),
     "speakers": TaskSpec(
         kind="speakers",
@@ -770,6 +846,74 @@ def chunk_goal(spec: TaskSpec, custom_prompt: str | None = None) -> str:
     return spec.goal
 
 
+def chunk_prompt(
+    spec: TaskSpec,
+    *,
+    index: int,
+    count: int,
+    start: str,
+    end: str,
+    transcript: str,
+    note_question: str | None = None,
+) -> str:
+    """The note prompt for one excerpt: `map_chunk.md` with this kind's goal and
+    note rule. One place, so the job and anything measuring its prompt render
+    the same text. `index` is one-based: the model is reading, not indexing."""
+    return render_prompt(
+        chunking.MAP_REDUCE_PROMPTS["chunk"],
+        index=index,
+        count=count,
+        start=start,
+        end=end,
+        goal=chunk_goal(spec, note_question),
+        note_rule=spec.note_rule,
+        transcript=transcript,
+        speakers=spec.with_speakers,
+    )
+
+
+COPY_MIN_WORDS = 4
+"""A note line shorter than this ('Ja.', 'Precies.') says nothing about
+copying either way, so `copied_lines` does not count it."""
+
+_LEADING_MARK = re.compile(r"^\s*(?:[-*\u2022]\s*)?(?:\[\d+(?::\d{2}){1,2}\]\s*)?")
+
+
+def _bare_line(line: str) -> str:
+    return " ".join(_LEADING_MARK.sub("", line).split()).casefold()
+
+
+def copied_lines(note: str, transcript: str) -> tuple[int, int]:
+    """(copied, counted): how many of a note's lines are a transcript line
+    word for word, out of the lines long enough to tell.
+
+    A bullet, the `[m:ss]` stamp, spacing and case are ignored on both sides,
+    so a line written back with a dash in front is still a copy; a short
+    quoted phrase inside a sentence of the model's own is not. Jobs 430-432
+    (TASK-124): blog notes that were the excerpt written back, line for line.
+    """
+    lines = {_bare_line(line) for line in transcript.splitlines()}
+    counted = copied = 0
+    for line in note.splitlines():
+        bare = _bare_line(line)
+        if len(bare.split()) < COPY_MIN_WORDS:
+            continue
+        counted += 1
+        copied += bare in lines
+    return copied, counted
+
+
+def _copying(copied: int, counted: int) -> str:
+    """The clause a refused note adds when most of it was the excerpt itself."""
+    if counted and copied * 2 > counted:
+        return (
+            f" {copied} of its {counted} lines are lines of the excerpt copied word for word: "
+            "the model was writing the transcript back rather than taking notes, and a bigger "
+            "budget would only buy a longer copy."
+        )
+    return ""
+
+
 def source_label(title: str, duration: float, *, notes_from: int = 0) -> str:
     """The one line that tells the model what the text under it actually is."""
     if notes_from:
@@ -811,7 +955,7 @@ def user_prompt(
     )
 
 
-def strict_json_schema(schema: dict) -> dict:
+def strict_json_schema(schema: dict, *, clock_as_text: bool = False) -> dict:
     """A pydantic JSON Schema the structured-output endpoints will accept.
 
     Measured against the live API on 2026-09-03: `Chapters.model_json_schema()`
@@ -832,6 +976,11 @@ def strict_json_schema(schema: dict) -> dict:
       must supply the key and may answer null. `default` is dropped for the same
       reason - a default is a statement about a key that may be missing, and
       here none may be.
+
+    A timestamp field loses its `CLOCK_FIELD` mark either way. With
+    `clock_as_text` its type becomes `CLOCK_TEXT` (or null, where pydantic
+    allows null) instead of `number` (ADR-034): a grammar that constrains every
+    token let qwen3.5:4b start `2:16:10` as the number 2 and end it as `2.0`.
 
     The rewrite happens here rather than in the models because it is a property
     of the wire format, not of the data: `parse_answer` still validates with
@@ -856,6 +1005,21 @@ def strict_json_schema(schema: dict) -> dict:
                     rewrite(item)
             return
 
+        if value.pop(CLOCK_FIELD, False) and clock_as_text:
+            nullable = any(
+                isinstance(alt, dict) and alt.get("type") == "null"
+                for alt in value.get("anyOf") or ()
+            )
+            title = value.get("title")
+            value.clear()
+            if title:
+                value["title"] = title
+            if nullable:
+                value["anyOf"] = [dict(CLOCK_TEXT), {"type": "null"}]
+            else:
+                value.update(CLOCK_TEXT)
+            return
+
         if value.get("type") == "object" or "properties" in value:
             value["additionalProperties"] = False
             value["required"] = list(value.get("properties") or {})
@@ -872,7 +1036,9 @@ def strict_json_schema(schema: dict) -> dict:
     return node
 
 
-def schema_payload(spec: TaskSpec, supports_json_schema: bool) -> dict | None:
+def schema_payload(
+    spec: TaskSpec, supports_json_schema: bool, *, clock_as_text: bool = False
+) -> dict | None:
     """The `json_schema` for a `ChatRequest`, or None to ask in words instead.
 
     The capability is read off the provider class (`Provider.supports_json_schema`),
@@ -883,12 +1049,17 @@ def schema_payload(spec: TaskSpec, supports_json_schema: bool) -> dict | None:
     `strict` is declared because the schema is now strict-shaped, and declaring
     it is the difference between the endpoint validating the schema and the
     endpoint constraining the model to it.
+
+    `clock_as_text` is the provider's `schema_clock_as_text`: timestamps as
+    text rather than numbers (`strict_json_schema`, ADR-034).
     """
     if spec.schema is None or not supports_json_schema:
         return None
     return {
         "name": spec.kind,
-        "schema": strict_json_schema(spec.schema.model_json_schema()),
+        "schema": strict_json_schema(
+            spec.schema.model_json_schema(), clock_as_text=clock_as_text
+        ),
         "strict": True,
     }
 
@@ -1059,11 +1230,21 @@ class TaskPlan:
     its own vocabulary halfway through would be asked to reuse labels it had
     just invented, from a run that has not finished deciding them yet."""
     provider_supports_schema: bool = False
+    provider_clock_as_text: bool = False
+    """The provider's `schema_clock_as_text`, read when the plan is made."""
+    provider_is_local: bool = False
+    """The provider's `is_local`, read when the plan is made: whether a kind's
+    `combine_reasoning_off` applies (ADR-035)."""
     note_budget: int = 0
     """The answer cap for one chunk's notes, decided here rather than in
     `_collect_notes` so that the number `plan_task` proved would fit back
     through the combine call is provably the number that gets spent. Zero for
     a task that is not chunked, which makes no note call at all."""
+    context_tokens: int = 0
+    """The model's window, when it is known (`_known_window`). Read back when
+    an answer stops at `length`, to tell a full window from a spent cap
+    (`_ran_out_of`). Zero means unknown - a cloud plan cut against the 128k
+    planning floor - and then no window is ever named."""
 
     @property
     def kind(self) -> str:
@@ -1216,8 +1397,27 @@ def plan_task(
         known_labels=vocabulary(conn) if spec.kind == "labels" else (),
         language=answer_language(doc.run),
         provider_supports_schema=bool(provider_cls.supports_json_schema),
+        provider_clock_as_text=bool(provider_cls.schema_clock_as_text),
+        provider_is_local=bool(provider_cls.is_local),
         note_budget=note_budget,
+        context_tokens=_known_window(provider_cls, chosen_model, window, given=context_tokens),
     )
+
+
+def _known_window(
+    provider_cls: type[base.Provider], model: str, window: int, *, given: int | None
+) -> int:
+    """`window` if it is the model's real window, else 0.
+
+    A caller's number, a local runtime's (the window the daemon is asked to
+    run) and a provider's own answer (`window_for_model`) are windows. The
+    cloud fallback `CLOUD_CONTEXT_TOKENS` is a planning floor: the routed model
+    may hold more or less, so a `length` stop past it says nothing about a
+    window (review of TASK-124).
+    """
+    if given or provider_cls.is_local or provider_cls.window_for_model(model):
+        return window
+    return 0
 
 
 def plan_notes(
@@ -1696,6 +1896,8 @@ def _ask(
 
     The kind's reasoning hint rides on every call made here - a note, a part,
     a single answer, a combine - so no call of a hinted kind goes out without it.
+    A kind with `combine_reasoning_off` adds it to its combine alone, on a
+    local model alone (ADR-035).
     """
     request = ChatRequest(
         system=system,
@@ -1703,7 +1905,10 @@ def _ask(
         model=plan.model,
         max_output_tokens=max_output_tokens,
         json_schema=json_schema,
-        reasoning_off=plan.spec.reasoning_off,
+        reasoning_off=plan.spec.reasoning_off
+        or (
+            phase == "combine" and plan.spec.combine_reasoning_off and plan.provider_is_local
+        ),
     )
     def watched(response: ChatResponse | None) -> None:
         """Tell the watcher, and never let it stop the work (ADR-014)."""
@@ -1762,7 +1967,9 @@ def generate(
         if on_progress is not None:
             on_progress(done / total_calls)
 
-    schema = schema_payload(plan.spec, plan.provider_supports_schema)
+    schema = schema_payload(
+        plan.spec, plan.provider_supports_schema, clock_as_text=plan.provider_clock_as_text
+    )
 
     if not plan.chunked:
         response = _ask(
@@ -1896,15 +2103,14 @@ def _collect_notes(
             # The language line too (TASK-105.01): notes taken in English from
             # a Dutch transcript would hand the combine an English text.
             system=SYSTEM + (LANGUAGE_SYSTEM.format(name=plan.language) if plan.language else ""),
-            user=render_prompt(
-                chunking.MAP_REDUCE_PROMPTS["chunk"],
-                index=chunk.index + 1,  # one-based: the model is reading, not indexing
+            user=chunk_prompt(
+                plan.spec,
+                index=chunk.index + 1,
                 count=len(plan.chunks),
                 start=render.format_ts(chunk.start),
                 end=render.format_ts(chunk.end),
-                goal=chunk_goal(plan.spec, plan.note_question),
                 transcript=chunk.text,
-                speakers=plan.spec.with_speakers,
+                note_question=plan.note_question,
             ),
             max_output_tokens=note_budget,
             json_schema=None,  # notes are prose; only the combine has a shape to keep
@@ -1926,12 +2132,16 @@ def _collect_notes(
         # later run of this task - including the one asked because the answer
         # looked wrong - is built from half a sentence. Refusing *before* the
         # insert is the load-bearing half; raising is how the job says so.
+        copied, counted = copied_lines(text, chunk.text)
         if response.raw_finish_reason == TRUNCATED_FINISH:
             raise base.BadResponse(
                 f"the model ran out of room writing its notes for chunk {chunk.index} of the "
-                f"{plan.kind!r} task {where}: it stopped at the {note_budget}-token cap "
+                f"{plan.kind!r} task {where}: {_ran_out_of(plan, response, note_budget)} "
                 f"({_spent(response)}) rather than finishing, so the "
-                "notes are cut off mid-sentence and have not been stored. What it managed: "
+                "notes are cut off mid-sentence and have not been stored."
+                # Named a fault only where the note rule forbade copying:
+                # `speakers` is asked for quotes, and its notes are lines.
+                f"{_copying(copied, counted) if plan.spec.note_rule else ''} What it managed: "
                 + clip(text)
             )
         chunk_ids.append(
@@ -1957,6 +2167,11 @@ def _collect_notes(
                     # one nobody looks at again, which is exactly why it needs
                     # to say how the model stopped.
                     "finish_reason": response.raw_finish_reason,
+                    # Reported, not refused: a finished copy is still the
+                    # excerpt's words, which the combine can use, and refusing
+                    # it would fail a job that can finish (TASK-124).
+                    "copied_lines": copied,
+                    "note_lines": counted,
                     # Judged against the note budget this call was asked with.
                     **reasoning_record(response, note_budget),
                 },
@@ -2066,7 +2281,7 @@ def _refuse_a_cut_off_part(plan: TaskPlan, chunk: Chunk, response: ChatResponse)
     where = f"({render.format_ts(chunk.start)}-{render.format_ts(chunk.end)})"
     raise base.BadResponse(
         f"the model ran out of room on chunk {chunk.index} of the {plan.kind!r} task "
-        f"{where}: it stopped at the {plan.max_output_tokens}-token cap "
+        f"{where}: {_ran_out_of(plan, response, plan.max_output_tokens)} "
         f"({_spent(response)}) rather than finishing, so the part "
         "is cut off and has not been stored. What it managed: " + clip(response.text or "")
     )
@@ -2085,11 +2300,50 @@ def _refuse_a_cut_off_answer(plan: TaskPlan, response: ChatResponse) -> None:
     if plan.spec.schema is None or response.raw_finish_reason != TRUNCATED_FINISH:
         return
     raise base.BadResponse(
-        f"the model ran out of room on the {plan.kind!r} task: it stopped at the "
-        f"{plan.max_output_tokens}-token cap ({_spent(response)}) before its answer was "
+        f"the model ran out of room on the {plan.kind!r} task: "
+        f"{_ran_out_of(plan, response, plan.max_output_tokens)} ({_spent(response)}) before its answer was "
         "complete, so there is nothing whole to store. What it managed: "
         + clip(response.text or "")
     )
+
+
+def _ran_out_of(plan: TaskPlan, response: ChatResponse, cap: int) -> str:
+    """Which limit a `length` answer hit, in the words that name the fix.
+
+    Job 436 (TASK-124): a blog answer read 32,016 prompt tokens and wrote 752,
+    which is 32,768 - the whole window - and the board said it 'stopped at the
+    4000-token cap', which it never reached. The cap is a number to raise; a
+    full window is a prompt to shorten, so the two must not share a sentence.
+
+    The cap is checked first: a call that spent its whole cap hit the cap,
+    whatever the window. A full window is named only when the window is known
+    (`_known_window`); a cloud plan's 128k is a planning floor, so there a stop
+    below the cap is a limit of the model or provider that MyScribe cannot
+    see, and is called that. Counts a provider did not report leave the cap
+    wording, which is what was said before this could tell.
+    """
+    prompt, completion = response.prompt_tokens, response.completion_tokens
+    spent_cap = isinstance(completion, int) and completion >= cap
+    window = plan.context_tokens
+    if (
+        not spent_cap
+        and window
+        and isinstance(prompt, int)
+        and isinstance(completion, int)
+        and prompt + completion >= window
+    ):
+        return (
+            f"the {window}-token window was full - {prompt} tokens of prompt and {completion} "
+            f"of answer - before it reached its {cap}-token answer budget, so a bigger budget "
+            f"would not help: the prompt has to be shorter (smaller chunks) or the window larger"
+        )
+    if not spent_cap and isinstance(completion, int):
+        return (
+            f"it stopped after {completion} tokens of answer, short of its {cap}-token answer "
+            f"budget, at a limit of the model or provider (an output limit or a window smaller "
+            f"than MyScribe can see)"
+        )
+    return f"it stopped at the {cap}-token cap"
 
 
 def _spent(response: ChatResponse) -> str:

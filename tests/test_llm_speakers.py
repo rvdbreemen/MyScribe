@@ -347,6 +347,10 @@ def test_a_stored_part_cut_on_other_boundaries_is_asked_again(conn, monkeypatch)
     fewer segments; reused by its index it would stand in for them, the next
     part would repeat the stretch in between, and the gate would refuse media
     12 on every run - the wrong words, paid for once and served forever.
+
+    Budgets 220 and 110 (100 and 60 before TASK-124, which counts a segment of
+    `seed_long_run` at 54 tokens rather than about 25): four and two segments
+    a part, the same cut as before.
     """
     media_id = seed_media(conn, title="Long one")
     seed_long_run(conn, media_id, n_segments=12)
@@ -354,14 +358,14 @@ def test_a_stored_part_cut_on_other_boundaries_is_asked_again(conn, monkeypatch)
 
     first, first_calls = fake_provider(echo_the_lines)
     register(monkeypatch, first)
-    tasks.run_task(conn, budget_tokens=100, **kwargs)
+    tasks.run_task(conn, budget_tokens=220, **kwargs)
 
     again, again_calls = fake_provider(echo_the_lines)
     register(monkeypatch, again)
-    tasks.run_task(conn, budget_tokens=60, **kwargs)
+    tasks.run_task(conn, budget_tokens=110, **kwargs)
 
-    wide = tasks.plan_task(conn, budget_tokens=100, **kwargs).chunks
-    narrow = tasks.plan_task(conn, budget_tokens=60, **kwargs).chunks
+    wide = tasks.plan_task(conn, budget_tokens=220, **kwargs).chunks
+    narrow = tasks.plan_task(conn, budget_tokens=110, **kwargs).chunks
     assert wide[0].segment_ids != narrow[0].segment_ids, "the test needs boundaries that moved"
     # Every part of the narrow plan differs from the wide part stored under its
     # index (or has none), so every one of them is asked.

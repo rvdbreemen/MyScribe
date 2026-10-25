@@ -236,10 +236,11 @@ def test_a_transcript_that_fits_is_passed_whole(conn, short_media):
     assert chat_tool.GAP_MARKER not in text  # nothing was left out
 
 
-RETRIEVAL_BUDGET = 85
+RETRIEVAL_BUDGET = 125
 """Room for three of these segments and not four: each is eight short words
-plus its `[m:ss]`, about 26 tokens by `chunking.estimate_tokens`, and the fill
-also charges a token per segment for the `…` markers. Sized by hand like the
+plus its `[m:ss]`, about 38 tokens by `chunking.estimate_tokens` (26 before
+TASK-124 priced a digit and a line break as a token), and the fill also
+charges `MARKER_TOKENS` per segment for the `…` markers. Sized by hand like the
 chunking tests' documents, so an assertion below names the segments the
 retrieval chose rather than however many happened to fit."""
 
@@ -327,7 +328,7 @@ def test_retrieval_is_in_time_order_however_the_hits_ranked(conn, media):
     cannot see went by.
     """
     text, segment_ids = chat_tool.context_for(
-        conn, media, "krikkit and towels", budget_tokens=150
+        conn, media, "krikkit and towels", budget_tokens=170
     )
 
     assert segment_ids == [0, 1, 10, 11]  # both hits, each with its neighbour
@@ -369,11 +370,12 @@ def test_retrieval_never_exceeds_the_budget_it_was_given(conn, media):
     assert estimate_tokens(text) <= RETRIEVAL_BUDGET
 
 
-TIGHT_BUDGET = 78
-"""One token under what three of these segments plus their two `…` markers
-cost. Measured, not guessed: at this budget an implementation that charged for
-the lines and forgot the markers would send 80 tokens' worth of context for a
-78-token budget, and one that charges for both sends two segments."""
+TIGHT_BUDGET = 121
+"""One token under what the fill charges for three of these segments with
+their `…` markers (122). Measured, not guessed: an implementation that charged
+for the lines and forgot the markers would take the third segment here, and
+one that charges for both sends two. 78 before TASK-124, when a marker line
+was priced at one token and is two now (its line break)."""
 
 
 def test_the_gap_markers_are_paid_for_out_of_the_budget(conn, media):
