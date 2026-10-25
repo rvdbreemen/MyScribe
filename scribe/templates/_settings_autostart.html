@@ -65,7 +65,7 @@
   {% if autostart.on and autostart.stops_now %}
   <p class="hint warn">
     Switching this off also stops MyScribe now, if it was started at login: macOS unloads it
-    at once. A job that is running stops with it.
+    at once. A job that is running is not put back in the queue.
   </p>
   {% endif %}
   <form method="post" action="/settings/autostart"

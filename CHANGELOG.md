@@ -24,14 +24,16 @@
 - **On a Mac, Start at login starts MyScribe itself.** The LaunchAgent now
   runs `MyScribe.app/Contents/MacOS/MyScribe --at-login --no-browser
   --headless` instead of `open -a`, which returned at once. launchd restarts
-  it only when the app died under the launcher (exit 70), and writes its
-  output to `~/Library/Logs/MyScribe/launchd.log`. It waits 240 seconds for a
+  it after an exit that is not clean; the launcher exits that way only when
+  the app died under it (code 70). launchd writes its output to
+  `~/Library/Logs/MyScribe/launchd.log`. It waits 240 seconds for a
   stop before it kills MyScribe. Switching it on also loads it at once with
   `launchctl bootstrap`. If launchd refuses, the plist stays, it loads at
   your next login, and Settings shows what launchd said. Switching it off
   deletes the plist and then runs `launchctl bootout`. That stops a MyScribe
-  launchd started right away, and a running job stops with it; the card
-  warns about this first. A MyScribe opened from the disk image or Downloads
+  launchd started right away. A job that is running is not put back in the
+  queue; per ADR-028 its runner may go on working without MyScribe until it
+  ends. The card warns about the stop first. A MyScribe opened from the disk image or Downloads
   runs from a temporary copy (App Translocation). It is not registered, and
   Settings says to move it to Applications. A plist an earlier version wrote
   for the same app is rewritten at the next start. None of this has been run
