@@ -1063,6 +1063,76 @@ def test_the_settings_page_survives_an_os_that_will_not_answer(client, monkeypat
     assert "Start at login" in page.text
 
 
+def test_the_card_says_when_the_entry_starts_another_file_than_the_running_one(client, monkeypatch, login_entry):
+    """TASK-119, Robert's option C. An entry naming another file - an older
+    AppImage in another folder, say - starts that file at the next login. The
+    card names the file that is running and what to do about it."""
+    from scribe import autostart
+
+    running = r"D:\Apps\MyScribe\MyScribe.exe"
+    monkeypatch.setenv(autostart.LAUNCHER_VARIABLE, running)
+    login_entry.write(AT_LOGIN)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+
+    assert "starts another file" in card
+    assert running in card
+    assert "switch it off and on" in card.lower()
+
+
+def test_the_card_says_nothing_extra_when_the_entry_starts_the_running_file(client, monkeypatch, login_entry):
+    from scribe import autostart
+
+    monkeypatch.setenv(autostart.LAUNCHER_VARIABLE, AT_LOGIN[0])
+    login_entry.write(AT_LOGIN)
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+    assert "starts another file" not in card
+
+    # Off starts nothing, and a clone has no launcher to compare with.
+    login_entry.value = None
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+    assert "starts another file" not in card
+
+    monkeypatch.delenv(autostart.LAUNCHER_VARIABLE)
+    login_entry.write(("/bin/bash", "start.sh", "--detached"))
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+    assert "starts another file" not in card
+
+
+TRANSLOCATED = "/private/var/folders/x1/abc123/T/AppTranslocation/1F2E3D4C-0000-4ABC-9DEF-0123456789AB/d/MyScribe.app"
+AT_LOGIN_MAC = ("/usr/bin/open", "-a", "/Applications/MyScribe.app", "--args", "--at-login", "--no-browser", "--headless")
+
+
+def test_a_translocated_copy_is_told_to_move_to_applications_not_to_switch(client, monkeypatch, login_entry):
+    """Review finding on TASK-119. A Mac copy macOS runs from App Translocation
+    has a launcher that differs from the registered /Applications bundle.
+    "Switch it off and on" would register the translocated path, which
+    ADR-026 lists under Must Not. The card says to move the app instead, and
+    keeps only the switch that removes."""
+    from scribe import autostart
+
+    monkeypatch.setenv(autostart.LAUNCHER_VARIABLE, TRANSLOCATED)
+    monkeypatch.setattr(
+        autostart, "start_command",
+        lambda **kwargs: ("/usr/bin/open", "-a", TRANSLOCATED, "--args", "--at-login", "--no-browser", "--headless"),
+    )
+    login_entry.write(AT_LOGIN_MAC)
+
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+    assert "off and on" not in card.lower()
+    assert "App Translocation" in card and "into Applications" in card
+    assert 'name="enabled" value="0"' in card, "switching the old entry off stays possible"
+
+    login_entry.value = None
+    card = _the_autostart_card(client.get("/settings?section=autostart").text)
+    assert "into Applications" in card
+    assert 'name="enabled" value="1"' not in card, "no switch that would register a path gone at the next login"
+
+    refused = client.post("/settings/autostart", data={"enabled": "1"}, follow_redirects=False)
+    assert refused.status_code == 409
+    assert login_entry.value is None
+
+
 # --- the installer and the switch register the identical item (TASK-089.22) ---------
 
 

@@ -196,9 +196,12 @@ way Quit does, and a job that was running starts over afterwards; 0.8.x has
 no stop, so it is ended, and its running job is marked interrupted: Retry on
 the jobs page starts it over.
 
-On Linux the new release is a new file. If *Start at login* is on, switch it
-off and on again in Settings after you start the new AppImage, so the login
-entry names the new file and not the old one.
+On Linux the new release is a new file. Put it in the same folder as the old
+one: when you start it, a *Start at login* entry that starts another
+`MyScribe-<version>-linux-x64.AppImage` from that folder is pointed at the
+new file. If you keep the new file somewhere else, or renamed the old one,
+Settings says the entry starts another file; switch *Start at login* off and
+on there so it names the new one.
 
 **A clone:** `git pull`, then `python install.py`.
 

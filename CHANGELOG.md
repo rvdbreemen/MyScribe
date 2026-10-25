@@ -2,6 +2,24 @@
 
 ### Fixed
 
+- **After a Linux update, Start at login starts the new AppImage.** Each
+  release is a new file, and the login entry kept starting the old one. When
+  an AppImage starts, a login entry (the systemd user unit or the autostart
+  file) whose command starts a `MyScribe-<anything>-linux-x64.AppImage` in
+  the same folder is now rewritten to start the running file; with a systemd
+  user session, such an autostart file is moved into the unit. An entry for a
+  file in another folder, or under another name, is left alone. Windows and
+  macOS still rewrite only an entry that names the same program. In an
+  installed MyScribe, Settings now says when the entry starts a different
+  file from the one running, and says to switch it off and on (TASK-119).
+
+- **On macOS, Start at login no longer registers a copy that is gone at the
+  next login.** When macOS runs MyScribe from a temporary copy (App
+  Translocation: opened from Downloads or the disk image), switching Start at
+  login on is refused, and Settings says to move MyScribe.app into
+  Applications and open it from there instead of offering the switch.
+  Switching an existing entry off still works (TASK-119).
+
 - **The doctor names the weights for the quality you chose.** With *Max* set
   as the transcription default, the models line asked about the *Turbo*
   weights and never mentioned the larger ones *Max* loads. It now checks the

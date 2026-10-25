@@ -939,8 +939,9 @@ def test_the_start_migrates_before_it_refreshes_and_logs_it(monkeypatch):
 
 def test_a_desktop_file_the_unit_did_not_take_over_reads_as_on(tmp_path):
     """Review of TASK-112.06. A desktop file naming another launcher path - an
-    AppImage renamed, or replaced by a new versioned filename - is not moved
-    into the unit, and the desktop still starts it at login. The card has to
+    AppImage renamed off the release name, or one in another folder (TASK-119
+    takes over only a release name in the same folder) - is not moved into
+    the unit, and the desktop still starts it at login. The card has to
     say on, and where, or a user who believes it never flips the switch that
     would take the file away. Off then removes it; a hidden one stays off."""
     unit = _systemd(tmp_path)
@@ -1002,3 +1003,184 @@ def test_a_rewrite_the_manager_refused_keeps_the_unit_that_was_on(tmp_path):
         autostart.enable(unit, command=AT_LOGIN)
 
     assert unit.path.exists()
+
+
+# --- an AppImage update is a new file in the same folder (TASK-119) ----------------
+#
+# Robert, 2026-10-24: on Linux an entry whose command starts
+# MyScribe-<anything>-linux-x64.AppImage in the folder of the running
+# $APPIMAGE is ours, and the start rewrites it - the desktop file and the
+# user unit alike. Windows and macOS keep the strict rule. The card says when
+# the entry starts another file than the one running.
+
+APPS = "/home/me/Apps"
+OLD_APPIMAGE = f"{APPS}/MyScribe-0.9.0-linux-x64.AppImage"
+NEW_APPIMAGE = f"{APPS}/MyScribe-0.9.1-linux-x64.AppImage"
+OLD_AT_LOGIN = (OLD_APPIMAGE, "--at-login", "--no-browser", "--headless")
+NEW_AT_LOGIN = (NEW_APPIMAGE, "--at-login", "--no-browser", "--headless")
+NEW_RELEASE = {autostart.LAUNCHER_VARIABLE: NEW_APPIMAGE}
+
+
+def test_an_appimage_update_in_the_same_folder_takes_the_desktop_entry_over(tmp_path):
+    mechanism = _CountingXdg(tmp_path / "autostart")
+    mechanism.write(OLD_AT_LOGIN)
+
+    entry = autostart.refresh(mechanism, command=NEW_AT_LOGIN, environ=NEW_RELEASE)
+
+    assert entry is not None and entry.on is True
+    assert mechanism.read() == mechanism.render(NEW_AT_LOGIN)
+    assert mechanism.writes == 2
+
+
+def test_an_appimage_update_in_the_same_folder_rewrites_the_user_unit(tmp_path):
+    unit = _systemd(tmp_path)
+    autostart.enable(unit, command=OLD_AT_LOGIN)
+    unit.run.calls.clear()
+
+    entry = autostart.refresh(unit, command=NEW_AT_LOGIN, environ=NEW_RELEASE)
+
+    assert entry is not None and entry.where == str(unit.path)
+    assert unit.read() == unit.render(NEW_AT_LOGIN)
+    assert [verb for verb in unit.run.verbs() if verb != "is-enabled"] == ["daemon-reload", "enable"]
+
+
+def test_the_first_start_of_an_update_moves_the_older_desktop_file_into_the_unit(tmp_path):
+    """0.9.0 wrote a desktop file; 0.9.1, started from the same folder with a
+    user session, moves it into a unit that starts 0.9.1."""
+    unit = _systemd(tmp_path)
+    unit.legacy.write(OLD_AT_LOGIN)
+
+    entry = autostart.migrate(unit, command=NEW_AT_LOGIN, environ=NEW_RELEASE)
+
+    assert entry is not None and entry.where == str(unit.path)
+    assert not unit.legacy.path.exists()
+    assert unit.read() == unit.render(NEW_AT_LOGIN)
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        "/home/me/Elsewhere/MyScribe-0.9.0-linux-x64.AppImage",  # another folder
+        f"{APPS}/Other-1.0-linux-x64.AppImage",  # not MyScribe
+        f"{APPS}/MyScribe-0.9.0-linux-x64.AppImage.bak",  # not the release name
+        f"{APPS}/MyScribe-linux-x64.AppImage",  # no version between the dashes
+        f"{APPS}/sub/MyScribe-0.9.0-linux-x64.AppImage",  # a folder below
+    ],
+)
+def test_an_entry_that_is_not_a_sibling_appimage_is_left_alone(tmp_path, program):
+    xdg = _CountingXdg(tmp_path / "autostart")
+    xdg.write((program, "--at-login"))
+    assert autostart.refresh(xdg, command=NEW_AT_LOGIN, environ=NEW_RELEASE) is None
+    assert xdg.writes == 1
+
+    unit = _systemd(tmp_path / "unit")
+    autostart.enable(unit, command=(program, "--at-login"))
+    assert autostart.refresh(unit, command=NEW_AT_LOGIN, environ=NEW_RELEASE) is None
+    assert unit.read() == unit.render((program, "--at-login"))
+
+    legacy = _systemd(tmp_path / "legacy")
+    legacy.legacy.write((program, "--at-login"))
+    assert autostart.migrate(legacy, command=NEW_AT_LOGIN, environ=NEW_RELEASE) is None
+    assert legacy.legacy.path.exists() and not legacy.path.exists()
+
+
+def test_only_the_program_counts_not_a_sibling_named_further_along(tmp_path):
+    """The sibling has to be what the entry starts, not an argument to it."""
+    xdg = _CountingXdg(tmp_path / "autostart")
+    xdg.write(("/usr/bin/env", OLD_APPIMAGE, "--at-login"))
+
+    assert autostart.refresh(xdg, command=NEW_AT_LOGIN, environ=NEW_RELEASE) is None
+    assert xdg.writes == 1
+
+
+def test_the_sibling_rule_is_linux_only(mechanism):
+    """The same two names on Windows and macOS: the ownership rule there stays
+    "names this same launcher", so neither entry is touched."""
+    mechanism.write(OLD_AT_LOGIN)
+
+    entry = autostart.refresh(mechanism, command=NEW_AT_LOGIN, environ=NEW_RELEASE)
+
+    linux = isinstance(mechanism, (autostart.XdgAutostart, autostart.SystemdUserUnit))
+    assert (entry is not None) is linux
+    assert mechanism.read() == mechanism.render(NEW_AT_LOGIN if linux else OLD_AT_LOGIN)
+
+
+@pytest.mark.parametrize("kind", ["xdg", "systemd"])
+def test_a_folder_name_that_needs_quoting_is_still_recognised(tmp_path, kind):
+    """Each Linux mechanism quotes its own way; the folder is read back through
+    that quoting before it is compared."""
+    folder = '/home/me/My "Apps" $5 100% \\ `x`'
+    old = (f"{folder}/MyScribe-0.9.0-linux-x64.AppImage", "--at-login")
+    new = (f"{folder}/MyScribe-0.9.1-linux-x64.AppImage", "--at-login", "--headless")
+    mechanism = _CountingXdg(tmp_path / "autostart") if kind == "xdg" else _systemd(tmp_path)
+    autostart.enable(mechanism, command=old)
+
+    entry = autostart.refresh(mechanism, command=new, environ={autostart.LAUNCHER_VARIABLE: new[0]})
+
+    assert entry is not None
+    assert mechanism.read() == mechanism.render(new)
+
+
+def test_status_says_when_the_entry_starts_another_file_than_the_one_running(tmp_path):
+    """Robert's option C: the card names the case the rule does not reach."""
+    xdg = autostart.XdgAutostart(folder=tmp_path / "autostart")
+    xdg.write(("/home/me/Elsewhere/MyScribe-0.9.0-linux-x64.AppImage", "--at-login"))
+    assert autostart.status(xdg, command=NEW_AT_LOGIN, environ=NEW_RELEASE).elsewhere is True
+
+    # A sibling the start did not rewrite yet - it failed, say - is another
+    # file too: the line asks the strict question.
+    xdg.write(OLD_AT_LOGIN)
+    assert autostart.status(xdg, command=NEW_AT_LOGIN, environ=NEW_RELEASE).elsewhere is True
+
+    xdg.write(NEW_AT_LOGIN)
+    assert autostart.status(xdg, command=NEW_AT_LOGIN, environ=NEW_RELEASE).elsewhere is False
+    # A clone has no launcher to compare with, and an entry that is off
+    # starts nothing.
+    assert autostart.status(xdg, command=NEW_AT_LOGIN, environ={}).elsewhere is False
+    xdg.remove()
+    assert autostart.status(xdg, command=NEW_AT_LOGIN, environ=NEW_RELEASE).elsewhere is False
+
+    unit = _systemd(tmp_path / "unit")
+    unit.legacy.write(("/home/me/Elsewhere/MyScribe-0.9.0-linux-x64.AppImage", "--at-login"))
+    shown = autostart.status(unit, command=NEW_AT_LOGIN, environ=NEW_RELEASE)
+    assert shown.on is True and shown.where == str(unit.legacy.path) and shown.elsewhere is True
+
+
+# --- a Mac copy running from App Translocation (ADR-026 Must Not) ------------------
+
+# Where macOS runs an unsigned, quarantined app opened from Downloads or a disk
+# image: a random read-only path that is gone at the next login
+# (docs/reports/2026-10-19-background-server-research.md).
+TRANSLOCATED = "/private/var/folders/x1/abc123/T/AppTranslocation/1F2E3D4C-0000-4ABC-9DEF-0123456789AB/d/MyScribe.app"
+APPLICATIONS = "/Applications/MyScribe.app"
+
+
+def test_a_copy_running_from_app_translocation_is_never_registered(tmp_path):
+    """ADR-026 Must Not: register a macOS path under `AppTranslocation`. The
+    switch refuses with the way out, and writes nothing."""
+    agent = autostart.LaunchAgent(folder=tmp_path / "LaunchAgents")
+    command = autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: TRANSLOCATED}, platform="darwin")
+
+    with pytest.raises(autostart.Translocated) as refused:
+        autostart.enable(agent, command=command)
+
+    assert isinstance(refused.value, autostart.NothingToStart), "the settings route answers it with a 409"
+    assert "Applications" in str(refused.value)
+    assert agent.read() is None and not agent.path.exists()
+    assert autostart.translocated(TRANSLOCATED) is True
+    assert autostart.translocated(APPLICATIONS) is False
+    assert autostart.translocated(None) is False
+
+
+def test_a_translocated_copy_can_still_switch_an_entry_off_and_a_moved_one_on(tmp_path):
+    """Off removes the /Applications entry, which harms nothing; the same app
+    moved into Applications registers as before."""
+    agent = autostart.LaunchAgent(folder=tmp_path / "LaunchAgents")
+    applications = autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: APPLICATIONS}, platform="darwin")
+    translocated = autostart.start_command(environ={autostart.LAUNCHER_VARIABLE: TRANSLOCATED}, platform="darwin")
+
+    autostart.enable(agent, command=applications)
+    assert agent.read() is not None and APPLICATIONS in agent.read()
+
+    assert autostart.disable(agent, command=translocated).on is False
+    assert agent.read() is None
