@@ -11,6 +11,7 @@ supersedes: []
 superseded_by: null
 related:
   - "ADR-032"
+  - "ADR-038"
 topics:
   - "jobs"
   - "shutdown"
@@ -56,6 +57,11 @@ status_history:
     status: Accepted
     changed_by: Claude (agent, session 2026-10-24)
     reason: "ADR-032 amends ADR-028: every shutdown ends the runner, only the route requeues"
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Claude (agent, session 2026-10-25)
+    reason: the tray's Stop is a deliberate stop that requeues the running job (TASK-112.11)
     changed_via: adr-kit lifecycle
 ```
 

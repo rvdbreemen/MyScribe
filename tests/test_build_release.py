@@ -96,7 +96,7 @@ def _frozen_args(tmp_path, monkeypatch, target="windows-x64"):
     commands = []
     monkeypatch.setattr(build_release, "BUILD", tmp_path / "build")
     monkeypatch.setattr(build_release, "run", commands.append)
-    monkeypatch.setattr(build_release, "replaceable_tray", lambda frozen: frozen)
+    monkeypatch.setattr(build_release, "replaceable_tray", lambda frozen, target: frozen)
     monkeypatch.setattr(build_release, "stamp_bundle_version", lambda app, value: None)
     build_release.freeze(Path("pyinstaller"), tmp_path / "payload", target)
     return [str(part) for part in commands[0]]
@@ -115,20 +115,23 @@ def test_the_freeze_names_pystray_and_the_hooks_that_keep_it_source(tmp_path, mo
 
 
 def test_the_freeze_checks_the_bundle_it_made(tmp_path, monkeypatch):
-    checked = []
     monkeypatch.setattr(build_release, "BUILD", tmp_path / "build")
     monkeypatch.setattr(build_release, "run", lambda command: None)
-    monkeypatch.setattr(build_release, "replaceable_tray", checked.append)
+    monkeypatch.setattr(build_release, "stamp_bundle_version", lambda app, value: None)
+    for target in ("windows-x64", "macos-arm64", "linux-x64"):
+        checked = []
+        monkeypatch.setattr(build_release, "replaceable_tray",
+                            lambda frozen, target: checked.append((frozen, target)))
 
-    out = build_release.freeze(Path("pyinstaller"), tmp_path / "payload", "linux-x64")
+        out = build_release.freeze(Path("pyinstaller"), tmp_path / "payload", target)
 
-    assert checked == [out]
+        assert checked == [(out, target)]
 
 
-def _bundle_with(tmp_path, *files):
+def _bundle_with(tmp_path, *files, inside="MyScribe/_internal"):
     frozen = tmp_path / "frozen"
     for name in files:
-        path = frozen / "MyScribe" / "_internal" / name
+        path = frozen / inside / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
     frozen.mkdir(exist_ok=True)
@@ -144,6 +147,30 @@ def test_a_bundle_without_pystray_as_source_fails_the_build(tmp_path):
     frozen = _bundle_with(tmp_path, "pystray-0.19.5.dist-info/COPYING.LGPL")
     with pytest.raises(SystemExit, match="loose .py files"):
         build_release.replaceable_tray(frozen)
+
+
+def test_on_macos_the_app_bundle_itself_must_carry_pystray_as_source(tmp_path):
+    """The dmg ships MyScribe.app, not the onedir PyInstaller leaves beside it:
+    loose files in that onedir prove nothing about the .app (review of
+    TASK-112.11)."""
+    files = ("pystray/__init__.py", "pystray-0.19.5.dist-info/COPYING.LGPL")
+    frozen = _bundle_with(tmp_path, *files)
+    with pytest.raises(SystemExit, match="loose .py files"):
+        build_release.replaceable_tray(frozen, "macos-arm64")
+
+    _bundle_with(tmp_path, *files, inside="MyScribe.app/Contents/Resources")
+    assert build_release.replaceable_tray(frozen, "macos-arm64") ==         frozen / "MyScribe.app" / "Contents" / "Resources" / "pystray"
+
+
+def test_pystray_outside_the_shipped_folder_does_not_count(tmp_path):
+    """Windows and Linux ship frozen/MyScribe (Inno's MySource, the AppImage's
+    usr/bin); a copy anywhere else in the dist folder is not in the product."""
+    frozen = _bundle_with(tmp_path, "pystray/__init__.py", "pystray-0.19.5.dist-info/COPYING.LGPL",
+                          inside="elsewhere")
+    (frozen / "MyScribe").mkdir()
+    for target in ("windows-x64", "linux-x64"):
+        with pytest.raises(SystemExit, match="loose .py files"):
+            build_release.replaceable_tray(frozen, target)
 
 
 def test_a_bundle_without_pystrays_licence_fails_the_build(tmp_path):

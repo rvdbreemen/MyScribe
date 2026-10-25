@@ -1601,7 +1601,7 @@
       "path": "ADR-026-myscribe-runs-in-the-background-as-a-per-user-login-item-started-headless-not-as-an-operating-system-service.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-19",
+      "date": "2026-10-25",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-19, with a systemd user unit on Linux and the XDG autostart file as fa...",
       "topics": [
         "autostart",
@@ -1718,7 +1718,7 @@
       "path": "ADR-028-a-deliberate-stop-puts-the-running-job-back-at-the-front-of-the-queue.md",
       "format": "madr",
       "status": "Accepted",
-      "date": "2026-10-24",
+      "date": "2026-10-25",
       "decision_summary": "Chosen option: A, decided by Robert on 2026-10-21.",
       "topics": [
         "background",
@@ -1979,7 +1979,7 @@
       "context_scope": "selective",
       "decision_contract": {
         "must": [
-          "Only the headless door shows the icon, after the app answers /health. The window keeps its own Open and Quit.",
+          "Only the headless door shows the icon, after the app answers /health, and it makes the icon inside the try whose finally calls Launch.stop, under a SIGTERM handler: a Ctrl+C or logout while pystray imports still stops the app. The window...",
           "pystray, Pillow, python-xlib and pyobjc are imported inside functions only, AppKit and PyObjCTools already in trayfor. When any import, the icon or its loop fails, for any exception, the door serves without a tray and writes one No tray...",
           "Stop in the menu only sets a flag. The headless loop then calls Launch.stop: the stop route first (ADR-028, ADR-032), the hard stop after. A stop asked from the tray exits 0, and a dead app still exits APPDIED.",
           "The icon runs on a thread of its own on Windows and Linux, so Python's signal handlers keep the main thread.",
@@ -2580,6 +2580,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-026",
+      "target": "ADR-038",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-027",
       "target": "ADR-011",
       "type": "related",
@@ -2616,6 +2622,12 @@
       "resolved": true
     },
     {
+      "source": "ADR-028",
+      "target": "ADR-038",
+      "type": "related",
+      "resolved": true
+    },
+    {
       "source": "ADR-029",
       "target": "ADR-020",
       "type": "related",
@@ -2648,6 +2660,12 @@
     {
       "source": "ADR-032",
       "target": "ADR-028",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-032",
+      "target": "ADR-038",
       "type": "related",
       "resolved": true
     },

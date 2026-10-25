@@ -96,22 +96,27 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
         args += ["--icon", "NONE"]
     args.append(REPO / "packaging" / "launcher" / "myscribe_launcher.py")
     run(args)
-    replaceable_tray(out)
+    replaceable_tray(out, target)
     if target == "macos-arm64":
         stamp_bundle_version(out / "MyScribe.app", version())
     return out
 
 
-def replaceable_tray(frozen: Path) -> Path:
+def replaceable_tray(frozen: Path, target: str = "windows-x64") -> Path:
     """Fail the build unless pystray sits in the bundle as source, with its
     licence: LGPL-3.0 lets us ship it frozen only if somebody can replace it
     (ADR-038). A hook that stopped applying would otherwise compile it into
-    the archive inside the executable without a word. Returns its folder."""
-    found = next((init.parent for init in frozen.rglob("pystray/__init__.py")), None)
+    the archive inside the executable without a word. Returns its folder.
+
+    It looks in what ships, not in the whole dist folder: on macOS that is
+    MyScribe.app (the dmg), not the onedir PyInstaller leaves beside it;
+    elsewhere the onedir that Inno and the AppImage copy."""
+    shipped = frozen / ("MyScribe.app" if target == "macos-arm64" else FROZEN_NAME)
+    found = next((init.parent for init in shipped.rglob("pystray/__init__.py")), None)
     if found is None:
-        raise SystemExit(f"the tray is not in {frozen} as loose .py files (packaging/launcher/hooks)")
-    if not any(frozen.rglob("pystray-*.dist-info/COPYING.LGPL")):
-        raise SystemExit(f"pystray's licence (COPYING.LGPL) is not in {frozen}")
+        raise SystemExit(f"the tray is not in {shipped} as loose .py files (packaging/launcher/hooks)")
+    if not any(shipped.rglob("pystray-*.dist-info/COPYING.LGPL")):
+        raise SystemExit(f"pystray's licence (COPYING.LGPL) is not in {shipped}")
     print(f"tray: pystray as source at {found}")
     return found
 

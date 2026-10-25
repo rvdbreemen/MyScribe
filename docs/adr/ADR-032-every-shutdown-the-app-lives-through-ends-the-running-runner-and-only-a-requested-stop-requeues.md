@@ -12,6 +12,7 @@ superseded_by: null
 related:
   - "ADR-001"
   - "ADR-028"
+  - "ADR-038"
 topics:
   - "shutdown"
   - "jobs"
@@ -82,6 +83,11 @@ status_history:
     status: Accepted
     changed_by: Robert van den Breemen (said yes in session 2026-10-25; recorded by Claude)
     reason: Robert accepted ADR-032 in the session of 2026-10-25, with the upload window, ingest window and stop order in front of him
+    changed_via: adr-kit lifecycle
+  - date: 2026-10-25
+    status: Accepted
+    changed_by: Claude (agent, session 2026-10-25)
+    reason: the tray's Stop and its SIGTERM handling go through ADR-032's stop route (TASK-112.11)
     changed_via: adr-kit lifecycle
 ```
 

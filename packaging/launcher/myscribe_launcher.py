@@ -3106,10 +3106,14 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             keep_login_problem(launch.layout.home, launch.problem)
         return 0
     interrupted = False
-    # After the start, so a first sync at login has no icon that offers to
-    # stop a MyScribe that is not there yet (TASK-112.11).
-    tray = tray_for(launch)
+    tray = None
     try:
+        # After the start, so a first sync at login has no icon that offers to
+        # stop a MyScribe that is not there yet (TASK-112.11). Inside the try
+        # and under a SIGTERM handler: importing pystray and Pillow takes some
+        # 200 ms, and a Ctrl+C or a logout in it must still reach launch.stop().
+        with stop_on_sigterm():
+            tray = tray_for(launch)
         if tray is not None and tray.main_thread:
             try:
                 with stop_on_sigterm(then=tray.ask_stop):

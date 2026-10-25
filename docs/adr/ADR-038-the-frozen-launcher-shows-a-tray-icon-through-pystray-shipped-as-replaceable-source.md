@@ -11,6 +11,9 @@ supersedes: []
 superseded_by: null
 related:
   - "ADR-011"
+  - "ADR-026"
+  - "ADR-028"
+  - "ADR-032"
 topics:
   - "packaging"
   - "launcher"
@@ -53,7 +56,7 @@ status_history:
   - date: 2026-10-25
     status: Proposed
     changed_by: Claude (agent, session 2026-10-25)
-    reason: ADR-038 amends ADR-011's standard-library-only rule for the frozen launcher's tray (TASK-112.11)
+    reason: Related to ADR-011 (amended, its standard-library-only rule), ADR-026 (the login door the icon is for), ADR-028 and ADR-032 (the stop its Stop uses) (TASK-112.11)
     changed_via: adr-kit lifecycle
 ```
 
@@ -78,9 +81,7 @@ Checked on 2026-10-25 against PyPI's JSON API and OSV (osv.dev).
 
 ## Decision Outcome
 
-Chosen option: **A**. It is the only candidate that covers all three OSes at a few MB. B and C cover Windows alone. D and E would multiply the launcher's size, and E has no Linux wheel. F is what Robert chose against.
-
-A measured cost: the Windows onedir build went from 33 MB to 47 MB, of which Pillow is 13 MB.
+Chosen option: **A**. It is the only candidate that covers all three OSes at a few MB. B and C cover Windows alone. D and E would multiply the launcher's size, and E has no Linux wheel. F is what Robert chose against. A measured cost: the Windows onedir build went from 33 MB to 47 MB, of which Pillow is 13 MB.
 
 ### Confirmation
 
@@ -90,7 +91,7 @@ On Windows, from source and from a local frozen build (port 4540, a scratch home
 
 ### Must
 
-* Only the headless door shows the icon, after the app answers `/health`. The window keeps its own Open and Quit.
+* Only the headless door shows the icon, after the app answers `/health`, and it makes the icon inside the `try` whose `finally` calls `Launch.stop`, under a SIGTERM handler: a Ctrl+C or logout while pystray imports still stops the app. The window keeps its own Open and Quit.
 * pystray, Pillow, python-xlib and pyobjc are imported inside functions only, AppKit and PyObjCTools already in `tray_for`. When any import, the icon or its loop fails, for any exception, the door serves without a tray and writes one `No tray icon (...)` line to launcher.log.
 * Stop in the menu only sets a flag. The headless loop then calls `Launch.stop`: the stop route first (ADR-028, ADR-032), the hard stop after. A stop asked from the tray exits 0, and a dead app still exits `APP_DIED`.
 * The icon runs on a thread of its own on Windows and Linux, so Python's signal handlers keep the main thread.
@@ -121,8 +122,7 @@ On Windows, from source and from a local frozen build (port 4540, a scratch home
 ### Negative
 
 * ADR-011's standard-library-only rule now has one exception: an LGPL dependency from 2023 and its backends, in the frozen builds only.
-* Fourteen MB on Windows, and Pillow to watch for advisories. The macOS path is unit-tested but has not run.
-* Licence, as read by the agent (not legal advice): LGPL-3.0 section 4 asks for a notice that pystray is used, the GPL and LGPL texts, and its source or a replaceable copy. Loose `.py` files in `_internal` are both; on macOS a swapped file breaks the ad-hoc signature until it is re-signed.
+* Fourteen MB on Windows, and Pillow to watch for advisories. The macOS path is unit-tested but has not run. Licence, as read by the agent (not legal advice): LGPL-3.0 section 4 asks for a notice that pystray is used, the GPL and LGPL texts, and its source or a replaceable copy. Loose `.py` files in `_internal` are both; on macOS a swapped file breaks the ad-hoc signature until it is re-signed.
 
 ## Open Questions
 

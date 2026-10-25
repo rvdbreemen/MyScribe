@@ -4478,6 +4478,56 @@ def test_the_tray_goes_when_the_app_dies(layout, monkeypatch):
     assert tray.events == ["show", "close"]
 
 
+def _stop_while_the_tray_is_made(layout, monkeypatch, interrupt):
+    """run_headless with ``interrupt`` raised from inside tray_for: the
+    ~200 ms that importing pystray and Pillow takes (review of TASK-112.11)."""
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+    stops: list[int] = []
+    real_stop = launch.stop
+
+    def stop():
+        stops.append(1)
+        real_stop()
+
+    launch.stop = stop
+    monkeypatch.setattr(launcher, "tray_for", lambda _launch: interrupt())
+    try:
+        try:
+            code = launcher.run_headless(launch)
+        except KeyboardInterrupt:  # pytest would end the whole session on it
+            code = "KeyboardInterrupt escaped run_headless"
+        alive_after = child.poll() is None
+    finally:
+        if child.poll() is None:
+            child.kill()
+    return code, stops, alive_after
+
+
+def test_ctrl_c_while_the_tray_is_made_still_stops_the_app(layout, monkeypatch):
+    def ctrl_c():
+        raise KeyboardInterrupt
+
+    code, stops, alive_after = _stop_while_the_tray_is_made(layout, monkeypatch, ctrl_c)
+
+    assert stops == [1], "launch.stop never ran: the app would outlive the launcher"
+    assert code == 0 and not alive_after
+
+
+def test_sigterm_while_the_tray_is_made_still_stops_the_app(layout, monkeypatch):
+    """The handler that is in place while tray_for runs is called directly:
+    raising a real SIGTERM with the default handler would end pytest itself."""
+    def sigterm():
+        handler = _signal.getsignal(_signal.SIGTERM)
+        assert callable(handler), "SIGTERM still has its default: Python would end on the spot"
+        handler(_signal.SIGTERM, None)
+
+    code, stops, alive_after = _stop_while_the_tray_is_made(layout, monkeypatch, sigterm)
+
+    assert stops == [1], "launch.stop never ran: the app would outlive the launcher"
+    assert code == 0 and not alive_after
+
+
 def test_without_pystray_the_headless_launcher_serves_and_says_there_is_no_tray(layout, monkeypatch):
     """The source launcher and every door without the dependency: no tray,
     one line in launcher.log, and the app serves as before."""

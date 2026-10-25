@@ -8,7 +8,9 @@
   works like the Stop button in Settings: a running job goes back to the front
   of the queue. On Windows 11 a new icon starts in the overflow beside the
   clock. A Linux desktop without a system tray gets no icon, and the launcher's
-  log says so. The installed MyScribe now includes pystray (LGPL-3.0) for the
+  log says so. The icon has been seen on Windows only: the menu bar on macOS
+  and a Linux desktop, with or without a system tray, have not been tried yet
+  to confirm it. The installed MyScribe now includes pystray (LGPL-3.0) for the
   icon, shipped as replaceable source with its licence (TASK-112.11).
 
 ### Fixed
