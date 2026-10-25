@@ -2,6 +2,16 @@
 
 ### Added
 
+- **A tray icon while MyScribe runs in the background.** Started at login,
+  MyScribe now shows an icon in the tray (the notification area on Windows,
+  the menu bar on macOS) with **Open MyScribe** and **Stop MyScribe**. Stop
+  goes through the same stop as the Stop button in Settings: a running job goes
+  back to the front of the queue. On Windows 11 a new icon starts in the overflow beside the
+  clock. A Linux desktop without a system tray gets no icon, and the launcher's
+  log says so. The icon has been seen on Windows only: the menu bar on macOS
+  and a Linux desktop, with or without a system tray, have not been tried yet
+  to confirm it. The installed MyScribe now includes pystray (LGPL-3.0) for the
+  icon, shipped as replaceable source with its licence (TASK-112.11).
 - **A JSON API for programs, under `/api/v1`.** A script or an agent can list
   and search the library, read a transcript as JSON, send a recording in
   (multipart, or a path under the browse roots), transcribe a recording again,

@@ -93,7 +93,8 @@ with its transcript, speakers and the AI panel beside it.
   is complete but has no speakers, and says how to fix that.
   [Configuration](docs/configuration.md#hugging-face-token).
 - **In the background** - with *Start at login* on, MyScribe starts without a
-  window when you log in; open it at `http://127.0.0.1:4242`. To stop it, press
+  window when you log in, with a tray icon whose menu opens and stops it; or
+  open it at `http://127.0.0.1:4242`. To stop it, use the tray icon, press
   **Stop MyScribe** under Settings > *Start at login*, or run the launcher with
   `--stop`. A job that was running starts over at the next start; if MyScribe
   has to be ended because it did not stop within a minute, that job is marked
@@ -152,3 +153,10 @@ versions in all EU languages are available from the
 [EUPL collection](https://interoperable-europe.ec.europa.eu/collection/eupl/eupl-text-eupl-12).
 
 SPDX-License-Identifier: EUPL-1.2
+
+The installed MyScribe includes [pystray](https://github.com/moses-palmer/pystray)
+for its tray icon, under the GNU Lesser General Public License v3
+(LGPL-3.0), and on Linux python-xlib under the LGPL-2.1-or-later. Both are
+shipped as their Python source with their licence texts, next to the
+MyScribe program, where you can replace them with a modified version
+([ADR-038](docs/adr/ADR-038-the-frozen-launcher-shows-a-tray-icon-through-pystray-shipped-as-replaceable-source.md)).

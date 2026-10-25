@@ -2296,6 +2296,73 @@
       }
     },
     {
+      "id": "ADR-038",
+      "title": "The frozen launcher shows a tray icon through pystray, shipped as replaceable source",
+      "path": "ADR-038-the-frozen-launcher-shows-a-tray-icon-through-pystray-shipped-as-replaceable-source.md",
+      "format": "madr",
+      "status": "Accepted",
+      "date": "2026-10-25",
+      "decision_summary": "Chosen option: A.",
+      "topics": [
+        "background",
+        "launcher",
+        "licensing",
+        "packaging"
+      ],
+      "aliases": [
+        "pystray",
+        "status item",
+        "system tray",
+        "tray icon"
+      ],
+      "components": [
+        "packaging.launcher",
+        "packaging/launcher/hooks"
+      ],
+      "symbols": [
+        "replaceable_tray",
+        "Tray",
+        "tray_for",
+        "xembed_tray_present"
+      ],
+      "context_scope": "selective",
+      "decision_contract": {
+        "must": [
+          "Only the headless door shows the icon, after the app answers /health, and it makes the icon inside the try whose finally calls Launch.stop, under a SIGTERM handler: a Ctrl+C or logout while pystray imports still stops the app. The window...",
+          "pystray, Pillow, python-xlib and pyobjc are imported inside functions only, AppKit and PyObjCTools already in trayfor. When any import, the icon or its loop fails, for any exception, the door serves without a tray and writes one No tray...",
+          "Stop in the menu only sets a flag. The headless loop then calls Launch.stop: the stop route first (ADR-028, ADR-032), the hard stop after. A stop asked from the tray exits 0, and a dead app still exits APPDIED.",
+          "The icon runs on a thread of its own on Windows and Linux, so Python's signal handlers keep the main thread.",
+          "On macOS the icon takes the main thread. It takes SIGINT and SIGTERM back through PyObjCTools.MachSignals as a stop, because pystray's own SIGINT handler calls NSApp.terminate, which exits without stopping the app. It sets the accessory...",
+          "On Linux, the xorg backend runs only when an X11 system tray owns NETSYSTEMTRAYS ; otherwise the door serves with no tray and logs that line.",
+          "The dependencies live in packaging/build-requirements.in and its hashed .txt only, never in the app's uv.lock.",
+          "The hooks in packaging/launcher/hooks collect pystray and python-xlib as loose .py files (modulecollectionmode = \"py\"), with their dist-info and licence texts. buildrelease.replaceabletray fails the build when pystray's source or COPYING..."
+        ],
+        "must_not": [
+          "Import a tray module at the top of myscribelauncher.py.",
+          "Stop the app from inside a menu callback."
+        ],
+        "exceptions": [
+          "The frozen Linux AppImage carries no PyGObject, so it gets the xorg backend only. On GNOME (the GNU Network Object Model Environment desktop) without an extension that hosts legacy tray icons it has no tray (unverified on a real desktop)."
+        ],
+        "verification": [
+          "tests/testlauncher.py, the tray tests from testthetraymenuoffersopenmyscribeandstop on; tests/testbuildrelease.py, the replaceabletray, freeze and hook tests."
+        ]
+      },
+      "scope": {
+        "path_globs": [
+          "packaging/launcher/*.py"
+        ]
+      },
+      "metadata": {
+        "binding": false,
+        "gate": null,
+        "documents_shipped": false,
+        "verified_in": [],
+        "supersedes": [],
+        "superseded_by": null
+      }
+    },
+    {
       "id": "ADR-039",
       "title": "A login start that cannot serve shows one notice on Windows",
       "path": "ADR-039-a-login-start-that-cannot-serve-shows-one-notice-on-windows.md",
@@ -2552,6 +2619,12 @@
     {
       "source": "ADR-011",
       "target": "ADR-017",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-011",
+      "target": "ADR-038",
       "type": "related",
       "resolved": true
     },
@@ -2929,6 +3002,12 @@
     },
     {
       "source": "ADR-026",
+      "target": "ADR-038",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-026",
       "target": "ADR-039",
       "type": "related",
       "resolved": true
@@ -2966,6 +3045,12 @@
     {
       "source": "ADR-028",
       "target": "ADR-032",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-028",
+      "target": "ADR-038",
       "type": "related",
       "resolved": true
     },
@@ -3026,6 +3111,12 @@
     {
       "source": "ADR-032",
       "target": "ADR-037",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-032",
+      "target": "ADR-038",
       "type": "related",
       "resolved": true
     },
@@ -3109,6 +3200,30 @@
     },
     {
       "source": "ADR-037",
+      "target": "ADR-032",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-038",
+      "target": "ADR-011",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-038",
+      "target": "ADR-026",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-038",
+      "target": "ADR-028",
+      "type": "related",
+      "resolved": true
+    },
+    {
+      "source": "ADR-038",
       "target": "ADR-032",
       "type": "related",
       "resolved": true

@@ -12,6 +12,7 @@ superseded_by: null
 related:
   - "ADR-015"
   - "ADR-017"
+  - "ADR-038"
 topics:
   - "packaging"
   - "release"

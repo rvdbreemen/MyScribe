@@ -193,8 +193,16 @@ What a clone uses, per platform:
 
 ## Stopping MyScribe
 
-Started at login, MyScribe runs without a window. Stop it from Settings >
-*Start at login* > **Stop MyScribe**, or from a terminal:
+Started at login, MyScribe runs without a window, with an icon in the tray
+(the notification area on Windows, the menu bar on macOS). Its menu has
+**Open MyScribe** and **Stop MyScribe**. On Windows 11 a new icon starts in
+the overflow behind the arrow beside the clock; drag it out to keep it in
+view. A Linux desktop without a system tray (GNOME without an extension that
+shows tray icons) gets no icon, and `launcher.log` says so. So far the icon
+has been seen on Windows only; macOS and Linux have not been tried yet to
+confirm it. Stop it from the
+tray, from Settings > *Start at login* > **Stop MyScribe**, or from a
+terminal:
 
 - Windows: `"%LOCALAPPDATA%\Programs\MyScribe\MyScribe.exe" --stop`
 - macOS: `/Applications/MyScribe.app/Contents/MacOS/MyScribe --stop`

@@ -11,6 +11,7 @@ supersedes: []
 superseded_by: null
 related:
   - "ADR-032"
+  - "ADR-038"
 topics:
   - "jobs"
   - "shutdown"

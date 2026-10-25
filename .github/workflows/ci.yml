@@ -112,3 +112,53 @@ jobs:
           "$PY" -m pytest -q tests/test_[a-r]*.py
           "$PY" -m pytest -q tests/test_[s-z]*.py
         shell: bash
+
+      - name: The launcher's tray, frozen (TASK-112.11, ADR-038)
+        # The suite only ever hands the launcher a fake pystray, and pystray is
+        # in no lockfile the suite installs: it ships in the frozen launcher
+        # only. release.yml installs it through build_release.py, but that runs
+        # on a tag or by hand, so without this step a pull request never
+        # installs the hash-pinned tray deps (python-xlib on Linux,
+        # pyobjc-framework-quartz on macOS) nor freezes them. Here each runner
+        # installs packaging/build-requirements.txt with --require-hashes into
+        # its own venv (not .venv) and calls build_release.freeze, the function
+        # the release calls: the same PyInstaller flags and hooks. Unlike the
+        # release, the venv comes from the runner's uv without
+        # --python-preference only-managed (the release uses the payload's uv
+        # with it) and the payload is empty. freeze's replaceable_tray fails
+        # the step unless pystray and its COPYING.LGPL are in the shipped
+        # bundle as loose files; then missing_tray_modules fails it unless the
+        # backend and what it imports ship too (Xlib on Linux; AppKit,
+        # Foundation, objc and PyObjCTools on macOS, not Quartz, which nothing
+        # imports), loose or in the archive inside the executable.
+        # No installer, dmg or AppImage is made and the frozen launcher is not
+        # started: that is the release's --smoke.
+        if: ${{ !cancelled() }}
+        run: |
+          uv venv build/venv-tray --python 3.12
+          uv pip install --python build/venv-tray --require-hashes -r packaging/build-requirements.txt
+          case "$RUNNER_OS" in
+            Windows) target=windows-x64; py=build/venv-tray/Scripts/python.exe ;;
+            macOS)   target=macos-arm64; py=build/venv-tray/bin/python ;;
+            *)       target=linux-x64;   py=build/venv-tray/bin/python ;;
+          esac
+          "$py" - "$target" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "packaging")
+          import build_release
+          target = sys.argv[1]
+          payload = build_release.BUILD / "payload-tray-check"
+          payload.mkdir(parents=True, exist_ok=True)
+          (payload / "README.txt").write_text("the tray check freezes no payload\n", encoding="utf-8")
+          scripts = Path(sys.executable).parent
+          pyinstaller = scripts / ("pyinstaller.exe" if sys.platform == "win32" else "pyinstaller")
+          out = build_release.freeze(pyinstaller, payload, target)
+          wanted = build_release.TRAY_MODULES[target]
+          missing = build_release.missing_tray_modules(out, target)
+          print("tray modules wanted:", ", ".join(wanted))
+          if missing:
+              raise SystemExit(f"not in the frozen {target} bundle: {', '.join(missing)}")
+          print("tray modules: all in the bundle")
+          PY
+        shell: bash

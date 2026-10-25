@@ -1031,14 +1031,43 @@ def _import_roots(path: Path) -> set[str]:
     return roots
 
 
+def _module_level_import_roots(path: Path) -> set[str]:
+    """The roots imported anywhere but inside a function: what an import of
+    the file itself, or a door that never calls the function, needs."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path), feature_version=(3, 9))
+    roots: set[str] = set()
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in child.names)
+            elif isinstance(child, ast.ImportFrom) and child.level == 0:
+                roots.add((child.module or "").split(".")[0])
+            visit(child)
+
+    visit(tree)
+    return roots
+
+
+TRAY_MODULES = {"pystray", "PIL", "Xlib", "AppKit", "PyObjCTools"}
+"""The launcher's one exception to the standard library (ADR-038): the tray
+icon of the frozen builds, imported inside functions only."""
+
+
 def test_the_three_stdlib_only_files_parse_as_3_9_and_import_only_the_stdlib():
     """Criterion 14: install.py, build_payload.py and the launcher all run
-    before the environment exists. The one exception is named: build_payload
+    before the environment exists. Two exceptions are named: build_payload
     imports its sibling fetch_models inside `build()`, which install.py never
-    calls."""
+    calls, and the launcher imports the tray's modules inside the functions
+    that show the icon, which the frozen builds ship and a door without them
+    survives (ADR-038)."""
     allowed = set(sys.stdlib_module_names)
     assert _import_roots(INSTALL_PATH) <= allowed, _import_roots(INSTALL_PATH) - allowed
-    assert _import_roots(LAUNCHER_PATH) <= allowed, _import_roots(LAUNCHER_PATH) - allowed
+    assert _import_roots(LAUNCHER_PATH) - allowed == TRAY_MODULES
+    assert _module_level_import_roots(LAUNCHER_PATH) <= allowed, (
+        _module_level_import_roots(LAUNCHER_PATH) - allowed)
     assert _import_roots(BUILD_PAYLOAD_PATH) - allowed == {"fetch_models"}
 
 

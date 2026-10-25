@@ -3500,6 +3500,278 @@ class RestartBudget:
         return True
 
 
+# --- the tray icon (TASK-112.11, ADR-038) ----------------------------------------
+#
+# The one place the launcher may use more than the standard library: pystray,
+# with Pillow and its backend (python-xlib on Linux, pyobjc on macOS), shipped
+# in the frozen builds only (`packaging/build-requirements.in`). Every one of
+# them is imported inside a function, so the launcher still starts from source
+# and in every door without them; the headless door then serves without a
+# tray and says so in launcher.log. Only the headless door has a tray: it is
+# what a login entry starts, and the window has its own Open and Quit.
+
+TRAY_OPEN = "Open MyScribe"
+TRAY_STOP = "Stop MyScribe"
+TRAY_RUNNING = "MyScribe is running at {url}"
+TRAY_STOPPING = "MyScribe is stopping..."
+TRAY_SHOWN = "MyScribe shows a tray icon; Open MyScribe and Stop MyScribe are in its menu."
+TRAY_NONE = ("No tray icon ({reason}). MyScribe runs without one: Stop MyScribe in Settings > "
+             "Start at login, or MyScribe --stop, stops it.")
+TRAY_NO_HOST = "nothing on this desktop shows tray icons (no X11 system tray)"
+
+
+def _load_pystray():
+    """pystray, or what importing it raised. Not only ImportError: its xorg
+    backend opens the display at import time, and without one python-xlib
+    raises its own error."""
+    import pystray
+
+    return pystray
+
+
+def xembed_tray_present() -> bool:
+    """Whether an X11 system tray will take the xorg backend's icon.
+
+    That backend docks into whatever owns ``_NET_SYSTEM_TRAY_S<screen>``, and
+    with nobody owning it - GNOME without an extension that hosts tray icons -
+    it runs an icon nobody can see, without a word (pystray 0.19.5,
+    ``_xorg.py``). Asked here first, so the log can say there is no tray."""
+    import Xlib.X
+    import Xlib.display
+
+    display = Xlib.display.Display()
+    try:
+        atom = display.intern_atom(f"_NET_SYSTEM_TRAY_S{display.get_default_screen()}")
+        return display.get_selection_owner(atom) != Xlib.X.NONE
+    finally:
+        display.close()
+
+
+def tray_image():
+    """The icon: a filled circle with an M in it, drawn in memory. Nothing is
+    read from a file, so Pillow never parses anything it was handed."""
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((2, 2, 61, 61), fill=(37, 99, 235, 255))
+    draw.line([(17, 46), (17, 18), (32, 36), (47, 18), (47, 46)], fill=(255, 255, 255, 255),
+              width=6, joint="curve")
+    return image
+
+
+class Tray:
+    """The icon and its menu: Open MyScribe, and Stop MyScribe.
+
+    Stop only asks. The menu callback runs on the tray's own loop, and a stop
+    done there would hold that loop for the whole `STOP_WAIT`; the headless
+    door reads `stop_asked` and stops the way Ctrl+C does - through the stop
+    route first (ADR-028, ADR-032), the hard stop after it.
+
+    On Windows and Linux the icon runs on a thread of its own, because the
+    main thread is where Python runs its signal handlers, and a main thread
+    blocked in a Win32 or X11 loop would starve Ctrl+C and SIGTERM. AppKit
+    insists on the main thread, so on macOS the headless door hands it over
+    (`serve_on_main_thread`).
+    """
+
+    def __init__(self, pystray, image, url: str, open_url: Callable[[], None],
+                 platform: str = sys.platform, report: Callable[[str, str], None] | None = None):
+        self.stop_asked = threading.Event()
+        self.platform = platform
+        self._report = report
+        self._open_url = open_url
+        self.thread: threading.Thread | None = None
+        self.icon = pystray.Icon(
+            APP_NAME, image, TRAY_RUNNING.format(url=url),
+            menu=pystray.Menu(
+                pystray.MenuItem(TRAY_OPEN, self.open, default=True),
+                pystray.MenuItem(TRAY_STOP, self.ask_stop),
+            ),
+        )
+
+    @property
+    def main_thread(self) -> bool:
+        return self.platform == "darwin"
+
+    def open(self) -> None:
+        self._open_url()
+
+    def ask_stop(self) -> None:
+        self.stop_asked.set()
+        with contextlib.suppress(Exception):  # a title that cannot change stops nothing
+            self.icon.title = TRAY_STOPPING
+
+    def show(self) -> None:
+        self.thread = threading.Thread(target=self._run, name="myscribe-tray", daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        try:
+            self.icon.run()
+        except Exception as error:  # a tray that fails leaves MyScribe serving, and says so
+            if self._report is not None:
+                self._report("busy", TRAY_NONE.format(reason=f"{type(error).__name__}: {error}"))
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self.icon.stop()
+        if self.thread is not None:
+            self.thread.join(2.0)  # long enough for the icon to be taken out of the tray
+
+    def serve_on_main_thread(self, alive: Callable[[], bool]) -> bool:
+        """macOS: run the status item's loop here until the app ends or Stop
+        is asked; True when it was asked.
+
+        pystray's loop sets SIGINT to `NSApp.terminate_`, which exits the
+        process on the spot - before `launch.stop` has stopped the app. So
+        SIGINT and SIGTERM are taken back through `PyObjCTools.MachSignals`
+        once the loop runs (`callAfter` runs on that loop, after pystray set
+        its own), as a Stop. The accessory policy keeps a MyScribe without a
+        window out of the Dock."""
+        import AppKit
+        from PyObjCTools import AppHelper, MachSignals
+
+        AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+            AppKit.NSApplicationActivationPolicyAccessory)
+
+        def as_a_stop(_signum) -> None:
+            self.ask_stop()
+
+        def take_the_signals() -> None:
+            for number in (signal.SIGINT, signal.SIGTERM):
+                MachSignals.signal(number, as_a_stop)
+
+        def watch(icon) -> None:
+            icon.visible = True
+            AppHelper.callAfter(take_the_signals)
+            while alive() and not self.stop_asked.is_set():
+                time.sleep(0.5)
+            icon.stop()
+
+        self.icon.run(setup=watch)
+        return self.stop_asked.is_set()
+
+
+def tray_for(launch: Launch, platform: str = sys.platform) -> Tray | None:
+    """The tray for this launch, or None with one line saying why.
+
+    No tray is never a failure: MyScribe serves the same without one. On
+    macOS what `serve_on_main_thread` imports is imported here too, so a
+    bundle without it is this line and not a launcher that exits 1 into a
+    launchd restart."""
+    try:
+        pystray = _load_pystray()
+        if platform == "darwin":
+            import AppKit  # noqa: F401
+            from PyObjCTools import AppHelper, MachSignals  # noqa: F401
+        if pystray.Icon.__module__.endswith("_xorg") and not xembed_tray_present():
+            reason = TRAY_NO_HOST
+        else:
+            url = launch.url()
+            tray = Tray(pystray, tray_image(), url, lambda: open_in_browser(url, launch.report),
+                        platform=platform, report=launch.report)
+            launch.report("busy", TRAY_SHOWN)
+            return tray
+    except Exception as error:  # every way a tray has of not being there
+        reason = f"{type(error).__name__}: {error}"
+    launch.report("busy", TRAY_NONE.format(reason=reason))
+    return None
+
+
+def _rest(stopping: threading.Event, seconds: float) -> bool:
+    """Sleep up to ``seconds``; True as soon as a stop is asked. In short
+    `time.sleep`s, which Ctrl+C and the SIGTERM handler interrupt on every
+    platform - a lock wait on Windows would hold them off until it ends."""
+    until = time.monotonic() + seconds
+    while not stopping.is_set():
+        left = until - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(0.1, left))
+    return True
+
+
+def keep_serving(launch: Launch, stopping: threading.Event, budget: RestartBudget) -> tuple[bool, bool]:
+    """Watch the app until it ends for good, starting a crashed one again
+    within ``budget`` (ADR-037); ``(stopped, gave_up)``.
+
+    ``stopping`` is the tray's Stop (ADR-038): asked while the app serves, in
+    the restart delay or while a restarted app comes up, it ends the watch as
+    a stop somebody asked for and never as a crash to restart. Under an OS
+    supervisor the first end is final; an exit of 0 - the stop route - too
+    (ADR-032)."""
+    supervisor = os_supervisor()
+    answered = True
+    while True:
+        while launch.app.alive():
+            if _rest(stopping, 0.5):
+                return True, False
+        if stopping.is_set():
+            return True, False
+        code = launch.app.exit_code()
+        if (not code and answered) or supervisor:
+            return False, False
+        if answered:  # `start_app` has said it for one that did not answer
+            launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); "
+                                   f"see {launch.layout.logs_dir / 'app.log'}.")
+        if not budget.spend():
+            return False, True
+        launch.report("status", RESTARTING.format(delay=RESTART_DELAY, count=len(budget.spent),
+                                                  limit=budget.limit, minutes=budget.window / 60))
+        if _rest(stopping, RESTART_DELAY):
+            return True, False
+        # One that does not answer is stopped - on POSIX its SIGTERM may end
+        # it with 0 - and the loop spends again.
+        answered = launch.start_app()
+        if stopping.is_set():
+            return True, False
+
+
+def _serve_beside_a_main_thread_tray(launch: Launch, tray: Tray, budget: RestartBudget):
+    """macOS: the status item keeps the main thread for the launcher's whole
+    life, across restarts too, and `keep_serving` runs on a thread of its own;
+    ``(stopped, gave_up, tray)``, the tray None when it failed.
+
+    Every way out waits for that thread before `launch.stop` can run: a stop
+    while it is inside `start_app` would leave the app it starts running
+    behind a launcher that has gone. Whatever the thread raised - a Ctrl+C in
+    a test's `start_app` - is raised here, on the main thread."""
+    stopping = tray.stop_asked
+    outcome: dict = {}
+
+    def watch() -> None:
+        try:
+            outcome["result"] = keep_serving(launch, stopping, budget)
+        except BaseException as error:  # noqa: BLE001  handed to the main thread
+            outcome["error"] = error
+
+    worker = threading.Thread(target=watch, name="myscribe-watch", daemon=True)
+    worker.start()
+    try:
+        try:
+            with stop_on_sigterm(then=tray.ask_stop):
+                if tray.serve_on_main_thread(worker.is_alive):
+                    stopping.set()
+        except Exception as error:  # no status bar after all: serve on without one
+            launch.report("busy", TRAY_NONE.format(reason=f"{type(error).__name__}: {error}"))
+            tray.close()
+            tray = None
+    finally:
+        # Normal return, a failed tray, or a Ctrl+C before the tray took SIGINT:
+        # the watch is ended and waited for, so only one thread starts apps.
+        with stop_on_sigterm(then=stopping.set):
+            while worker.is_alive():
+                try:
+                    worker.join(0.5)
+                except KeyboardInterrupt:
+                    stopping.set()
+    if "error" in outcome:
+        raise outcome["error"]
+    stopped, gave_up = outcome["result"]
+    return stopped, gave_up, tray
+
+
 def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = False) -> int:
     """The console door, and every build without Tk; the exit code is
     `APP_DIED`'s contract.
@@ -3521,6 +3793,11 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
     restarts for one crash. An exit of 0 - the stop route, from Settings or
     `--stop` - and Ctrl+C or SIGTERM, also during a restart, are never
     restarted (ADR-032).
+
+    The tray (ADR-038) is the launcher's and not one app's: made once after
+    the first app answers, up while a crashed app is started again, closed
+    after the stop or the give-up. Its Stop, also in the restart delay, is a
+    stop and never a crash to restart (`keep_serving`).
     """
     started = first_run(launch, None, launch.report, force_setup, at_login)
     if at_login and (launch.serving or (started and launch.app is not None)):
@@ -3536,36 +3813,36 @@ def run_headless(launch: Launch, force_setup: bool = False, at_login: bool = Fal
             launch.kept = launch.problem  # for the box, once the lock is let go (TASK-120)
         return 0
     interrupted = gave_up = False
-    supervisor = os_supervisor()
     budget = RestartBudget()
     app_log = lambda: launch.layout.logs_dir / "app.log"  # noqa: E731  (only after a crash)
+    tray = None
+    stopping = threading.Event()  # the tray's own once there is one
     try:
-        # One handler and one `finally` over the restarts too: a SIGTERM in
-        # the delay or while a restarted app comes up is a stop, not a crash.
+        # After the start, so a first sync at login has no icon that offers to
+        # stop a MyScribe that is not there yet (TASK-112.11). Inside the try
+        # and under a SIGTERM handler: importing pystray and Pillow takes some
+        # 200 ms, and a Ctrl+C or a logout in it must still reach launch.stop().
+        # One tray for the launcher's whole life: it stays up across a restart.
         with stop_on_sigterm():
-            answered = True
-            while True:
-                while launch.app.alive():
-                    time.sleep(0.5)
-                code = launch.app.exit_code()
-                if (not code and answered) or supervisor:
-                    break
-                if answered:  # `start_app` has said it for one that did not answer
-                    launch.report("error", f"MyScribe stopped unexpectedly (exit code {code}); see {app_log()}.")
-                if not budget.spend():
-                    gave_up = True
-                    break
-                launch.report("status", RESTARTING.format(delay=RESTART_DELAY, count=len(budget.spent),
-                                                          limit=budget.limit, minutes=budget.window / 60))
-                time.sleep(RESTART_DELAY)
-                # One that does not answer is stopped - on POSIX its SIGTERM may
-                # end it with 0 - and the loop spends again.
-                answered = launch.start_app()
+            tray = tray_for(launch)
+        if tray is not None:
+            stopping = tray.stop_asked
+        if tray is not None and tray.main_thread:
+            interrupted, gave_up, tray = _serve_beside_a_main_thread_tray(launch, tray, budget)
+        else:
+            if tray is not None:
+                tray.show()
+            # One handler and one `finally` over the restarts too: a SIGTERM in
+            # the delay or while a restarted app comes up is a stop, not a crash.
+            with stop_on_sigterm():
+                interrupted, gave_up = keep_serving(launch, stopping, budget)
     except KeyboardInterrupt:
         interrupted = True
     finally:
         with signals_held():
             launch.stop()  # says what happened to the running job (TASK-112.09)
+        if tray is not None:
+            tray.close()  # after the stop: the icon says "stopping" while it runs
     if interrupted:
         return 0
     if gave_up:

@@ -7,8 +7,10 @@ Four steps, all from a clean checkout:
 1. the payload (`build_payload.py`): the app source, `uv.lock`, uv and
    ffmpeg, each download checked against its pinned sha256;
 2. a build environment: the payload's own verified uv makes a venv and
-   installs PyInstaller from `build-requirements.txt` with `--require-hashes`;
-3. the frozen launcher: one windowed onedir build, the payload inside it;
+   installs PyInstaller and the tray's pystray from `build-requirements.txt`
+   with `--require-hashes`;
+3. the frozen launcher: one windowed onedir build, the payload inside it,
+   and pystray as replaceable source beside it (ADR-038);
 4. the native artifact: an Inno Setup installer (Windows), a dmg (macOS), an
    AppImage (Linux).
 
@@ -95,6 +97,10 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
         "--name", FROZEN_NAME, "--onedir", "--windowed",
         "--distpath", out, "--workpath", BUILD / "pyinstaller", "--specpath", BUILD,
         "--add-data", f"{payload}{os.pathsep}payload",
+        # The tray (TASK-112.11, ADR-038): imported inside a function, so named
+        # here, and collected by the hooks beside the launcher as loose files.
+        "--hidden-import", "pystray",
+        "--additional-hooks-dir", REPO / "packaging" / "launcher" / "hooks",
     ]
     if target == "macos-arm64":
         args += ["--osx-bundle-identifier", BUNDLE_ID, "--target-architecture", "arm64"]
@@ -102,9 +108,84 @@ def freeze(pyinstaller: Path, payload: Path, target: str) -> Path:
         args += ["--icon", "NONE"]
     args.append(REPO / "packaging" / "launcher" / "myscribe_launcher.py")
     run(args)
+    replaceable_tray(out, target)
     if target == "macos-arm64":
         finish_bundle(out / "MyScribe.app", version())
     return out
+
+
+def replaceable_tray(frozen: Path, target: str = "windows-x64") -> Path:
+    """Fail the build unless pystray sits in the bundle as source, with its
+    licence: LGPL-3.0 lets us ship it frozen only if somebody can replace it
+    (ADR-038). A hook that stopped applying would otherwise compile it into
+    the archive inside the executable without a word. Returns its folder.
+
+    It looks in what ships, not in the whole dist folder: on macOS that is
+    MyScribe.app (the dmg), not the onedir PyInstaller leaves beside it;
+    elsewhere the onedir that Inno and the AppImage copy."""
+    shipped = frozen / ("MyScribe.app" if target == "macos-arm64" else FROZEN_NAME)
+    found = next((init.parent for init in shipped.rglob("pystray/__init__.py")), None)
+    if found is None:
+        raise SystemExit(f"the tray is not in {shipped} as loose .py files (packaging/launcher/hooks)")
+    if not any(shipped.rglob("pystray-*.dist-info/COPYING.LGPL")):
+        raise SystemExit(f"pystray's licence (COPYING.LGPL) is not in {shipped}")
+    print(f"tray: pystray as source at {found}")
+    return found
+
+
+# What each platform's tray imports besides pystray itself (TASK-112.11,
+# ADR-038): its backend, and what that backend imports. The pyobjc packages
+# are Python in the archive plus a compiled extension beside it; both count.
+# Not Quartz: pystray declares pyobjc-framework-quartz, but neither pystray
+# 0.19.5's code nor the launcher imports it, so PyInstaller rightly leaves it
+# out (the macOS runner of 2026-10-25 showed it absent).
+TRAY_MODULES = {
+    "windows-x64": ("pystray._win32",),
+    "linux-x64": ("pystray._xorg", "Xlib.display", "Xlib.threaded", "Xlib.XK"),
+    "macos-arm64": ("pystray._darwin", "AppKit", "AppKit._AppKit", "Foundation",
+                    "Foundation._Foundation", "objc", "objc._objc", "PyObjCTools.MachSignals",
+                    "PyObjCTools.AppHelper"),
+}
+
+
+def _shipped(frozen: Path, target: str) -> Path:
+    return frozen / ("MyScribe.app" if target == "macos-arm64" else FROZEN_NAME)
+
+
+def archived_modules(frozen: Path, target: str) -> set[str]:
+    """The module names in the PYZ archive inside the frozen executable.
+
+    Needs PyInstaller importable, so only the build venv calls it."""
+    from PyInstaller.archive.readers import CArchiveReader
+
+    shipped = _shipped(frozen, target)
+    executable = (shipped / "Contents" / "MacOS" / FROZEN_NAME if target == "macos-arm64"
+                  else shipped / (FROZEN_NAME + (".exe" if target == "windows-x64" else "")))
+    package = CArchiveReader(str(executable))
+    names: set[str] = set()
+    for name, entry in package.toc.items():
+        if entry[-1] == "z":  # a PYZ archive
+            names.update(package.open_embedded_archive(name).toc)
+    return names
+
+
+def missing_tray_modules(frozen: Path, target: str, archived: set[str] | None = None) -> list[str]:
+    """The modules in TRAY_MODULES[target] that are not in what ships: not a
+    loose .py, package or compiled extension in the bundle, and not in the
+    archive inside the executable (`archived`, read from it when not given)."""
+    shipped = _shipped(frozen, target)
+    if archived is None:
+        archived = archived_modules(frozen, target)
+    loose: set[str] = set()
+    for path in shipped.rglob("*"):
+        if path.suffix not in (".py", ".so", ".pyd"):
+            continue
+        parts = list(path.relative_to(shipped).parts)
+        parts[-1] = parts[-1].split(".", 1)[0]  # _AppKit.cpython-312-darwin.so -> _AppKit
+        if parts[-1] == "__init__":
+            parts.pop()
+        loose.update(".".join(parts[i:]) for i in range(len(parts)))
+    return [name for name in TRAY_MODULES[target] if name not in archived and name not in loose]
 
 
 def finish_bundle(app: Path, value: str, sign: Callable[[Path], None] | None = None) -> None:

@@ -13,6 +13,7 @@ related:
   - "ADR-001"
   - "ADR-028"
   - "ADR-037"
+  - "ADR-038"
 topics:
   - "shutdown"
   - "jobs"

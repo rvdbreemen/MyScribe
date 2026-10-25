@@ -4435,6 +4435,439 @@ def test_a_setup_click_during_the_pump_still_opens_the_sitting(layout, monkeypat
     assert sat == ["sitting"], "the Setup click was dropped"
 
 
+# --- TASK-112.11: a tray icon in the headless door (ADR-038) ----------------------
+#
+# pystray never runs here: every test hands the launcher a fake module, so the
+# menu wiring is tested without a display, a shell or a status bar. What a
+# real tray looks like is the real run's screenshot and the macOS and Linux
+# walks; these hold the wiring.
+
+
+class _FakeItem:
+    def __init__(self, text, action, default=False):
+        self.text, self.action, self.default = text, action, default
+
+
+class _FakeMenu:
+    def __init__(self, *items):
+        self.items = list(items)
+
+
+class _FakeIcon:
+    """What `Tray` uses of `pystray.Icon`, recorded."""
+
+    def __init__(self, name, icon=None, title=None, menu=None):
+        self.name, self.image, self.title, self.menu = name, icon, title, menu
+        self.ran_on: list[str] = []
+        self.stopped = threading.Event()
+        self.visible = False
+
+    def run(self, setup=None):
+        self.ran_on.append(threading.current_thread().name)
+        if setup is not None:
+            threading.Thread(target=setup, args=(self,), daemon=True).start()
+        else:
+            self.visible = True
+        self.stopped.wait(10)
+
+    def stop(self):
+        self.stopped.set()
+
+
+def _fake_pystray(module_name: str = "pystray._win32"):
+    icon = type("Icon", (_FakeIcon,), {"__module__": module_name})
+    return types.SimpleNamespace(Icon=icon, Menu=_FakeMenu, MenuItem=_FakeItem)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_tray(monkeypatch):
+    """No test puts a real icon in the tray of whoever runs the suite: a
+    machine with pystray installed would otherwise show one per test."""
+    def absent():
+        raise ImportError("no pystray in the tests")
+
+    monkeypatch.setattr(launcher, "_load_pystray", absent)
+
+
+def _tray(opened=None, platform="win32", module_name="pystray._win32"):
+    opened = [] if opened is None else opened
+    return launcher.Tray(_fake_pystray(module_name), object(), "http://127.0.0.1:4242/",
+                         lambda: opened.append("open"), platform=platform)
+
+
+def _reporting_launch(said):
+    return types.SimpleNamespace(url=lambda: "http://127.0.0.1:4242/",
+                                 report=lambda state, text: said.append((state, text)))
+
+
+def test_the_tray_menu_offers_open_myscribe_and_stop():
+    tray = _tray()
+
+    items = tray.icon.menu.items
+    assert [item.text for item in items] == ["Open MyScribe", "Stop MyScribe"]
+    assert items[0].default is True, "a click on the icon itself opens MyScribe"
+    assert "http://127.0.0.1:4242/" in tray.icon.title
+
+
+def test_open_myscribe_opens_the_page_and_stops_nothing():
+    opened: list[str] = []
+    tray = _tray(opened)
+
+    tray.icon.menu.items[0].action()
+
+    assert opened == ["open"]
+    assert not tray.stop_asked.is_set()
+
+
+def test_stop_in_the_tray_only_asks_and_says_it_is_stopping():
+    """The menu callback runs on the tray's own loop: a stop done there would
+    hold the menu for the whole `STOP_WAIT`. It sets the flag the headless
+    loop reads, which then stops the way Ctrl+C does - the stop route first."""
+    opened: list[str] = []
+    tray = _tray(opened)
+
+    tray.icon.menu.items[1].action()
+
+    assert tray.stop_asked.is_set()
+    assert opened == []
+    assert tray.icon.title == launcher.TRAY_STOPPING
+
+
+def test_the_tray_runs_on_a_thread_of_its_own_outside_macos():
+    """On Windows and Linux the main thread keeps the headless loop, where
+    Python's signal handlers run: Ctrl+C and SIGTERM stay a stop (TASK-102.03)."""
+    tray = _tray()
+    assert tray.main_thread is False
+
+    tray.show()
+    deadline = time.monotonic() + 5
+    while not tray.icon.ran_on and time.monotonic() < deadline:
+        time.sleep(0.02)
+    tray.close()
+
+    assert tray.icon.ran_on == ["myscribe-tray"]
+    assert tray.icon.stopped.is_set()
+
+
+def test_on_macos_the_tray_has_the_main_thread():
+    assert _tray(platform="darwin").main_thread is True
+
+
+class _ServingTray:
+    """A tray whose Stop is clicked after ``after`` seconds."""
+
+    main_thread = False
+
+    def __init__(self, after: float | None = 0.3):
+        self.stop_asked = threading.Event()
+        self.events: list[str] = []
+        if after is not None:
+            threading.Timer(after, self.stop_asked.set).start()
+
+    def show(self):
+        self.events.append("show")
+
+    def ask_stop(self):
+        self.stop_asked.set()
+
+    def close(self):
+        self.events.append("close")
+
+
+def test_stop_in_the_tray_ends_the_headless_launcher_through_the_stop_route(layout, monkeypatch):
+    launch, child, fake, said, hard = _route_over(layout, monkeypatch)
+    tray = _ServingTray()
+    stopped_with: list = []
+    real_stop = launch.stop
+
+    def stop():
+        stopped_with.append(list(tray.events))
+        real_stop()
+
+    launch.stop = stop
+    monkeypatch.setattr(launcher, "tray_for", lambda _launch: tray)
+    try:
+        code = launcher.run_headless(launch)
+    finally:
+        _cleanup(child, fake)
+
+    assert code == 0, "a stop somebody asked for is not a crash to restart"
+    assert fake.posted == ["/api/shutdown"] and hard == []
+    assert "Job 7 is back at the front of the queue" in _launcher_log(layout)
+    assert stopped_with == [["show"]], "the icon stays up while the stop runs"
+    assert tray.events == ["show", "close"]
+
+
+def test_the_tray_goes_when_the_app_dies(layout, monkeypatch):
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "systemd")  # no restart: TASK-112.10's own tests
+    tray = _ServingTray(after=None)
+    monkeypatch.setattr(launcher, "tray_for", lambda _launch: tray)
+    threading.Timer(0.3, child.kill).start()
+
+    code = launcher.run_headless(launch)
+
+    assert code == launcher.APP_DIED
+    assert tray.events == ["show", "close"]
+
+
+def _stop_while_the_tray_is_made(layout, monkeypatch, interrupt):
+    """run_headless with ``interrupt`` raised from inside tray_for: the
+    ~200 ms that importing pystray and Pillow takes (review of TASK-112.11)."""
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+    stops: list[int] = []
+    real_stop = launch.stop
+
+    def stop():
+        stops.append(1)
+        real_stop()
+
+    launch.stop = stop
+    monkeypatch.setattr(launcher, "tray_for", lambda _launch: interrupt())
+    try:
+        try:
+            code = launcher.run_headless(launch)
+        except KeyboardInterrupt:  # pytest would end the whole session on it
+            code = "KeyboardInterrupt escaped run_headless"
+        alive_after = child.poll() is None
+    finally:
+        if child.poll() is None:
+            child.kill()
+    return code, stops, alive_after
+
+
+def test_ctrl_c_while_the_tray_is_made_still_stops_the_app(layout, monkeypatch):
+    def ctrl_c():
+        raise KeyboardInterrupt
+
+    code, stops, alive_after = _stop_while_the_tray_is_made(layout, monkeypatch, ctrl_c)
+
+    assert stops == [1], "launch.stop never ran: the app would outlive the launcher"
+    assert code == 0 and not alive_after
+
+
+def test_sigterm_while_the_tray_is_made_still_stops_the_app(layout, monkeypatch):
+    """The handler that is in place while tray_for runs is called directly:
+    raising a real SIGTERM with the default handler would end pytest itself."""
+    def sigterm():
+        handler = _signal.getsignal(_signal.SIGTERM)
+        assert callable(handler), "SIGTERM still has its default: Python would end on the spot"
+        handler(_signal.SIGTERM, None)
+
+    code, stops, alive_after = _stop_while_the_tray_is_made(layout, monkeypatch, sigterm)
+
+    assert stops == [1], "launch.stop never ran: the app would outlive the launcher"
+    assert code == 0 and not alive_after
+
+
+def test_without_pystray_the_headless_launcher_serves_and_says_there_is_no_tray(layout, monkeypatch):
+    """The source launcher and every door without the dependency: no tray,
+    one line in launcher.log, and the app serves as before."""
+    child = _app_child("pass")
+    launch = _launch_over(layout, child, monkeypatch)
+
+    assert launcher.run_headless(launch) == 0
+
+    said = _launcher_log(layout)
+    assert "No tray icon" in said and "no pystray in the tests" in said
+    assert "MyScribe stopped." in said
+
+
+def test_a_display_error_at_import_is_no_tray_and_not_a_crash(monkeypatch):
+    """pystray's xorg backend opens the display at import time, and what it
+    raises without one is Xlib's own error, not an ImportError."""
+    class DisplayNameError(Exception):
+        pass
+
+    def no_display():
+        raise DisplayNameError('Bad display name ""')
+
+    monkeypatch.setattr(launcher, "_load_pystray", no_display)
+    said: list[tuple[str, str]] = []
+
+    assert launcher.tray_for(_reporting_launch(said)) is None
+    assert any("No tray icon" in text and "Bad display name" in text for _state, text in said)
+
+
+def test_linux_without_a_tray_host_gets_no_tray_and_a_line_that_says_so(monkeypatch):
+    """The xorg backend docks into whatever owns the system tray selection,
+    and with nobody owning it runs an icon nobody can see, without a word."""
+    monkeypatch.setattr(launcher, "_load_pystray", lambda: _fake_pystray("pystray._xorg"))
+    monkeypatch.setattr(launcher, "xembed_tray_present", lambda: False)
+    said: list[tuple[str, str]] = []
+
+    # The platform is named: left to its default it is the runner's, and on
+    # macOS that imports AppKit, which the suite does not install.
+    assert launcher.tray_for(_reporting_launch(said), platform="linux") is None
+    assert any("No tray icon" in text and launcher.TRAY_NO_HOST in text for _state, text in said)
+
+
+def test_linux_with_a_tray_host_gets_the_tray(monkeypatch):
+    monkeypatch.setattr(launcher, "_load_pystray", lambda: _fake_pystray("pystray._xorg"))
+    monkeypatch.setattr(launcher, "xembed_tray_present", lambda: True)
+    monkeypatch.setattr(launcher, "tray_image", lambda: object())
+    said: list[tuple[str, str]] = []
+
+    tray = launcher.tray_for(_reporting_launch(said), platform="linux")
+
+    assert isinstance(tray, launcher.Tray)
+    assert ("busy", launcher.TRAY_SHOWN) in said
+
+
+def test_windows_gets_the_tray_without_asking_for_a_tray_host(monkeypatch):
+    monkeypatch.setattr(launcher, "_load_pystray", lambda: _fake_pystray("pystray._win32"))
+    monkeypatch.setattr(launcher, "xembed_tray_present", lambda: pytest.fail("not an X11 question"))
+    monkeypatch.setattr(launcher, "tray_image", lambda: object())
+
+    assert isinstance(launcher.tray_for(_reporting_launch([]), platform="win32"), launcher.Tray)
+
+
+def _fake_appkit(monkeypatch, handlers=None, after=None, policy=None):
+    handlers = {} if handlers is None else handlers
+    after = [] if after is None else after
+    policy = [] if policy is None else policy
+    machsignals = types.SimpleNamespace(signal=lambda number, handler: handlers.__setitem__(number, handler))
+    apphelper = types.SimpleNamespace(callAfter=lambda work: after.append(work) or work())
+    application = types.SimpleNamespace(setActivationPolicy_=policy.append)
+    appkit = types.SimpleNamespace(
+        NSApplication=types.SimpleNamespace(sharedApplication=lambda: application),
+        NSApplicationActivationPolicyAccessory=1)
+    tools = types.ModuleType("PyObjCTools")
+    tools.AppHelper, tools.MachSignals = apphelper, machsignals
+    monkeypatch.setitem(sys.modules, "PyObjCTools", tools)
+    monkeypatch.setitem(sys.modules, "PyObjCTools.AppHelper", apphelper)
+    monkeypatch.setitem(sys.modules, "PyObjCTools.MachSignals", machsignals)
+    monkeypatch.setitem(sys.modules, "AppKit", appkit)
+
+
+def test_on_macos_ctrl_c_and_sigterm_in_the_tray_are_a_stop_and_not_an_exit(monkeypatch):
+    """pystray's own SIGINT handler on macOS is `NSApp.terminate_`, which
+    exits the process on the spot and skips `launch.stop`: the app would keep
+    serving. The tray takes SIGINT and SIGTERM back once its loop runs, as a
+    stop the headless door finishes the way Ctrl+C does elsewhere."""
+    handlers: dict = {}
+    after: list = []
+    policy: list = []
+    _fake_appkit(monkeypatch, handlers, after, policy)
+    tray = _tray(platform="darwin")
+
+    def press_ctrl_c():
+        deadline = time.monotonic() + 5
+        while _signal.SIGINT not in handlers and time.monotonic() < deadline:
+            time.sleep(0.02)
+        handlers[_signal.SIGINT](_signal.SIGINT)
+
+    threading.Thread(target=press_ctrl_c, daemon=True).start()
+    asked = tray.serve_on_main_thread(lambda: True)
+
+    assert asked is True
+    assert set(handlers) == {_signal.SIGINT, _signal.SIGTERM}
+    assert len(after) == 1, "the signals are taken on the main loop, after pystray set its own"
+    assert tray.icon.visible is True and tray.icon.stopped.is_set()
+    assert policy == [1], "no Dock icon for a MyScribe that has no window"
+
+
+def test_on_macos_the_tray_ends_when_the_app_does(monkeypatch):
+    _fake_appkit(monkeypatch)
+    tray = _tray(platform="darwin")
+    until = time.monotonic() + 0.3
+
+    assert tray.serve_on_main_thread(lambda: time.monotonic() < until) is False
+    assert tray.icon.stopped.is_set()
+
+
+def test_the_macos_headless_door_hands_the_main_thread_to_the_tray(layout, monkeypatch):
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+    served: list[str] = []
+
+    class MainThreadTray(_ServingTray):
+        main_thread = True
+
+        def serve_on_main_thread(self, alive):
+            served.append(threading.current_thread().name)
+            return True  # Stop was clicked
+
+    tray = MainThreadTray(after=None)
+    monkeypatch.setattr(launcher, "tray_for", lambda _launch: tray)
+    try:
+        code = launcher.run_headless(launch)
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+    assert served == [threading.main_thread().name]
+    assert code == 0
+    assert tray.events == ["close"], "a main-thread tray is not shown on a thread of its own"
+
+
+def test_the_tray_image_is_drawn_in_memory():
+    pytest.importorskip("PIL")
+    image = launcher.tray_image()
+    assert image.size == (64, 64) and image.mode == "RGBA"
+
+
+def test_the_tray_and_its_dependencies_are_imported_lazily():
+    """ADR-038: the launcher must start without pystray - from source, and in
+    every door that is not the headless one - so no tray module is imported
+    at the top of the file."""
+    source = LAUNCHER_PATH.read_text(encoding="utf-8")
+    assert not re.search(r"^(import|from)\s+(pystray|PIL|Xlib|AppKit|PyObjCTools)\b", source, re.M)
+
+
+def test_on_macos_a_missing_appkit_helper_is_no_tray_and_not_a_crash(monkeypatch):
+    """`serve_on_main_thread` needs AppKit and PyObjCTools; a bundle that left
+    one out must say so and serve, not exit 1 into a launchd restart loop."""
+    monkeypatch.setattr(launcher, "_load_pystray", lambda: _fake_pystray("pystray._darwin"))
+    monkeypatch.setattr(launcher, "tray_image", lambda: object())
+    monkeypatch.setitem(sys.modules, "AppKit", types.ModuleType("AppKit"))
+    monkeypatch.setitem(sys.modules, "PyObjCTools", None)  # import fails
+    said: list[tuple[str, str]] = []
+
+    assert launcher.tray_for(_reporting_launch(said), platform="darwin") is None
+    assert any("No tray icon" in text and "PyObjCTools" in text for _state, text in said)
+
+
+def test_a_main_thread_tray_that_fails_leaves_the_headless_door_serving(layout, monkeypatch):
+    child = _sleeping_child()
+    launch = _launch_over(layout, child, monkeypatch)
+
+    class BrokenTray(_ServingTray):
+        main_thread = True
+
+        def serve_on_main_thread(self, alive):
+            raise RuntimeError("no status bar")
+
+    tray = BrokenTray(after=None)
+    monkeypatch.setattr(launcher, "tray_for", lambda _launch: tray)
+    monkeypatch.setattr(launcher, "os_supervisor", lambda *a, **k: "launchd")  # no restart here
+    threading.Timer(1.0, child.kill).start()
+
+    code = launcher.run_headless(launch)
+
+    assert code == launcher.APP_DIED, "the door served on until the app died, and said why it ended"
+    said = _launcher_log(layout)
+    assert "No tray icon (RuntimeError: no status bar)" in said
+    assert "stopped unexpectedly" in said
+
+
+def test_a_tray_loop_that_fails_says_so(monkeypatch):
+    said: list[tuple[str, str]] = []
+    tray = launcher.Tray(_fake_pystray(), object(), "http://127.0.0.1:4242/", lambda: None,
+                         platform="win32", report=lambda state, text: said.append((state, text)))
+
+    def broken(setup=None):
+        raise OSError("Shell_NotifyIcon failed")
+
+    tray.icon.run = broken
+    tray.show()
+    tray.thread.join(5)
+
+    assert any("No tray icon" in text and "Shell_NotifyIcon failed" in text for _state, text in said)
+
+
 # --- TASK-112.10: the launcher restarts a crashed app, a bounded number of times --
 #
 # ADR-037. Only where no OS supervisor watches the launcher: the Windows Run
@@ -4667,6 +5100,141 @@ def test_a_sigterm_during_the_restart_delay_starts_nothing(layout, monkeypatch):
 
     assert code == 0
     assert started == []
+
+
+# --- TASK-112.11 with TASK-112.10: the tray across a restart ----------------------
+#
+# The tray belongs to the launcher, not to one app process: it stays up while
+# a crashed app is started again, goes when the launcher gives up or stops,
+# and a Stop in it - also in the restart delay - is a stop, never a crash to
+# restart (ADR-032, ADR-037, ADR-038).
+
+
+def _tray_over_restarts(layout, monkeypatch, tray, first, then):
+    launch, started = _restarting(layout, monkeypatch, first, then)
+    made: list[int] = []
+
+    def make(_launch):
+        made.append(1)
+        return tray
+
+    monkeypatch.setattr(launcher, "tray_for", make)
+    return launch, started, made
+
+
+def _stopping_by_kill(launch):
+    stopped: list[bool] = []
+
+    def stop():
+        stopped.append(launch.app.alive())
+        launch.app.proc.kill()
+        launch.app.proc.wait()
+
+    launch.stop = stop
+    return stopped
+
+
+def test_the_tray_stays_up_across_a_restart_and_goes_when_the_launcher_gives_up(layout, monkeypatch):
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    tray = _ServingTray(after=None)
+    seen: list[list[str]] = []
+    launch, started, made = _tray_over_restarts(
+        layout, monkeypatch, tray, _exits(3), lambda n: seen.append(list(tray.events)) or _exits(3))
+
+    assert launcher.run_headless(launch) == launcher.APP_DIED
+    assert len(started) == 1 and made == [1], "one tray for the launcher's whole life"
+    assert seen == [["show"]], "the icon was taken down for the restart"
+    assert tray.events == ["show", "close"]
+
+
+def test_stop_in_the_tray_after_a_restart_is_a_stop_and_not_a_crash(layout, monkeypatch):
+    tray = _ServingTray(after=None)
+
+    def restarted(n):
+        threading.Timer(0.3, tray.ask_stop).start()
+        return _sleeping_child()
+
+    launch, started, _ = _tray_over_restarts(layout, monkeypatch, tray, _exits(3), restarted)
+    stopped = _stopping_by_kill(launch)
+
+    assert launcher.run_headless(launch) == 0
+    assert len(started) == 1 and stopped == [True], "the restarted app is stopped, once"
+    assert _launcher_log(layout).count("stopped unexpectedly") == 1, "the Stop was counted as a crash"
+    assert tray.events == ["show", "close"]
+
+
+def test_stop_in_the_tray_during_the_restart_delay_starts_nothing(layout, monkeypatch):
+    tray = _ServingTray(after=None)
+    launch, started, _ = _tray_over_restarts(layout, monkeypatch, tray, _exits(3), lambda n: _exits(0))
+    monkeypatch.setattr(launcher, "RESTART_DELAY", 3.0)
+    report = launch.report
+    began: list[float] = []
+
+    def stop_when_the_delay_begins(state, text):
+        report(state, text)
+        if text.startswith("Starting MyScribe again"):  # said right before the delay
+            began.append(time.monotonic())
+            tray.ask_stop()
+
+    launch.report = stop_when_the_delay_begins
+
+    code = launcher.run_headless(launch)
+
+    assert code == 0
+    assert len(began) == 1, "the restart delay was never reached"
+    assert started == [], "a Stop in the delay still started the app again"
+    assert time.monotonic() - began[0] < launcher.RESTART_DELAY, "the delay was sat out after the Stop"
+
+
+class _MacTray(_ServingTray):
+    """A main-thread tray that serves the way the real one does: until
+    ``alive`` says no or Stop is asked."""
+
+    main_thread = True
+
+    def __init__(self):
+        super().__init__(after=None)
+        self.serving = threading.Event()
+        self.served_on: list[str] = []
+
+    def serve_on_main_thread(self, alive):
+        self.served_on.append(threading.current_thread().name)
+        self.serving.set()
+        try:
+            while alive() and not self.stop_asked.is_set():
+                time.sleep(0.05)
+        finally:
+            self.serving.clear()
+        return self.stop_asked.is_set()
+
+
+def test_on_macos_the_tray_keeps_the_main_thread_across_a_restart(layout, monkeypatch):
+    monkeypatch.setattr(launcher, "RESTART_LIMIT", 1)
+    tray = _MacTray()
+    seen: list[bool] = []
+    launch, started, made = _tray_over_restarts(
+        layout, monkeypatch, tray, _exits(3), lambda n: seen.append(tray.serving.is_set()) or _exits(3))
+
+    assert launcher.run_headless(launch) == launcher.APP_DIED
+    assert len(started) == 1 and made == [1]
+    assert seen == [True], "the status item was gone while the app was started again"
+    assert tray.served_on == [threading.main_thread().name]
+    assert tray.events == ["close"]
+
+
+def test_on_macos_stop_in_the_tray_after_a_restart_stops_the_restarted_app(layout, monkeypatch):
+    tray = _MacTray()
+
+    def restarted(n):
+        threading.Timer(0.3, tray.ask_stop).start()
+        return _sleeping_child()
+
+    launch, started, _ = _tray_over_restarts(layout, monkeypatch, tray, _exits(3), restarted)
+    stopped = _stopping_by_kill(launch)
+
+    assert launcher.run_headless(launch) == 0
+    assert len(started) == 1 and stopped == [True]
+    assert _launcher_log(layout).count("stopped unexpectedly") == 1
 
 
 # --- TASK-120: a reserved port, and a failed start at login somebody sees ---------
